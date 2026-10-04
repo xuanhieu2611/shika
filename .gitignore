@@ -1,0 +1,15 @@
+/target/
+/logs/
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.sw?
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key

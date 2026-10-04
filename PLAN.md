@@ -1,0 +1,269 @@
+# Shika MVP plan
+
+Build the Mac app described in `PRD.md`, in checklist order, and stop when the "Done when" script at the bottom passes.
+
+The PRD is the spec, except where this file records a later decision from the author. Those decisions:
+
+- A `git push` in the shell does not remove the card. The user removes it with Close.
+- Close asks what to do with work that is not on the remote: discard it, or push it.
+- This build launches Claude Code and Cursor CLI only. Kiro, Codex, and Pi wait.
+- Shika creates the worktree. Never pass Cursor's `--worktree`.
+- Shika is a pure Rust app on GPUI, not Tauri 2 with a web view. Decided 2026-10-04. See "Stack change".
+
+## Stack change, 2026-10-04
+
+Shika moves from Tauri 2, React, and xterm.js to a pure Rust app on GPUI, Zed's GPU UI framework. Everything, including the UI, is Rust.
+
+Why: the product is terminals and keyboard. Its users come from terminal multiplexers like Herdr and dmux and expect terminal speed. A web view gives too narrow a surface for precise keyboard and IME handling, is a poor host for xterm's WebGL renderer, and makes every PTY byte cross an IPC bridge into JavaScript. GPUI draws on the GPU with Metal, and the same Rust process that reads the PTY parses and paints it. Comparable agent apps already ship on GPUI: Paneflow, Arbor, Ghostex, Codux, herdr-gpui. The code is small today, about 2,100 lines of TypeScript and 2,650 of Rust, so the switch is cheapest now.
+
+Only the stack changes. Every product behavior in this file and in `PRD.md` stays the same.
+
+The Tauri build served as the reference implementation of PRD checklist items 1 to 7 during the GPUI port. It has now been removed.
+
+### Migration order
+
+1. **Terminal proof.** A GPUI window with real terminals on `alacritty_terminal` and `portable-pty`. Claude Code's and Cursor's TUIs are usable. Check typing latency, IME, selection and copy, bracketed paste, scrollback, mouse reporting and the wheel, truecolor, resize, a flood of output such as `seq 1 2000000`, and two or more terminals where the hidden ones keep draining their PTY so the CLI never stalls.
+2. **Core.** The Tauri-free backend in `crates/shika-core`, with the existing Rust tests ported.
+3. **App.** Port PRD checklist items 1 to 7, everything the Tauri build already does, to GPUI in `crates/shika`, matching `design/`. Then the Dock-launch check from a built `.app` opened with `open`.
+4. **Delete the Tauri and web code.** `src/`, `src-tauri/`, `index.html`, `vite.config.ts`, `tsconfig*.json`, `package.json`, `package-lock.json`, `node_modules`, `dist`.
+5. **Continue** with PRD checklist items 8 to 10 and the "Done when" script, unchanged in intent.
+
+Steps 1 and 2 run in parallel.
+
+### Implementation record, 2026-10-04
+
+The Cargo workspace now contains the core, terminal, and GPUI app. The app implements the grouped cards, native picker, keyboard controls, shell toggle, branch naming, quiet status timer, native notifications with click routing, safe close choices, and leftovers cleanup. The former Tauri and web app and its build dependencies have been removed. The GPUI commit pin and author decisions above are unchanged.
+
+`scripts/bundle-app.sh --debug` produces `target/debug/Shika.app` with the bundle identifier, icon, and JetBrains Mono plus OFL. The built app has been opened with isolated test data and finds both real CLI binaries. The "Done when" flow passed using isolated app data, two disposable repositories, local bare remotes, and the real authenticated CLIs. Native notification delivery and a user click were verified. Acceptance evidence and the separate terminal feel and IME checks are recorded in `MANUAL_CHECKS.md` and `crates/shika-terminal/MANUAL_CHECKS.md`. Final validation passed 108 workspace tests, formatting, strict Clippy, and bundle signature verification.
+
+## How a new task is named
+
+Pressing New creates the worktree before the prompt exists, because the CLI has to open in that folder so you can type there and switch away before pressing Enter.
+
+The folder starts as `<repo>/.worktrees/shika-draft-<id>` on branch `shika-draft-<id>`. The first line you submit in that terminal becomes the card title, and Shika renames the git branch to a slug of that line with `git branch -m`. The folder stays where it is. The agent is already running inside it, so moving the directory out from under the process is not reliable. The path is only shown in the terminal header.
+
+You do not name the task in a separate field.
+
+## Author decisions
+
+1. **Push does not finish the task.** A successful `git push` in Shika's shell leaves the card, the session, and the worktree in place. The user closes the card when they want it gone. A push typed inside the agent CLI is also ignored.
+2. **Close is a choice when work would be lost.** If the agent is still working, the worktree has uncommitted changes, or the branch has commits that are not on the remote, Shika asks:
+   - **Discard changes** stops the agent, deletes the worktree, and deletes the local branch. Uncommitted files and unpushed commits go away.
+   - **Push changes** runs `git push -u origin HEAD` only when the worktree is clean and there is something to push. On success, Shika then removes the card and the worktree and leaves the local branch, because that branch is now on the remote. If the push fails, the card stays and the error is shown.
+   - If the worktree is dirty, Push is not offered. Shika does not commit. Escape leaves the card and focuses the shell so the user can commit and push, then close again.
+   - Escape always cancels.
+3. **Nothing to lose closes immediately.** If the agent is not working, the worktree is clean, and the branch is already on the remote or has no commits of its own, Close removes the card and the worktree without asking. A pushed branch stays. An empty draft branch is deleted.
+4. **Projects persist. Live sessions do not restore.** Relaunch shows the project list and an empty terminal. A journal of Shika worktrees is kept so a quit or crash can list leftovers. Nothing is deleted automatically. The user removes leftovers from that list.
+5. **One terminal view per live PTY, hidden when not selected.** Switching cards does not kill processes. Output keeps flowing into the hidden view so the CLI does not block on a full PTY buffer. The shell PTY is created the first time the user toggles to it, then kept.
+6. **Status stays coarse.** Waiting means the CLI is up and the first prompt has not been sent. Working means output is still arriving. About two seconds of quiet after work has started becomes Ready to check, and that posts the notification. Asking you is a bonus if a cheap check of the recent output is obvious. Do not block the MVP on parsing each CLI's question UI. A non-zero exit is still Ready to check.
+7. **Fonts.** The system UI font, San Francisco, for the chrome. JetBrains Mono, bundled with the app under its OFL license, for the terminal, as in `design/`. Menlo if it fails to load. SF Mono is out: GPUI loads only its regular weight. Light chrome, dark terminal. Warm mark for asking, green mark for ready. No drag handle, 280px column, at most three visible cards per project.
+8. **Extra keyboard keys the PRD table does not list, because the app has to work without a mouse.** `a` adds a project. `n` opens the CLI picker. In the picker, `j` / `k`, Enter, and `1`–`2` choose, Escape cancels. In the close dialog, `d` discards, `p` pushes when that action is available, Escape cancels.
+
+## CLIs in this build
+
+Checked 2026-10-03 from each binary's `--help`. Do not invent a flag. Do not pass `agent --worktree`.
+
+| Preset | Binary | Launch args |
+| --- | --- | --- |
+| Claude Code | `claude` | `--dangerously-skip-permissions` |
+| Cursor CLI | `agent` | `--yolo --trust --sandbox disabled` |
+
+Both are installed under `~/.local/bin`. Codex, Pi, and Kiro are not in this build.
+
+Rust is installed with rustup for this machine. `~/.zshenv` is a Nix store symlink, so rustup must not try to edit it. The toolchain is on `PATH` after `source "$HOME/.cargo/env"`. GPUI needs full Xcode, not only the Command Line Tools, for the Metal shader compiler. It is installed. The GPUI app needs no Node. The Tauri and web build files have been removed. The current platform dependency enables `runtime_shaders` because the separate Xcode Metal Toolchain component is not installed. The app must resolve `claude` and `agent` through a login shell, or a Finder launch will not see `~/.local/bin`.
+
+## Stack
+
+- Pure Rust, one Cargo workspace, one window. Mac only.
+- UI: GPUI from the `zed-industries/zed` git repo, pinned to one commit `rev`. Not crates.io `gpui` 0.2.2, which is stale, and not the `gpui-ce` fork. Plain GPUI first. Add `gpui-component` only if it saves real work later.
+- Terminal engine: `alacritty_terminal`, wrapped behind Shika's own types. Alacritty types never leave one module, so a later swap to libghostty-vt stays cheap.
+- `portable-pty` for the agent and the shell.
+- GPUI's native path prompt (`cx.prompt_for_paths`, or the equivalent at the pinned `rev`) for the folder picker.
+- Native macOS notifications use Apple's `UNUserNotificationCenter` through `objc2-user-notifications`, including delegate callbacks for card selection.
+- No database, no account, no extra crates for status parsing.
+- No Node, npm, Vite, TypeScript app, or web view. HTML in `design/` remains a visual reference.
+
+Licensing: never copy from Zed's `terminal` or `terminal_view` crates. They are GPL-3.0. Only `gpui` is Apache-2.0. `alacritty_terminal` is Apache-2.0.
+
+Confirm GPUI names against the pinned `rev`, not against docs for another version.
+
+## Shape of the app
+
+```
+Cargo.toml                    workspace
+crates/shika-core/            no UI code, no GPUI
+  projects                    load/save projects.json
+  worktree                    exclude, add, rename branch, remove, dirty and unpushed checks, worktrees.json
+  path_env                    login-shell PATH and absolute CLI paths
+  agents                      Claude Code and Cursor CLI
+  pty                         spawn, write, resize, read, exit, child env
+  session                     create, shell, git state, discard, push and close, close, leftovers
+crates/shika-terminal/        alacritty_terminal wrapper and the GPUI terminal view
+                              PTY bytes in; encoded input bytes and resizes out. Spawns no process.
+crates/shika/                 the GPUI app
+                              window, project headers, cards, picker, close dialog, toast,
+                              keyboard map, shell toggle, .app bundle
+design/                       visual reference, unchanged
+```
+
+Persisted in `~/Library/Application Support/com.hieule.shika/`, the same directory the Tauri build used, so existing files keep working:
+
+- `projects.json` - `{ id, name, path }[]`. Name is the folder name.
+- `worktrees.json` - journal of `{ projectId, branch, path }` for crash cleanup. Not a session history.
+
+In memory only: session id, CLI preset, card title, status, both PTY ids, whether the first prompt has been sent.
+
+Operations `shika-core` gives the app:
+
+- `projects_list`, `project_add`, `project_remove`
+- `cli_presets`: absolute path or "not found", plus the argv
+- `session_create`: worktree and agent PTY
+- `pty_write`, `pty_resize`
+- `session_rename_from_prompt`: slug, unique branch, `git branch -m`
+- `shell_open`: shell PTY in the worktree, once
+- `session_git_state`: dirty, unpushed, agent still working
+- `session_discard`: kill PTYs, force-remove worktree, delete local branch
+- `session_push_and_close`: `git push -u origin HEAD`, then remove the worktree and keep the branch
+- `session_close`: remove the card and worktree when there is nothing to lose
+- `leftovers_list`, `leftover_remove`
+
+PTY output, PTY exit, and status changes reach the app as events inside the process. There is no IPC bridge.
+
+### PATH
+
+On startup, run the user's login shell once:
+
+```sh
+"$SHELL" -ilc 'printf %s "$PATH"'
+```
+
+Put that PATH on every child. Resolve `claude` and `agent` inside that same environment and store absolute paths. Also put the resolved PATH on the PTY environment so the CLI can find `git`, `node`, and itself. `cargo run` from a terminal inherits a terminal PATH and hides this bug. The real test is opening the built `.app` from Finder or `open`.
+
+### Worktree
+
+- Project path must be a git repo (`git rev-parse --show-toplevel`). If they pick a nested folder, use the toplevel and say so.
+- Append `.worktrees/` to `$(git rev-parse --git-path info/exclude)` if the line is missing. Do not edit `.gitignore`.
+- Create with `git worktree add -b <branch> <path>` from the main repo.
+- Slug: lowercase, non-alphanumerics to `-`, collapse dashes, trim, max 48 characters. Empty slug becomes `task-<id>`. Collision gets `-2`, `-3`.
+- Dirty means `git status --porcelain` is non-empty.
+- Unpushed means the branch has commits that are not on its upstream. A branch with no upstream is unpushed when it has commits that are not in the default branch.
+- Discard uses `git worktree remove --force` and then `git branch -D`.
+- A normal close of a clean, already-pushed task uses `git worktree remove` and leaves the branch.
+- A normal close of an empty draft uses `git worktree remove` and `git branch -D`.
+
+### Shell
+
+`g` opens the user's login shell with its cwd set to the worktree. No command hook and no push watcher. `git status` and `git diff` in that shell show this task's files. The user commits and pushes there themselves.
+
+### Status and notifications
+
+- Card title before the first Enter: `New Claude Code` or `New Cursor CLI`. Status: Waiting.
+- First Enter submits whatever line was buffered from keystrokes. Then Working, and the title is that line, shortened to about 80 characters.
+- Quiet for ~2s after output has arrived: Ready to check, and a notification named `{project} - {task}`.
+- Process exit: Ready to check, same notification if one was not just posted.
+- Asking you, if implemented: only flip it when the tail of recent output clearly looks like a question, and post the same kind of notification. Otherwise leave the status at Ready to check. The user reads the real terminal either way.
+- Clicking the notification focuses the window and selects that card.
+
+### Keyboard and focus
+
+Focus starts on the cards. `j` / `k` and arrows move through project headers and every card, including cards hidden by the three-card cap. The three visible cards follow the selection. A project with no agents is still a row, and `n` on it creates the agent there. If nothing is selected, `n` uses the first project.
+
+`Enter` focuses the terminal. `Escape` returns to the cards. `g` toggles agent and shell. `c` closes.
+
+Ignore this map while the terminal is focused, while a text field is focused, and while the picker or close dialog is open.
+
+### Layout
+
+- Left column, fixed 280px. Every project. Under each, up to three cards. Further cards show as a count and stay reachable from the keyboard.
+- A card shows the CLI name, the task name, and the status. The worktree path is only in the terminal header.
+- Right side: the selected agent's terminal, or empty if a project header is selected or there are no sessions. At most one terminal on screen.
+- Header controls: agent/shell toggle, Close.
+- Top of the column: one line of counts: agents, working, asking, ready.
+- No kanban, no flat session list, no project tabs, no divider drag, no second terminal, no editor.
+
+## Build order
+
+Do not skip ahead of a failed proof. Each step is done only when its check passes.
+
+The GPUI port must pass the same checks. The migration order above says when.
+
+### 0. Toolchain and scaffold
+
+Rust is installed with rustup. Full Xcode is installed for GPUI's Metal shaders. Create the Cargo workspace and the GPUI app in `crates/shika`. Bundle identifier `com.hieule.shika`. Window opens on Mac.
+
+Check: `cargo run -p shika` shows an empty split window.
+
+### 1. Projects
+
+Folder picker, git toplevel check, persist `projects.json`, render the left column. A project with no agents still shows. Restart keeps the list. `a` and a button both add.
+
+Check: add two repos, quit, relaunch, both are there.
+
+### 2. PATH and presets
+
+Login-shell PATH. Claude Code and Cursor CLI, with absolute paths. A missing binary stays in the picker and cannot be launched.
+
+Check: from a built app opened with `open` (not `cargo run`), both resolve. This is the Dock-launch trap. Do it here, before believing any later CLI test.
+
+### 3. Worktree, PTY, and terminal view
+
+This is the risk. Prove it before cards get fancy.
+
+Create the draft worktree, write `.worktrees/` into info/exclude, spawn the preset with the argv above and the login PATH, bind a terminal view to that PTY. Keep the terminal view alive when switching cards. Typing and the mouse scroll work. The CLI's own UI is usable, including a question the user can answer.
+
+Launch Claude with `--dangerously-skip-permissions` and Cursor with `--yolo --trust --sandbox disabled`. Do not pass `--worktree`. Confirm neither one asks Shika to approve a shell command. If Claude still shows a workspace trust prompt, check `claude --help` again for an existing flag before adding anything.
+
+Check, in the built app opened from Finder:
+
+- New on a real repo opens Claude in the new worktree. A second card can open Cursor the same way.
+- A prompt runs, tools run, and a question can be answered in the embedded terminal.
+- Switch to the other card and back. The draft or the running session is intact.
+- `.worktrees/` is not showing up in `git status` on the main checkout.
+- Cursor did not create a worktree under `~/.cursor/worktrees`.
+
+If the embedded terminal cannot drive Claude's or Cursor's UI, fix that before continuing. The rest of the MVP depends on it.
+
+### 4. Card title, status, collapse
+
+First Enter renames the branch and the card. Counts line. Status colors. More than three cards collapse, keyboard still reaches them. Working view does not grow a custom transcript.
+
+Check: two agents under one project show the right titles and statuses. A third and fourth collapse. An empty project remains visible.
+
+### 5. Keyboard
+
+The map in the PRD, plus `a` and the picker keys. Keys do nothing while typing in the terminal.
+
+Check: add, new, move, focus terminal, escape, toggle shell, close, all without the mouse.
+
+### 6. Shell and close
+
+`g` opens the user's shell with cwd on the worktree. `git status` and `git diff` show that task. `git push` leaves the card in place.
+
+Close with nothing to lose removes the card and the worktree. Close while the agent is working, the tree is dirty, or commits are unpushed asks: discard, or push when the tree is clean. Discard removes the worktree and the local branch. Push, on success, removes the card and the worktree and keeps the branch. A dirty tree sends the user back to the shell to commit. Shika does not commit.
+
+Check: a push leaves the card; a later close of that clean pushed task removes the card and the directory and leaves the branch; discard of a dirty task removes the directory and the branch; the other agent's process is still running; `git worktree list` no longer has the removed path.
+
+### 7. Notifications and leftovers
+
+Notification when a session becomes Ready to check (and Asking you, if that flip exists). Click focuses Shika and selects the card. Next launch lists journaled worktrees whose sessions are gone, and can remove them on request.
+
+Check: start an agent, hide Shika, get the notification, click it, land on that card. Kill the app mid-task, relaunch, see the leftover, remove it.
+
+### 8. Done when
+
+On this Mac, with Claude Code and Cursor CLI already logged in:
+
+1. Add two real repos.
+2. Start Claude in one and Cursor in the other, on separate tasks, without typing a git command. Cursor must be using Shika's worktree.
+3. Leave both running, use the browser, and get a notification when one is ready or asking.
+4. Answer in the agent's terminal.
+5. In Shika's shell, run `git status`, `git diff`, commit, and `git push`.
+6. The card is still there after the push.
+7. Close that card. The work is already pushed and the tree is clean, so the card and the worktree are removed, and the local branch stays. The other agent is still running.
+8. Opening the `.app` from Finder still finds both CLIs.
+
+Then stop. Distribution (signed dmg, notarization, Homebrew) is out of scope until this passes.
+
+## Do not build
+
+Phone, web, Windows, Linux, Homebrew, accounts, sync, telemetry, a planner, pull requests, CI, review, worktree reuse, conversation history, more than one visible terminal, a resizable split, a code editor, installing the CLIs, a custom chat transcript, a per-CLI question parser, Codex, Pi, Kiro, Cursor's own worktree flag, auto-removing a card after `git push`, committing on behalf of the user.

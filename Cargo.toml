@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
+
+# GPUI comes from Zed's git tree, not crates.io (0.2.2 there is stale).
+# Pinned to the v1.22.0 stable tag (2026-09-30): a stable release has been
+# shipped to Zed users, so the gpui and gpui_platform at that commit are known
+# to build and run on macOS together.
+# None of Zed's own [patch.crates-io] entries are needed to build gpui and
+# gpui_platform on macOS from this commit: they cover tree-sitter, livekit,
+# Windows capture, and Linux calloop, which these two crates do not pull in
+# here. async-task resolves from crates.io and builds as is.
+[workspace.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "76659a55a8c10ed355a070f8764a0b1733e3c115" }
+# `runtime_shaders` compiles the Metal shaders when the app starts instead of
+# at build time. This machine has Xcode but not the separate Metal Toolchain
+# component (`xcodebuild -showComponent MetalToolchain` says uninstalled), so
+# the build-time `metal` compiler fails. Drop the feature once
+# `xcodebuild -downloadComponent MetalToolchain` has been run, and for release.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "76659a55a8c10ed355a070f8764a0b1733e3c115", features = ["font-kit", "runtime_shaders"] }

@@ -1,0 +1,19 @@
+[package]
+name = "shika-terminal"
+version = "0.1.0"
+edition = "2024"
+description = "Terminal engine wrapper and GPUI terminal view for Shika"
+license = "MIT"
+publish = false
+
+[dependencies]
+alacritty_terminal = "0.26.0"
+async-channel = "2"
+bitflags = "2"
+gpui = { workspace = true }
+parking_lot = "0.12"
+
+[dev-dependencies]
+anyhow = "1"
+gpui_platform = { workspace = true }
+portable-pty = "0.9.0"
