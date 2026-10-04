@@ -869,6 +869,20 @@ impl Shika {
             cx.quit();
             return;
         }
+        // Ctrl+Q leaves a focused terminal. Escape is typed into the program.
+        if self.overlay.is_none()
+            && !self.focus.is_focused(window)
+            && stroke.key == "q"
+            && stroke.modifiers.control
+            && !stroke.modifiers.platform
+            && !stroke.modifiers.alt
+            && !stroke.modifiers.shift
+        {
+            window.focus(&self.focus, cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if stroke.modifiers.platform
             || stroke.modifiers.control
             || stroke.modifiers.alt
@@ -952,11 +966,6 @@ impl Shika {
             return;
         }
         if !self.focus.is_focused(window) {
-            if key == "escape" {
-                window.focus(&self.focus, cx);
-                cx.stop_propagation();
-                cx.notify();
-            }
             return;
         }
         match key {
@@ -1264,7 +1273,7 @@ impl Render for Shika {
                         div()
                             .text_size(px(10.5))
                             .text_color(rgb(0x6C7166))
-                            .child("j / k move   enter terminal   esc cards"),
+                            .child("j / k move   enter terminal   ctrl+q cards"),
                     ),
             );
         let mut right = div()
@@ -1351,7 +1360,7 @@ impl Render for Shika {
                             .child(if cards_focused {
                                 "Close  c"
                             } else {
-                                "esc cards · Close"
+                                "ctrl+q cards · Close"
                             })
                             .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
                     ),

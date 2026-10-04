@@ -9,7 +9,7 @@ The PLAN Done when flow was exercised with two disposable git repositories and t
 - PASS: The app opened with open discovers both binaries under ~/.local/bin through the login-shell PATH.
 - PASS: Claude and Cursor launch in separate Shika worktrees. Terminals measure their pane before the PTY starts.
 - PASS: Real Claude tool output, multiple-choice questions, keyboard answers, and Cursor task output render in their own terminal UI.
-- PASS: An unsent prompt survives switching cards. Hidden PTYs drain. Terminal typing does not trigger card shortcuts. Escape restores navigation.
+- PASS: An unsent prompt survives switching cards. Hidden PTYs drain. Terminal typing does not trigger card shortcuts. Ctrl+Q restores navigation. Escape is typed into the terminal.
 - PASS: The first prompt updates title and branch. The worktree directory stays fixed.
 - PASS: About two seconds of quiet changes Working to Ready to check.
 - PASS: A native notification arrives while another app is active. The author saw and clicked it; the delegate recorded the expected session ID and Shika selected that card. Notification permission was enabled with approval.

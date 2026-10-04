@@ -70,11 +70,11 @@ The app has to be usable without the mouse. Focus starts on the cards.
 | `a` | Add a project with the folder picker |
 | `n` | New agent on the selected card's project. If nothing is selected, the first project |
 | `Enter` | Focus the terminal |
-| `Escape` | Focus the cards again |
+| `Ctrl+Q` | Focus the cards again |
 | `g` | Toggle agent terminal and shell |
 | `c` | Close the selected conversation, with the confirm rule above |
 
-Typing in the terminal or in a text field must not trigger these keys.
+Typing in the terminal or in a text field must not trigger these keys. `Ctrl+Q` still leaves the terminal, so `Escape` reaches the program.
 
 ## Projects and worktrees
 

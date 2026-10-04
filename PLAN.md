@@ -168,9 +168,9 @@ Put that PATH on every child. Resolve `claude` and `agent` inside that same envi
 
 Focus starts on the cards. `j` / `k` and arrows move through project headers and every card, including cards hidden by the three-card cap. The three visible cards follow the selection. A project with no agents is still a row, and `n` on it creates the agent there. If nothing is selected, `n` uses the first project.
 
-`Enter` focuses the terminal. `Escape` returns to the cards. `g` toggles agent and shell. `c` closes.
+`Enter` focuses the terminal. `Ctrl+Q` returns to the cards. `Escape` is typed into the terminal. `g` toggles agent and shell. `c` closes.
 
-Ignore this map while the terminal is focused, while a text field is focused, and while the picker or close dialog is open.
+Ignore this map while the terminal is focused, except `Ctrl+Q`. Also ignore it while a text field is focused, and while the picker or close dialog is open.
 
 ### Layout
 
@@ -233,7 +233,7 @@ Check: two agents under one project show the right titles and statuses. A third 
 
 The map in the PRD, plus `a` and the picker keys. Keys do nothing while typing in the terminal.
 
-Check: add, new, move, focus terminal, escape, toggle shell, close, all without the mouse.
+Check: add, new, move, focus terminal, ctrl+q back to the cards, toggle shell, close, all without the mouse.
 
 ### 6. Shell and close
 
