@@ -33,7 +33,7 @@ Public code is MIT licensed. JetBrains Mono retains its separate OFL license. Or
 
 `a` or Add project picks a git repo. A nested folder becomes the repo root. `n` opens the CLI picker (`j` / `k`, `1` / `2`, Enter, Escape). The new card is selected and the CLI is already in `<repo>/.worktrees/shika-draft-<id>`.
 
-`j` / `k` or the arrows move through project headers and every card, including cards hidden by the three-card cap. Enter focuses the terminal. Escape returns to the cards. `g` toggles the agent and the shell without moving focus; Enter again types in whichever one is showing. Clicking Agent or Shell focuses that terminal. `c` closes.
+`j` / `k` or the arrows move through project headers and every card, including cards hidden by the three-card cap. Enter focuses the terminal. Ctrl+Q returns to the cards. Escape is typed into the terminal. `g` toggles the agent and the shell without moving focus; Enter again types in whichever one is showing. Clicking Agent or Shell focuses that terminal. `c` closes.
 
 The shell is the user's login shell, with its cwd on the worktree. `git status` and `git diff` there are that task, not the main checkout. The author commits and pushes there.
 
