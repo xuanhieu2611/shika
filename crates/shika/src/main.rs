@@ -1,6 +1,8 @@
+mod appearance;
 mod model;
 mod notifications;
 
+use appearance::tint;
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Render, SharedString,
@@ -10,7 +12,8 @@ use gpui::{
 use model::{PromptCapture, Status, visible_indices};
 use notifications::Notifications;
 use shika_core::{
-    CliCatalog, Core, JournalEntry, Project, PtyEvent, PtyId, PtySize, Session, SessionGitState,
+    Appearance, CliCatalog, Core, JournalEntry, Project, PtyEvent, PtyId, PtySize, Session,
+    SessionGitState, Settings, Translucency,
 };
 use shika_terminal::{
     Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize, TerminalView,
@@ -21,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-gpui::actions!(shika, [Quit, Hide, HideOthers, ShowAll]);
+gpui::actions!(shika, [Quit, Hide, HideOthers, ShowAll, OpenSettings]);
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -85,7 +88,13 @@ struct Pane {
     state: Arc<Mutex<HostState>>,
 }
 impl Pane {
-    fn new(core: Arc<Core>, capture: bool, window: &mut Window, cx: &mut Context<Shika>) -> Self {
+    fn new(
+        core: Arc<Core>,
+        capture: bool,
+        opacity: f32,
+        window: &mut Window,
+        cx: &mut Context<Shika>,
+    ) -> Self {
         let state = Arc::new(Mutex::new(HostState::default()));
         let terminal = Terminal::new(
             TerminalOptions {
@@ -99,13 +108,15 @@ impl Pane {
             },
         );
         let view = cx.new(|cx| {
-            TerminalView::new(
+            let mut view = TerminalView::new(
                 terminal.clone(),
                 TerminalConfig::default(),
                 Palette::shika(),
                 window,
                 cx,
-            )
+            );
+            view.set_background_opacity(opacity, cx);
+            view
         });
         Self {
             view,
@@ -145,6 +156,12 @@ enum Overlay {
     Leftovers,
     RemoveLeftover(usize),
     RemoveProject(String),
+    /// `row` is the selected setting: opacity, blur, then translucency.
+    /// `edit` holds digits typed into the selected number, not yet applied.
+    Settings {
+        row: usize,
+        edit: Option<String>,
+    },
 }
 struct Shika {
     core: Arc<Core>,
@@ -161,10 +178,12 @@ struct Shika {
     clock: Instant,
     notifications: Notifications,
     clicks: std::sync::mpsc::Receiver<String>,
+    appearance: Appearance,
 }
 impl Shika {
     fn new(
         core: Arc<Core>,
+        settings: shika_core::Result<Settings>,
         diagnostics: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -183,6 +202,12 @@ impl Shika {
             load_errors.push(e.to_string());
             Vec::new()
         });
+        let appearance = settings
+            .unwrap_or_else(|e| {
+                load_errors.push(e.to_string());
+                Settings::default()
+            })
+            .appearance;
         let this = Self {
             core: core.clone(),
             projects,
@@ -206,6 +231,7 @@ impl Shika {
             clock: Instant::now(),
             notifications,
             clicks,
+            appearance,
         };
         cx.spawn_in(window, async move |this, cx| {
             let catalog = cx
@@ -392,7 +418,8 @@ impl Shika {
         let project = project.clone();
         self.overlay = None;
         self.busy = true;
-        let pane = Pane::new(self.core.clone(), true, window, cx);
+        let opacity = appearance::terminal_alpha(&self.appearance);
+        let pane = Pane::new(self.core.clone(), true, opacity, window, cx);
         let terminal = pane.terminal.clone();
         let state = pane.state.clone();
         let index = self.cards.len();
@@ -506,7 +533,8 @@ impl Shika {
         let Some(session) = self.cards[index].session.clone() else {
             return;
         };
-        let pane = Pane::new(self.core.clone(), false, window, cx);
+        let opacity = appearance::terminal_alpha(&self.appearance);
+        let pane = Pane::new(self.core.clone(), false, opacity, window, cx);
         let state = pane.state.clone();
         let terminal = pane.terminal.clone();
         self.cards[index].shell = Some(pane);
@@ -779,6 +807,7 @@ impl Shika {
         .detach();
     }
     fn cancel_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_setting_edit(window, cx);
         let shell = match &self.overlay {
             Some(Overlay::Close { index, state }) if state.dirty || state.unpushed => Some(*index),
             _ => None,
@@ -863,6 +892,87 @@ impl Shika {
         })
         .detach();
     }
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        self.overlay = Some(Overlay::Settings { row: 0, edit: None });
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+    /// One step left (`-1`) or right (`1`) on a settings row. Applies and
+    /// saves at once so the window is the preview.
+    fn step_setting(
+        &mut self,
+        row: usize,
+        delta: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_setting_edit(window, cx);
+        let mut next = self.appearance;
+        match row {
+            0 => next = next.with_opacity(i64::from(next.opacity) + delta * 5),
+            1 => next = next.with_blur(i64::from(next.blur) + delta * 5),
+            _ => {
+                next.translucency = if delta < 0 {
+                    Translucency::Sidebar
+                } else {
+                    Translucency::SidebarAndTerminal
+                }
+            }
+        }
+        self.set_appearance(next, window, cx);
+    }
+    /// Select a settings row and start typing into its number. An empty
+    /// field shows the current value until a digit arrives.
+    fn edit_setting(
+        &mut self,
+        row: usize,
+        digits: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_setting_edit(window, cx);
+        if let Some(Overlay::Settings { row: at, edit }) = &mut self.overlay {
+            *at = row;
+            *edit = Some(digits.to_string());
+        }
+        cx.notify();
+    }
+    /// Apply typed digits, pulled into range. Nothing typed keeps the value.
+    fn commit_setting_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Overlay::Settings { row, edit }) = &mut self.overlay else {
+            return;
+        };
+        let row = *row;
+        let Some(value) = edit.take().and_then(|text| text.parse::<i64>().ok()) else {
+            return;
+        };
+        let next = match row {
+            0 => self.appearance.with_opacity(value),
+            _ => self.appearance.with_blur(value),
+        };
+        self.set_appearance(next, window, cx);
+    }
+    fn set_appearance(&mut self, next: Appearance, window: &mut Window, cx: &mut Context<Self>) {
+        if next == self.appearance {
+            return;
+        }
+        self.appearance = next;
+        appearance::apply(&next, window);
+        let opacity = appearance::terminal_alpha(&next);
+        for card in &self.cards {
+            for pane in std::iter::once(&card.agent).chain(card.shell.as_ref()) {
+                pane.view
+                    .update(cx, |view, cx| view.set_background_opacity(opacity, cx));
+            }
+        }
+        if let Err(e) = self.core.save_settings(&Settings { appearance: next }) {
+            self.message(e.to_string());
+        }
+        cx.notify();
+    }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let stroke = &event.keystroke;
         if stroke.modifiers.platform && stroke.key == "q" {
@@ -945,6 +1055,42 @@ impl Shika {
                         _ => {}
                     }
                 }
+                Some(Overlay::Settings { row, edit }) => {
+                    let at = *row;
+                    let digit = key.len() == 1 && key.as_bytes()[0].is_ascii_digit();
+                    let number_row = at < 2;
+                    match (edit.as_mut(), key) {
+                        (Some(text), _) if digit => {
+                            if text.len() < 3 {
+                                text.push_str(key)
+                            }
+                        }
+                        (Some(text), "backspace") => {
+                            text.pop();
+                        }
+                        (Some(_), "escape") => *edit = None,
+                        (Some(_), "enter") => self.commit_setting_edit(window, cx),
+                        (Some(_), "h" | "l" | "left" | "right") => {}
+                        (None, _) if digit && number_row => self.edit_setting(at, key, window, cx),
+                        (None, "backspace") if number_row => self.edit_setting(at, "", window, cx),
+                        (None, "h" | "left") => self.step_setting(at, -1, window, cx),
+                        (None, "l" | "right") => self.step_setting(at, 1, window, cx),
+                        (None, "enter" | "escape") => self.cancel_overlay(window, cx),
+                        (_, "j" | "down" | "tab") => {
+                            self.commit_setting_edit(window, cx);
+                            if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
+                                *row = (at + 1) % 3;
+                            }
+                        }
+                        (_, "k" | "up") => {
+                            self.commit_setting_edit(window, cx);
+                            if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
+                                *row = (at + 2) % 3;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 None => {}
             }
             cx.stop_propagation();
@@ -970,6 +1116,86 @@ impl Shika {
             _ => return,
         }
         cx.stop_propagation();
+    }
+}
+impl Shika {
+    /// A settings row: minus, a number field that takes typed digits, plus.
+    fn setting_row(
+        &self,
+        row: usize,
+        label: &'static str,
+        value: u8,
+        unit: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (selected, edit) = match &self.overlay {
+            Some(Overlay::Settings { row: at, edit }) => {
+                (*at == row, edit.as_deref().filter(|_| *at == row))
+            }
+            _ => (false, None),
+        };
+        let step = |delta: i64| {
+            cx.listener(move |this: &mut Self, _: &gpui::ClickEvent, window, cx| {
+                this.step_setting(row, delta, window, cx);
+                if let Some(Overlay::Settings { row: at, .. }) = &mut this.overlay {
+                    *at = row;
+                }
+            })
+        };
+        let text = match edit {
+            Some("") | None => value.to_string(),
+            Some(digits) => digits.to_string(),
+        };
+        let field = div()
+            .id(SharedString::from(format!("setting-{row}-value")))
+            .w(px(64.))
+            .h(px(28.))
+            .px_2()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(2.))
+            .rounded(px(6.))
+            .bg(rgb(0xFFFFFF))
+            .border_1()
+            .border_color(rgb(if edit.is_some() { 0x2F332C } else { 0xCFD3C7 }))
+            .font_family("JetBrains Mono")
+            .cursor_text()
+            .child(
+                div()
+                    .when(edit == Some(""), |d| d.text_color(rgb(0x9EA296)))
+                    .child(text),
+            )
+            .when(edit.is_some(), |d| {
+                d.child(div().w(px(1.)).h(px(14.)).bg(rgb(0x2F332C)))
+            })
+            .child(div().text_color(rgb(0x9EA296)).child(unit))
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.edit_setting(row, "", window, cx)),
+            );
+        div()
+            .p_2()
+            .rounded(px(8.))
+            .when(selected, |d| d.bg(rgb(0xE8EBE2)))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(label)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        button(SharedString::from(format!("setting-{row}-less")), "-")
+                            .on_click(step(-1)),
+                    )
+                    .child(field)
+                    .child(
+                        button(SharedString::from(format!("setting-{row}-more")), "+")
+                            .on_click(step(1)),
+                    ),
+            )
     }
 }
 impl Focusable for Shika {
@@ -1203,7 +1429,7 @@ impl Render for Shika {
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(0xF1F2EC))
+            .bg(tint(0xF1F2EC, appearance::sidebar_alpha(&self.appearance)))
             .border_r_1()
             .border_color(rgb(0xDADDD3))
             .child(
@@ -1245,6 +1471,9 @@ impl Render for Shika {
                         button("add", "Add project  a")
                             .on_click(cx.listener(|this, _, _, cx| this.add_project(cx))),
                     )
+                    .child(button("settings", "Settings  \u{2318},").on_click(
+                        cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
+                    ))
                     .when(!self.leftovers.is_empty(), |d| {
                         d.child(
                             button(
@@ -1267,13 +1496,15 @@ impl Render for Shika {
                             .child("j / k move   enter terminal   esc cards"),
                     ),
             );
+        // Each child paints its own background, so a translucent terminal is
+        // not stacked over a second translucent fill.
+        let terminal_alpha = appearance::terminal_alpha(&self.appearance);
         let mut right = div()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x131512))
             .text_color(rgb(0xD5D9CF));
         if let Some(i) = self.selected_card() {
             let card = &self.cards[i];
@@ -1291,7 +1522,7 @@ impl Render for Shika {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .bg(rgb(0x181A17))
+                    .bg(tint(0x181A17, terminal_alpha))
                     .border_b_1()
                     .border_color(rgb(0x262924))
                     .child(
@@ -1371,6 +1602,7 @@ impl Render for Shika {
                     .items_center()
                     .justify_center()
                     .gap_3()
+                    .bg(tint(0x131512, terminal_alpha))
                     .text_color(rgb(0x757A6E))
                     .child(
                         div()
@@ -1386,6 +1618,9 @@ impl Render for Shika {
         let mut root = div()
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::key))
+            .on_action(
+                cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
+            )
             .relative()
             .size_full()
             .flex()
@@ -1563,12 +1798,77 @@ impl Render for Shika {
                             cx.listener(move |this, _, _, cx| this.remove_leftover(i, cx)),
                         ));
                 }
+                Overlay::Settings { row, edit } => {
+                    let a = &self.appearance;
+                    let both = a.translucency == Translucency::SidebarAndTerminal;
+                    let choice = |id: &'static str, text: &'static str, on: bool| {
+                        button(id, text).when(on, |d| d.bg(rgb(0x2F332C)).text_color(rgb(0xF2F5EC)))
+                    };
+                    panel = panel
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("Settings"),
+                        )
+                        .child(self.setting_row(0, "Background opacity", a.opacity, "%", cx))
+                        .child(self.setting_row(1, "Background blur", a.blur, "", cx))
+                        .child(
+                            div()
+                                .p_2()
+                                .rounded(px(8.))
+                                .when(*row == 2, |d| d.bg(rgb(0xE8EBE2)))
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child("Apply to")
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap_2()
+                                        .child(
+                                            choice("translucent-sidebar", "Sidebar", !both)
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.step_setting(2, -1, window, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            choice(
+                                                "translucent-both",
+                                                "Sidebar and terminal",
+                                                both,
+                                            )
+                                            .on_click(
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.step_setting(2, 1, window, cx)
+                                                }),
+                                            ),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(rgb(0x6C7166))
+                                .child(
+                                    "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%.",
+                                ),
+                        )
+                        .child(if edit.is_some() {
+                            "type a number   enter apply   esc cancel"
+                        } else {
+                            "j / k choose   h / l change   type a number   esc done"
+                        });
+                }
             }
+            let settings = matches!(overlay, Overlay::Settings { .. });
             panel = panel.child(
                 button(
                     "cancel",
                     if self.busy {
                         "Working..."
+                    } else if settings {
+                        "Done  esc"
                     } else {
                         "Cancel  esc"
                     },
@@ -1584,7 +1884,8 @@ impl Render for Shika {
                     .absolute()
                     .occlude()
                     .inset_0()
-                    .bg(gpui::rgba(0x10120F57))
+                    // Settings leaves the window undimmed, so it is the preview.
+                    .when(!settings, |d| d.bg(gpui::rgba(0x10120F57)))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1632,6 +1933,7 @@ fn main() -> anyhow::Result<()> {
         shika_terminal::init(cx);
         cx.bind_keys([
             gpui::KeyBinding::new("cmd-q", Quit, None),
+            gpui::KeyBinding::new("cmd-,", OpenSettings, None),
             gpui::KeyBinding::new("cmd-h", Hide, None),
             gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
         ]);
@@ -1640,6 +1942,8 @@ fn main() -> anyhow::Result<()> {
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         cx.set_menus([gpui::Menu::new("Shika").items([
+            gpui::MenuItem::action("Settings...", OpenSettings),
+            gpui::MenuItem::separator(),
             gpui::MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
             gpui::MenuItem::separator(),
             gpui::MenuItem::action("Hide Shika", Hide),
@@ -1655,22 +1959,28 @@ fn main() -> anyhow::Result<()> {
         })
         .detach();
         let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some("Shika".into()),
+        let settings = core.settings();
+        let start = settings.as_ref().map(|s| s.appearance).unwrap_or_default();
+        let handle = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui::TitlebarOptions {
+                        title: Some("Shika".into()),
+                        ..Default::default()
+                    }),
+                    window_background: appearance::background(&start),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| {
-                let app = cx.new(|cx| Shika::new(core, diagnostics, window, cx));
-                window.focus(&app.focus_handle(cx), cx);
-                app
-            },
-        )
-        .expect("Open Shika window");
+                },
+                |window, cx| {
+                    let app = cx.new(|cx| Shika::new(core, settings, diagnostics, window, cx));
+                    window.focus(&app.focus_handle(cx), cx);
+                    app
+                },
+            )
+            .expect("Open Shika window");
+        // The blur radius needs the window on screen, which it is now.
+        let _ = handle.update(cx, |_, window, _| appearance::apply(&start, window));
         cx.activate(true);
     });
     Ok(())

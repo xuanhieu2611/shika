@@ -167,6 +167,9 @@ pub struct TerminalView {
     layout: Option<GridLayout>,
     snapshot: Option<Arc<Snapshot>>,
     palette: Palette,
+    /// Alpha of the default background, so a translucent window shows
+    /// through. Cells with their own background color stay opaque.
+    background_opacity: f32,
     /// IME composition in progress, drawn at the cursor and not yet sent.
     marked_text: Option<String>,
     selecting: bool,
@@ -235,6 +238,7 @@ impl TerminalView {
             layout: None,
             snapshot: None,
             palette,
+            background_opacity: 1.0,
             marked_text: None,
             selecting: false,
             reported_button: None,
@@ -278,6 +282,15 @@ impl TerminalView {
         self.palette = palette;
         self.terminal.set_palette(palette);
         cx.notify();
+    }
+
+    /// 1.0 is opaque. Values are clamped to 0.0..=1.0.
+    pub fn set_background_opacity(&mut self, opacity: f32, cx: &mut Context<Self>) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        if opacity != self.background_opacity {
+            self.background_opacity = opacity;
+            cx.notify();
+        }
     }
 
     fn on_wake(&mut self, cx: &mut Context<Self>) {
@@ -604,6 +617,7 @@ impl TerminalView {
             layout,
             hitbox,
             palette: self.palette,
+            background_opacity: self.background_opacity,
             focused: self.focus_handle.is_focused(window) && window.is_window_active(),
             marked_text: self.marked_text.clone(),
         }
@@ -786,6 +800,7 @@ pub struct Frame {
     layout: GridLayout,
     hitbox: Hitbox,
     palette: Palette,
+    background_opacity: f32,
     focused: bool,
     marked_text: Option<String>,
 }
@@ -938,7 +953,7 @@ fn paint_frame(bounds: Bounds<Pixels>, frame: &Frame, window: &mut Window, cx: &
     let layout = &frame.layout;
     let palette = &frame.palette;
     let background = snapshot.background;
-    window.paint_quad(fill(bounds, hsla(background)));
+    window.paint_quad(fill(bounds, rgba(background, frame.background_opacity)));
 
     // Where the block cursor goes, so the glyph under it can be drawn in
     // the cursor text color. Hidden while composing; the marked text sits

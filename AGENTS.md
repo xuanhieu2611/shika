@@ -39,23 +39,26 @@ The shell is the user's login shell, with its cwd on the worktree. `git status` 
 
 Typing in the terminal, a text field, the picker, or the close dialog does not run the card keys.
 
+Cmd-, (also the Shika menu and the sidebar button) opens Settings: background opacity, blur radius, and whether the sidebar alone or the sidebar and terminal are translucent. Opacity is 0 to 100%, blur radius 0 to 255. `j` / `k` choose a row, `h` / `l` or the arrows step by 5, and typing digits (or clicking the number) edits it: Enter applies, Escape cancels the edit, and out-of-range values are clamped. Escape closes the dialog. Changes apply and save at once. At 100% opacity the window is opaque and blur does nothing. Cards, dialogs, the toast, and cells with their own background color stay opaque.
+
 ## Code
 
 The Cargo workspace has three crates:
 
 ```
 Cargo.toml              workspace, members crates/*
-crates/shika-core/      projects.json, worktrees.json, worktree add/remove, login-shell PATH,
-                        agent presets, PTY processes and env, sessions. No UI, no GPUI.
+crates/shika-core/      projects.json, worktrees.json, settings.json, worktree add/remove,
+                        login-shell PATH, agent presets, PTY processes and env, sessions.
+                        No UI, no GPUI.
 crates/shika-terminal/  alacritty_terminal wrapper and the GPUI terminal view. PTY bytes in,
                         input bytes and resizes out. Spawns no process.
-crates/shika/           the GPUI app: window, cards, picker, close dialog, toast, keys,
-                        shell toggle, .app bundle
+crates/shika/           the GPUI app: window, cards, picker, close dialog, settings, toast,
+                        keys, shell toggle, translucency, .app bundle
 ```
 
 `assets/fonts/` holds JetBrains Mono and its OFL license. `assets/macos/` holds the bundle metadata and icon. `scripts/bundle-app.sh` builds a local ad hoc signed `.app`.
 
-App data: `~/Library/Application Support/com.hieule.shika/`, the same directory used before the migration. `projects.json` and `worktrees.json` keep working there. Sessions, titles, status, and PTY ids are memory only.
+App data: `~/Library/Application Support/com.hieule.shika/`, the same directory used before the migration. `projects.json` and `worktrees.json` keep working there. `settings.json` holds the appearance; a missing file or field takes the opaque default. Sessions, titles, status, and PTY ids are memory only.
 
 Worktrees live at `<repo>/.worktrees/<branch>`. `.worktrees/` is appended to that repo's `info/exclude`. Do not edit the user's `.gitignore` when the exclude file works.
 
@@ -81,5 +84,7 @@ open target/debug/Shika.app
 `cargo run` inherits a terminal `PATH` and hides the Dock-launch bug. GUI apps do not see Homebrew, nvm, or `~/.local/bin`. `path_env` runs the login shell once at startup from a short `PATH`, with the environment cleared, because Nix's `__NIX_DARWIN_SET_ENVIRONMENT_DONE` stops a login shell from rebuilding `PATH`. Claude and Cursor on this machine are under `~/.local/bin`. The real check is a built `.app` opened with `open`, not only `cargo run`.
 
 Never test against the author's normal `projects.json`. Use disposable git repositories and local bare remotes, with `open -n target/debug/Shika.app --args --data-dir /absolute/test/data`. Before sending synthetic keystrokes, confirm Shika's own window is in front. `--diagnostics-file /absolute/report` writes CLI discovery there and metadata-only native notification diagnostics to `/absolute/report.notifications`.
+
+Translucency uses GPUI's `Transparent` window background, not `Blurred`, because GPUI's blur has one fixed strength. The blur radius is set with the private `CGSSetWindowBackgroundBlurRadius` in `crates/shika/src/appearance.rs`, as Ghostty, WezTerm, and winit do. The terminal paints its default background with the configured alpha; its parent must not paint a second translucent fill under it.
 
 No em dashes in code, docs, or visible text.

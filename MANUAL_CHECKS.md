@@ -21,6 +21,17 @@ The PLAN Done when flow was exercised with two disposable git repositories and t
 - PASS: Quit preserves projects and worktrees. Relaunch restores projects without live sessions and lists leftovers. Explicit discard removes a leftover worktree and branch.
 - PASS: Two repositories add through the native folder picker and survive relaunch. A nested folder resolves to its repository root and duplicate projects are prevented.
 
+## Appearance settings, 2026-10-04
+
+The author checked the first version by eye and it looked good. Typed values and the wider ranges (opacity 0 to 100, blur 0 to 255) are not yet checked by eye.
+
+- [ ] At 100% opacity the window looks as before and blur has no effect.
+- [ ] Below 100%, the sidebar shows the blurred desktop. Blur 0 is see-through without blur. Raising blur softens the desktop behind.
+- [ ] Sidebar only keeps the terminal and its header opaque. Sidebar and terminal makes both translucent, with CLI-colored cells still opaque and text readable.
+- [ ] Changes apply live from the dialog, keyboard and mouse, and survive a relaunch.
+- [ ] Typing digits or clicking the number edits it. Enter applies, Escape cancels, 300 becomes 255, and blank keeps the old value.
+- [ ] The title bar looks right on a translucent window.
+
 ## Automated checks
 
 Workspace tests cover PTY streaming, hidden terminal drains, terminal input, git exclusion, branch renaming, journal updates, unpushed commits, failed pushes, branch retention, safe close, branch-switch refusal, and leftovers. All use temporary app data and repositories.

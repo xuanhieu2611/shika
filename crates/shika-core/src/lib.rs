@@ -19,7 +19,8 @@
 //!   GPUI main thread. There are no async variants on purpose: the work is
 //!   process spawning and file IO, the app already has a background executor,
 //!   and a plain blocking call keeps core free of any async runtime.
-//! - **Quick.** [`Core::open`], [`Core::projects`],
+//! - **Quick.** [`Core::open`], [`Core::projects`], [`Core::settings`],
+//!   [`Core::save_settings`],
 //!   [`Core::worktree_journal`], [`Core::leftovers_list`],
 //!   [`Core::sessions`], [`Core::session`], [`Core::write`], and
 //!   [`Core::resize`]. They read a small JSON file, take a short lock, or
@@ -46,6 +47,7 @@ mod path_env;
 mod projects;
 mod pty;
 mod session;
+mod settings;
 mod worktree;
 
 use std::path::{Path, PathBuf};
@@ -57,11 +59,13 @@ pub use path_env::{LoginShellError, PathEnv};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use session::{Session, SessionGitState, ShellOpen};
+pub use settings::{Appearance, Settings, Translucency};
 pub use worktree::JournalEntry;
 
 use projects::ProjectDb;
 use pty::{PtyHub, SpawnRequest};
 use session::SessionStore;
+use settings::SettingsFile;
 use worktree::Journal;
 
 /// The bundle identifier the Tauri build shipped with. Its data directory
@@ -81,6 +85,7 @@ pub struct Core {
     data_dir: PathBuf,
     projects: ProjectDb,
     journal: Journal,
+    settings: SettingsFile,
     env: OnceLock<PathEnv>,
     sessions: SessionStore,
     ptys: PtyHub,
@@ -88,15 +93,16 @@ pub struct Core {
 }
 
 impl Core {
-    /// Opens `projects.json` and `worktrees.json` in `data_dir`, creating the
-    /// directory if needed. Pass [`app_data_dir`] in the app and a temporary
-    /// directory in tests. Quick: the login shell runs later, on first use.
+    /// Opens `projects.json`, `worktrees.json`, and `settings.json` in
+    /// `data_dir`, creating the directory if needed. Pass [`app_data_dir`] in
+    /// the app and a temporary directory in tests. Quick: the login shell runs later, on first use.
     pub fn open(data_dir: impl Into<PathBuf>) -> Result<Self> {
         let data_dir = data_dir.into();
         std::fs::create_dir_all(&data_dir).map_err(|_| Error::AppData)?;
         Ok(Self {
             projects: ProjectDb::open(data_dir.join("projects.json")),
             journal: Journal::open(data_dir.join("worktrees.json")),
+            settings: SettingsFile::open(data_dir.join("settings.json")),
             data_dir,
             env: OnceLock::new(),
             sessions: SessionStore::new(),
@@ -132,6 +138,15 @@ impl Core {
 
     pub fn projects(&self) -> Result<Vec<Project>> {
         self.projects.list()
+    }
+
+    /// `settings.json`, or the defaults when it does not exist yet.
+    pub fn settings(&self) -> Result<Settings> {
+        self.settings.load()
+    }
+
+    pub fn save_settings(&self, settings: &Settings) -> Result<()> {
+        self.settings.save(settings)
     }
 
     /// Saves the git root of a folder the user picked. A nested folder
