@@ -9,6 +9,7 @@ The PRD is the spec, except where this file records a later decision from the au
 - This build launches Claude Code and Cursor CLI only. Kiro, Codex, and Pi wait.
 - Shika creates the worktree. Never pass Cursor's `--worktree`.
 - Shika is a pure Rust app on GPUI, not Tauri 2 with a web view. Decided 2026-10-04. See "Stack change".
+- A Settings dialog (Cmd-,) sets background opacity, blur radius, and whether translucency covers the sidebar alone or the sidebar and terminal. Saved in `settings.json`. The default is opaque. Decided 2026-10-04.
 
 ## Stack change, 2026-10-04
 
@@ -110,6 +111,7 @@ Persisted in `~/Library/Application Support/com.hieule.shika/`, the same directo
 
 - `projects.json` - `{ id, name, path }[]`. Name is the folder name.
 - `worktrees.json` - journal of `{ projectId, branch, path }` for crash cleanup. Not a session history.
+- `settings.json` - `{ appearance: { opacity, blur, translucency } }`. Opacity 0 to 100 percent, blur radius 0 to 255, translucency `sidebar` or `sidebarAndTerminal`.
 
 In memory only: session id, CLI preset, card title, status, both PTY ids, whether the first prompt has been sent.
 

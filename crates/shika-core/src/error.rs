@@ -24,6 +24,11 @@ pub enum Error {
     #[error("Could not save worktrees.")]
     SaveJournal,
 
+    #[error("Could not read settings.")]
+    ReadSettings,
+    #[error("Could not save settings.")]
+    SaveSettings,
+
     #[error("Could not run git.{}", detail(.0))]
     Git(Option<String>),
     #[error("Could not update the git exclude.")]
