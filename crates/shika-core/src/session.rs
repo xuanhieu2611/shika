@@ -21,6 +21,8 @@ pub struct Session {
     pub worktree: PathBuf,
     pub pty: PtyId,
     pub shell_pty: Option<PtyId>,
+    /// Whether the CLI's own session title has named the card and branch.
+    pub cli_titled: bool,
 }
 
 /// Git facts for the close dialog. `agent_working` comes from the UI's
@@ -129,6 +131,23 @@ impl SessionStore {
         Ok(session.clone())
     }
 
+    pub(crate) fn apply_cli_title(
+        &self,
+        id: &str,
+        branch: String,
+        title: String,
+    ) -> Result<Session> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
+        let session = sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+            .ok_or(Error::UnknownSession)?;
+        session.branch = branch;
+        session.title = title;
+        session.cli_titled = true;
+        Ok(session.clone())
+    }
+
     pub(crate) fn remove(&self, id: &str) {
         self.sessions
             .lock()
@@ -201,6 +220,7 @@ mod tests {
             worktree: PathBuf::from("/repo/.worktrees/shika-draft-1"),
             pty,
             shell_pty: None,
+            cli_titled: false,
         }
     }
 

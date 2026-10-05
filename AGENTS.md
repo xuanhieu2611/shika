@@ -21,7 +21,9 @@ In particular:
 
 ## Where the build is
 
-The GPUI app is implemented in `crates/shika`. The Tauri, React, xterm.js, Node, and Vite app has been removed. The app includes project persistence, draft worktrees, cards, the keyboard map, shell toggle, task branch renaming, a two-second quiet timer, native notifications, discard-or-push close, and explicit leftovers cleanup.
+The GPUI app is implemented in `crates/shika`. The Tauri, React, xterm.js, Node, and Vite app has been removed. The app includes project persistence, draft worktrees, cards, the keyboard map, shell toggle, task branch naming from the CLI's own session title, a two-second quiet timer, native notifications, discard-or-push close, and explicit leftovers cleanup.
+
+Branch names: the first prompt line names the branch at once. About a second later the CLI's own session title, read from Claude Code's or Cursor's private files, renames it once, without the project name and with the optional Settings prefix. Those files are not a public API, so reading them is best effort; on any failure the prompt name stays. A branch already on a remote is never renamed. `PLAN.md` has the rules; `docs/branch-naming.md` explains the why, the code map, the CLI file formats, and how to debug it.
 
 Asking is not parsed. Ready means the output became quiet or the process exited, including a non-zero exit. Notifications are titled `{project} - {task}` and route clicks to the matching card. Permission denial is reported in the app.
 
@@ -39,7 +41,7 @@ The shell is the user's login shell, with its cwd on the worktree. `git status` 
 
 Typing in the terminal, a text field, the picker, or the close dialog does not run the card keys.
 
-Cmd-, (also the Shika menu and the gear at the right of the title bar) opens Settings. Hovering the gear shows Settings ⌘,. The dialog sets background opacity, blur radius, and whether translucency covers the sidebar alone or the sidebar and terminal. Opacity is 0 to 100%, blur radius 0 to 255. `j` / `k` choose a row, `h` / `l` or the arrows step by 5, and typing digits (or clicking the number) edits it: Enter applies, Escape cancels the edit, and out-of-range values are clamped. Escape closes the dialog. Changes apply and save at once. At 100% opacity the window is opaque and blur does nothing. The title bar uses that same opacity, so the blur shows through it. Cards, dialogs, the toast, and cells with their own background color stay opaque.
+Cmd-, (also the Shika menu and the gear at the right of the title bar) opens Settings. Hovering the gear shows Settings ⌘,. The dialog sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, and the branch prefix. Opacity is 0 to 100%, blur radius 0 to 255. `j` / `k` choose a row, `h` / `l` or the arrows step by 5, and typing digits (or clicking the number) edits it: Enter applies, Escape cancels the edit, and out-of-range values are clamped. On the prefix row, Enter or a click edits the text, Enter applies, and Escape cancels. Escape closes the dialog. Changes apply and save at once. At 100% opacity the window is opaque and blur does nothing. The title bar uses that same opacity, so the blur shows through it. Cards, dialogs, the toast, and cells with their own background color stay opaque.
 
 ## Code
 
@@ -58,7 +60,7 @@ crates/shika/           the GPUI app: window, cards, picker, close dialog, setti
 
 `assets/fonts/` holds JetBrains Mono and its OFL license. `assets/macos/` holds the bundle metadata and icon. `scripts/bundle-app.sh` builds a local ad hoc signed `.app`.
 
-App data: `~/Library/Application Support/com.hieule.shika/`, the same directory used before the migration. `projects.json` and `worktrees.json` keep working there. `settings.json` holds the appearance; a missing file or field takes the opaque default. Sessions, titles, status, and PTY ids are memory only.
+App data: `~/Library/Application Support/com.hieule.shika/`, the same directory used before the migration. `projects.json` and `worktrees.json` keep working there. `settings.json` holds the appearance and `branchPrefix`; a missing file or field takes the default (opaque, no prefix). Sessions, titles, status, and PTY ids are memory only.
 
 Worktrees live at `<repo>/.worktrees/<branch>`. `.worktrees/` is appended to that repo's `info/exclude`. Do not edit the user's `.gitignore` when the exclude file works.
 
@@ -82,6 +84,8 @@ open target/debug/Shika.app
 ```
 
 `cargo run` inherits a terminal `PATH` and hides the Dock-launch bug. GUI apps do not see Homebrew, nvm, or `~/.local/bin`. `path_env` runs the login shell once at startup from a short `PATH`, with the environment cleared, because Nix's `__NIX_DARWIN_SET_ENVIRONMENT_DONE` stops a login shell from rebuilding `PATH`. Claude and Cursor on this machine are under `~/.local/bin`. The real check is a built `.app` opened with `open`, not only `cargo run`.
+
+Claude Code saves no transcript, and so writes no session title, when it inherits `CLAUDE_CODE_CHILD_SESSION`. A Shika started with `cargo run` from inside a Claude Code session passes that variable to its PTYs, so branch titles fall back to the prompt there. Launch with `open` to test naming.
 
 Never test against the author's normal `projects.json`. Use disposable git repositories and local bare remotes, with `open -n target/debug/Shika.app --args --data-dir /absolute/test/data`. Before sending synthetic keystrokes, confirm Shika's own window is in front. `--diagnostics-file /absolute/report` writes CLI discovery there and metadata-only native notification diagnostics to `/absolute/report.notifications`.
 
