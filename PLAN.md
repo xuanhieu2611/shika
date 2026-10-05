@@ -10,6 +10,7 @@ The PRD is the spec, except where this file records a later decision from the au
 - Shika creates the worktree. Never pass Cursor's `--worktree`.
 - Shika is a pure Rust app on GPUI, not Tauri 2 with a web view. Decided 2026-10-04. See "Stack change".
 - The agent column is 540px, fixed, replacing the 280px column. The window opens at 1400x880 with a 960x600 minimum. The 48px top row is the title bar: traffic lights, the wordmark, the settings gear, and New agent on the column side, the terminal header on the other. The summary is a headline and status chips; clicking a chip selects the first card with that status. Ready cards show a diff stat. Decided by the author 2026-10-04, following the designer's v3 prototype.
+- Each project has an optional base branch, the branch New starts from, for repos where work happens on a branch such as `dev` and merges to `main` later. Unset, New starts from the remote default branch. The project header shows it, and `b` or a click on it opens the Base branch dialog. A card measures its diff stat and its close checks against the base it started from, so changing the base later does not touch running cards. Decided by the author 2026-10-05. See "Worktree".
 - A Settings dialog (Cmd-,) sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, the terminal font size (8 to 32, default 12.5), and whether a notification plays the system alert sound (on by default). The title bar uses that same opacity, so the window blur shows through it. Saved in `settings.json`. The default is opaque. Decided 2026-10-04.
 
 ## Stack change, 2026-10-04
@@ -125,8 +126,8 @@ design/                       DESIGN.md, Shika v3.dc.html, logo artwork
 
 Persisted in `~/Library/Application Support/com.hieule.shika/`, the same directory the Tauri build used, so existing files keep working:
 
-- `projects.json` - `{ id, name, path }[]`. Name is the folder name.
-- `worktrees.json` - journal of `{ projectId, branch, path }` for crash cleanup. Not a session history.
+- `projects.json` - `{ id, name, path, baseBranch? }[]`. Name is the folder name. `baseBranch` is the short name the user typed, such as `dev`; missing means the remote default.
+- `worktrees.json` - journal of `{ projectId, branch, path, baseRef? }` for crash cleanup. `baseRef` is the ref the branch started from. Not a session history.
 - `settings.json` - `{ appearance: { opacity, blur, translucency }, fontSize, branchPrefix, notificationSound }`. Opacity 0 to 100 percent, blur radius 0 to 255, translucency `sidebar` or `sidebarAndTerminal`. `notificationSound` plays the system alert with the banner and defaults to true.
 
 In memory only: session id, CLI preset, card title, status, both PTY ids, whether the first prompt has been sent.
@@ -161,10 +162,16 @@ Put that PATH on every child. Resolve `claude` and `agent` inside that same envi
 
 - Project path must be a git repo (`git rev-parse --show-toplevel`). If they pick a nested folder, use the toplevel and say so.
 - Append `.worktrees/` to `$(git rev-parse --git-path info/exclude)` if the line is missing. Do not edit `.gitignore`.
-- Create with `git worktree add -b <branch> <path>` from the main repo.
+- Create with `git worktree add --no-track -b <branch> <path> <start>` from the main repo (decided by the author 2026-10-05, replacing a plain `git worktree add -b <branch> <path>`, which started from whatever the main checkout had out).
+  - `<start>` for a configured base `B` is `refs/remotes/origin/B`, else `refs/heads/B`. If neither exists, New fails with "Base branch B not found." It never falls back to another branch.
+  - With no base set, `<start>` is the remote default (`refs/remotes/origin/HEAD` when it is valid), then local `main`, then `master`, then the main checkout's HEAD as the last resort.
+  - `--no-track` is required. Starting from `origin/dev` would otherwise make `origin/dev` the upstream, so a fresh card would look pushed and a plain `git push` would target dev.
+  - Before creating, fetch only that branch from origin (`+refs/heads/B:refs/remotes/origin/B`), best effort: no terminal prompt, no askpass, ssh in batch mode, a 4 second cap. The fetch starts when the picker opens, and New waits for it rather than starting another. On any failure or timeout, New uses the ref it already has.
+  - The session keeps the full ref it started from, in memory and as `baseRef` in the journal. Diff stat, own commits, and unpushed-without-upstream compare against it. If it no longer resolves, or there is none (the HEAD fallback), they use the default branch: `origin/HEAD`, `main`, `master`, then the main checkout's HEAD, refusing when that checkout is on the task branch.
+  - The Base branch dialog saves a branch only when it exists on origin or locally, fetching it first if it is missing. `origin/dev` is saved as `dev`. Empty clears it.
 - Slug: lowercase, non-alphanumerics to `-`, collapse dashes, trim, max 48 characters. Empty slug becomes `task-<id>`. Collision gets `-2`, `-3`.
 - Dirty means `git status --porcelain` is non-empty.
-- Unpushed means the branch has commits that are not on its upstream. A branch with no upstream is unpushed when it has commits that are not in the default branch.
+- Unpushed means the branch has commits that are not on its upstream. A branch with no upstream is unpushed when it has commits that are not in the base it started from (else the default branch) or on any remote-tracking branch.
 - Discard uses `git worktree remove --force` and then `git branch -D`.
 - A normal close of a clean, already-pushed task uses `git worktree remove` and leaves the branch.
 - A normal close of an empty draft uses `git worktree remove` and `git branch -D`.

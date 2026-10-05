@@ -3,8 +3,9 @@ use std::fs;
 use std::io::{ErrorKind, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,10 @@ pub struct JournalEntry {
     pub project_id: String,
     pub branch: String,
     pub path: PathBuf,
+    /// The ref the branch started from, such as `refs/remotes/origin/dev`.
+    /// Missing in entries written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
 }
 
 pub struct Journal {
@@ -81,7 +86,17 @@ impl Journal {
     }
 }
 
-pub fn create_draft(git: &Path, path_env: &str, repo: &Path, id: &str) -> Result<Draft> {
+/// Creates `<repo>/.worktrees/shika-draft-<id>` on a new branch that starts
+/// at `start`, a ref or `HEAD`. The branch gets no upstream even when it
+/// starts from a remote-tracking branch, so a fresh card never looks pushed
+/// and a plain `git push` cannot land on the base.
+pub fn create_draft(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    id: &str,
+    start: &str,
+) -> Result<Draft> {
     ensure_excluded(git, path_env, repo)?;
     let branch = format!("shika-draft-{id}");
     let path = repo.join(".worktrees").join(&branch);
@@ -90,8 +105,9 @@ pub fn create_draft(git: &Path, path_env: &str, repo: &Path, id: &str) -> Result
     }
     fs::create_dir_all(repo.join(".worktrees")).map_err(|_| Error::CreateWorktree(None))?;
     let output = git_cmd(git, path_env, repo)
-        .args(["worktree", "add", "-b", &branch])
+        .args(["worktree", "add", "--no-track", "-b", &branch])
         .arg(&path)
+        .arg(start)
         .output()
         .map_err(|_| Error::CreateWorktree(None))?;
     if !output.status.success() {
@@ -99,6 +115,206 @@ pub fn create_draft(git: &Path, path_env: &str, repo: &Path, id: &str) -> Result
         return Err(Error::CreateWorktree(first_line(&output.stderr)));
     }
     Ok(Draft { branch, path })
+}
+
+/// Where New starts a task branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseStart {
+    /// The branch as the app shows it: `dev`, `main`. None only when the start
+    /// is a detached HEAD in the main checkout.
+    pub name: Option<String>,
+    /// The full ref the branch starts from, such as `refs/remotes/origin/dev`.
+    /// None when the start is the main checkout's HEAD, the last resort, which
+    /// is no fixed base: later checks then use the default branch.
+    pub reference: Option<String>,
+}
+
+impl BaseStart {
+    /// What `git worktree add` starts from.
+    pub fn start(&self) -> &str {
+        self.reference.as_deref().unwrap_or("HEAD")
+    }
+}
+
+/// Resolves where New starts. A configured base `B` is `origin/B`, else the
+/// local `B`, and is an error when neither exists: it never falls back to
+/// another branch. Unset, it is the remote default (`origin/HEAD`), then local
+/// main, then master, then the main checkout's HEAD.
+pub fn resolve_base(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    configured: Option<&str>,
+) -> Result<BaseStart> {
+    if let Some(branch) = configured {
+        if let Some(reference) = configured_ref(git, path_env, repo, branch)? {
+            return Ok(BaseStart {
+                name: Some(branch.to_string()),
+                reference: Some(reference),
+            });
+        }
+        return Err(Error::BaseBranchMissing(branch.to_string()));
+    }
+    if let Some(reference) = named_default(git, path_env, repo)? {
+        return Ok(BaseStart {
+            name: Some(short_branch(&reference).to_string()),
+            reference: Some(reference),
+        });
+    }
+    let head = git_cmd(git, path_env, repo)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    let name = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    Ok(BaseStart {
+        name: (head.status.success() && !name.is_empty()).then_some(name),
+        reference: None,
+    })
+}
+
+/// `refs/remotes/origin/<branch>` if it exists, else `refs/heads/<branch>`.
+/// None for a name git does not accept as a branch.
+pub fn configured_ref(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    branch: &str,
+) -> Result<Option<String>> {
+    if branch.is_empty() || !is_valid_branch(git, path_env, repo, branch)? {
+        return Ok(None);
+    }
+    for reference in [
+        format!("refs/remotes/origin/{branch}"),
+        format!("refs/heads/{branch}"),
+    ] {
+        if ref_exists(git, path_env, repo, &reference)? {
+            return Ok(Some(reference));
+        }
+    }
+    Ok(None)
+}
+
+/// `dev` from `refs/remotes/origin/dev` or `refs/heads/dev`.
+fn short_branch(reference: &str) -> &str {
+    reference
+        .strip_prefix("refs/remotes/origin/")
+        .or_else(|| reference.strip_prefix("refs/heads/"))
+        .unwrap_or(reference)
+}
+
+/// The branch on origin worth fetching before New: the configured base, or
+/// the branch `origin/HEAD` names. None without an `origin` remote.
+pub fn fetch_target(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    configured: Option<&str>,
+) -> Option<String> {
+    if !has_origin(git, path_env, repo) {
+        return None;
+    }
+    if let Some(branch) = configured {
+        return Some(branch.to_string());
+    }
+    let head = git_cmd(git, path_env, repo)
+        .args(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+        .output()
+        .ok()?;
+    if !head.status.success() {
+        return None;
+    }
+    let reference = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    reference
+        .strip_prefix("refs/remotes/origin/")
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether the repository has a remote named `origin`.
+pub fn has_origin(git: &Path, path_env: &str, repo: &Path) -> bool {
+    git_cmd(git, path_env, repo)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// How long New waits for a base branch fetch before using the ref it has.
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// Best effort: updates `refs/remotes/origin/<branch>` from origin and
+/// nothing else. It can never prompt: no terminal prompt, no askpass, ssh in
+/// batch mode, no stdin. Gives up after `timeout`, killing the fetch and its
+/// ssh. Returns whether the fetch succeeded; callers carry on either way.
+pub fn fetch_branch(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    branch: &str,
+    timeout: Duration,
+) -> bool {
+    // A valid branch name has no glob or other refspec syntax.
+    if branch.is_empty()
+        || branch.starts_with('-')
+        || !is_valid_branch(git, path_env, repo, branch).unwrap_or(false)
+    {
+        return false;
+    }
+    let mut cmd = git_cmd(git, path_env, repo);
+    // An explicit destination also works when the clone fetches only some
+    // branches, as `git clone --single-branch` sets up.
+    cmd.args([
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-recurse-submodules",
+        "origin",
+    ])
+    .arg(format!("+refs/heads/{branch}:refs/remotes/origin/{branch}"))
+    .env("GIT_TERMINAL_PROMPT", "0")
+    // Empty means no askpass helper at all, so git cannot ask for a password.
+    .env("GIT_ASKPASS", "")
+    .env("SSH_ASKPASS_REQUIRE", "never")
+    .env("GCM_INTERACTIVE", "never")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    if !user_ssh_command(git, path_env, repo) {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    // Its own process group, so a timeout can stop ssh along with git.
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => break,
+        }
+    }
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+    false
+}
+
+/// Whether the user chose their own ssh command, which Shika leaves alone.
+fn user_ssh_command(git: &Path, path_env: &str, repo: &Path) -> bool {
+    if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+        return true;
+    }
+    git_cmd(git, path_env, repo)
+        .args(["config", "--get", "core.sshCommand"])
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 pub fn is_dirty(git: &Path, path_env: &str, worktree: &Path) -> Result<bool> {
@@ -301,11 +517,14 @@ pub fn rename_branch(
     }
 }
 
+/// Dirty, unpushed, and pushed, measured against `base`: the ref the task
+/// branch started from, when it still resolves. Otherwise the default branch.
 pub fn git_state(
     git: &Path,
     path_env: &str,
     repo: &Path,
     worktree: &Path,
+    base: Option<&str>,
     agent_working: bool,
 ) -> Result<crate::SessionGitState> {
     let dirty = is_dirty(git, path_env, worktree)?;
@@ -318,7 +537,7 @@ pub fn git_state(
         ])
         .output()
         .map_err(|_| Error::GitStatus(None))?;
-    let default = default_branch(git, path_env, repo, worktree)?;
+    let default = compare_base(git, path_env, repo, worktree, base)?;
     let has_own_commits = commits_not_in(git, path_env, worktree, &[&default])?;
     let (unpushed, pushed) = if upstream.status.success() {
         let upstream = String::from_utf8_lossy(&upstream.stdout).trim().to_string();
@@ -339,29 +558,66 @@ pub fn git_state(
     })
 }
 
-fn default_branch(git: &Path, path_env: &str, repo: &Path, worktree: &Path) -> Result<String> {
+/// The ref a session's work is measured against: the recorded base while it
+/// still resolves, else the default branch, with its safety refusal.
+fn compare_base(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    worktree: &Path,
+    recorded: Option<&str>,
+) -> Result<String> {
+    if let Some(reference) = recorded
+        && ref_exists(git, path_env, repo, reference)?
+    {
+        return Ok(reference.to_string());
+    }
+    default_branch(git, path_env, repo, worktree)
+}
+
+/// Whether `reference`, a full `refs/...` name, names a commit in `repo`.
+fn ref_exists(git: &Path, path_env: &str, repo: &Path, reference: &str) -> Result<bool> {
+    let output = git_cmd(git, path_env, repo)
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("{reference}^{{commit}}"))
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    Ok(output.status.success())
+}
+
+/// The full ref `refs/remotes/origin/HEAD` points at, when it is valid.
+fn remote_default(git: &Path, path_env: &str, repo: &Path) -> Result<Option<String>> {
     let remote = git_cmd(git, path_env, repo)
         .args(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
         .output()
         .map_err(|_| Error::GitStatus(None))?;
-    if remote.status.success() {
-        let reference = String::from_utf8_lossy(&remote.stdout).trim().to_string();
-        let valid = git_cmd(git, path_env, repo)
-            .args(["rev-parse", "--verify", &reference])
-            .output()
-            .map_err(|_| Error::GitStatus(None))?;
-        if valid.status.success() {
-            return Ok(reference);
-        }
+    if !remote.status.success() {
+        return Ok(None);
+    }
+    let reference = String::from_utf8_lossy(&remote.stdout).trim().to_string();
+    if reference.is_empty() || !ref_exists(git, path_env, repo, &reference)? {
+        return Ok(None);
+    }
+    Ok(Some(reference))
+}
+
+/// The default branch as a named ref: the remote default, then local main,
+/// then master. None when the repository has none of them.
+fn named_default(git: &Path, path_env: &str, repo: &Path) -> Result<Option<String>> {
+    if let Some(reference) = remote_default(git, path_env, repo)? {
+        return Ok(Some(reference));
     }
     for candidate in ["refs/heads/main", "refs/heads/master"] {
-        let exists = git_cmd(git, path_env, repo)
-            .args(["rev-parse", "--verify", candidate])
-            .output()
-            .map_err(|_| Error::GitStatus(None))?;
-        if exists.status.success() {
-            return Ok(String::from_utf8_lossy(&exists.stdout).trim().to_string());
+        if ref_exists(git, path_env, repo, candidate)? {
+            return Ok(Some(candidate.to_string()));
         }
+    }
+    Ok(None)
+}
+
+fn default_branch(git: &Path, path_env: &str, repo: &Path, worktree: &Path) -> Result<String> {
+    if let Some(reference) = named_default(git, path_env, repo)? {
+        return Ok(reference);
     }
     // A custom default branch can be the main checkout's HEAD. Refuse if
     // that checkout is on the task branch: it cannot prove anything is safe.
@@ -389,7 +645,8 @@ fn default_branch(git: &Path, path_env: &str, repo: &Path, worktree: &Path) -> R
     Err(Error::GitStatus(None))
 }
 
-/// What the task changed against where its branch left the default branch:
+/// What the task changed against where its branch left its base (the
+/// recorded start ref, else the default branch):
 /// committed and uncommitted tracked edits, plus untracked files that are not
 /// ignored. Reads only; never stages anything or writes the index.
 pub fn diff_stat(
@@ -397,8 +654,9 @@ pub fn diff_stat(
     path_env: &str,
     repo: &Path,
     worktree: &Path,
+    base: Option<&str>,
 ) -> Result<crate::DiffStat> {
-    let base = diff_base(git, path_env, repo, worktree);
+    let base = diff_base(git, path_env, repo, worktree, base);
     // Comparing the base to the working tree covers commits and edits at once.
     let output = read_only_git(git, path_env, worktree)
         .args([
@@ -445,11 +703,17 @@ pub fn diff_stat(
     Ok(stat)
 }
 
-/// Where the task branch left the default branch. Falls back to HEAD, so only
-/// uncommitted work counts, when there is no default branch to compare with or
-/// the two share no history.
-fn diff_base(git: &Path, path_env: &str, repo: &Path, worktree: &Path) -> String {
-    let Ok(default) = default_branch(git, path_env, repo, worktree) else {
+/// Where the task branch left its base. Falls back to HEAD, so only
+/// uncommitted work counts, when there is no base to compare with or the two
+/// share no history.
+fn diff_base(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    worktree: &Path,
+    recorded: Option<&str>,
+) -> String {
+    let Ok(default) = compare_base(git, path_env, repo, worktree, recorded) else {
         return "HEAD".into();
     };
     let output = read_only_git(git, path_env, worktree)
@@ -807,7 +1071,7 @@ mod tests {
     fn rename_skips_names_taken_locally_or_on_a_remote() {
         let scratch = Scratch::new();
         let repo = scratch.repo("demo");
-        let draft = create_draft(&git(), "", &repo, "one").unwrap();
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
         let run = |args: &[&str]| {
             let status = Command::new("git")
                 .arg("-C")
@@ -863,7 +1127,7 @@ mod tests {
     fn draft_worktree_stays_out_of_main_status_and_can_be_removed() {
         let scratch = Scratch::new();
         let repo = scratch.repo("demo");
-        let draft = create_draft(&git(), "", &repo, "one").unwrap();
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
 
         assert_eq!(draft.branch, "shika-draft-one");
         assert!(draft.path.join(".git").exists());
@@ -906,7 +1170,7 @@ mod tests {
     fn a_dirty_worktree_is_kept_until_removal_is_forced() {
         let scratch = Scratch::new();
         let repo = scratch.repo("demo");
-        let draft = create_draft(&git(), "", &repo, "one").unwrap();
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
         fs::write(draft.path.join("note.txt"), "wip\n").unwrap();
 
         assert!(is_dirty(&git(), "", &draft.path).unwrap());
@@ -952,12 +1216,12 @@ mod tests {
         let repo = scratch.repo("demo");
         fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
         commit_all(&repo, "base");
-        let draft = create_draft(&git(), "", &repo, "one").unwrap();
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
         (repo, draft)
     }
 
     fn stat(repo: &Path, draft: &Draft) -> crate::DiffStat {
-        diff_stat(&git(), "", repo, &draft.path).unwrap()
+        diff_stat(&git(), "", repo, &draft.path, None).unwrap()
     }
 
     fn counts(files: usize, insertions: usize, deletions: usize) -> crate::DiffStat {
@@ -1062,6 +1326,7 @@ mod tests {
             project_id: "p1".into(),
             branch: "shika-draft-one".into(),
             path: "/tmp/demo/.worktrees/shika-draft-one".into(),
+            base_ref: Some("refs/remotes/origin/dev".into()),
         };
         journal.add(&entry).unwrap();
         let again = Journal::open(scratch.path.join("worktrees.json"));
@@ -1070,6 +1335,7 @@ mod tests {
                 project_id: "p1".into(),
                 branch: "shika-draft-two".into(),
                 path: "/tmp/demo/.worktrees/shika-draft-two".into(),
+                base_ref: None,
             })
             .unwrap();
         again.remove_path(&entry.path).unwrap();
@@ -1077,6 +1343,15 @@ mod tests {
         assert!(!text.contains("shika-draft-one"));
         assert!(text.contains("shika-draft-two"));
         assert!(text.contains("\"projectId\": \"p1\""), "{text}");
+        // No base recorded leaves the field out, as in older files.
+        assert!(!text.contains("baseRef"), "{text}");
         assert_eq!(again.list().unwrap().len(), 1);
+        again.add(&entry).unwrap();
+        let text = fs::read_to_string(scratch.path.join("worktrees.json")).unwrap();
+        assert!(
+            text.contains("\"baseRef\": \"refs/remotes/origin/dev\""),
+            "{text}"
+        );
+        assert_eq!(again.list().unwrap()[1], entry);
     }
 }

@@ -31,6 +31,13 @@ impl Status {
         }
     }
 }
+/// Longest base branch name the Base branch field takes.
+pub const BRANCH_MAX: usize = 100;
+/// Characters the Base branch field takes. Git refuses more names than this
+/// lets through; core checks the rest.
+pub fn branch_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.')
+}
 /// Output this long after the user's last key, click, scroll, or resize is
 /// the agent's own work. Sooner, it is an echo or a redraw.
 pub const ECHO: Duration = Duration::from_secs(1);
@@ -340,6 +347,15 @@ pub fn visible_indices(len: usize, selected: Option<usize>) -> std::ops::Range<u
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_base_field_takes_branch_characters_only() {
+        for ch in ['d', 'E', '7', '/', '-', '_', '.'] {
+            assert!(branch_char(ch), "{ch}");
+        }
+        for ch in [' ', '~', '^', ':', '?', '*', '[', '\\', '@', 'é'] {
+            assert!(!branch_char(ch), "{ch}");
+        }
+    }
     #[test]
     fn the_title_watch_checks_one_at_a_time_then_gives_up() {
         let t0 = Instant::now();
