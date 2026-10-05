@@ -1,0 +1,8 @@
+/* UI text uses the macOS system font (SF Pro). JetBrains Mono (OFL) is served locally. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("../../fonts/JetBrainsMono-Variable.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}

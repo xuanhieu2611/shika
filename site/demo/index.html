@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="styles.css">
+<style>
+html,body{margin:0;height:100%;background:var(--term-bg);}
+[data-glass="on"] body{background:#7d8a74;}
+aside *{scrollbar-width:thin;scrollbar-color:transparent transparent;}
+aside *:hover{scrollbar-color:var(--line-dashed) transparent;}
+body{-webkit-font-smoothing:antialiased;}
+*{box-sizing:border-box;}
+button{font:inherit;color:inherit;}
+a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
+@keyframes shikaBlink{0%{opacity:1}50%{opacity:0}}
+@keyframes shikaPulse{0%,100%{opacity:1}50%{opacity:0.3}}
+</style>
+</helmet>
+<div style="height:100vh;min-height:664px;padding:var(--window-inset);background:var(--desktop-bg);background-size:cover;background-position:center;transition:padding 260ms cubic-bezier(.2,.8,.2,1)">
+<div style="display:flex;height:100%;min-width:960px;min-height:600px;font-family:var(--font-ui);color:var(--ink-1);overflow:hidden;position:relative;user-select:none;border-radius:var(--window-radius);box-shadow:var(--window-shadow)">
+
+  <aside style="width:{{ colWidth }};flex:none;display:flex;flex-direction:column;background:var(--column-bg);backdrop-filter:var(--column-blur);-webkit-backdrop-filter:var(--column-blur);border-right:1px solid var(--line-1);transition:width 220ms cubic-bezier(.2,.8,.2,1)">
+    <div style="height:48px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 18px">
+      <div style="display:flex;gap:8px">
+        <span style="width:12px;height:12px;border-radius:50%;background:var(--traffic-close);box-shadow:inset 0 0 0 0.5px rgba(0,0,0,0.12)"></span>
+        <span style="width:12px;height:12px;border-radius:50%;background:var(--traffic-min);box-shadow:inset 0 0 0 0.5px rgba(0,0,0,0.12)"></span>
+        <span style="width:12px;height:12px;border-radius:50%;background:var(--traffic-zoom);box-shadow:inset 0 0 0 0.5px rgba(0,0,0,0.12)"></span>
+      </div>
+      <button onClick="{{ newTop }}" style="display:flex;align-items:center;gap:8px;border:1px solid var(--line-control);background:var(--surface-raised);border-radius:7px;padding:4px 6px 4px 11px;font-size:12.5px;font-weight:500;color:var(--ink-1);cursor:default;box-shadow:var(--shadow-control)" style-hover="background:var(--surface-raised-hover)">New agent<span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-3);border-radius:4px;padding:1px 5px">n</span></button>
+    </div>
+
+    <div style="flex:none;padding:6px 20px 18px;display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px">
+        <span style="font-size:15px;font-weight:600;letter-spacing:-0.01em;color:var(--ink-1)">{{ headline }}</span>
+        <sc-if value="{{ hasAttention }}" hint-placeholder-val="{{ true }}">
+          <button onClick="{{ jumpNext }}" style="display:flex;align-items:center;gap:6px;border:none;background:transparent;padding:0;font-size:12px;color:var(--ink-3);cursor:default;white-space:nowrap"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">a</span>next that needs you</button>
+        </sc-if>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <sc-for list="{{ chips }}" as="ch" hint-placeholder-count="4">
+          <button onClick="{{ ch.onClick }}" style="display:flex;align-items:center;gap:7px;border:none;border-radius:999px;padding:4px 10px 4px 9px;font-size:12px;cursor:default;background:{{ ch.bg }};color:{{ ch.color }};font-weight:{{ ch.weight }}">
+            <span style="width:7px;height:7px;border-radius:50%;background:{{ ch.dot }};box-shadow:{{ ch.ring }}"></span>{{ ch.label }}
+          </button>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="flex:1;min-height:0;overflow-y:auto;padding:0 12px 18px;display:flex;flex-direction:column;gap:20px">
+      <sc-for list="{{ projects }}" as="p" hint-placeholder-count="3">
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;align-items:center;gap:10px;padding:0 4px 0 8px;min-height:24px">
+            <span style="font-size:13px;font-weight:600;color:var(--ink-1)">{{ p.name }}</span>
+            <span style="flex:1;min-width:0;font-family:var(--font-mono);font-size:11px;color:var(--ink-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.path }}</span>
+            <span style="font-size:11.5px;color:var(--ink-3);white-space:nowrap">{{ p.countLabel }}</span>
+            <button onClick="{{ p.onNew }}" title="New agent in this project" style="width:24px;height:24px;border:none;background:transparent;border-radius:6px;color:var(--ink-3);font-size:16px;line-height:22px;cursor:default;padding:0" style-hover="background:var(--surface-hover);color:var(--ink-1)">+</button>
+          </div>
+          <sc-if value="{{ p.empty }}" hint-placeholder-val="{{ false }}">
+            <button onClick="{{ p.onNew }}" style="text-align:left;border:1px dashed var(--line-dashed);background:transparent;border-radius:10px;padding:12px 14px;font-size:12.5px;color:var(--ink-3);cursor:default" style-hover="background:var(--surface-card);color:var(--ink-2)">No one is on this repo. Press + to start an agent.</button>
+          </sc-if>
+          <sc-for list="{{ p.cards }}" as="c" hint-placeholder-count="2">
+            <div onClick="{{ c.onClick }}" style="display:flex;flex-direction:column;gap:6px;padding:12px 14px 11px;border-radius:10px;cursor:default;background:{{ c.bg }};box-shadow:{{ c.shadow }}">
+              <div style="display:flex;align-items:center;gap:10px;min-width:0">
+                <span style="flex:none;width:8px;height:8px;display:flex">{{ c.dotEl }}</span>
+                <span style="flex:1;min-width:0;font-size:13.5px;line-height:19px;font-weight:500;color:{{ c.taskColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.task }}</span>
+                <span style="flex:none;font-family:var(--font-mono);font-size:11.5px;color:{{ c.timeColor }};font-variant-numeric:tabular-nums">{{ c.time }}</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;padding-left:18px;font-size:12px;line-height:16px;color:var(--ink-3);white-space:nowrap;min-width:0">
+                <span>{{ c.cli }}</span>
+                <span style="color:var(--ink-5)">·</span>
+                <span style="color:{{ c.labelColor }};font-weight:{{ c.labelWeight }}">{{ c.label }}</span>
+                <span style="color:var(--ink-5)">·</span>
+                <span style="flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);font-size:11.5px;color:var(--ink-3)">{{ c.branch }}</span>
+                <sc-if value="{{ c.hasStat }}" hint-placeholder-val="{{ false }}">
+                  <span style="color:var(--ink-5)">·</span><span>{{ c.stat }}</span>
+                </sc-if>
+                <span style="flex:1"></span>
+                <sc-for list="{{ c.hints }}" as="h" hint-placeholder-count="0">
+                  <span style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--ink-3);margin-left:6px"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:0 5px">{{ h.k }}</span>{{ h.t }}</span>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+          <sc-if value="{{ p.hasMore }}" hint-placeholder-val="{{ false }}">
+            <button onClick="{{ p.onMore }}" style="align-self:flex-start;border:none;background:transparent;padding:2px 8px;font-size:12px;color:var(--ink-3);cursor:default" style-hover="color:var(--ink-1)">{{ p.moreLabel }}</button>
+          </sc-if>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="flex:none;border-top:1px solid var(--line-2);padding:10px 12px 12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <button onClick="{{ addProject }}" style="border:none;background:transparent;border-radius:6px;padding:5px 8px;font-size:12.5px;color:var(--ink-2);cursor:default" style-hover="background:var(--surface-hover)">Add project…</button>
+      <sc-if value="{{ showHints }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;flex-wrap:wrap;column-gap:12px;row-gap:6px;padding-right:6px;font-size:11px;color:var(--ink-3)">
+          <span style="display:flex;gap:4px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">j k</span>move</span>
+          <span style="display:flex;gap:4px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">↵</span>terminal</span>
+          <span style="display:flex;gap:4px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">g</span>shell</span>
+          <span style="display:flex;gap:4px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">c</span>close</span>
+          <span style="display:flex;gap:4px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">t</span>theme</span>
+        </div>
+      </sc-if>
+    </div>
+  </aside>
+
+  <main style="flex:1;min-width:0;display:flex;flex-direction:column;background:var(--term-surface);backdrop-filter:var(--term-blur);-webkit-backdrop-filter:var(--term-blur);position:relative">
+    <sc-if value="{{ hasSel }}" hint-placeholder-val="{{ true }}">
+      <div style="height:48px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px 0 14px;background:var(--term-header-surface);border-bottom:1px solid var(--term-line)">
+        <div style="flex:none;display:flex;background:var(--term-seg-bg);border-radius:7px;padding:2px;gap:2px">
+          <button onClick="{{ setAgentMode }}" style="border:none;border-radius:5px;padding:4px 10px;font-size:12px;cursor:default;background:{{ agentSegBg }};color:{{ agentSegColor }}">{{ cliName }}</button>
+          <button onClick="{{ setShellMode }}" style="border:none;border-radius:5px;padding:4px 10px;font-size:12px;cursor:default;background:{{ shellSegBg }};color:{{ shellSegColor }}">Shell</button>
+        </div>
+        <div style="flex:1;min-width:0;font-family:var(--font-mono);font-size:11.5px;color:var(--term-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left">{{ wtPath }}</div>
+        <span style="flex:none;font-size:11.5px;color:var(--term-faint-ui)">{{ focusHint }}</span>
+        <button onClick="{{ closeSel }}" style="flex:none;display:flex;align-items:center;gap:7px;border:1px solid var(--term-seg-active);background:transparent;border-radius:6px;padding:4px 6px 4px 10px;font-size:12px;color:var(--term-fg-ui);cursor:default" style-hover="background:var(--term-hover)">Close<span style="font-family:var(--font-mono);font-size:10.5px;background:var(--term-line);color:var(--term-dim);border-radius:4px;padding:0 5px">c</span></button>
+      </div>
+      <div ref="{{ termRef }}" onClick="{{ focusTerm }}" style="flex:1;min-height:0;overflow-y:auto;padding:16px 20px 28px;font-family:var(--font-mono);font-size:12.5px;line-height:19px;color:var(--term-fg);user-select:text;cursor:text">
+        <sc-for list="{{ lines }}" as="ln" hint-placeholder-count="0">
+          <div style="white-space:pre-wrap;word-break:break-word;min-height:19px"><sc-for list="{{ ln.segs }}" as="sg"><span style="color:{{ sg.color }};font-weight:{{ sg.weight }}">{{ sg.t }}</span></sc-for></div>
+        </sc-for>
+        <sc-if value="{{ showInput }}" hint-placeholder-val="{{ false }}">
+          <div style="white-space:pre-wrap;word-break:break-word;min-height:19px"><sc-for list="{{ inputPrefix }}" as="sg"><span style="color:{{ sg.color }};font-weight:{{ sg.weight }}">{{ sg.t }}</span></sc-for><span style="color:var(--term-white)">{{ inputText }}</span>{{ cursorEl }}</div>
+        </sc-if>
+      </div>
+    </sc-if>
+    <sc-if value="{{ noSel }}" hint-placeholder-val="{{ false }}">
+      <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--term-faint-ui);font-size:13px">
+        <img src="assets/shika-app-icon-256.png" alt="Shika" style="width:64px;height:64px;margin-bottom:6px"><span>No agent selected</span>
+        <span style="display:flex;gap:14px;font-size:11.5px;color:var(--term-faint)">
+          <span style="display:flex;gap:5px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--term-seg-bg);color:var(--term-dim);border-radius:4px;padding:1px 5px">j</span>select</span>
+          <span style="display:flex;gap:5px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--term-seg-bg);color:var(--term-dim);border-radius:4px;padding:1px 5px">n</span>new agent</span>
+        </span>
+      </div>
+    </sc-if>
+    <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+      <div style="position:absolute;left:50%;bottom:22px;transform:translateX(-50%);background:var(--toast-bg);backdrop-filter:var(--overlay-blur);-webkit-backdrop-filter:var(--overlay-blur);color:var(--toast-fg);font-size:12.5px;padding:8px 14px;border-radius:8px;box-shadow:var(--shadow-toast);white-space:nowrap">{{ toast }}</div>
+    </sc-if>
+  </main>
+
+  <sc-if value="{{ hasPicker }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closePicker }}" style="position:absolute;inset:0;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding-top:18vh">
+      <div onClick="{{ stop }}" style="width:420px;background:var(--overlay-surface);backdrop-filter:var(--overlay-blur);-webkit-backdrop-filter:var(--overlay-blur);border-radius:12px;box-shadow:var(--shadow-dialog);padding:8px;display:flex;flex-direction:column;gap:2px">
+        <div style="display:flex;align-items:baseline;gap:6px;padding:8px 10px 10px">
+          <span style="font-size:14px;font-weight:600">New agent</span>
+          <span style="font-size:13px;color:var(--ink-3)">in {{ pickerProject }}</span>
+          <span style="flex:1"></span>
+          <span style="font-size:11.5px;color:var(--ink-4)">tab to change project</span>
+        </div>
+        <sc-for list="{{ pickerRows }}" as="r" hint-placeholder-count="5">
+          <div onClick="{{ r.onClick }}" style="display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:7px;cursor:default;background:{{ r.bg }}">
+            <span style="flex:none;font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-3);border-radius:4px;padding:1px 5px">{{ r.num }}</span>
+            <span style="flex:none;font-size:13.5px;font-weight:500;color:{{ r.nameColor }}">{{ r.name }}</span>
+            <span style="flex:1;min-width:0;text-align:right;font-family:var(--font-mono);font-size:11px;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.detail }}</span>
+          </div>
+        </sc-for>
+        <div style="display:flex;gap:14px;padding:10px 10px 6px;font-size:11px;color:var(--ink-3);border-top:1px solid var(--line-2);margin-top:6px">
+          <span>↵ start</span><span>esc cancel</span><span>creates a branch and a worktree</span>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ hasConfirm }}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute;inset:0;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding-top:20vh">
+      <div style="width:400px;background:var(--overlay-surface);backdrop-filter:var(--overlay-blur);-webkit-backdrop-filter:var(--overlay-blur);border-radius:12px;box-shadow:var(--shadow-dialog);padding:20px 20px 16px;display:flex;flex-direction:column;gap:8px">
+        <span style="font-size:14px;font-weight:600">{{ confirmTitle }}</span>
+        <sc-for list="{{ confirmLines }}" as="cl" hint-placeholder-count="2">
+          <span style="font-size:13px;line-height:19px;color:var(--ink-2);text-wrap:pretty">{{ cl.t }}</span>
+        </sc-for>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+          <button onClick="{{ cancelConfirm }}" style="display:flex;gap:8px;align-items:center;border:1px solid var(--line-control);background:var(--surface-raised);border-radius:7px;padding:6px 10px 6px 12px;font-size:12.5px;cursor:default">Cancel<span style="font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3)">esc</span></button>
+          <button onClick="{{ doConfirm }}" style="display:flex;gap:8px;align-items:center;border:none;background:var(--btn-primary-bg);color:var(--btn-primary-fg);border-radius:7px;padding:7px 10px 7px 12px;font-size:12.5px;cursor:default">Delete worktree<span style="font-family:var(--font-mono);font-size:10.5px;color:var(--kbd-inverse-fg)">↵</span></button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <div style="position:absolute;top:12px;right:12px;display:flex;flex-direction:column;gap:8px;z-index:5">
+    <sc-for list="{{ notes }}" as="nt" hint-placeholder-count="0">
+      <div onClick="{{ nt.onClick }}" style="width:344px;display:flex;gap:11px;padding:11px 12px;border-radius:14px;background:var(--notif-bg);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);box-shadow:var(--shadow-notification);cursor:default">
+        <img src="assets/shika-app-icon-256.png" alt="" style="flex:none;width:36px;height:36px">
+        <div style="min-width:0;flex:1;display:flex;flex-direction:column;gap:1px">
+          <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--notif-meta)"><span style="font-weight:600;letter-spacing:0.02em">SHIKA</span><span>now</span></div>
+          <div style="font-size:13px;font-weight:600;color:var(--notif-title)">{{ nt.title }}</div>
+          <div style="font-size:13px;color:var(--notif-body);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ nt.body }}</div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
+  <div style="position:absolute;inset:0;border-radius:var(--window-radius);box-shadow:var(--window-edge);pointer-events:none;z-index:40"></div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;,&quot;system&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark' | 'light' | 'system'&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;glass&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Glass&quot;},&quot;wallpaper&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Meadow&quot;,&quot;Dusk&quot;,&quot;Tide&quot;,&quot;Graphite&quot;],&quot;default&quot;:&quot;Meadow&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Glass&quot;},&quot;terminalOpacity&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:0.92,&quot;min&quot;:0.85,&quot;max&quot;:1,&quot;step&quot;:0.01,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Glass&quot;},&quot;columnWidth&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:540,&quot;min&quot;:400,&quot;max&quot;:760,&quot;step&quot;:20,&quot;unit&quot;:&quot;px&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;expandTerminalOnFocus&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;sortByAttention&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;},&quot;simulateAgents&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;},&quot;showKeyHints&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;}}">
+const WALLPAPERS = {
+  Meadow: 'radial-gradient(60% 70% at 12% 18%, #dfe9cc 0%, transparent 60%), radial-gradient(50% 60% at 88% 8%, #f1e2c2 0%, transparent 60%), radial-gradient(55% 65% at 78% 88%, #6f9479 0%, transparent 62%), radial-gradient(45% 55% at 22% 92%, #9fbf98 0%, transparent 60%), radial-gradient(40% 40% at 55% 45%, #c9d8b6 0%, transparent 70%), linear-gradient(135deg, #cfdcc0, #8fab8a)',
+  Dusk: 'radial-gradient(60% 70% at 15% 15%, #f3c9a8 0%, transparent 60%), radial-gradient(50% 60% at 85% 12%, #c7a6d8 0%, transparent 60%), radial-gradient(60% 70% at 75% 90%, #4f5b8f 0%, transparent 62%), radial-gradient(45% 55% at 20% 88%, #b07b98 0%, transparent 60%), linear-gradient(135deg, #e3b9a6, #6c6a9c)',
+  Tide: 'radial-gradient(60% 70% at 15% 18%, #cfe6ee 0%, transparent 60%), radial-gradient(50% 60% at 85% 10%, #e9efe2 0%, transparent 60%), radial-gradient(60% 70% at 78% 88%, #3f7387 0%, transparent 62%), radial-gradient(45% 55% at 22% 90%, #7fb0b7 0%, transparent 60%), linear-gradient(135deg, #bcd8df, #4f8597)',
+  Graphite: 'radial-gradient(60% 70% at 15% 15%, #4a4f47 0%, transparent 60%), radial-gradient(50% 60% at 85% 12%, #3b3f4a 0%, transparent 60%), radial-gradient(60% 70% at 75% 90%, #1c1f1b 0%, transparent 62%), radial-gradient(40% 50% at 40% 60%, #5c6b55 0%, transparent 65%), linear-gradient(135deg, #3a3e38, #151714)',
+};
+const COL = { fg:'var(--term-fg)', dim:'var(--term-dim)', faint:'var(--term-faint)', warm:'var(--ansi-yellow)', green:'var(--ansi-green)', red:'var(--ansi-red)', blue:'var(--ansi-blue)', white:'var(--term-white)' };
+const ST = {
+  asking: { label:'Asking you', rank:0, dot:'var(--status-asking)', text:'var(--status-asking-text)', weight:600, tint:'var(--status-asking-tint)', chip:'var(--status-asking-chip)' },
+  ready: { label:'Ready to check', rank:1, dot:'var(--status-ready)', text:'var(--status-ready-text)', weight:600, tint:'var(--status-ready-tint)', chip:'var(--status-ready-chip)' },
+  working: { label:'Working', rank:2, dot:'var(--status-working)', text:'var(--status-working-text)', weight:500, tint:'var(--surface-card)', chip:'var(--status-working-chip)' },
+  waiting: { label:'Waiting', rank:3, dot:null, text:'var(--ink-3)', weight:400, tint:'var(--surface-card)', chip:'var(--surface-hover)' },
+};
+const CLIS = [
+  { id:'claude', name:'Claude Code', path:'~/.local/bin/claude', launch:'claude --dangerously-skip-permissions', prompt:'> ', bullet:'● ', bc:'green', verb:'Update ' },
+  { id:'codex',  name:'Codex',       path:null, soon:'coming soon', launch:'codex --dangerously-bypass-approvals-and-sandbox', prompt:'› ', bullet:'• ', bc:'dim', verb:'Edited ' },
+  { id:'cursor', name:'Cursor CLI',  path:'~/.local/bin/agent', launch:'agent --yolo --trust --sandbox disabled', prompt:'→ ', bullet:'  ', bc:'dim', verb:'edited ' },
+  { id:'pi',     name:'Pi',          path:null, soon:'coming soon', launch:'pi', prompt:'> ', bullet:'· ', bc:'dim', verb:'edit ' },
+  { id:'kiro',   name:'Kiro',        path:null, soon:'coming soon', launch:null, prompt:'> ', bullet:'· ', bc:'dim', verb:'edit ' },
+];
+const HOME = '/Users/kai';
+const MONO = "var(--font-mono)";
+const SANS = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif";
+const s = (t, c, b) => ({ t, c: c || 'fg', b: !!b });
+const L = (...x) => x.map(v => typeof v === 'string' ? s(v) : v);
+const cliOf = id => CLIS.find(c => c.id === id);
+function shorten(t, n = 60) { t = t.replace(/\s+/g, ' ').trim(); if (t.length <= n) return t; const cut = t.slice(0, n); const i = cut.lastIndexOf(' '); return (i > 30 ? cut.slice(0, i) : cut).replace(/[,.;:]$/, '') + '…'; }
+function slugify(t) { return t.toLowerCase().replace(/[^a-z0-9\s-]/g, '').split(/\s+/).filter(w => w && !['the','a','an','to','so','and','of','in','for'].includes(w)).slice(0, 4).join('-').slice(0, 40) || 'task'; }
+function fmtElapsed(ms) { const t = Math.max(0, Math.floor(ms / 1000)); return t < 60 ? t + 's' : Math.floor(t / 60) + 'm ' + (t % 60) + 's'; }
+function fmtShort(ms) { const t = Math.max(0, Math.floor(ms / 1000)); if (t < 60) return t + 's'; const m = Math.floor(t / 60); if (m < 60) return m + 'm'; return Math.floor(m / 60) + 'h ' + (m % 60) + 'm'; }
+const hex = () => Math.random().toString(16).slice(2, 9);
+const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+function lastText(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = lines[i].map(x => x.t).join('').trim();
+    if (t && !t.startsWith('shika')) return t.replace(/^[●•·⎿✱→›>\s]+/, '');
+  }
+  return '';
+}
+function banner(cli, wt, branch) { return [
+  L(s('shika  git worktree add -b ' + branch + ' .worktrees/' + branch, 'faint')),
+  L(s('shika  ' + cli.launch, 'faint')),
+  L(''),
+  L(s(cli.name, 'white', 1), s('   approvals bypassed', 'dim')),
+  L(s(wt, 'dim')),
+  L(''),
+]; }
+const HUNKS = {
+  'src/router.rs': ['@@ -18,9 +18,12 @@ impl Router', '     pub fn build(self) -> Service {', '-    pub fn add(self, path: &str, h: Handler) -> Self {', '+    pub fn route(self, path: &str, h: Handler) -> Self {', '-    pub fn mount(self, prefix: &str, r: Router) -> Self {', '+    pub fn nest(self, prefix: &str, r: Router) -> Self {', '-    pub fn wrap(self, m: Middleware) -> Self {', '+    pub fn layer(self, m: Middleware) -> Self {', '     }'],
+  'src/lib.rs': ['@@ -61,6 +61,10 @@ impl Router', '+    #[deprecated(note = "use route")]', '+    pub fn add(self, path: &str, h: Handler) -> Self { self.route(path, h) }', '+    #[deprecated(note = "use nest")]', '+    pub fn mount(self, prefix: &str, r: Router) -> Self { self.nest(prefix, r) }'],
+  'lib/stripe.ts': ['@@ -12,3 +12,9 @@ export async function handleWebhook(event: Stripe.Event)', '   const handler = handlers[event.type];', '-  if (!handler) return;', '+  if (!handler) return;', '+  try {', '+    await handler(event);', '+  } catch (err) {', '+    await queue.retry(event, { attempt: 1, maxAttempts: 5 });', '+  }'],
+  'lib/queue.ts': ['@@ -88,4 +88,9 @@ export const queue = {', '   push,', '+  async retry(event: Stripe.Event, opts: RetryOpts) {', '+    const delay = 2 ** opts.attempt * 1000;', '+    await push(event, { delay, attempt: opts.attempt + 1 });', '+  },'],
+  'lib/tax.ts': ['@@ -0,0 +1,64 @@', '+export async function salesTax(address: Address, subtotal: number) {', '+  const rate = await rateFor(address.zip);', '+  return Math.round(subtotal * rate);', '+}'],
+};
+const GENERIC_HUNK = ['@@ -40,7 +40,9 @@', '     let cfg = Config::load()?;', '-    let timeout = 16;', '+    let timeout = cfg.debounce_ms;', '+    tracing::debug!(timeout, "debounce");', '     run(cfg, timeout)'];
+const SAMPLE_PROJECTS = [
+  { name:'ledger', path:'~/work/ledger', files:['app/models/invoice.rb','spec/models/invoice_spec.rb'], ls:'Gemfile  README.md  app  config  db  spec' },
+  { name:'site', path:'~/code/site', files:['src/pages/index.astro','src/styles/base.css'], ls:'astro.config.mjs  package.json  public  src' },
+];
+const ACTIVITY = [
+  f => ['Read ', f], f => ['Search ', '"' + f.split('/').pop().split('.')[0] + '"'], f => [null, 'Running cargo check'], f => ['Update ', f], f => [null, 'Running cargo test'], f => [null, 'Thinking about the error path'],
+];
+
+class Component extends DCLogic {
+  termRef = React.createRef();
+  seq = 10;
+  lastScrollKey = '';
+
+  constructor(props) {
+    super(props);
+    const now = Date.now();
+    const mk = (p, o) => {
+      const a = Object.assign({ draft:'', ask:null, dirty:[], commits:[], staged:false, mode:'agent', shell:[], shellInput:'', created: now, startedAt: now, statusSince: now, doneAt:null, finish:'generic', adds:0, dels:0 }, o);
+      const cli = cliOf(a.cli);
+      a.lines = banner(cli, p.path + '/.worktrees/' + a.branch, a.branch).concat(a.prompt ? [L(s(cli.prompt, 'dim'), s(a.prompt, 'white')), L('')] : []).concat(o.lines || []);
+      return a;
+    };
+    const store = { id:'p1', name:'storefront', path:'~/code/storefront', files:['app/checkout/page.tsx','lib/cart.ts','lib/stripe.ts'], ls:'README.md  app  lib  next.config.ts  package.json  tests', agents:[] };
+    const routekit = { id:'p2', name:'routekit', path:'~/code/routekit', files:['src/router.rs','src/timeout.rs','src/commands/routes.rs'], ls:'Cargo.toml  README.md  docs  examples  src  tests', agents:[] };
+    const dots = { id:'p3', name:'dotfiles', path:'~/dotfiles', files:['zsh/.zshrc'], ls:'git  nvim  wezterm  zsh', agents:[] };
+    store.agents = [
+      mk(store, { id:'a1', cli:'claude', branch:'sales-tax-at-checkout', status:'working', startedAt: now - 254000, statusSince: now - 254000, doneAt: now + 11000, finish:'tax', created: now - 254000,
+        prompt:'Calculate sales tax at checkout from the shipping address, and show it as its own line',
+        lines:[ L(s('● ','green'),'Read ',s('lib/cart.ts','blue')), L(s('● ','green'),'Bash ',s("rg -n 'subtotal' app lib",'white')), L(s('  ⎿ ','faint'),s('app/checkout/page.tsx:42  lib/cart.ts:18  lib/cart.ts:57','dim')), L(s('● ','green'),'Update ',s('lib/cart.ts','blue')) ] }),
+      mk(store, { id:'a2', cli:'claude', branch:'retry-failed-webhooks', status:'ready', dirty:['lib/stripe.ts','lib/queue.ts'], adds:64, dels:3, created: now - 900000, statusSince: now - 720000,
+        prompt:'Retry failed Stripe webhooks with backoff instead of dropping them',
+        lines:[ L(s('● ','green'),'Read ',s('lib/stripe.ts','blue'),', ',s('lib/queue.ts','blue')), L(s('● ','green'),'Update ',s('lib/stripe.ts','blue'),s('  +46 −3','dim')), L(s('● ','green'),'Update ',s('lib/queue.ts','blue'),s('  +18 −0','dim')), L(s('● ','green'),'Bash ',s('pnpm typecheck','white')), L(s('  ⎿ ','faint'),s('ok','green')), L(''), L('Failed webhooks now go back on the queue and retry up to five times, waiting longer each time. After that they land in failed_webhooks for you to look at. I could not replay a real Stripe event locally.'), L('') ] }),
+    ];
+    routekit.agents = [
+      mk(routekit, { id:'a3', cli:'claude', branch:'rename-builder-methods', status:'asking', dirty:['src/router.rs','src/lib.rs'], adds:50, dels:25, genFiles:['docs/guide.md','examples/hello.rs'], created: now - 600000, statusSince: now - 252000,
+        prompt:'Rename the builder methods to route, nest and layer. Keep the old names as deprecated aliases for one release',
+        ask:{ options:['Update docs and examples','Only the docs','Leave them, I will do it'], choice:0 },
+        lines:[ L(s('● ','green'),'Read ',s('src/router.rs','blue')), L(s('● ','green'),'Read ',s('src/lib.rs','blue')), L(s('● ','green'),'Update ',s('src/router.rs','blue'),s('  +38 −21','dim')), L(s('● ','green'),'Update ',s('src/lib.rs','blue'),s('  +12 −4','dim')), L(''), L('The old names also appear in docs/guide.md and in three files under examples/. Should I update those too?'), L('') ] }),
+      mk(routekit, { id:'a4', cli:'cursor', branch:'fix-flaky-timeout-test', status:'working', startedAt: now - 95000, statusSince: now - 95000, doneAt: now + 26000, finish:'flaky', genFiles:['src/timeout.rs','tests/timeout.rs'], created: now - 95000,
+        prompt:'Fix the flaky timeout test in tests/timeout.rs, it fails about one run in ten on CI',
+        lines:[ L(s('  reading ','dim'),s('tests/timeout.rs','blue')), L(s('  reading ','dim'),s('src/timeout.rs','blue')), L(s('  running ','dim'),s('cargo test timeout -- --test-threads=1','white'),s('  ×20','dim')) ] }),
+      mk(routekit, { id:'a5', cli:'cursor', branch:'json-route-listing', status:'working', startedAt: now - 412000, statusSince: now - 412000, doneAt:null, dirty:['src/commands/routes.rs'], created: now - 412000,
+        prompt:'Add a --json flag to routekit routes so scripts can read the route table',
+        lines:[ L(s('  reading ','dim'),s('src/commands/routes.rs','blue')), L(s('  edited ','dim'),s('src/commands/routes.rs','blue'),s('  +31 −2','dim')), L(s('  running ','dim'),s('cargo test routes','white')) ] }),
+      mk(routekit, { id:'a6', cli:'claude', branch:'claude', status:'waiting', draft:'requests hang when the body is larger than 64 KB, find out why', created: now - 130000, statusSince: now - 130000 }),
+    ];
+    this.state = { projects:[store, routekit, dots], sel:'a3', focus:'cards', picker:null, confirm:null, notes:[], toast:null, expanded:{}, now, v:0, added:0 };
+  }
+
+  applyTheme() {
+    const q = new URLSearchParams(location.search).get('theme');
+    const p = q === 'light' || q === 'dark' ? q : (this.props.theme ?? 'dark');
+    const sys = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    const t = this.state.themeOverride || (p === 'system' ? sys : p);
+    const de = document.documentElement;
+    if (de.dataset.theme !== t) de.dataset.theme = t;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-transparency: reduce)').matches;
+    const glass = (this.props.glass ?? true) && !reduce ? 'on' : 'off';
+    if (de.dataset.glass !== glass) de.dataset.glass = glass;
+    const alpha = String(Math.max(0.85, Math.min(1, this.props.terminalOpacity ?? 0.92)));
+    if (de.style.getPropertyValue('--glass-term-alpha') !== alpha) de.style.setProperty('--glass-term-alpha', alpha);
+    const wp = glass === 'on' ? (WALLPAPERS[this.props.wallpaper ?? 'Meadow'] || WALLPAPERS.Meadow) : 'none';
+    if (de.style.getPropertyValue('--desktop-bg') !== wp) de.style.setProperty('--desktop-bg', wp);
+  }
+  componentDidMount() {
+    this.applyTheme();
+    this.onKey = this.onKey.bind(this);
+    window.addEventListener('keydown', this.onKey);
+    this.timer = setInterval(() => this.tick(), 1000);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this.onKey); clearInterval(this.timer); clearTimeout(this.toastT); }
+  componentDidUpdate(prevProps) {
+    if (prevProps && prevProps.theme !== this.props.theme && this.state.themeOverride) this.setState({ themeOverride: null });
+    this.applyTheme();
+    const el = this.termRef.current; if (!el) return;
+    const a = this.selA(); if (!a) return;
+    const key = a.id + a.mode + a.lines.length + a.shell.length + a.status + a.draft.length + a.shellInput.length;
+    if (key !== this.lastScrollKey) { this.lastScrollKey = key; el.scrollTop = el.scrollHeight; }
+  }
+
+  bump(extra) { this.setState(st => Object.assign({ v: st.v + 1 }, extra || {})); }
+  setStatus(a, st) { a.status = st; a.statusSince = Date.now(); }
+  sorted(p) { return (this.props.sortByAttention ?? true) ? [...p.agents].sort((x, y) => ST[x.status].rank - ST[y.status].rank || x.created - y.created) : p.agents; }
+  flat() { return this.state.projects.flatMap(p => this.sorted(p).map(a => ({ a, p }))); }
+  find(id) { return this.flat().find(x => x.a.id === id); }
+  selA() { const f = this.state.sel && this.find(this.state.sel); return f ? f.a : null; }
+  wt(a, p) { return p.path + '/.worktrees/' + a.branch; }
+  shellPrefix(a, p) { return [s(p.name, 'blue'), s(' ' + a.branch, 'dim'), s(' $ ', 'fg')]; }
+  uniqueBranch(p, base, self) { let b = base, i = 2; while (p.agents.some(x => x !== self && x.branch === b)) b = base + '-' + i++; return b; }
+  showToast(t) { clearTimeout(this.toastT); this.setState({ toast: t }); this.toastT = setTimeout(() => this.setState({ toast: null }), 3200); }
+
+  tick() {
+    const now = Date.now();
+    if (this.props.simulateAgents ?? true) {
+      this.state.projects.forEach(p => p.agents.forEach(a => {
+        if (a.status !== 'working') return;
+        if (a.doneAt && now >= a.doneAt) { this.complete(a, p); return; }
+        if (Math.random() < 0.14) {
+          const cli = cliOf(a.cli), f = p.files[Math.floor(Math.random() * p.files.length)];
+          const [verb, obj] = ACTIVITY[Math.floor(Math.random() * ACTIVITY.length)](f);
+          a.lines.push(verb ? L(s(cli.bullet, cli.bc), verb, s(obj, 'blue')) : L(s(cli.bullet, cli.bc), obj));
+        }
+      }));
+    }
+    this.setState({ now });
+  }
+
+  complete(a, p) {
+    const cli = cliOf(a.cli);
+    if (a.finish === 'tax') {
+      a.lines.push(L(s('● ','green'),'Write ',s('lib/tax.ts','blue'),s('  +64','dim')), L(s('● ','green'),'Update ',s('app/checkout/page.tsx','blue'),s('  +9 −3','dim')), L(s('● ','green'),'Bash ',s('pnpm test tax','white')), L(s('  ⎿ ','faint'),s('6 passed','green')), L(''), L('Tax now comes from the shipping address through lib/tax.ts, with rates cached per ZIP code. The order summary shows it as its own line. I did not test a live checkout.'), L(''));
+      a.dirty = ['lib/tax.ts', 'app/checkout/page.tsx']; a.adds = 73; a.dels = 3; this.setStatus(a, 'ready');
+    } else if (a.finish === 'flaky') {
+      a.lines.push(L(s('  result  ','dim'),s('19 passed, 1 failed','red')), L(''), L('The failure is a 16ms sleep racing the deadline in request_times_out. How should I fix it?'), L(''));
+      a.ask = { options:['Use a paused tokio clock in the test','Wait for the timeout event instead of sleeping','Show me both diffs first'], choice:0 };
+      this.setStatus(a, 'asking'); a.finish = 'generic';
+    } else {
+      const files = a.genFiles || p.files.slice(0, 2);
+      let add = 0, del = 0;
+      a.lines.push(...files.map(f => { const x = 8 + Math.floor(Math.random() * 40), y = Math.floor(Math.random() * 12); add += x; del += y; return L(s(cli.bullet, cli.bc), cli.verb, s(f, 'blue'), s('  +' + x + ' −' + y, 'dim')); }), L(''), L('Done. The changes are in ' + files.join(' and ') + '. I did not run the full test suite.'), L(''));
+      a.dirty = Array.from(new Set([...a.dirty, ...files])); a.adds += add; a.dels += del; this.setStatus(a, 'ready');
+    }
+    a.doneAt = null;
+    this.notify(a, p);
+  }
+
+  notify(a, p) {
+    const id = 'n' + (++this.seq);
+    const note = { id, aid: a.id, title: p.name + ' · ' + ST[a.status].label, body: a.prompt ? shorten(a.prompt, 70) : 'New ' + cliOf(a.cli).name, color: ST[a.status].dot };
+    this.setState(st => ({ notes: [note, ...st.notes].slice(0, 3) }));
+    setTimeout(() => this.setState(st => ({ notes: st.notes.filter(n => n.id !== id) })), 9000);
+  }
+
+  answer(a, i) {
+    const opt = a.ask.options[i]; const now = Date.now();
+    a.lines.push(L(s('  ⎿ ', 'faint'), s(opt, 'white')), L(''));
+    a.ask = null; this.setStatus(a, 'working'); a.startedAt = now; a.doneAt = now + 8000; a.finish = 'generic';
+    this.bump();
+  }
+
+  submit(a, p, text) {
+    const cli = cliOf(a.cli); const now = Date.now();
+    if (a.status === 'waiting') { a.prompt = text; a.branch = this.uniqueBranch(p, slugify(text), a); }
+    a.lines.push(L(s(cli.prompt, 'dim'), s(text, 'white')), L(''));
+    a.draft = ''; this.setStatus(a, 'working'); a.startedAt = now; a.doneAt = now + 9000 + Math.random() * 4000; a.finish = 'generic';
+    this.bump();
+  }
+
+  runShell(a, p) {
+    const raw = a.shellInput, cmd = raw.trim(), out = [];
+    a.shell.push(L(...this.shellPrefix(a, p), s(raw, 'white')));
+    a.shellInput = '';
+    let pushing = false;
+    if (!cmd) {}
+    else if (cmd === 'clear') { a.shell = []; }
+    else if (cmd === 'pwd') out.push(L(this.wt(a, p).replace('~', HOME)));
+    else if (cmd === 'ls') out.push(L(p.ls));
+    else if (/^git status/.test(cmd)) {
+      out.push(L('On branch ' + a.branch));
+      if (!a.dirty.length) out.push(L('nothing to commit, working tree clean'));
+      else if (a.staged) { out.push(L('Changes to be committed:')); a.dirty.forEach(f => out.push(L(s('        modified:   ' + f, 'green')))); }
+      else { out.push(L('Changes not staged for commit:'), L(s('  (use "git add <file>..." to update what will be committed)', 'dim'))); a.dirty.forEach(f => out.push(L(s('        modified:   ' + f, 'red')))); }
+    }
+    else if (/^git diff/.test(cmd)) {
+      a.dirty.forEach(f => {
+        out.push(L(s('diff --git a/' + f + ' b/' + f, 'white', 1)), L(s('--- a/' + f, 'white', 1)), L(s('+++ b/' + f, 'white', 1)));
+        (HUNKS[f] || GENERIC_HUNK).forEach(h => out.push(L(s(h, h.startsWith('@@') ? 'blue' : h[0] === '-' ? 'red' : h[0] === '+' ? 'green' : 'fg'))));
+      });
+    }
+    else if (/^git add/.test(cmd)) { if (a.dirty.length) a.staged = true; }
+    else if (/^git commit/.test(cmd)) {
+      const all = /\s-\w*a/.test(cmd);
+      if (!a.dirty.length) out.push(L('On branch ' + a.branch), L('nothing to commit, working tree clean'));
+      else if (!all && !a.staged) out.push(L('no changes added to commit (use "git add" and/or "git commit -a")'));
+      else {
+        const m = (cmd.match(/-\w*m\s+["'](.+?)["']/) || [])[1] || shorten(a.prompt || 'Update', 50);
+        const h = hex(); const n = a.dirty.length;
+        out.push(L('[' + a.branch + ' ' + h + '] ' + m), L(' ' + plural(n, 'file') + ' changed, ' + (a.adds || 20) + ' insertions(+), ' + (a.dels || 3) + ' deletions(-)'));
+        a.commits.push(h + ' ' + m); a.dirty = []; a.staged = false;
+      }
+    }
+    else if (/^git log/.test(cmd)) { a.commits.slice().reverse().forEach(c => out.push(L(s(c.slice(0, 7), 'warm'), ' ' + c.slice(8)))); out.push(L(s('9e41b07', 'warm'), ' Merge branch \'main\'')); }
+    else if (/^git push/.test(cmd)) {
+      out.push(L('Enumerating objects: 11, done.'), L('Writing objects: 100% (6/6), 1.42 KiB | 1.42 MiB/s, done.'), L('To github.com:kai/' + p.name + '.git'), L(' * [new branch]      ' + a.branch + ' -> ' + a.branch));
+      pushing = true;
+    }
+    else if (/test|rspec/.test(cmd)) out.push(L(s('running 48 tests', 'dim')), L('test result: ', s('ok', 'green'), '. 48 passed; 0 failed; finished in 2.31s'));
+    else out.push(L('zsh: command not found: ' + cmd.split(' ')[0]));
+    a.shell.push(...out);
+    this.bump();
+    if (pushing) setTimeout(() => this.requestClose(a.id, 'push'), 900);
+  }
+
+  requestClose(aid, reason) {
+    const f = this.find(aid); if (!f) return;
+    if (f.a.status === 'working' || f.a.dirty.length) this.setState({ confirm: { aid, reason } });
+    else this.remove(aid, reason);
+  }
+
+  remove(aid, reason) {
+    const flat = this.flat(); const i = flat.findIndex(x => x.a.id === aid); if (i < 0) return;
+    const { a, p } = flat[i];
+    p.agents = p.agents.filter(x => x.id !== aid);
+    let sel = this.state.sel;
+    if (sel === aid) { const rest = this.flat(); sel = rest.length ? rest[Math.min(i, rest.length - 1)].a.id : null; }
+    this.showToast(reason === 'push' ? 'Pushed ' + a.branch + '. Card and worktree removed.' : 'Closed. Session and worktree removed.');
+    this.setState(st => ({ sel, focus:'cards', confirm:null, notes: st.notes.filter(n => n.aid !== aid), v: st.v + 1 }));
+  }
+
+  openPicker(pid) {
+    const p = pid ? this.state.projects.find(x => x.id === pid) : (this.state.sel ? this.find(this.state.sel).p : this.state.projects[0]);
+    if (p) this.setState({ picker: { pid: p.id, idx: 0 } });
+  }
+
+  create(pid, cliId) {
+    const p = this.state.projects.find(x => x.id === pid); const cli = cliOf(cliId);
+    if (!p || !cli.path) return;
+    const id = 'x' + (++this.seq); const now = Date.now();
+    const a = { id, cli: cli.id, prompt:null, branch:'', status:'waiting', draft:'', ask:null, dirty:[], commits:[], staged:false, mode:'agent', shell:[], shellInput:'', created: now, startedAt: now, statusSince: now, doneAt:null, finish:'generic', adds:0, dels:0 };
+    a.branch = this.uniqueBranch(p, cli.id, a);
+    a.lines = banner(cli, this.wt(a, p), a.branch);
+    p.agents.push(a);
+    this.setState(st => ({ picker:null, sel:id, focus:'terminal', v: st.v + 1 }));
+  }
+
+  move(d) {
+    const flat = this.flat(); if (!flat.length) return;
+    const i = flat.findIndex(x => x.a.id === this.state.sel);
+    const n = i < 0 ? (d > 0 ? 0 : flat.length - 1) : Math.max(0, Math.min(flat.length - 1, i + d));
+    this.setState({ sel: flat[n].a.id });
+  }
+
+  attentionQueue() {
+    return this.flat().filter(x => x.a.status === 'asking' || x.a.status === 'ready').sort((x, y) => ST[x.a.status].rank - ST[y.a.status].rank || x.a.statusSince - y.a.statusSince);
+  }
+  jumpNext() {
+    const q = this.attentionQueue(); if (!q.length) { this.showToast('Nobody needs you right now.'); return; }
+    const i = q.findIndex(x => x.a.id === this.state.sel);
+    this.setState({ sel: q[(i + 1) % q.length].a.id, focus: 'cards' });
+  }
+  jumpStatus(stt) {
+    const list = this.flat().filter(x => x.a.status === stt).sort((x, y) => x.a.statusSince - y.a.statusSince);
+    if (!list.length) return;
+    const i = list.findIndex(x => x.a.id === this.state.sel);
+    this.setState({ sel: list[(i + 1) % list.length].a.id, focus: 'cards' });
+  }
+
+  onKey(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const st = this.state, k = e.key;
+    const t = e.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (st.confirm) {
+      if (k === 'Escape') this.setState({ confirm: null });
+      else if (k === 'Enter') this.remove(st.confirm.aid, st.confirm.reason);
+      e.preventDefault(); return;
+    }
+    if (st.picker) {
+      const pk = st.picker;
+      if (k === 'Escape') this.setState({ picker: null });
+      else if (k === 'j' || k === 'ArrowDown') this.setState({ picker: { ...pk, idx: Math.min(CLIS.length - 1, pk.idx + 1) } });
+      else if (k === 'k' || k === 'ArrowUp') this.setState({ picker: { ...pk, idx: Math.max(0, pk.idx - 1) } });
+      else if (k === 'Tab') { const ps = st.projects; const i = ps.findIndex(x => x.id === pk.pid); this.setState({ picker: { ...pk, pid: ps[(i + (e.shiftKey ? ps.length - 1 : 1)) % ps.length].id } }); }
+      else if (k === 'Enter') this.create(pk.pid, CLIS[pk.idx].id);
+      else if (/^[1-5]$/.test(k)) this.create(pk.pid, CLIS[+k - 1].id);
+      e.preventDefault(); return;
+    }
+    if (st.focus === 'terminal') { this.termKey(e); return; }
+    const a = this.selA();
+    if (k === 'j' || k === 'ArrowDown') this.move(1);
+    else if (k === 'k' || k === 'ArrowUp') this.move(-1);
+    else if (k === 'n') this.openPicker();
+    else if (k === 'a') this.jumpNext();
+    else if (k === 't') this.setState({ themeOverride: document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark' });
+    else if (k === 'Enter') { if (a) this.setState({ focus: 'terminal' }); }
+    else if (k === 'Escape') this.setState({ sel: null });
+    else if (k === 'g') { if (a) { a.mode = a.mode === 'agent' ? 'shell' : 'agent'; this.setState(s2 => ({ v: s2.v + 1, focus: a.mode === 'shell' ? 'terminal' : s2.focus })); } }
+    else if (k === 'c') { if (a) this.requestClose(a.id, 'close'); }
+    else return;
+    e.preventDefault();
+  }
+
+  termKey(e) {
+    const k = e.key; const f = this.state.sel && this.find(this.state.sel);
+    if (!f) { this.setState({ focus: 'cards' }); return; }
+    const { a, p } = f;
+    if (k === 'Escape') { this.setState({ focus: 'cards' }); e.preventDefault(); return; }
+    const printable = k.length === 1;
+    if (a.mode === 'shell') {
+      if (printable) a.shellInput += k; else if (k === 'Backspace') a.shellInput = a.shellInput.slice(0, -1); else if (k === 'Enter') { e.preventDefault(); this.runShell(a, p); return; } else return;
+      e.preventDefault(); this.bump(); return;
+    }
+    if (a.status === 'asking' && a.ask) {
+      const n = a.ask.options.length;
+      if (k === 'ArrowDown') a.ask.choice = (a.ask.choice + 1) % n;
+      else if (k === 'ArrowUp') a.ask.choice = (a.ask.choice - 1 + n) % n;
+      else if (k === 'Enter') { e.preventDefault(); this.answer(a, a.ask.choice); return; }
+      else if (/^[1-9]$/.test(k) && +k <= n) { e.preventDefault(); this.answer(a, +k - 1); return; }
+      else return;
+      e.preventDefault(); this.bump(); return;
+    }
+    if (a.status === 'waiting' || a.status === 'ready') {
+      if (printable) a.draft += k; else if (k === 'Backspace') a.draft = a.draft.slice(0, -1);
+      else if (k === 'Enter') { e.preventDefault(); if (a.draft.trim()) this.submit(a, p, a.draft.trim()); return; } else return;
+      e.preventDefault(); this.bump();
+    }
+  }
+
+  addProject() {
+    const i = this.state.added;
+    if (i >= SAMPLE_PROJECTS.length) { this.showToast('The folder picker opens here.'); return; }
+    const sp = SAMPLE_PROJECTS[i];
+    this.setState(st => ({ projects: [...st.projects, { id: 'p' + (10 + i), agents: [], ...sp }], added: i + 1 }));
+    this.showToast('Added ' + sp.name + '. .worktrees/ is in its local exclude.');
+  }
+
+  cardView(a, termFocused, compact, now) {
+    const st = this.state, cli = cliOf(a.cli), S = ST[a.status], sel = a.id === st.sel;
+    let detail = '', detailFont = SANS, detailSize = '13px', detailColor = 'var(--ink-2)';
+    if (a.status === 'asking') { detail = lastText(a.lines); detailColor = 'var(--ink-1)'; }
+    else if (a.status === 'ready') { detail = lastText(a.lines); }
+    else if (a.status === 'working') { detail = lastText(a.lines); detailFont = MONO; detailSize = '11.5px'; detailColor = 'var(--ink-3)'; }
+    else { detail = a.draft ? 'Draft: ' + a.draft : 'Prompt not sent yet.'; detailColor = a.draft ? 'var(--ink-3)' : 'var(--ink-4)'; }
+    const time = a.status === 'working' ? fmtShort(now - a.startedAt) : fmtShort(now - a.statusSince);
+    const hintsBy = {
+      asking: [{ k:'↵', t:'answer' }],
+      ready: [{ k:'↵', t:'read' }, { k:'g', t:'shell' }],
+      working: [{ k:'↵', t:'watch' }],
+      waiting: [{ k:'↵', t:'write prompt' }],
+    };
+    const ring = sel ? (termFocused ? 'var(--shadow-card-selected-dim)' : 'var(--shadow-card-selected)') : 'var(--shadow-card)';
+    const dotEl = React.createElement('span', { style: { width:'8px', height:'8px', borderRadius:'50%', background: S.dot || 'transparent', boxShadow: S.dot ? 'none' : 'inset 0 0 0 1.5px var(--status-waiting)', animation: a.status === 'working' ? 'shikaPulse 1.6s ease-in-out infinite' : 'none' } });
+    return {
+      id: a.id, task: a.prompt ? shorten(a.prompt, 90) : 'New ' + cli.name, cli: cli.name, label: S.label,
+      labelColor: S.text, labelWeight: S.weight, taskColor: a.prompt ? 'var(--ink-1)' : 'var(--ink-3)',
+      time, timeColor: a.status === 'waiting' ? 'var(--ink-4)' : S.text, branch: a.branch,
+      detail, detailFont, detailSize, detailColor, showDetail: !compact && !!detail,
+      hasStat: a.status === 'ready' && a.dirty.length > 0, stat: plural(a.dirty.length, 'file') + '  +' + a.adds + ' −' + a.dels,
+      hints: sel && !termFocused && !compact ? hintsBy[a.status] : [],
+      dotEl, bg: sel ? 'var(--surface-raised)' : S.tint, shadow: ring,
+      onClick: () => this.setState({ sel: a.id, focus: 'cards' }),
+    };
+  }
+
+  renderVals() {
+    const st = this.state, now = st.now;
+    const flat = this.flat();
+    const cnt = k => flat.filter(x => x.a.status === k).length;
+    const termFocused = st.focus === 'terminal';
+    const wide = this.props.columnWidth ?? 540;
+    const compact = termFocused && (this.props.expandTerminalOnFocus ?? false);
+    const activeProjects = st.projects.filter(p => p.agents.length).length;
+
+    const projects = st.projects.map(p => {
+      const sorted = this.sorted(p);
+      const selIdx = sorted.findIndex(a => a.id === st.sel);
+      let vis = st.expanded[p.id] ? sorted : sorted.slice(0, 3);
+      if (!st.expanded[p.id] && selIdx >= 3) vis = [...vis, sorted[selIdx]];
+      const more = sorted.length - vis.length;
+      return {
+        id: p.id, name: p.name, path: p.path, empty: !sorted.length, countLabel: sorted.length ? plural(sorted.length, 'agent') : '',
+        hasMore: more > 0, moreLabel: '+ ' + more + ' more · j to reach',
+        onMore: () => this.setState(s2 => ({ expanded: { ...s2.expanded, [p.id]: true } })),
+        onNew: (e) => { e && e.stopPropagation && e.stopPropagation(); this.openPicker(p.id); },
+        cards: vis.map(a => this.cardView(a, termFocused, compact, now)),
+      };
+    });
+
+    const chips = ['asking', 'ready', 'working', 'waiting'].map(k => {
+      const n = cnt(k), S = ST[k], loud = n > 0 && k !== 'waiting';
+      return { label: n + ' ' + S.label.toLowerCase().replace('ready to check', 'ready').replace('asking you', 'asking'), bg: loud ? S.chip : 'var(--surface-hover)', color: loud ? S.text : (n ? 'var(--ink-2)' : 'var(--ink-4)'), weight: loud ? 600 : 400, dot: S.dot || 'transparent', ring: S.dot ? 'none' : 'inset 0 0 0 1.5px var(--status-waiting)', onClick: () => this.jumpStatus(k) };
+    });
+
+    const f = st.sel && this.find(st.sel);
+    const a = f ? f.a : null, p = f ? f.p : null;
+    let lines = [], showInput = false, inputPrefix = [], inputText = '';
+    if (a) {
+      const cli = cliOf(a.cli);
+      if (a.mode === 'agent') {
+        lines = a.lines.slice();
+        if (a.status === 'asking' && a.ask) a.ask.options.forEach((o, i) => lines.push(L(s(i === a.ask.choice ? '❯ ' : '  ', 'white'), s((i + 1) + '. ' + o, i === a.ask.choice ? 'white' : 'dim', i === a.ask.choice))));
+        if (a.status === 'working') lines.push(L(s('✱ Working… ' + fmtElapsed(now - a.startedAt), 'dim')));
+        if (a.status === 'waiting' || a.status === 'ready') { showInput = true; inputPrefix = [s(cli.prompt, 'dim')]; inputText = a.draft; }
+      } else { lines = a.shell.slice(); showInput = true; inputPrefix = this.shellPrefix(a, p); inputText = a.shellInput; }
+    }
+    const toView = segs => segs.map(x => ({ t: x.t, color: COL[x.c] || x.c, weight: x.b ? 600 : 400 }));
+    const cursorEl = React.createElement('span', { style: { display:'inline-block', width:'7.5px', height:'15px', verticalAlign:'-3px', background: termFocused ? COL.fg : 'transparent', boxShadow: termFocused ? 'none' : 'inset 0 0 0 1px ' + COL.faint, animation: termFocused ? 'shikaBlink 1.1s steps(1) infinite' : 'none' } });
+
+    const pk = st.picker, pkProj = pk && st.projects.find(x => x.id === pk.pid);
+    const cf = st.confirm, cfF = cf && this.find(cf.aid);
+    const confirmLines = [];
+    if (cfF) {
+      if (cfF.a.status === 'working') confirmLines.push({ t: 'The agent is still working.' });
+      if (cfF.a.dirty.length) confirmLines.push({ t: 'The worktree has ' + plural(cfF.a.dirty.length, 'uncommitted file') + ': ' + cfF.a.dirty.join(', ') + '.' });
+      confirmLines.push({ t: 'This stops the session and force-removes .worktrees/' + cfF.a.branch + '.' });
+    }
+
+    return {
+      colWidth: (compact ? 340 : wide) + 'px',
+      headline: plural(flat.length, 'agent') + ' across ' + plural(activeProjects, 'project'),
+      hasAttention: cnt('asking') + cnt('ready') > 0, jumpNext: () => this.jumpNext(),
+      chips, newTop: () => this.openPicker(),
+      projects, showHints: this.props.showKeyHints ?? true,
+      addProject: () => this.addProject(),
+      hasSel: !!a, noSel: !a,
+      cliName: a ? cliOf(a.cli).name : '', wtPath: a && p ? '\u200E' + this.wt(a, p) : '',
+      agentSegBg: a && a.mode === 'agent' ? 'var(--term-seg-active)' : 'transparent', agentSegColor: a && a.mode === 'agent' ? 'var(--term-white)' : 'var(--term-dim)',
+      shellSegBg: a && a.mode === 'shell' ? 'var(--term-seg-active)' : 'transparent', shellSegColor: a && a.mode === 'shell' ? 'var(--term-white)' : 'var(--term-dim)',
+      setAgentMode: () => { if (a) { a.mode = 'agent'; this.bump(); } },
+      setShellMode: () => { if (a) { a.mode = 'shell'; this.bump(); } },
+      focusHint: termFocused ? 'esc  back to cards' : '↵  type here',
+      closeSel: () => a && this.requestClose(a.id, 'close'),
+      termRef: this.termRef, focusTerm: () => a && this.setState({ focus: 'terminal' }),
+      lines: lines.map(l => ({ segs: toView(l) })), showInput, inputPrefix: toView(inputPrefix), inputText, cursorEl,
+      hasToast: !!st.toast, toast: st.toast || '',
+      hasPicker: !!pk, pickerProject: pkProj ? pkProj.name : '',
+      closePicker: () => this.setState({ picker: null }), stop: e => e.stopPropagation(),
+      pickerRows: CLIS.map((c, i) => ({ num: String(i + 1), name: c.name, detail: c.path || c.soon, nameColor: c.path ? 'var(--ink-1)' : 'var(--ink-4)', bg: pk && pk.idx === i ? 'var(--surface-selected)' : 'transparent', onClick: () => pk && this.create(pk.pid, c.id) })),
+      hasConfirm: !!cfF, confirmTitle: cfF ? (cf.reason === 'push' ? 'Pushed. Delete this worktree?' : 'Close “' + (cfF.a.prompt ? shorten(cfF.a.prompt, 40) : 'New ' + cliOf(cfF.a.cli).name) + '”?') : '',
+      confirmLines, cancelConfirm: () => this.setState({ confirm: null }), doConfirm: () => cf && this.remove(cf.aid, cf.reason),
+      notes: st.notes.map(n => ({ ...n, onClick: () => this.setState(s2 => ({ sel: n.aid, focus: 'cards', notes: s2.notes.filter(x => x.id !== n.id) })) })),
+    };
+  }
+}
+</script>
+</body>
+</html>
