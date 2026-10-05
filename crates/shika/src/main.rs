@@ -604,7 +604,7 @@ impl Shika {
         let mut rename = vec![];
         if now.duration_since(self.clock) >= Duration::from_secs(1) {
             self.clock = now;
-            changed = !self.cards.is_empty();
+            changed = self.cards.iter().any(|c| c.status == Status::Working);
         }
         for warning in self.notifications.warnings() {
             self.message(warning);
@@ -1651,13 +1651,18 @@ impl Render for Shika {
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .child(card.title.clone()),
                                 )
-                                .child(
-                                    div()
-                                        .text_size(px(10.))
-                                        .text_color(rgb(0x9EA296))
-                                        .font_family("JetBrains Mono")
-                                        .child(format!("{}s", card.since.elapsed().as_secs())),
-                                ),
+                                .when(card.status == Status::Working, |row| {
+                                    row.child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .text_color(rgb(0x9EA296))
+                                            .font_family("JetBrains Mono")
+                                            .child(format!(
+                                                "{}s",
+                                                card.since.elapsed().as_secs()
+                                            )),
+                                    )
+                                }),
                         )
                         .child(
                             div()
