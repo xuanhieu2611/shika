@@ -9,7 +9,7 @@ The PRD is the spec, except where this file records a later decision from the au
 - This build launches Claude Code and Cursor CLI only. Kiro, Codex, and Pi wait.
 - Shika creates the worktree. Never pass Cursor's `--worktree`.
 - Shika is a pure Rust app on GPUI, not Tauri 2 with a web view. Decided 2026-10-04. See "Stack change".
-- A Settings dialog (Cmd-,) sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, and the terminal font size (8 to 32, default 12.5). The title bar uses that same opacity, so the window blur shows through it. Saved in `settings.json`. The default is opaque. Decided 2026-10-04.
+- A Settings dialog (Cmd-,) sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, the terminal font size (8 to 32, default 12.5), and whether a notification plays the system alert sound (on by default). The title bar uses that same opacity, so the window blur shows through it. Saved in `settings.json`. The default is opaque. Decided 2026-10-04.
 
 ## Stack change, 2026-10-04
 
@@ -122,7 +122,7 @@ Persisted in `~/Library/Application Support/com.hieule.shika/`, the same directo
 
 - `projects.json` - `{ id, name, path }[]`. Name is the folder name.
 - `worktrees.json` - journal of `{ projectId, branch, path }` for crash cleanup. Not a session history.
-- `settings.json` - `{ appearance: { opacity, blur, translucency } }`. Opacity 0 to 100 percent, blur radius 0 to 255, translucency `sidebar` or `sidebarAndTerminal`.
+- `settings.json` - `{ appearance: { opacity, blur, translucency }, fontSize, branchPrefix, notificationSound }`. Opacity 0 to 100 percent, blur radius 0 to 255, translucency `sidebar` or `sidebarAndTerminal`. `notificationSound` plays the system alert with the banner and defaults to true.
 
 In memory only: session id, CLI preset, card title, status, both PTY ids, whether the first prompt has been sent.
 
@@ -172,7 +172,7 @@ Put that PATH on every child. Resolve `claude` and `agent` inside that same envi
 
 - Card title before the first Enter: `New Claude Code` or `New Cursor CLI`. Status: Waiting.
 - First Enter submits whatever line was buffered from keystrokes. Then Working, and the title is that line, shortened to about 80 characters.
-- Quiet for ~2s after output has arrived: Ready to check, and a notification named `{project} - {task}`.
+- Quiet for ~2s after output has arrived: Ready to check, and a notification named `{project} - {task}`. The banner plays the system alert sound unless Settings turns that off.
 - Process exit: Ready to check, same notification if one was not just posted.
 - One notification per turn (author, 2026-10-04). A turn starts when the user types or pastes into the agent. Reading the result, focusing, scrolling, or typing a draft must not notify again.
 - Asking you, if implemented: only flip it when the tail of recent output clearly looks like a question, and post the same kind of notification. Otherwise leave the status at Ready to check. The user reads the real terminal either way.
