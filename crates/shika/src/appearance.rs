@@ -150,8 +150,7 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
         1.0
     };
     let term_alpha = terminal_alpha_for(appearance, reduce_transparency);
-    let frost_term =
-        glass && matches!(appearance.translucency, Translucency::SidebarAndTerminal);
+    let frost_term = glass && matches!(appearance.translucency, Translucency::SidebarAndTerminal);
     let (column, hairline, ink, meta, faint, focus) = if dark {
         (
             tint(if glass { 0x181A17 } else { 0x1A1C19 }, alpha),
@@ -437,7 +436,13 @@ mod tests {
         );
         let chrome = chrome_for(&appearance, false, true);
         assert!(!chrome.glass);
-        assert_eq!(Rgba { a: 1.0, ..chrome.column }, rgb(0xF1F2EC));
+        assert_eq!(
+            Rgba {
+                a: 1.0,
+                ..chrome.column
+            },
+            rgb(0xF1F2EC)
+        );
     }
 
     #[test]
@@ -450,11 +455,23 @@ mod tests {
         let chrome = chrome_for(&appearance, false, false);
         assert!(chrome.glass);
         assert!((chrome.column.a - 0.58).abs() < 0.001);
-        assert_eq!(Rgba { a: 1.0, ..chrome.column }, rgb(0xF6F8F2));
+        assert_eq!(
+            Rgba {
+                a: 1.0,
+                ..chrome.column
+            },
+            rgb(0xF6F8F2)
+        );
         assert!((chrome.card_rest.a - 0.48).abs() < 0.001);
         assert_eq!(chrome.card_selected.a, 1.0);
         let dark = chrome_for(&appearance, true, false);
-        assert_eq!(Rgba { a: 1.0, ..dark.column }, rgb(0x181A17));
+        assert_eq!(
+            Rgba {
+                a: 1.0,
+                ..dark.column
+            },
+            rgb(0x181A17)
+        );
         assert!((dark.card_rest.a - 0.045).abs() < 0.001);
         assert_eq!(dark.card_selected.a, 1.0);
     }
