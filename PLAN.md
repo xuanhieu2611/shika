@@ -115,7 +115,7 @@ crates/shika-terminal/        alacritty_terminal wrapper and the GPUI terminal v
 crates/shika/                 the GPUI app
                               window, project headers, cards, picker, close dialog, toast,
                               keyboard map, shell toggle, .app bundle
-design/                       visual reference, unchanged
+design/                       DESIGN.md, Shika v3.dc.html, logo artwork
 ```
 
 Persisted in `~/Library/Application Support/com.hieule.shika/`, the same directory the Tauri build used, so existing files keep working:
