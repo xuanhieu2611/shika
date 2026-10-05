@@ -403,7 +403,6 @@ class Component extends DCLogic {
     const raw = a.shellInput, cmd = raw.trim(), out = [];
     a.shell.push(L(...this.shellPrefix(a, p), s(raw, 'white')));
     a.shellInput = '';
-    let pushing = false;
     if (!cmd) {}
     else if (cmd === 'clear') { a.shell = []; }
     else if (cmd === 'pwd') out.push(L(this.wt(a, p).replace('~', HOME)));
@@ -435,13 +434,11 @@ class Component extends DCLogic {
     else if (/^git log/.test(cmd)) { a.commits.slice().reverse().forEach(c => out.push(L(s(c.slice(0, 7), 'warm'), ' ' + c.slice(8)))); out.push(L(s('9e41b07', 'warm'), ' Merge branch \'main\'')); }
     else if (/^git push/.test(cmd)) {
       out.push(L('Enumerating objects: 11, done.'), L('Writing objects: 100% (6/6), 1.42 KiB | 1.42 MiB/s, done.'), L('To github.com:kai/' + p.name + '.git'), L(' * [new branch]      ' + a.branch + ' -> ' + a.branch));
-      pushing = true;
     }
     else if (/test|rspec/.test(cmd)) out.push(L(s('running 48 tests', 'dim')), L('test result: ', s('ok', 'green'), '. 48 passed; 0 failed; finished in 2.31s'));
     else out.push(L('zsh: command not found: ' + cmd.split(' ')[0]));
     a.shell.push(...out);
     this.bump();
-    if (pushing) setTimeout(() => this.requestClose(a.id, 'push'), 900);
   }
 
   requestClose(aid, reason) {
@@ -456,7 +453,7 @@ class Component extends DCLogic {
     p.agents = p.agents.filter(x => x.id !== aid);
     let sel = this.state.sel;
     if (sel === aid) { const rest = this.flat(); sel = rest.length ? rest[Math.min(i, rest.length - 1)].a.id : null; }
-    this.showToast(reason === 'push' ? 'Pushed ' + a.branch + '. Card and worktree removed.' : 'Closed. Session and worktree removed.');
+    this.showToast('Closed. Session and worktree removed.');
     this.setState(st => ({ sel, focus:'cards', confirm:null, notes: st.notes.filter(n => n.aid !== aid), v: st.v + 1 }));
   }
 
@@ -668,7 +665,7 @@ class Component extends DCLogic {
       hasPicker: !!pk, pickerProject: pkProj ? pkProj.name : '',
       closePicker: () => this.setState({ picker: null }), stop: e => e.stopPropagation(),
       pickerRows: CLIS.map((c, i) => ({ num: String(i + 1), name: c.name, detail: c.path || c.soon, nameColor: c.path ? 'var(--ink-1)' : 'var(--ink-4)', bg: pk && pk.idx === i ? 'var(--surface-selected)' : 'transparent', onClick: () => pk && this.create(pk.pid, c.id) })),
-      hasConfirm: !!cfF, confirmTitle: cfF ? (cf.reason === 'push' ? 'Pushed. Delete this worktree?' : 'Close “' + (cfF.a.prompt ? shorten(cfF.a.prompt, 40) : 'New ' + cliOf(cfF.a.cli).name) + '”?') : '',
+      hasConfirm: !!cfF, confirmTitle: cfF ? 'Close “' + (cfF.a.prompt ? shorten(cfF.a.prompt, 40) : 'New ' + cliOf(cfF.a.cli).name) + '”?' : '',
       confirmLines, cancelConfirm: () => this.setState({ confirm: null }), doConfirm: () => cf && this.remove(cf.aid, cf.reason),
       notes: st.notes.map(n => ({ ...n, onClick: () => this.setState(s2 => ({ sel: n.aid, focus: 'cards', notes: s2.notes.filter(x => x.id !== n.id) })) })),
     };
