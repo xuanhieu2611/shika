@@ -9,7 +9,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, div,
     prelude::FluentBuilder, px, rgb, size,
 };
-use model::{PromptCapture, Status, visible_indices};
+use model::{PromptCapture, Status, TitleWatch, visible_indices};
 use notifications::Notifications;
 use shika_core::{
     Appearance, CliCatalog, Core, JournalEntry, Project, PtyEvent, PtyId, PtySize, Session,
@@ -138,6 +138,7 @@ struct Card {
     submitted: u64,
     last_ready: Option<Instant>,
     creating: bool,
+    title_watch: TitleWatch,
 }
 #[derive(Clone, PartialEq)]
 enum Selection {
@@ -156,8 +157,9 @@ enum Overlay {
     Leftovers,
     RemoveLeftover(usize),
     RemoveProject(String),
-    /// `row` is the selected setting: opacity, blur, then translucency.
-    /// `edit` holds digits typed into the selected number, not yet applied.
+    /// `row` is the selected setting: opacity, blur, translucency, then the
+    /// branch prefix. `edit` holds digits typed into the selected number, or
+    /// the prefix being typed, not yet applied.
     Settings {
         row: usize,
         edit: Option<String>,
@@ -182,6 +184,8 @@ struct Shika {
     /// Mouse is down on the title bar and has not moved yet. The drag starts
     /// on the first move, so a double-click can still zoom.
     title_drag: bool,
+    /// As typed in Settings, already normalized. Core reads it from disk.
+    branch_prefix: String,
 }
 impl Shika {
     fn new(
@@ -205,12 +209,12 @@ impl Shika {
             load_errors.push(e.to_string());
             Vec::new()
         });
-        let appearance = settings
-            .unwrap_or_else(|e| {
-                load_errors.push(e.to_string());
-                Settings::default()
-            })
-            .appearance;
+        let settings = settings.unwrap_or_else(|e| {
+            load_errors.push(e.to_string());
+            Settings::default()
+        });
+        let appearance = settings.appearance;
+        let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
         let this = Self {
             core: core.clone(),
             projects,
@@ -236,6 +240,7 @@ impl Shika {
             clicks,
             appearance,
             title_drag: false,
+            branch_prefix,
         };
         cx.spawn_in(window, async move |this, cx| {
             let catalog = cx
@@ -440,6 +445,7 @@ impl Shika {
             submitted: 0,
             last_ready: None,
             creating: true,
+            title_watch: TitleWatch::default(),
         });
         self.selection = Some(Selection::Card(index));
         window.focus(&self.focus, cx);
@@ -610,13 +616,18 @@ impl Shika {
                 continue;
             }
             if let Some(title) = state.title.take() {
-                card.title = model::card_title(&title);
+                if !card.session.as_ref().is_some_and(|s| s.cli_titled) {
+                    card.title = model::card_title(&title);
+                }
                 card.status = Status::Working;
                 card.since = now;
                 if let Some(s) = &card.session {
                     rename.push((s.id.clone(), title));
                 }
                 changed = true;
+            }
+            if state.submission > 0 {
+                card.title_watch.start(now);
             }
             if state.submission != card.submitted && card.status != Status::Waiting {
                 card.submitted = state.submission;
@@ -668,6 +679,47 @@ impl Shika {
                 }
             }
         }
+        let mut title_checks = vec![];
+        for card in &mut self.cards {
+            if let Some(session) = &card.session
+                && card.title_watch.due(now)
+            {
+                title_checks.push(session.id.clone());
+            }
+        }
+        for id in title_checks {
+            let core = self.core.clone();
+            cx.spawn(async move |this, cx| {
+                let session_id = id.clone();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { core.session_apply_cli_title(&id) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    let Some(card) = this
+                        .cards
+                        .iter_mut()
+                        .find(|c| c.session.as_ref().is_some_and(|s| s.id == session_id))
+                    else {
+                        return;
+                    };
+                    match result {
+                        Ok(Some(session)) => {
+                            card.title = model::card_title(&session.title);
+                            card.session = Some(session);
+                            card.title_watch.finish();
+                        }
+                        Ok(None) => card.title_watch.checked(Instant::now()),
+                        Err(e) => {
+                            card.title_watch.finish();
+                            this.message(e.to_string());
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
         for (id, title) in rename {
             let core = self.core.clone();
             cx.spawn(async move |this, cx| {
@@ -675,20 +727,22 @@ impl Shika {
                     .background_executor()
                     .spawn(async move { core.session_rename_from_prompt(&id, &title) })
                     .await;
-                let _ =
-                    this.update(cx, |this, cx| {
-                        match result {
-                            Ok(session) => {
-                                if let Some(card) = this.cards.iter_mut().find(|c| {
-                                    c.session.as_ref().is_some_and(|s| s.id == session.id)
-                                }) {
-                                    card.session = Some(session);
-                                }
+                let _ = this.update(cx, |this, cx| {
+                    match result {
+                        Ok(session) => {
+                            // A CLI title applied meanwhile is newer.
+                            if let Some(card) = this.cards.iter_mut().find(|c| {
+                                c.session
+                                    .as_ref()
+                                    .is_some_and(|s| s.id == session.id && !s.cli_titled)
+                            }) {
+                                card.session = Some(session);
                             }
-                            Err(e) => this.message(e.to_string()),
-                        };
-                        cx.notify();
-                    });
+                        }
+                        Err(e) => this.message(e.to_string()),
+                    };
+                    cx.notify();
+                });
             })
             .detach();
         }
@@ -918,13 +972,14 @@ impl Shika {
         match row {
             0 => next = next.with_opacity(i64::from(next.opacity) + delta * 5),
             1 => next = next.with_blur(i64::from(next.blur) + delta * 5),
-            _ => {
+            2 => {
                 next.translucency = if delta < 0 {
                     Translucency::Sidebar
                 } else {
                     Translucency::SidebarAndTerminal
                 }
             }
+            _ => return,
         }
         self.set_appearance(next, window, cx);
     }
@@ -944,12 +999,24 @@ impl Shika {
         }
         cx.notify();
     }
-    /// Apply typed digits, pulled into range. Nothing typed keeps the value.
+    /// Apply typed digits, pulled into range, or the typed prefix, made
+    /// safe for git. Nothing typed keeps a number.
     fn commit_setting_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Overlay::Settings { row, edit }) = &mut self.overlay else {
             return;
         };
         let row = *row;
+        if row == PREFIX_ROW {
+            if let Some(text) = edit.take() {
+                let prefix = shika_core::normalize_branch_prefix(&text);
+                if prefix != self.branch_prefix {
+                    self.branch_prefix = prefix;
+                    self.save_settings();
+                }
+                cx.notify();
+            }
+            return;
+        }
         let Some(value) = edit.take().and_then(|text| text.parse::<i64>().ok()) else {
             return;
         };
@@ -972,10 +1039,17 @@ impl Shika {
                     .update(cx, |view, cx| view.set_background_opacity(opacity, cx));
             }
         }
-        if let Err(e) = self.core.save_settings(&Settings { appearance: next }) {
+        self.save_settings();
+        cx.notify();
+    }
+    fn save_settings(&mut self) {
+        let settings = Settings {
+            appearance: self.appearance,
+            branch_prefix: self.branch_prefix.clone(),
+        };
+        if let Err(e) = self.core.save_settings(&settings) {
             self.message(e.to_string());
         }
-        cx.notify();
     }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let stroke = &event.keystroke;
@@ -993,6 +1067,39 @@ impl Shika {
             && !stroke.modifiers.shift
         {
             window.focus(&self.focus, cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if let Some(Overlay::Settings {
+            row: PREFIX_ROW,
+            edit: Some(text),
+        }) = &mut self.overlay
+        {
+            match stroke.key.as_str() {
+                "enter" => self.commit_setting_edit(window, cx),
+                "escape" => {
+                    if let Some(Overlay::Settings { edit, .. }) = &mut self.overlay {
+                        *edit = None;
+                    }
+                }
+                "backspace" => {
+                    text.pop();
+                }
+                _ => {
+                    let typed = stroke.key_char.as_deref().filter(|_| {
+                        !stroke.modifiers.platform
+                            && !stroke.modifiers.control
+                            && !stroke.modifiers.alt
+                    });
+                    if let Some(ch) = typed.and_then(|t| t.chars().next())
+                        && (ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.'))
+                        && text.len() < 40
+                    {
+                        text.push(ch);
+                    }
+                }
+            }
             cx.stop_propagation();
             cx.notify();
             return;
@@ -1091,19 +1198,23 @@ impl Shika {
                         (Some(_), "h" | "l" | "left" | "right") => {}
                         (None, _) if digit && number_row => self.edit_setting(at, key, window, cx),
                         (None, "backspace") if number_row => self.edit_setting(at, "", window, cx),
+                        (None, "enter") if at == PREFIX_ROW => {
+                            let prefix = self.branch_prefix.clone();
+                            self.edit_setting(at, &prefix, window, cx)
+                        }
                         (None, "h" | "left") => self.step_setting(at, -1, window, cx),
                         (None, "l" | "right") => self.step_setting(at, 1, window, cx),
                         (None, "enter" | "escape") => self.cancel_overlay(window, cx),
                         (_, "j" | "down" | "tab") => {
                             self.commit_setting_edit(window, cx);
                             if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
-                                *row = (at + 1) % 3;
+                                *row = (at + 1) % SETTING_ROWS;
                             }
                         }
                         (_, "k" | "up") => {
                             self.commit_setting_edit(window, cx);
                             if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
-                                *row = (at + 2) % 3;
+                                *row = (at + SETTING_ROWS - 1) % SETTING_ROWS;
                             }
                         }
                         _ => {}
@@ -1131,7 +1242,64 @@ impl Shika {
         cx.stop_propagation();
     }
 }
+/// Settings rows: opacity, blur, translucency, then the branch prefix.
+const SETTING_ROWS: usize = 4;
+const PREFIX_ROW: usize = 3;
 impl Shika {
+    /// The branch prefix row: a text field. Enter or a click starts typing.
+    fn prefix_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (selected, edit) = match &self.overlay {
+            Some(Overlay::Settings { row, edit }) => (
+                *row == PREFIX_ROW,
+                edit.as_deref().filter(|_| *row == PREFIX_ROW),
+            ),
+            _ => (false, None),
+        };
+        let text = edit.unwrap_or(&self.branch_prefix).to_string();
+        let empty = text.is_empty();
+        let field = div()
+            .id("setting-prefix-value")
+            .w(px(168.))
+            .h(px(28.))
+            .px_2()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .rounded(px(6.))
+            .bg(rgb(0xFFFFFF))
+            .border_1()
+            .border_color(rgb(if edit.is_some() { 0x2F332C } else { 0xCFD3C7 }))
+            .font_family("JetBrains Mono")
+            .cursor_text()
+            .when(!empty, |d| d.child(text))
+            .when(edit.is_some(), |d| {
+                d.child(div().w(px(1.)).h(px(14.)).bg(rgb(0x2F332C)))
+            })
+            .when(empty && edit.is_none(), |d| {
+                d.child(div().text_color(rgb(0x9EA296)).child("none"))
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                if !matches!(
+                    this.overlay,
+                    Some(Overlay::Settings {
+                        row: PREFIX_ROW,
+                        edit: Some(_)
+                    })
+                ) {
+                    let prefix = this.branch_prefix.clone();
+                    this.edit_setting(PREFIX_ROW, &prefix, window, cx);
+                }
+            }));
+        div()
+            .p_2()
+            .rounded(px(8.))
+            .when(selected, |d| d.bg(rgb(0xE8EBE2)))
+            .flex()
+            .items_center()
+            .justify_between()
+            .child("Branch prefix")
+            .child(field)
+    }
     /// A settings row: minus, a number field that takes typed digits, plus.
     fn setting_row(
         &self,
@@ -1969,18 +2137,22 @@ impl Render for Shika {
                                         ),
                                 ),
                         )
+                        .child(self.prefix_row(cx))
                         .child(
                             div()
                                 .text_size(px(10.5))
                                 .text_color(rgb(0x6C7166))
                                 .child(
-                                    "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%.",
+                                    "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%. The prefix starts each new branch name, like hieu/.",
                                 ),
                         )
-                        .child(if edit.is_some() {
-                            "type a number   enter apply   esc cancel"
-                        } else {
-                            "j / k choose   h / l change   type a number   esc done"
+                        .child(match (edit.is_some(), *row == PREFIX_ROW) {
+                            (true, true) => "type a prefix   enter apply   esc cancel",
+                            (true, false) => "type a number   enter apply   esc cancel",
+                            (false, true) => "j / k choose   enter edit   esc done",
+                            (false, false) => {
+                                "j / k choose   h / l change   type a number   esc done"
+                            }
                         });
                 }
             }

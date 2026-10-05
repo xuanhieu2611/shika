@@ -16,7 +16,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Use disposable repositories and an isolated app data directory for integration tests. Never test worktree deletion against personal projects. Verify the app window is in front before automated keyboard input.
 
-Describe what changed, why, and how it was verified. Include a screenshot for visible UI changes. Check PLAN.md for current scope and decisions before adding features.
+Describe what changed, why, and how it was verified. Include a screenshot for visible UI changes. Check PLAN.md for current scope and decisions before adding features. `docs/` explains individual features in depth; read the matching file before changing one, and update it with the change.
 
 ## License
 
