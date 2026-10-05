@@ -15,7 +15,7 @@
 //!   --cwd DIR        working directory for both (default: current)
 //!   --type TEXT      type TEXT and Enter into the shell once it starts
 //!   --show N         which terminal to show first, 1 or 2
-//!   --font-size PX   font size (default 12.5)
+//!   --font-size PX   font size (default 14)
 //!   --stats          print paint counters once a second
 
 use std::io::Write as _;
@@ -54,7 +54,7 @@ fn parse_args() -> Args {
         command: Vec::new(),
         type_into_shell: None,
         show: 0,
-        font_size: 12.5,
+        font_size: 14.,
         stats: false,
     };
     let mut iter = std::env::args().skip(1);
