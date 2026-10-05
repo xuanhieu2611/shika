@@ -13,6 +13,11 @@ The PLAN Done when flow was exercised with two disposable git repositories and t
 - PASS: The first prompt updates title and branch. The worktree directory stays fixed.
 - PASS: About two seconds of quiet changes Working to Ready to check.
 - PASS: A native notification arrives while another app is active. The author saw and clicked it; the delegate recorded the expected session ID and Shika selected that card. Notification permission was enabled with approval.
+
+## Notification sound
+
+- [ ] A ready notification plays the system alert sound while another app is active, and also when Shika is in front.
+- [ ] Settings can turn the sound off. The banner still arrives, and the choice survives a relaunch.
 - PASS: Four cards collapse to three; keyboard navigation reveals the hidden card.
 - PASS: Shell status and staged diff show task changes. Shell commit and push leave the card open.
 - PASS: Closing a clean pushed task removes its worktree, retains its branch, and leaves the other CLI alive.
