@@ -955,6 +955,42 @@ mod tests {
     }
 
     #[test]
+    fn shell_push_without_upstream_counts_as_pushed() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        local_remote(&scratch, &repo);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let session = create_fake_session(&core, &project.id);
+        git(
+            &session.worktree,
+            &["commit", "--allow-empty", "-m", "task"],
+        );
+        git(&session.worktree, &["push", "origin", "HEAD"]);
+        let state = core.session_git_state(&session.id, false).unwrap();
+        assert!(state.pushed && state.has_own_commits && !state.unpushed);
+        assert!(!state.requires_confirmation());
+        git(
+            &session.worktree,
+            &["commit", "--allow-empty", "-m", "more"],
+        );
+        let state = core.session_git_state(&session.id, false).unwrap();
+        assert!(state.unpushed && !state.pushed);
+        assert_eq!(
+            core.session_close(&session.id, false),
+            Err(Error::CloseNeedsConfirmation)
+        );
+        git(&session.worktree, &["push", "origin", "HEAD"]);
+        core.session_close(&session.id, false).unwrap();
+        assert!(!session.worktree.exists());
+        assert!(
+            !git(&repo, &["branch", "--list", &session.branch])
+                .trim()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn push_choice_preserves_failed_task_and_success_keeps_branch() {
         let scratch = Scratch::new();
         let repo = scratch.repo("demo");
