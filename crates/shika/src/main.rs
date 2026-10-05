@@ -12,8 +12,8 @@ use gpui::{
 use model::{PromptCapture, Status, TitleWatch, visible_indices};
 use notifications::Notifications;
 use shika_core::{
-    Appearance, CliCatalog, Core, JournalEntry, Project, PtyEvent, PtyId, PtySize, Session,
-    SessionGitState, Settings, Translucency,
+    Appearance, CliCatalog, Core, FontSize, JournalEntry, Project, PtyEvent, PtyId, PtySize,
+    Session, SessionGitState, Settings, Translucency,
 };
 use shika_terminal::{
     Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize, TerminalView,
@@ -92,6 +92,7 @@ impl Pane {
         core: Arc<Core>,
         capture: bool,
         opacity: f32,
+        font_size: f32,
         window: &mut Window,
         cx: &mut Context<Shika>,
     ) -> Self {
@@ -110,7 +111,10 @@ impl Pane {
         let view = cx.new(|cx| {
             let mut view = TerminalView::new(
                 terminal.clone(),
-                TerminalConfig::default(),
+                TerminalConfig {
+                    font_size: px(font_size),
+                    ..TerminalConfig::default()
+                },
                 Palette::shika(),
                 window,
                 cx,
@@ -157,9 +161,9 @@ enum Overlay {
     Leftovers,
     RemoveLeftover(usize),
     RemoveProject(String),
-    /// `row` is the selected setting: opacity, blur, translucency, then the
-    /// branch prefix. `edit` holds digits typed into the selected number, or
-    /// the prefix being typed, not yet applied.
+    /// `row` is the selected setting: opacity, blur, translucency, font size,
+    /// then the branch prefix. `edit` holds digits typed into the selected
+    /// number, or the prefix being typed, not yet applied.
     Settings {
         row: usize,
         edit: Option<String>,
@@ -181,6 +185,8 @@ struct Shika {
     notifications: Notifications,
     clicks: std::sync::mpsc::Receiver<String>,
     appearance: Appearance,
+    /// Terminal text size. New panes and live ones both use it.
+    font_size: FontSize,
     /// Mouse is down on the title bar and has not moved yet. The drag starts
     /// on the first move, so a double-click can still zoom.
     title_drag: bool,
@@ -214,6 +220,7 @@ impl Shika {
             Settings::default()
         });
         let appearance = settings.appearance;
+        let font_size = settings.font_size;
         let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
         let this = Self {
             core: core.clone(),
@@ -239,6 +246,7 @@ impl Shika {
             notifications,
             clicks,
             appearance,
+            font_size,
             title_drag: false,
             branch_prefix,
         };
@@ -428,7 +436,14 @@ impl Shika {
         self.overlay = None;
         self.busy = true;
         let opacity = appearance::terminal_alpha(&self.appearance);
-        let pane = Pane::new(self.core.clone(), true, opacity, window, cx);
+        let pane = Pane::new(
+            self.core.clone(),
+            true,
+            opacity,
+            self.font_size.points(),
+            window,
+            cx,
+        );
         let terminal = pane.terminal.clone();
         let state = pane.state.clone();
         let index = self.cards.len();
@@ -544,7 +559,14 @@ impl Shika {
             return;
         };
         let opacity = appearance::terminal_alpha(&self.appearance);
-        let pane = Pane::new(self.core.clone(), false, opacity, window, cx);
+        let pane = Pane::new(
+            self.core.clone(),
+            false,
+            opacity,
+            self.font_size.points(),
+            window,
+            cx,
+        );
         let state = pane.state.clone();
         let terminal = pane.terminal.clone();
         self.cards[index].shell = Some(pane);
@@ -968,6 +990,10 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         self.commit_setting_edit(window, cx);
+        if row == FONT_ROW {
+            self.set_font_size(self.font_size.step(delta), cx);
+            return;
+        }
         let mut next = self.appearance;
         match row {
             0 => next = next.with_opacity(i64::from(next.opacity) + delta * 5),
@@ -1017,12 +1043,21 @@ impl Shika {
             }
             return;
         }
+        if row == FONT_ROW {
+            if let Some(text) = edit.take()
+                && let Some(size) = FontSize::from_text(&text)
+            {
+                self.set_font_size(size, cx);
+            }
+            return;
+        }
         let Some(value) = edit.take().and_then(|text| text.parse::<i64>().ok()) else {
             return;
         };
         let next = match row {
             0 => self.appearance.with_opacity(value),
-            _ => self.appearance.with_blur(value),
+            1 => self.appearance.with_blur(value),
+            _ => return,
         };
         self.set_appearance(next, window, cx);
     }
@@ -1042,10 +1077,29 @@ impl Shika {
         self.save_settings();
         cx.notify();
     }
+    fn set_font_size(&mut self, next: FontSize, cx: &mut Context<Self>) {
+        if next == self.font_size {
+            return;
+        }
+        self.font_size = next;
+        let size = px(next.points());
+        for card in &self.cards {
+            for pane in std::iter::once(&card.agent).chain(card.shell.as_ref()) {
+                pane.view.update(cx, |view, cx| {
+                    let mut config = view.config().clone();
+                    config.font_size = size;
+                    view.set_config(config, cx);
+                });
+            }
+        }
+        self.save_settings();
+        cx.notify();
+    }
     fn save_settings(&mut self) {
         let settings = Settings {
             appearance: self.appearance,
             branch_prefix: self.branch_prefix.clone(),
+            font_size: self.font_size,
         };
         if let Err(e) = self.core.save_settings(&settings) {
             self.message(e.to_string());
@@ -1183,11 +1237,17 @@ impl Shika {
                 Some(Overlay::Settings { row, edit }) => {
                     let at = *row;
                     let digit = key.len() == 1 && key.as_bytes()[0].is_ascii_digit();
-                    let number_row = at < 2;
+                    let number_row = matches!(at, 0 | 1 | FONT_ROW);
+                    let max_len = if at == FONT_ROW { 4 } else { 3 };
                     match (edit.as_mut(), key) {
-                        (Some(text), _) if digit => {
-                            if text.len() < 3 {
-                                text.push_str(key)
+                        (Some(text), _) if digit || (at == FONT_ROW && key == ".") => {
+                            let accept = if key == "." {
+                                !text.is_empty() && !text.contains('.')
+                            } else {
+                                true
+                            };
+                            if accept && text.len() < max_len {
+                                text.push_str(key);
                             }
                         }
                         (Some(text), "backspace") => {
@@ -1242,9 +1302,10 @@ impl Shika {
         cx.stop_propagation();
     }
 }
-/// Settings rows: opacity, blur, translucency, then the branch prefix.
-const SETTING_ROWS: usize = 4;
-const PREFIX_ROW: usize = 3;
+/// Settings rows: opacity, blur, translucency, font size, then the branch prefix.
+const SETTING_ROWS: usize = 5;
+const FONT_ROW: usize = 3;
+const PREFIX_ROW: usize = 4;
 impl Shika {
     /// The branch prefix row: a text field. Enter or a click starts typing.
     fn prefix_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1305,7 +1366,7 @@ impl Shika {
         &self,
         row: usize,
         label: &'static str,
-        value: u8,
+        value: &str,
         unit: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1329,7 +1390,7 @@ impl Shika {
         };
         let field = div()
             .id(SharedString::from(format!("setting-{row}-value")))
-            .w(px(64.))
+            .w(px(76.))
             .h(px(28.))
             .px_2()
             .flex()
@@ -2090,8 +2151,10 @@ impl Render for Shika {
                         ));
                 }
                 Overlay::Settings { row, edit } => {
-                    let a = &self.appearance;
-                    let both = a.translucency == Translucency::SidebarAndTerminal;
+                    let opacity = self.appearance.opacity.to_string();
+                    let blur = self.appearance.blur.to_string();
+                    let font = self.font_size.text();
+                    let both = self.appearance.translucency == Translucency::SidebarAndTerminal;
                     let choice = |id: &'static str, text: &'static str, on: bool| {
                         button(id, text).when(on, |d| d.bg(rgb(0x2F332C)).text_color(rgb(0xF2F5EC)))
                     };
@@ -2102,8 +2165,8 @@ impl Render for Shika {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child("Settings"),
                         )
-                        .child(self.setting_row(0, "Background opacity", a.opacity, "%", cx))
-                        .child(self.setting_row(1, "Background blur", a.blur, "", cx))
+                        .child(self.setting_row(0, "Background opacity", &opacity, "%", cx))
+                        .child(self.setting_row(1, "Background blur", &blur, "", cx))
                         .child(
                             div()
                                 .p_2()
@@ -2137,13 +2200,14 @@ impl Render for Shika {
                                         ),
                                 ),
                         )
+                        .child(self.setting_row(FONT_ROW, "Font size", &font, "px", cx))
                         .child(self.prefix_row(cx))
                         .child(
                             div()
                                 .text_size(px(10.5))
                                 .text_color(rgb(0x6C7166))
                                 .child(
-                                    "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%. The prefix starts each new branch name, like hieu/.",
+                                    "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%. Font size is the terminal text, 8 to 32. The prefix starts each new branch name, like hieu/.",
                                 ),
                         )
                         .child(match (edit.is_some(), *row == PREFIX_ROW) {

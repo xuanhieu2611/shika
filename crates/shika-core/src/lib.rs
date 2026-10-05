@@ -61,7 +61,7 @@ pub use path_env::{LoginShellError, PathEnv};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use session::{Session, SessionGitState, ShellOpen};
-pub use settings::{Appearance, Settings, Translucency};
+pub use settings::{Appearance, FontSize, Settings, Translucency};
 pub use worktree::JournalEntry;
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 
