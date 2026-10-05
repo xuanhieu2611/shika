@@ -1212,7 +1212,8 @@ impl Shika {
     }
 
     /// The strip above the sidebar and the agent header. The system title is
-    /// hidden so this bar can hold the settings icon. It stays opaque.
+    /// hidden so this bar can hold the settings icon. Its fill uses the same
+    /// opacity as the sidebar, so the window blur shows through it.
     fn title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let inset = if window.is_fullscreen() || window.is_simple_fullscreen() {
             px(16.)
@@ -1225,7 +1226,7 @@ impl Shika {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .bg(rgb(0xF1F2EC))
+            .bg(tint(0xF1F2EC, appearance::sidebar_alpha(&self.appearance)))
             .border_b_1()
             .border_color(rgb(0xDADDD3))
             .child(
