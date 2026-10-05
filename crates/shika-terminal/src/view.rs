@@ -791,8 +791,7 @@ fn measure(config: &TerminalConfig, installed: &[String], window: &mut Window) -
     let line_height = (font_size * config.line_height).round();
     let ascent = text_system.ascent(font_id, font_size);
     let descent = text_system.descent(font_id, font_size);
-    let baseline = text_system.baseline_offset(font_id, font_size, line_height);
-    let underline_offset = gpui::underline_y_offset(line_height, ascent, descent);
+    let (baseline, underline_offset) = vertical_align(line_height, ascent, descent);
     Metrics {
         fonts,
         font_size,
@@ -801,6 +800,21 @@ fn measure(config: &TerminalConfig, installed: &[String], window: &mut Window) -
         baseline,
         underline_offset,
     }
+}
+
+/// Baseline and underline, both measured down from the top of the cell.
+///
+/// GPUI's font descent follows OpenType: it is negative when the face hangs
+/// below the baseline. `baseline_offset` subtracts that signed value, which
+/// pushes the baseline down by the whole descent, so the glyphs sit in the
+/// bottom of the cell. The line painter treats descent as a positive
+/// distance. This does the same.
+fn vertical_align(line_height: Pixels, ascent: Pixels, descent: Pixels) -> (Pixels, Pixels) {
+    let descent = px(f32::from(descent).abs());
+    let padding_top = (line_height - ascent - descent) / 2.;
+    let baseline = padding_top + ascent;
+    let underline = gpui::underline_y_offset(line_height, ascent, descent);
+    (baseline, underline)
 }
 
 fn pick_family(config: &TerminalConfig, installed: &[String]) -> SharedString {
@@ -1503,6 +1517,17 @@ mod tests {
             key: key.into(),
             key_char: None,
         }
+    }
+
+    #[test]
+    fn baseline_keeps_the_em_box_centered_in_the_cell() {
+        // JetBrains Mono at 12.5px in a 19px row: ascent 12.75, descent -3.75.
+        // A signed descent would put the baseline at 17.75, under the letters.
+        let (baseline, underline) = vertical_align(px(19.), px(12.75), px(-3.75));
+        assert_eq!(baseline, px(14.));
+        assert!(underline > baseline);
+        assert!(underline < px(19.));
+        assert_eq!(vertical_align(px(19.), px(12.75), px(3.75)).0, baseline);
     }
 
     #[test]
