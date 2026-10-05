@@ -31,6 +31,18 @@ impl Status {
         }
     }
 }
+/// Minimal scroll-offset adjustment that brings a selected row into view.
+/// Oversized rows align their top, rather than oscillating between edges.
+pub fn reveal_delta(top: f32, bottom: f32, viewport_top: f32, viewport_bottom: f32) -> f32 {
+    if top < viewport_top || bottom - top > viewport_bottom - viewport_top {
+        viewport_top - top
+    } else if bottom > viewport_bottom {
+        viewport_bottom - bottom
+    } else {
+        0.
+    }
+}
+
 /// Longest base branch name the Base branch field takes.
 pub const BRANCH_MAX: usize = 100;
 /// Characters the Base branch field takes. Git refuses more names than this
@@ -347,6 +359,17 @@ pub fn visible_indices(len: usize, selected: Option<usize>) -> std::ops::Range<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_reveal_moves_only_the_clipped_edge() {
+        assert_eq!(reveal_delta(120., 180., 100., 400.), 0.);
+        assert_eq!(reveal_delta(80., 140., 100., 400.), 20.);
+        assert_eq!(reveal_delta(380., 440., 100., 400.), -40.);
+        assert_eq!(reveal_delta(100., 400., 100., 400.), 0.);
+        assert_eq!(reveal_delta(120., 520., 100., 400.), -20.);
+        assert_eq!(reveal_delta(100., 500., 100., 400.), 0.);
+    }
+
     #[test]
     fn the_base_field_takes_branch_characters_only() {
         for ch in ['d', 'E', '7', '/', '-', '_', '.'] {

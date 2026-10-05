@@ -1543,6 +1543,9 @@ mod tests {
     fn command_is_left_to_the_app() {
         assert_eq!(key_for(&stroke("c", Modifiers::command()), true), None);
         assert_eq!(key_for(&stroke("left", Modifiers::command()), true), None);
+        for key in ["enter", "[", "]", "n"] {
+            assert_eq!(key_for(&stroke(key, Modifiers::command()), true), None);
+        }
     }
 
     #[test]

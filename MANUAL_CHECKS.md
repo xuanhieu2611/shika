@@ -65,6 +65,18 @@ Checked with isolated app data, a disposable repo, and a local bare remote with 
 - [ ] A click on the header label opens the dialog; hovering it shows "Base branch b".
 - [ ] A fresh card on a dev base shows no diff stat once Ready, and a commit in the shell shows its own stat and makes Close ask.
 
+## Command keyboard flow
+
+Implemented with automated coverage for agent-only traversal (headers, wrapping, no agents, one agent, and missing selection), minimal selected-row scroll adjustment, and terminal Command-key isolation. Validation passed: cargo fmt --all --check, cargo test --workspace (166 tests: 97 core, 46 terminal, 23 app), strict Clippy, a debug .app build, and strict bundle signature verification. GUI checks below remain unverified:
+
+- [ ] From both agent and shell, Cmd+Enter switches and focuses the destination. On first shell open, immediate typing arrives in the shell, not the agent. Ctrl+Q during startup stays on the cards after startup completes.
+- [ ] Cmd+] / Cmd+[ skip headers, wrap across projects, reveal collapsed cards, and preserve terminal versus card focus. Each task keeps its agent/shell choice and draft.
+- [ ] In a sidebar taller than the viewport, j/k and Command navigation reveal the selected header/card with minimal scrolling. Manual scrolling is not reset by terminal output or timer redraws.
+- [ ] Cmd+N opens New for the current project from either terminal. Escape returns to that exact terminal; launching focuses the new agent.
+- [ ] Cmd+, then Escape returns to the terminal that opened Settings. Base branch apply/cancel restores previous focus. Dirty Close cancellation still routes to the shell.
+- [ ] Command flow shortcuts do nothing while an overlay is open, including text editing, and never send input to the PTY. Escape and ordinary CLI bindings still reach the CLI.
+- [ ] The Agent menu lists shortcuts. New and agent/shell tooltips show their Command keys. Check light and dark appearance.
+
 ## Automated checks
 
 Workspace tests cover PTY streaming, hidden terminal drains, terminal input, git exclusion, branch renaming, CLI title reading (sample, missing, and broken files), branch slugs without the project name, prefix cleanup, renames that skip taken and pushed names, the title watch timing, Option+Backspace in prompt capture, journal updates, base branch start points (origin, local, missing, unset with origin/HEAD, a changed base, a vanished base, fetch freshness, a dead remote, and waiting for the picker fetch), unpushed commits, failed pushes, branch retention, safe close, branch-switch refusal, and leftovers. All use temporary app data and repositories.
