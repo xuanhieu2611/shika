@@ -84,7 +84,7 @@ Names such as `--ink-1` and `--surface-app` are how this document talks about co
 
 **Focus model.** Focus is either on the cards or in the terminal. Cards focused: selected card has the ink outline and key hints; terminal cursor is a hollow block. Terminal focused: card outline drops to a hairline; cursor is a solid blinking block; the terminal header reads "esc back to cards".
 
-**Glass.** Frosted, and the look when background opacity is below 100%. At 100% the window is solid and blur does nothing. The saved default is opaque. Settings (`Cmd-,`) sets opacity from 0 to 100, blur radius from 0 to 255, and whether frost covers the sidebar alone or the sidebar and the terminal. The title bar uses the sidebar opacity, so the blur shows through it.
+**Glass.** Frosted, and the look when background opacity is below 100%. At 100% the window is solid and blur does nothing. The saved default is opaque. Settings (`Cmd-,`) sets opacity from 0 to 100, blur radius from 0 to 255, whether frost covers the sidebar alone or the sidebar and the terminal, and the terminal font size from 8 to 32 (default 12.5). Chrome type sizes stay fixed. The title bar uses the sidebar opacity, so the blur shows through it.
 
 The app does this in `crates/shika/src/appearance.rs`. GPUI's window background is `Transparent`, not `Blurred`, because GPUI's blur has one fixed strength. The radius is the private `CGSSetWindowBackgroundBlurRadius`. A CSS `backdrop-filter` cannot see the desktop, so do not add one, and do not add `tokens/glass.css`. The browser mock's `blur(44px) saturate(1.9)` is only a stand-in for that native blur.
 
