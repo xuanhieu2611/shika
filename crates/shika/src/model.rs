@@ -15,6 +15,14 @@ impl Status {
             Self::Ready => "Ready to check",
         }
     }
+    /// The short form used by the summary chips.
+    pub fn chip(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::Working => "working",
+            Self::Ready => "ready",
+        }
+    }
     pub fn rank(self) -> u8 {
         match self {
             Self::Ready => 0,
@@ -273,6 +281,54 @@ pub fn card_title(title: &str) -> String {
         format!("{}…", title.chars().take(79).collect::<String>())
     }
 }
+/// `1 agent`, `2 agents`.
+pub fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
+/// The summary headline: every card, and the projects that have one.
+pub fn headline(agents: usize, projects: usize) -> String {
+    if agents == 0 {
+        "No agents running".into()
+    } else {
+        format!(
+            "{} across {}",
+            plural(agents, "agent"),
+            plural(projects, "project")
+        )
+    }
+}
+/// Time on a card: `42s`, `51m`, `1h 3m`.
+pub fn short_time(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else {
+        format!("{}h {}m", minutes / 60, minutes % 60)
+    }
+}
+/// What a ready task changed: `2 files +64 −3`, with a real minus sign.
+pub fn diff_stat_label(files: usize, insertions: usize, deletions: usize) -> String {
+    format!(
+        "{} +{insertions} \u{2212}{deletions}",
+        plural(files, "file")
+    )
+}
+/// A path with the home directory written as `~`.
+pub fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
 /// Keep the selected card inside the three-card window.
 pub fn visible_indices(len: usize, selected: Option<usize>) -> std::ops::Range<usize> {
     let start = selected
@@ -391,6 +447,28 @@ mod tests {
         let (clock, _) =
             advance_status(working, Some(at(3_000)), Some(at(4_200)), at(4_200), false);
         assert_eq!(clock.status, Status::Working);
+    }
+    #[test]
+    fn summary_and_card_text() {
+        assert_eq!(headline(0, 0), "No agents running");
+        assert_eq!(headline(1, 1), "1 agent across 1 project");
+        assert_eq!(headline(6, 2), "6 agents across 2 projects");
+        assert_eq!(short_time(Duration::from_secs(42)), "42s");
+        assert_eq!(short_time(Duration::from_secs(51 * 60 + 59)), "51m");
+        assert_eq!(short_time(Duration::from_secs(63 * 60 + 5)), "1h 3m");
+        assert_eq!(diff_stat_label(2, 64, 3), "2 files +64 \u{2212}3");
+        assert_eq!(diff_stat_label(1, 0, 0), "1 file +0 \u{2212}0");
+        let home = std::path::Path::new("/Users/kai");
+        let path = std::path::Path::new("/Users/kai/code/shika");
+        assert_eq!(tilde(path, Some(home)), "~/code/shika");
+        assert_eq!(tilde(home, Some(home)), "~");
+        assert_eq!(tilde(std::path::Path::new("/opt/x"), Some(home)), "/opt/x");
+        assert_eq!(tilde(path, None), "/Users/kai/code/shika");
+        // A sibling that only shares the prefix text is not under home.
+        assert_eq!(
+            tilde(std::path::Path::new("/Users/kaiser"), Some(home)),
+            "/Users/kaiser"
+        );
     }
     #[test]
     fn navigation_never_exceeds_three() {

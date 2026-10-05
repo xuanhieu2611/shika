@@ -11,6 +11,9 @@
 <link rel="stylesheet" href="styles.css">
 <style>
 html,body{margin:0;height:100%;background:var(--term-bg);}
+[data-glass="on"] body{background:#7d8a74;}
+aside *{scrollbar-width:thin;scrollbar-color:transparent transparent;}
+aside *:hover{scrollbar-color:var(--line-dashed) transparent;}
 body{-webkit-font-smoothing:antialiased;}
 *{box-sizing:border-box;}
 button{font:inherit;color:inherit;}
@@ -19,9 +22,10 @@ a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
 @keyframes shikaPulse{0%,100%{opacity:1}50%{opacity:0.3}}
 </style>
 </helmet>
-<div style="display:flex;height:100vh;min-width:960px;min-height:600px;font-family:var(--font-ui);color:var(--ink-1);overflow:hidden;position:relative;user-select:none">
+<div style="height:100vh;min-height:664px;padding:var(--window-inset);background:var(--desktop-bg);background-size:cover;background-position:center;transition:padding 260ms cubic-bezier(.2,.8,.2,1)">
+<div style="display:flex;height:100%;min-width:960px;min-height:600px;font-family:var(--font-ui);color:var(--ink-1);overflow:hidden;position:relative;user-select:none;border-radius:var(--window-radius);box-shadow:var(--window-shadow)">
 
-  <aside style="width:{{ colWidth }};flex:none;display:flex;flex-direction:column;background:var(--surface-app);border-right:1px solid var(--line-1);transition:width 220ms cubic-bezier(.2,.8,.2,1)">
+  <aside style="width:{{ colWidth }};flex:none;display:flex;flex-direction:column;background:var(--column-bg);backdrop-filter:var(--column-blur);-webkit-backdrop-filter:var(--column-blur);border-right:1px solid var(--line-1);transition:width 220ms cubic-bezier(.2,.8,.2,1)">
     <div style="height:48px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 14px 0 18px">
       <div style="display:flex;gap:8px">
         <span style="width:12px;height:12px;border-radius:50%;background:var(--traffic-close);box-shadow:inset 0 0 0 0.5px rgba(0,0,0,0.12)"></span>
@@ -103,9 +107,9 @@ a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
     </div>
   </aside>
 
-  <main style="flex:1;min-width:0;display:flex;flex-direction:column;background:var(--term-bg);position:relative">
+  <main style="flex:1;min-width:0;display:flex;flex-direction:column;background:var(--term-surface);backdrop-filter:var(--term-blur);-webkit-backdrop-filter:var(--term-blur);position:relative">
     <sc-if value="{{ hasSel }}" hint-placeholder-val="{{ true }}">
-      <div style="height:48px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px 0 14px;background:var(--term-header);border-bottom:1px solid var(--term-line)">
+      <div style="height:48px;flex:none;display:flex;align-items:center;gap:12px;padding:0 12px 0 14px;background:var(--term-header-surface);border-bottom:1px solid var(--term-line)">
         <div style="flex:none;display:flex;background:var(--term-seg-bg);border-radius:7px;padding:2px;gap:2px">
           <button onClick="{{ setAgentMode }}" style="border:none;border-radius:5px;padding:4px 10px;font-size:12px;cursor:default;background:{{ agentSegBg }};color:{{ agentSegColor }}">{{ cliName }}</button>
           <button onClick="{{ setShellMode }}" style="border:none;border-radius:5px;padding:4px 10px;font-size:12px;cursor:default;background:{{ shellSegBg }};color:{{ shellSegColor }}">Shell</button>
@@ -133,13 +137,13 @@ a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
       </div>
     </sc-if>
     <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
-      <div style="position:absolute;left:50%;bottom:22px;transform:translateX(-50%);background:var(--toast-bg);color:var(--toast-fg);font-size:12.5px;padding:8px 14px;border-radius:8px;box-shadow:var(--shadow-toast);white-space:nowrap">{{ toast }}</div>
+      <div style="position:absolute;left:50%;bottom:22px;transform:translateX(-50%);background:var(--toast-bg);backdrop-filter:var(--overlay-blur);-webkit-backdrop-filter:var(--overlay-blur);color:var(--toast-fg);font-size:12.5px;padding:8px 14px;border-radius:8px;box-shadow:var(--shadow-toast);white-space:nowrap">{{ toast }}</div>
     </sc-if>
   </main>
 
   <sc-if value="{{ hasPicker }}" hint-placeholder-val="{{ false }}">
     <div onClick="{{ closePicker }}" style="position:absolute;inset:0;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding-top:18vh">
-      <div onClick="{{ stop }}" style="width:420px;background:var(--surface-overlay);border-radius:12px;box-shadow:var(--shadow-dialog);padding:8px;display:flex;flex-direction:column;gap:2px">
+      <div onClick="{{ stop }}" style="width:420px;background:var(--overlay-surface);backdrop-filter:var(--overlay-blur);-webkit-backdrop-filter:var(--overlay-blur);border-radius:12px;box-shadow:var(--shadow-dialog);padding:8px;display:flex;flex-direction:column;gap:2px">
         <div style="display:flex;align-items:baseline;gap:6px;padding:8px 10px 10px">
           <span style="font-size:14px;font-weight:600">New agent</span>
           <span style="font-size:13px;color:var(--ink-3)">in {{ pickerProject }}</span>
@@ -162,7 +166,7 @@ a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
 
   <sc-if value="{{ hasConfirm }}" hint-placeholder-val="{{ false }}">
     <div style="position:absolute;inset:0;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding-top:20vh">
-      <div style="width:400px;background:var(--surface-overlay);border-radius:12px;box-shadow:var(--shadow-dialog);padding:20px 20px 16px;display:flex;flex-direction:column;gap:8px">
+      <div style="width:400px;background:var(--overlay-surface);backdrop-filter:var(--overlay-blur);-webkit-backdrop-filter:var(--overlay-blur);border-radius:12px;box-shadow:var(--shadow-dialog);padding:20px 20px 16px;display:flex;flex-direction:column;gap:8px">
         <span style="font-size:14px;font-weight:600">{{ confirmTitle }}</span>
         <sc-for list="{{ confirmLines }}" as="cl" hint-placeholder-count="2">
           <span style="font-size:13px;line-height:19px;color:var(--ink-2);text-wrap:pretty">{{ cl.t }}</span>
@@ -187,9 +191,17 @@ a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
       </div>
     </sc-for>
   </div>
+  <div style="position:absolute;inset:0;border-radius:var(--window-radius);box-shadow:var(--window-edge);pointer-events:none;z-index:40"></div>
+</div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;,&quot;system&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark' | 'light' | 'system'&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;columnWidth&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:540,&quot;min&quot;:400,&quot;max&quot;:760,&quot;step&quot;:20,&quot;unit&quot;:&quot;px&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;expandTerminalOnFocus&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;sortByAttention&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;},&quot;simulateAgents&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;},&quot;showKeyHints&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;,&quot;system&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark' | 'light' | 'system'&quot;,&quot;section&quot;:&quot;Display&quot;},&quot;glass&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Glass&quot;},&quot;wallpaper&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Meadow&quot;,&quot;Dusk&quot;,&quot;Tide&quot;,&quot;Graphite&quot;],&quot;default&quot;:&quot;Meadow&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Glass&quot;},&quot;terminalOpacity&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:0.92,&quot;min&quot;:0.85,&quot;max&quot;:1,&quot;step&quot;:0.01,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Glass&quot;},&quot;columnWidth&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:540,&quot;min&quot;:400,&quot;max&quot;:760,&quot;step&quot;:20,&quot;unit&quot;:&quot;px&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;expandTerminalOnFocus&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Layout&quot;},&quot;sortByAttention&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;},&quot;simulateAgents&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;},&quot;showKeyHints&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Display&quot;}}">
+const WALLPAPERS = {
+  Meadow: 'radial-gradient(60% 70% at 12% 18%, #dfe9cc 0%, transparent 60%), radial-gradient(50% 60% at 88% 8%, #f1e2c2 0%, transparent 60%), radial-gradient(55% 65% at 78% 88%, #6f9479 0%, transparent 62%), radial-gradient(45% 55% at 22% 92%, #9fbf98 0%, transparent 60%), radial-gradient(40% 40% at 55% 45%, #c9d8b6 0%, transparent 70%), linear-gradient(135deg, #cfdcc0, #8fab8a)',
+  Dusk: 'radial-gradient(60% 70% at 15% 15%, #f3c9a8 0%, transparent 60%), radial-gradient(50% 60% at 85% 12%, #c7a6d8 0%, transparent 60%), radial-gradient(60% 70% at 75% 90%, #4f5b8f 0%, transparent 62%), radial-gradient(45% 55% at 20% 88%, #b07b98 0%, transparent 60%), linear-gradient(135deg, #e3b9a6, #6c6a9c)',
+  Tide: 'radial-gradient(60% 70% at 15% 18%, #cfe6ee 0%, transparent 60%), radial-gradient(50% 60% at 85% 10%, #e9efe2 0%, transparent 60%), radial-gradient(60% 70% at 78% 88%, #3f7387 0%, transparent 62%), radial-gradient(45% 55% at 22% 90%, #7fb0b7 0%, transparent 60%), linear-gradient(135deg, #bcd8df, #4f8597)',
+  Graphite: 'radial-gradient(60% 70% at 15% 15%, #4a4f47 0%, transparent 60%), radial-gradient(50% 60% at 85% 12%, #3b3f4a 0%, transparent 60%), radial-gradient(60% 70% at 75% 90%, #1c1f1b 0%, transparent 62%), radial-gradient(40% 50% at 40% 60%, #5c6b55 0%, transparent 65%), linear-gradient(135deg, #3a3e38, #151714)',
+};
 const COL = { fg:'var(--term-fg)', dim:'var(--term-dim)', faint:'var(--term-faint)', warm:'var(--ansi-yellow)', green:'var(--ansi-green)', red:'var(--ansi-red)', blue:'var(--ansi-blue)', white:'var(--term-white)' };
 const ST = {
   asking: { label:'Asking you', rank:0, dot:'var(--status-asking)', text:'var(--status-asking-text)', weight:600, tint:'var(--status-asking-tint)', chip:'var(--status-asking-chip)' },
@@ -292,7 +304,15 @@ class Component extends DCLogic {
     const p = this.props.theme ?? 'dark';
     const sys = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     const t = this.state.themeOverride || (p === 'system' ? sys : p);
-    if (document.documentElement.dataset.theme !== t) document.documentElement.dataset.theme = t;
+    const de = document.documentElement;
+    if (de.dataset.theme !== t) de.dataset.theme = t;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-transparency: reduce)').matches;
+    const glass = (this.props.glass ?? true) && !reduce ? 'on' : 'off';
+    if (de.dataset.glass !== glass) de.dataset.glass = glass;
+    const alpha = String(Math.max(0.85, Math.min(1, this.props.terminalOpacity ?? 0.92)));
+    if (de.style.getPropertyValue('--glass-term-alpha') !== alpha) de.style.setProperty('--glass-term-alpha', alpha);
+    const wp = glass === 'on' ? (WALLPAPERS[this.props.wallpaper ?? 'Meadow'] || WALLPAPERS.Meadow) : 'none';
+    if (de.style.getPropertyValue('--desktop-bg') !== wp) de.style.setProperty('--desktop-bg', wp);
   }
   componentDidMount() {
     this.applyTheme();
