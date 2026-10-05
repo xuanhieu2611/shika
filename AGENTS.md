@@ -29,7 +29,11 @@ Asking is not parsed. Ready means the output became quiet or the process exited,
 
 `MANUAL_CHECKS.md` records integrated acceptance results and remaining checks. `crates/shika-terminal/MANUAL_CHECKS.md` records terminal-specific checks. Implementation and passing unit tests do not establish every GUI check.
 
-Public code is MIT licensed. JetBrains Mono retains its separate OFL license. Original web mockups were removed; runtime icons live in `assets/macos/`.
+Public code is MIT licensed. JetBrains Mono retains its separate OFL license. `design/DESIGN.md` is the visual spec. `design/Shika v3.dc.html` is the reference prototype. Runtime icons live in `assets/macos/`.
+
+## Design
+
+Before any UI work, read `design/DESIGN.md` and follow it. That file is the source of truth for color, type, spacing, layout, focus, motion, copy, and icons.
 
 ## Using the app
 
