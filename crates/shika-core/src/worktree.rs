@@ -196,13 +196,16 @@ pub fn git_state(
         .output()
         .map_err(|_| Error::GitStatus(None))?;
     let default = default_branch(git, path_env, repo, worktree)?;
-    let has_own_commits = commits_not_in(git, path_env, worktree, &default)?;
+    let has_own_commits = commits_not_in(git, path_env, worktree, &[&default])?;
     let (unpushed, pushed) = if upstream.status.success() {
         let upstream = String::from_utf8_lossy(&upstream.stdout).trim().to_string();
-        let unpushed = commits_not_in(git, path_env, worktree, &upstream)?;
+        let unpushed = commits_not_in(git, path_env, worktree, &[&upstream])?;
         (unpushed, !unpushed)
     } else {
-        (has_own_commits, false)
+        // `git push origin HEAD` sets no upstream but still updates a
+        // remote-tracking ref, so any remote branch holding the commits counts.
+        let unpushed = commits_not_in(git, path_env, worktree, &[&default, "--remotes"])?;
+        (unpushed, has_own_commits && !unpushed)
     };
     Ok(crate::SessionGitState {
         dirty,
@@ -263,9 +266,10 @@ fn default_branch(git: &Path, path_env: &str, repo: &Path, worktree: &Path) -> R
     Err(Error::GitStatus(None))
 }
 
-fn commits_not_in(git: &Path, path_env: &str, worktree: &Path, reference: &str) -> Result<bool> {
+fn commits_not_in(git: &Path, path_env: &str, worktree: &Path, excluded: &[&str]) -> Result<bool> {
     let output = git_cmd(git, path_env, worktree)
-        .args(["rev-list", "--count", "HEAD", "--not", reference])
+        .args(["rev-list", "--count", "HEAD", "--not"])
+        .args(excluded)
         .output()
         .map_err(|_| Error::GitStatus(None))?;
     if !output.status.success() {
