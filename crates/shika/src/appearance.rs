@@ -321,16 +321,11 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
         },
         card_shadow_blur: if dark { 8. } else { 6. },
         row_selected: if dark { rgb(0x363A33) } else { rgb(0xE8EBE2) },
-        overlay: pick(
-            rgb(0xFAFAF7),
-            rgb(0x242722),
-            tint(0xFAFBF7, 0.80),
-            tint(0x242722, 0.78),
-        ),
-        toast_bg: tint(
-            if dark { 0x363A33 } else { 0x252823 },
-            if glass { 0.86 } else { 1.0 },
-        ),
+        // Solid in glass too. The window-server blur only reaches the desktop
+        // and GPUI has no backdrop blur, so a translucent popup would show the
+        // cards and terminal text under it, unblurred.
+        overlay: if dark { rgb(0x242722) } else { rgb(0xFAFAF7) },
+        toast_bg: if dark { rgb(0x363A33) } else { rgb(0x252823) },
         toast_fg: if dark { rgb(0xF1F4EC) } else { rgb(0xE9ECE3) },
         toast_shadow: tint(0x000000, 0.35),
         scrim: pick(
@@ -561,6 +556,21 @@ mod tests {
         );
         assert!((dark.card_rest.a - 0.045).abs() < 0.001);
         assert_eq!(dark.card_selected.a, 1.0);
+    }
+
+    #[test]
+    fn popups_stay_solid_in_glass() {
+        let appearance = Appearance {
+            opacity: 40,
+            blur: 30,
+            translucency: Translucency::SidebarAndTerminal,
+        };
+        for dark in [false, true] {
+            let chrome = chrome_for(&appearance, dark, false);
+            assert!(chrome.glass);
+            assert_eq!(chrome.overlay.a, 1.0);
+            assert_eq!(chrome.toast_bg.a, 1.0);
+        }
     }
 
     #[test]
