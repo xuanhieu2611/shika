@@ -17,7 +17,8 @@ mod native {
     use objc2_user_notifications::{
         UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
         UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
-        UNNotificationSettings, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+        UNNotificationSettings, UNNotificationSound, UNUserNotificationCenter,
+        UNUserNotificationCenterDelegate,
     };
     use std::cell::Cell;
     use std::io::Write;
@@ -81,8 +82,11 @@ mod native {
                 _notification: &UNNotification,
                 complete: &DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
             ) {
+                // Sound plays the alert attached to the content. No sound attached
+                // means this option is quiet.
                 complete.call((UNNotificationPresentationOptions::Banner
-                    | UNNotificationPresentationOptions::List,));
+                    | UNNotificationPresentationOptions::List
+                    | UNNotificationPresentationOptions::Sound,));
             }
         }
     );
@@ -146,11 +150,17 @@ mod native {
             })
         }
 
-        pub fn post(&self, session: &str, project: &str, task: &str) {
-            self.diagnostics.write(&format!("posting={session}"));
+        pub fn post(&self, session: &str, project: &str, task: &str, sound: bool) {
+            self.diagnostics
+                .write(&format!("posting={session} sound={sound}"));
             let content = UNMutableNotificationContent::new();
             content.setTitle(&NSString::from_str(&super::title(project, task)));
             content.setBody(&NSString::from_str("Ready to check"));
+            // The system alert, the sound chosen in System Settings. A missing
+            // sound is why the banner used to arrive silently.
+            if sound {
+                content.setSound(Some(&UNNotificationSound::defaultSound()));
+            }
             let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
                 &NSString::from_str(session),
                 &content,
@@ -269,13 +279,13 @@ impl Notifications {
         }
     }
 
-    pub fn post(&self, session: &str, project: &str, task: &str) {
+    pub fn post(&self, session: &str, project: &str, task: &str, sound: bool) {
         #[cfg(target_os = "macos")]
         if let Some(native) = &self.native {
-            native.post(session, project, task);
+            native.post(session, project, task, sound);
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = (session, project, task);
+        let _ = (session, project, task, sound);
     }
 }
 

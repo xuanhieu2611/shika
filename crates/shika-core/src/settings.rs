@@ -155,8 +155,12 @@ impl<'de> Deserialize<'de> for FontSize {
     }
 }
 
+fn notification_sound_on() -> bool {
+    true
+}
+
 /// `settings.json`. A missing file, or a missing field, takes the default.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub appearance: Appearance,
@@ -165,6 +169,21 @@ pub struct Settings {
     pub branch_prefix: String,
     /// Terminal text size. Missing means 12.5.
     pub font_size: FontSize,
+    /// Play the system alert sound with the ready banner. Missing means on.
+    /// A bool's own default is false, so this field names its default.
+    #[serde(default = "notification_sound_on")]
+    pub notification_sound: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::default(),
+            branch_prefix: String::new(),
+            font_size: FontSize::default(),
+            notification_sound: true,
+        }
+    }
 }
 
 pub struct SettingsFile {
@@ -239,6 +258,7 @@ mod tests {
         assert_eq!(settings, Settings::default());
         assert!(settings.appearance.is_opaque());
         assert_eq!(settings.font_size.points(), 12.5);
+        assert!(settings.notification_sound);
     }
 
     #[test]
@@ -253,12 +273,14 @@ mod tests {
             },
             branch_prefix: "hieu/".into(),
             font_size: FontSize::from_text("14.5").unwrap(),
+            notification_sound: false,
         };
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"translucency\": \"sidebarAndTerminal\""));
         assert!(text.contains("\"branchPrefix\": \"hieu/\""));
         assert!(text.contains("\"fontSize\": 14.5"));
+        assert!(text.contains("\"notificationSound\": false"));
         assert_eq!(file.load().unwrap(), settings);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -278,6 +300,7 @@ mod tests {
         assert_eq!(settings.appearance.translucency, Translucency::Sidebar);
         assert_eq!(settings.branch_prefix, "");
         assert_eq!(settings.font_size.points(), 32.0);
+        assert!(settings.notification_sound);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -317,6 +340,7 @@ mod tests {
         let settings = SettingsFile::open(path.clone()).load().unwrap();
         assert_eq!(settings.font_size, FontSize::default());
         assert_eq!(settings.branch_prefix, "hieu/");
+        assert!(settings.notification_sound);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
