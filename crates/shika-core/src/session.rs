@@ -46,6 +46,16 @@ impl SessionGitState {
     }
 }
 
+/// What a task changed against where its branch left the default branch:
+/// committed work, uncommitted edits, and untracked files. Binary files
+/// count as files with no lines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiffStat {
+    pub files: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
 /// What [`crate::Core::open_shell`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShellOpen {
