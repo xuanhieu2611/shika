@@ -9,12 +9,18 @@ use crate::error::{Error, Result};
 use crate::worktree::git_cmd;
 
 /// A saved repository. The JSON shape is the one `projects.json` has always
-/// had, so files written by the Tauri build load unchanged.
+/// had, plus an optional `baseBranch`, so files written by the Tauri build
+/// load unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
     pub name: String,
     pub path: PathBuf,
+    /// The branch new agents start from, as the user typed it (`dev`).
+    /// None means the remote default branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,11 +76,27 @@ impl ProjectDb {
             id: new_id(&projects),
             name: name.clone(),
             path: toplevel,
+            base_branch: None,
         };
         projects.push(project.clone());
         save(&self.path, &projects)?;
         let note = nested.then(|| format!("Using the git root \"{name}\"."));
         Ok(ProjectAdded { project, note })
+    }
+
+    /// Saves the project's base branch, or clears it with None. The caller
+    /// has already checked that the branch exists.
+    pub fn set_base_branch(&self, id: &str, branch: Option<String>) -> Result<Project> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut projects = load(&self.path)?;
+        let project = projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .ok_or(Error::UnknownProject)?;
+        project.base_branch = branch;
+        let project = project.clone();
+        save(&self.path, &projects)?;
+        Ok(project)
     }
 
     pub fn remove(&self, id: &str) -> Result<()> {
@@ -346,6 +368,37 @@ mod tests {
             ["beta"]
         );
         assert_eq!(db.remove("missing").unwrap_err(), Error::UnknownProject);
+    }
+
+    #[test]
+    fn a_base_branch_is_saved_and_cleared() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let file = scratch.path.join("projects.json");
+        let db = ProjectDb::open(file.clone());
+        let id = add(&db, &repo).unwrap().project.id;
+        // Unset is left out of the file, as in files written before it existed.
+        assert!(!fs::read_to_string(&file).unwrap().contains("baseBranch"));
+
+        let saved = db.set_base_branch(&id, Some("dev".into())).unwrap();
+        assert_eq!(saved.base_branch.as_deref(), Some("dev"));
+        assert!(
+            fs::read_to_string(&file)
+                .unwrap()
+                .contains("\"baseBranch\": \"dev\"")
+        );
+        assert_eq!(
+            ProjectDb::open(file.clone()).get(&id).unwrap().base_branch,
+            Some("dev".into())
+        );
+
+        db.set_base_branch(&id, None).unwrap();
+        assert_eq!(db.get(&id).unwrap().base_branch, None);
+        assert!(!fs::read_to_string(&file).unwrap().contains("baseBranch"));
+        assert_eq!(
+            db.set_base_branch("missing", None).unwrap_err(),
+            Error::UnknownProject
+        );
     }
 
     #[test]
