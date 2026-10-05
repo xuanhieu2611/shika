@@ -12,8 +12,8 @@ use gpui::{
 use model::{PromptCapture, Status, TitleWatch, visible_indices};
 use notifications::Notifications;
 use shika_core::{
-    Appearance, CliCatalog, Core, JournalEntry, Project, PtyEvent, PtyId, PtySize, Session,
-    SessionGitState, Settings, Translucency,
+    Appearance, CliCatalog, Core, FontSize, JournalEntry, Project, PtyEvent, PtyId, PtySize,
+    Session, SessionGitState, Settings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize,
@@ -106,6 +106,7 @@ impl Pane {
         core: Arc<Core>,
         capture: bool,
         opacity: f32,
+        font_size: f32,
         palette: Palette,
         window: &mut Window,
         cx: &mut Context<Shika>,
@@ -125,7 +126,10 @@ impl Pane {
         let view = cx.new(|cx| {
             let mut view = TerminalView::new(
                 terminal.clone(),
-                TerminalConfig::default(),
+                TerminalConfig {
+                    font_size: px(font_size),
+                    ..TerminalConfig::default()
+                },
                 palette,
                 window,
                 cx,
@@ -173,9 +177,9 @@ enum Overlay {
     Leftovers,
     RemoveLeftover(usize),
     RemoveProject(String),
-    /// `row` is the selected setting: opacity, blur, translucency, then the
-    /// branch prefix. `edit` holds digits typed into the selected number, or
-    /// the prefix being typed, not yet applied.
+    /// `row` is the selected setting: opacity, blur, translucency, font size,
+    /// then the branch prefix. `edit` holds digits typed into the selected
+    /// number, or the prefix being typed, not yet applied.
     Settings {
         row: usize,
         edit: Option<String>,
@@ -197,6 +201,8 @@ struct Shika {
     notifications: Notifications,
     clicks: std::sync::mpsc::Receiver<String>,
     appearance: Appearance,
+    /// Terminal text size. New panes and live ones both use it.
+    font_size: FontSize,
     /// Last read of macOS Reduce transparency. Glass stays off while this is set.
     reduce_transparency: bool,
     /// Keeps the light and dark listener alive for the life of the window.
@@ -235,6 +241,7 @@ impl Shika {
             Settings::default()
         });
         let appearance = settings.appearance;
+        let font_size = settings.font_size;
         let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
         let reduce_transparency = appearance::reduce_transparency();
         let entity = cx.entity().downgrade();
@@ -269,6 +276,7 @@ impl Shika {
             notifications,
             clicks,
             appearance,
+            font_size,
             reduce_transparency,
             appearance_watch,
             title_drag: false,
@@ -464,6 +472,7 @@ impl Shika {
             self.core.clone(),
             true,
             opacity,
+            self.font_size.points(),
             self.terminal_palette(window),
             window,
             cx,
@@ -589,6 +598,7 @@ impl Shika {
             self.core.clone(),
             false,
             opacity,
+            self.font_size.points(),
             self.terminal_palette(window),
             window,
             cx,
@@ -1025,6 +1035,10 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         self.commit_setting_edit(window, cx);
+        if row == FONT_ROW {
+            self.set_font_size(self.font_size.step(delta), cx);
+            return;
+        }
         let mut next = self.appearance;
         match row {
             0 => next = next.with_opacity(i64::from(next.opacity) + delta * 5),
@@ -1074,12 +1088,21 @@ impl Shika {
             }
             return;
         }
+        if row == FONT_ROW {
+            if let Some(text) = edit.take()
+                && let Some(size) = FontSize::from_text(&text)
+            {
+                self.set_font_size(size, cx);
+            }
+            return;
+        }
         let Some(value) = edit.take().and_then(|text| text.parse::<i64>().ok()) else {
             return;
         };
         let next = match row {
             0 => self.appearance.with_opacity(value),
-            _ => self.appearance.with_blur(value),
+            1 => self.appearance.with_blur(value),
+            _ => return,
         };
         self.set_appearance(next, window, cx);
     }
@@ -1091,6 +1114,24 @@ impl Shika {
         self.reduce_transparency = appearance::reduce_transparency();
         appearance::apply(&next, window);
         self.push_terminal_theme(appearance::is_dark(window.appearance()), cx);
+        self.save_settings();
+        cx.notify();
+    }
+    fn set_font_size(&mut self, next: FontSize, cx: &mut Context<Self>) {
+        if next == self.font_size {
+            return;
+        }
+        self.font_size = next;
+        let size = px(next.points());
+        for card in &self.cards {
+            for pane in std::iter::once(&card.agent).chain(card.shell.as_ref()) {
+                pane.view.update(cx, |view, cx| {
+                    let mut config = view.config().clone();
+                    config.font_size = size;
+                    view.set_config(config, cx);
+                });
+            }
+        }
         self.save_settings();
         cx.notify();
     }
@@ -1131,6 +1172,7 @@ impl Shika {
         let settings = Settings {
             appearance: self.appearance,
             branch_prefix: self.branch_prefix.clone(),
+            font_size: self.font_size,
         };
         if let Err(e) = self.core.save_settings(&settings) {
             self.message(e.to_string());
@@ -1268,11 +1310,17 @@ impl Shika {
                 Some(Overlay::Settings { row, edit }) => {
                     let at = *row;
                     let digit = key.len() == 1 && key.as_bytes()[0].is_ascii_digit();
-                    let number_row = at < 2;
+                    let number_row = matches!(at, 0 | 1 | FONT_ROW);
+                    let max_len = if at == FONT_ROW { 4 } else { 3 };
                     match (edit.as_mut(), key) {
-                        (Some(text), _) if digit => {
-                            if text.len() < 3 {
-                                text.push_str(key)
+                        (Some(text), _) if digit || (at == FONT_ROW && key == ".") => {
+                            let accept = if key == "." {
+                                !text.is_empty() && !text.contains('.')
+                            } else {
+                                true
+                            };
+                            if accept && text.len() < max_len {
+                                text.push_str(key);
                             }
                         }
                         (Some(text), "backspace") => {
@@ -1327,9 +1375,10 @@ impl Shika {
         cx.stop_propagation();
     }
 }
-/// Settings rows: opacity, blur, translucency, then the branch prefix.
-const SETTING_ROWS: usize = 4;
-const PREFIX_ROW: usize = 3;
+/// Settings rows: opacity, blur, translucency, font size, then the branch prefix.
+const SETTING_ROWS: usize = 5;
+const FONT_ROW: usize = 3;
+const PREFIX_ROW: usize = 4;
 impl Shika {
     /// The branch prefix row: a text field. Enter or a click starts typing.
     fn prefix_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1394,7 +1443,7 @@ impl Shika {
         &self,
         row: usize,
         label: &'static str,
-        value: u8,
+        value: &str,
         unit: &'static str,
         chrome: &Chrome,
         cx: &mut Context<Self>,
@@ -1419,7 +1468,7 @@ impl Shika {
         };
         let field = div()
             .id(SharedString::from(format!("setting-{row}-value")))
-            .w(px(64.))
+            .w(px(76.))
             .h(px(28.))
             .px_2()
             .flex()
@@ -1476,7 +1525,7 @@ impl Shika {
                             "+",
                             chrome.sunken,
                         )
-                            .on_click(step(1)),
+                        .on_click(step(1)),
                     ),
             )
     }
@@ -2161,14 +2210,19 @@ impl Render for Shika {
                         "Discard stops the session and deletes the worktree and local branch.",
                     );
                     let i = *index;
-                    panel = panel.child(button("discard", "Discard changes  d", chrome.sunken).on_click(
-                        cx.listener(move |this, _, window, cx| this.finish_close(i, 1, window, cx)),
-                    ));
+                    panel = panel.child(
+                        button("discard", "Discard changes  d", chrome.sunken).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.finish_close(i, 1, window, cx)
+                            }),
+                        ),
+                    );
                     if state.can_push() {
-                        panel =
-                            panel.child(button("push", "Push changes  p", chrome.sunken).on_click(cx.listener(
+                        panel = panel.child(
+                            button("push", "Push changes  p", chrome.sunken).on_click(cx.listener(
                                 move |this, _, window, cx| this.finish_close(i, 2, window, cx),
-                            )));
+                            )),
+                        );
                     }
                 }
                 Overlay::Leftovers => {
@@ -2228,13 +2282,18 @@ impl Render for Shika {
                         .child(div().text_size(px(16.)).child("Remove leftover worktree?"))
                         .child(self.leftovers[i].path.display().to_string())
                         .child("This deletes any uncommitted work and the local branch.")
-                        .child(button("remove-confirm", "Discard worktree  d", chrome.sunken).on_click(
-                            cx.listener(move |this, _, _, cx| this.remove_leftover(i, cx)),
-                        ));
+                        .child(
+                            button("remove-confirm", "Discard worktree  d", chrome.sunken)
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.remove_leftover(i, cx)),
+                                ),
+                        );
                 }
                 Overlay::Settings { row, edit } => {
-                    let a = &self.appearance;
-                    let both = a.translucency == Translucency::SidebarAndTerminal;
+                    let opacity = self.appearance.opacity.to_string();
+                    let blur = self.appearance.blur.to_string();
+                    let font = self.font_size.text();
+                    let both = self.appearance.translucency == Translucency::SidebarAndTerminal;
                     let choice = |id: &'static str, text: &'static str, on: bool| {
                         button(id, text, chrome.sunken).when(on, |d| {
                             d.bg(chrome.primary_bg).text_color(chrome.primary_fg)
@@ -2247,8 +2306,15 @@ impl Render for Shika {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child("Settings"),
                         )
-                        .child(self.setting_row(0, "Background opacity", a.opacity, "%", &chrome, cx))
-                        .child(self.setting_row(1, "Background blur", a.blur, "", &chrome, cx))
+                        .child(self.setting_row(
+                            0,
+                            "Background opacity",
+                            &opacity,
+                            "%",
+                            &chrome,
+                            cx,
+                        ))
+                        .child(self.setting_row(1, "Background blur", &blur, "", &chrome, cx))
                         .child(
                             div()
                                 .p_2()
@@ -2282,13 +2348,14 @@ impl Render for Shika {
                                         ),
                                 ),
                         )
+                        .child(self.setting_row(FONT_ROW, "Font size", &font, "px", &chrome, cx))
                         .child(self.prefix_row(&chrome, cx))
                         .child(
                             div()
                                 .text_size(px(10.5))
                                 .text_color(chrome.meta)
                                 .child(
-                                    "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%. The prefix starts each new branch name, like hieu/.",
+                                    "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%. Font size is the terminal text, 8 to 32. The prefix starts each new branch name, like hieu/.",
                                 ),
                         )
                         .child(match (edit.is_some(), *row == PREFIX_ROW) {
