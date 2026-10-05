@@ -26,7 +26,42 @@ use std::{
     time::{Duration, Instant},
 };
 
-gpui::actions!(shika, [Quit, Hide, HideOthers, ShowAll, OpenSettings]);
+gpui::actions!(
+    shika,
+    [
+        Quit,
+        Hide,
+        HideOthers,
+        ShowAll,
+        OpenSettings,
+        NewAgent,
+        SwitchTerminal,
+        NextAgent,
+        PreviousAgent
+    ]
+);
+
+/// Agent-only traversal follows visible row order, skipping project headers.
+fn adjacent_agent(
+    rows: &[Selection],
+    selection: Option<&Selection>,
+    delta: isize,
+) -> Option<usize> {
+    let at = selection.and_then(|selected| rows.iter().position(|row| row == selected));
+    for step in 1..=rows.len() {
+        let index = match at {
+            Some(at) => {
+                (at as isize + delta * step as isize).rem_euclid(rows.len() as isize) as usize
+            }
+            None if delta > 0 => step - 1,
+            None => rows.len() - step,
+        };
+        if let Selection::Card(i) = rows[index] {
+            return Some(i);
+        }
+    }
+    None
+}
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -178,7 +213,7 @@ struct Card {
     /// What the task changed, fetched each time the card turns Ready.
     diff: Option<DiffStat>,
 }
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Selection {
     Project(String),
     Card(usize),
@@ -218,6 +253,10 @@ struct Shika {
     focus: FocusHandle,
     catalog: Option<CliCatalog>,
     overlay: Option<Overlay>,
+    /// Non-workflow overlays return to the surface that opened them.
+    overlay_return_focus: Option<FocusHandle>,
+    sidebar_scroll: gpui::ScrollHandle,
+    last_revealed_selection: Option<Selection>,
     busy: bool,
     toast: Option<(String, Instant)>,
     leftovers: Vec<JournalEntry>,
@@ -295,6 +334,9 @@ impl Shika {
             } else {
                 Some(Overlay::Leftovers)
             },
+            overlay_return_focus: None,
+            sidebar_scroll: gpui::ScrollHandle::new(),
+            last_revealed_selection: None,
             busy: false,
             toast: if load_errors.is_empty() {
                 None
@@ -419,6 +461,26 @@ impl Shika {
         window.focus(&self.focus, cx);
         cx.notify();
     }
+    fn move_agent(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let terminal_focused = !self.focus.is_focused(window);
+        if let Some(i) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) {
+            self.selection = Some(Selection::Card(i));
+            if terminal_focused {
+                self.focus_terminal(window, cx);
+            }
+            cx.notify();
+        }
+    }
+    fn restore_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self
+            .overlay_return_focus
+            .take()
+            .unwrap_or_else(|| self.focus.clone());
+        window.focus(&focus, cx);
+    }
     fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -435,11 +497,12 @@ impl Shika {
         }
     }
     fn picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy || self.overlay.is_some() {
             return;
         }
         if let Some(project) = self.project_id() {
             self.prefetch_base(project.clone(), cx);
+            self.overlay_return_focus = window.focused(cx);
             self.overlay = Some(Overlay::Picker { project, index: 0 });
             window.focus(&self.focus, cx);
             cx.notify();
@@ -503,6 +566,7 @@ impl Shika {
         }
         let project = project.clone();
         self.overlay = None;
+        self.overlay_return_focus = None;
         self.busy = true;
         let opacity = self.terminal_opacity();
         let pane = Pane::new(
@@ -645,6 +709,11 @@ impl Shika {
         let state = pane.state.clone();
         let terminal = pane.terminal.clone();
         self.cards[index].shell = Some(pane);
+        if focus {
+            // Focus the new view now. Its host queues typeahead until the
+            // PTY is bound, and startup must not steal focus back later.
+            self.focus_terminal(window, cx);
+        }
         let core = self.core.clone();
         self.busy = true;
         cx.notify();
@@ -679,13 +748,17 @@ impl Shika {
                 match result {
                     Ok(opened) => {
                         bind_host(&this.core, &state, opened.pty);
-                        if focus {
-                            this.focus_terminal(window, cx);
-                        }
                     }
                     Err(e) => {
+                        let shell_focused = this.cards[index]
+                            .shell
+                            .as_ref()
+                            .is_some_and(|pane| pane.view.focus_handle(cx).is_focused(window));
                         this.cards[index].shell = None;
                         this.cards[index].show_shell = false;
+                        if shell_focused {
+                            this.focus_terminal(window, cx);
+                        }
                         this.message(e.to_string());
                     }
                 };
@@ -955,6 +1028,7 @@ impl Shika {
             return;
         }
         self.prefetch_base(project.clone(), cx);
+        self.overlay_return_focus = window.focused(cx);
         self.overlay = Some(Overlay::Picker { project, index: 0 });
         window.focus(&self.focus, cx);
         cx.notify();
@@ -1015,6 +1089,7 @@ impl Shika {
             .and_then(|p| p.base_branch.clone())
             .unwrap_or_default();
         self.refresh_bases(vec![project.clone()], cx);
+        self.overlay_return_focus = window.focused(cx);
         self.overlay = Some(Overlay::Base {
             project,
             text,
@@ -1025,7 +1100,7 @@ impl Shika {
     }
     /// Saves the typed base branch once core finds it, or shows why not.
     /// Empty goes back to the default branch.
-    fn apply_base(&mut self, cx: &mut Context<Self>) {
+    fn apply_base(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -1036,13 +1111,13 @@ impl Shika {
         let core = self.core.clone();
         self.busy = true;
         cx.notify();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let id = project.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move { core.set_project_base(&id, &text) })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
                     Ok(saved) => {
@@ -1052,6 +1127,7 @@ impl Shika {
                         if matches!(&this.overlay, Some(Overlay::Base { project: open, .. }) if *open == project)
                         {
                             this.overlay = None;
+                            this.restore_overlay_focus(window, cx);
                         }
                         this.refresh_bases(vec![project], cx);
                     }
@@ -1166,6 +1242,7 @@ impl Shika {
         };
         self.overlay = None;
         if let Some(i) = shell {
+            self.overlay_return_focus = None;
             self.selection = Some(Selection::Card(i));
             if let Some(i) = self.selected_card() {
                 if !self.cards[i].show_shell {
@@ -1175,7 +1252,7 @@ impl Shika {
                 }
             }
         } else {
-            window.focus(&self.focus, cx);
+            self.restore_overlay_focus(window, cx);
         }
         cx.notify();
     }
@@ -1249,6 +1326,7 @@ impl Shika {
         if self.busy || self.overlay.is_some() {
             return;
         }
+        self.overlay_return_focus = window.focused(cx);
         self.overlay = Some(Overlay::Settings { row: 0, edit: None });
         window.focus(&self.focus, cx);
         cx.notify();
@@ -1475,7 +1553,7 @@ impl Shika {
         if let Some(Overlay::Base { text, error, .. }) = &mut self.overlay {
             if !self.busy {
                 match stroke.key.as_str() {
-                    "enter" => self.apply_base(cx),
+                    "enter" => self.apply_base(window, cx),
                     "escape" => self.cancel_overlay(window, cx),
                     "backspace" => {
                         text.pop();
@@ -1946,6 +2024,14 @@ impl Shika {
                     .font_weight(FontWeight::MEDIUM)
                     .child("New agent")
                     .child(kbd("n", chrome.sunken, chrome.ink_3))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| KeyTip {
+                            bg: tip_bg,
+                            fg: tip_fg,
+                            text: "New agent  ⌘N".into(),
+                        })
+                        .into()
+                    })
                     .on_click(cx.listener(|this, _, window, cx| this.picker(window, cx))),
             );
         self.title_drag(row, cx)
@@ -2020,6 +2106,7 @@ impl Shika {
         home: Option<&std::path::Path>,
         chrome: &Chrome,
         cards_focused: bool,
+        reveal_selection: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = project.id.clone();
@@ -2036,6 +2123,10 @@ impl Shika {
         let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
         let header = div()
             .id(SharedString::from(format!("project-{id}")))
+            .relative()
+            .when(selected && reveal_selection, |d| {
+                d.child(self.selection_reveal(cx))
+            })
             .group(group.clone())
             .flex()
             .items_center()
@@ -2176,7 +2267,13 @@ impl Shika {
         let shown = visible_indices(indices.len(), selected_index);
         let visible = shown.len();
         for at in shown {
-            column = column.child(self.card_view(indices[at], chrome, cards_focused, cx));
+            column = column.child(self.card_view(
+                indices[at],
+                chrome,
+                cards_focused,
+                reveal_selection,
+                cx,
+            ));
         }
         if indices.len() > visible {
             column = column.child(
@@ -2198,6 +2295,7 @@ impl Shika {
         i: usize,
         chrome: &Chrome,
         cards_focused: bool,
+        reveal_selection: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let card = &self.cards[i];
@@ -2357,7 +2455,49 @@ impl Shika {
                     )
                 })
         };
-        base.child(task).child(meta)
+        base.child(task)
+            .child(meta)
+            .when(selected && reveal_selection, |d| {
+                d.child(self.selection_reveal(cx))
+            })
+    }
+
+    /// Measure the selected row after layout, then reveal only the clipped
+    /// edge. Do this on selection changes, not on every terminal redraw, so
+    /// manual scrolling stays under the user's control.
+    fn selection_reveal(&self, cx: &Context<Self>) -> impl IntoElement {
+        let scroll = self.sidebar_scroll.clone();
+        let selection = self.selection.clone();
+        let entity = cx.entity().downgrade();
+        div().absolute().inset_0().child(
+            gpui::canvas(
+                move |bounds, window, _cx| {
+                    let viewport = scroll.bounds();
+                    let delta = model::reveal_delta(
+                        bounds.top().into(),
+                        bounds.bottom().into(),
+                        viewport.top().into(),
+                        viewport.bottom().into(),
+                    );
+                    if delta == 0. {
+                        return;
+                    }
+                    let scroll = scroll.clone();
+                    let selection = selection.clone();
+                    let entity = entity.clone();
+                    window.on_next_frame(move |_, cx| {
+                        let _ = entity.update(cx, |this, cx| {
+                            if this.selection == selection {
+                                scroll.set_offset(scroll.offset() + gpui::point(px(0.), px(delta)));
+                                cx.notify();
+                            }
+                        });
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .size_full(),
+        )
     }
 
     /// Add project, leftovers, and the key hints.
@@ -2465,6 +2605,7 @@ impl Shika {
                 .map(|s| model::tilde(&s.worktree, home))
                 .unwrap_or("Creating worktree...".into());
             let term_hover = chrome.term_hover;
+            let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
             let header = div()
                 .id("terminal-header")
                 .h(px(BAR_HEIGHT))
@@ -2479,6 +2620,7 @@ impl Shika {
                 .border_color(chrome.term_line)
                 .child(
                     div()
+                        .id("terminal-toggle")
                         .occlude()
                         .flex_none()
                         .flex()
@@ -2486,6 +2628,14 @@ impl Shika {
                         .gap(px(2.))
                         .rounded(px(7.))
                         .bg(chrome.term_seg)
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| KeyTip {
+                                bg: tip_bg,
+                                fg: tip_fg,
+                                text: "Switch agent/shell  ⌘↵".into(),
+                            })
+                            .into()
+                        })
                         .child(
                             segment(
                                 "agent",
@@ -2970,10 +3120,9 @@ impl Shika {
                     .child(
                         dialog_buttons()
                             .child(self.cancel_button("Cancel", chrome, cx))
-                            .child(
-                                primary_button("set-base", action, "↵", chrome)
-                                    .on_click(cx.listener(|this, _, _, cx| this.apply_base(cx))),
-                            ),
+                            .child(primary_button("set-base", action, "↵", chrome).on_click(
+                                cx.listener(|this, _, window, cx| this.apply_base(window, cx)),
+                            )),
                     )
             }
             Overlay::Settings { row, edit } => {
@@ -3401,8 +3550,11 @@ impl Render for Shika {
         let cards_focused = self.focus.is_focused(window);
         let chrome = self.chrome(window);
         let home = home_dir();
+        let reveal_selection = self.selection != self.last_revealed_selection;
+        self.last_revealed_selection = self.selection.clone();
         let mut projects = div()
             .id("projects")
+            .track_scroll(&self.sidebar_scroll)
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -3417,6 +3569,7 @@ impl Render for Shika {
                 home.as_deref(),
                 &chrome,
                 cards_focused,
+                reveal_selection,
                 cx,
             ));
         }
@@ -3436,6 +3589,19 @@ impl Render for Shika {
             .child(self.footer(&chrome, cx));
         let mut root = div()
             .track_focus(&self.focus)
+            .key_context("Shika")
+            .on_action(cx.listener(|this, _: &NewAgent, window, cx| this.picker(window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchTerminal, window, cx| {
+                if !this.busy && this.overlay.is_none() {
+                    this.toggle(true, window, cx);
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &NextAgent, window, cx| this.move_agent(1, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &PreviousAgent, window, cx| this.move_agent(-1, window, cx)),
+            )
             .capture_key_down(cx.listener(Self::key))
             .on_action(
                 cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
@@ -3492,6 +3658,10 @@ fn main() -> anyhow::Result<()> {
         }
         shika_terminal::init(cx);
         cx.bind_keys([
+            gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
+            gpui::KeyBinding::new("cmd-enter", SwitchTerminal, Some("Shika")),
+            gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
+            gpui::KeyBinding::new("cmd-[", PreviousAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-q", Quit, None),
             gpui::KeyBinding::new("cmd-,", OpenSettings, None),
             gpui::KeyBinding::new("cmd-h", Hide, None),
@@ -3501,17 +3671,26 @@ fn main() -> anyhow::Result<()> {
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-        cx.set_menus([gpui::Menu::new("Shika").items([
-            gpui::MenuItem::action("Settings...", OpenSettings),
-            gpui::MenuItem::separator(),
-            gpui::MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
-            gpui::MenuItem::separator(),
-            gpui::MenuItem::action("Hide Shika", Hide),
-            gpui::MenuItem::action("Hide others", HideOthers),
-            gpui::MenuItem::action("Show all", ShowAll),
-            gpui::MenuItem::separator(),
-            gpui::MenuItem::action("Quit Shika", Quit),
-        ])]);
+        cx.set_menus([
+            gpui::Menu::new("Shika").items([
+                gpui::MenuItem::action("Settings...", OpenSettings),
+                gpui::MenuItem::separator(),
+                gpui::MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
+                gpui::MenuItem::separator(),
+                gpui::MenuItem::action("Hide Shika", Hide),
+                gpui::MenuItem::action("Hide others", HideOthers),
+                gpui::MenuItem::action("Show all", ShowAll),
+                gpui::MenuItem::separator(),
+                gpui::MenuItem::action("Quit Shika", Quit),
+            ]),
+            gpui::Menu::new("Agent").items([
+                gpui::MenuItem::action("New agent", NewAgent),
+                gpui::MenuItem::action("Switch agent/shell", SwitchTerminal),
+                gpui::MenuItem::separator(),
+                gpui::MenuItem::action("Next agent", NextAgent),
+                gpui::MenuItem::action("Previous agent", PreviousAgent),
+            ]),
+        ]);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -3559,6 +3738,49 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+
+    #[test]
+    fn agent_navigation_skips_headers_and_wraps_in_both_directions() {
+        let rows = vec![
+            Selection::Project("a".into()),
+            Selection::Card(2),
+            Selection::Card(0),
+            Selection::Project("b".into()),
+            Selection::Card(1),
+        ];
+        assert_eq!(adjacent_agent(&rows, Some(&Selection::Card(0)), 1), Some(1));
+        assert_eq!(adjacent_agent(&rows, Some(&Selection::Card(1)), 1), Some(2));
+        assert_eq!(
+            adjacent_agent(&rows, Some(&Selection::Card(2)), -1),
+            Some(1)
+        );
+        assert_eq!(
+            adjacent_agent(&rows, Some(&Selection::Project("b".into())), -1),
+            Some(0)
+        );
+        assert_eq!(
+            adjacent_agent(&rows, Some(&Selection::Project("b".into())), 1),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn agent_navigation_handles_empty_single_and_missing_selection() {
+        assert_eq!(adjacent_agent(&[], None, 1), None);
+        let rows = vec![Selection::Project("a".into()), Selection::Card(0)];
+        assert_eq!(adjacent_agent(&rows, None, 1), Some(0));
+        assert_eq!(adjacent_agent(&rows, None, -1), Some(0));
+        assert_eq!(adjacent_agent(&rows, Some(&Selection::Card(0)), 1), Some(0));
+        assert_eq!(
+            adjacent_agent(&rows, Some(&Selection::Card(0)), -1),
+            Some(0)
+        );
+        assert_eq!(adjacent_agent(&rows[..1], None, 1), None);
+        assert_eq!(
+            adjacent_agent(&rows, Some(&Selection::Card(9)), -1),
+            Some(0)
+        );
+    }
 
     #[test]
     fn startup_query_replies_and_typeahead_survive_until_pty_binding() {

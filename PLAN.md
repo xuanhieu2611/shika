@@ -196,7 +196,9 @@ Focus starts on the cards. `j` / `k` and arrows move through project headers and
 
 `Enter` focuses the terminal. `Ctrl+Q` returns to the cards. `Escape` is typed into the terminal. `g` toggles agent and shell. `c` closes.
 
-Ignore this map while the terminal is focused, except `Ctrl+Q`. Also ignore it while a text field is focused, and while the picker or close dialog is open.
+Ignore the plain-key map while the terminal is focused, except `Ctrl+Q`. Also ignore it while a text field is focused, and while the picker or close dialog is open.
+
+The native Command flow layer works from cards or a terminal: `Cmd+Enter` switches agent/shell and focuses the destination, `Cmd+]` / `Cmd+[` select the next/previous agent in current row order (skip project headers, wrap, and preserve terminal versus card focus), and `Cmd+N` opens New for the current project. These actions are blocked while busy or while any overlay is open. The Agent menu exposes all four bindings; New and the terminal toggle have tooltips. Existing plain keys are unchanged. Picker cancel, Settings dismissal, and Base branch completion/cancel restore the previous focus. Close cancel keeps its shell-routing rule. Selection changes reveal the selected row with minimal scrolling; ordinary redraws do not override manual scrolling. Shell focus moves immediately to the new view, which queues typeahead during startup; completion does not reclaim focus if the user left.
 
 ### Layout
 
