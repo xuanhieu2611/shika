@@ -109,64 +109,184 @@ pub fn is_dirty(git: &Path, path_env: &str, worktree: &Path) -> Result<bool> {
     Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
 }
 
-/// ASCII branch slug, limited to 48 characters before collision suffixes.
-pub fn prompt_slug(prompt: &str, id: &str) -> String {
-    let mut slug = String::new();
-    let mut dash = false;
-    for c in prompt.chars() {
-        if c.is_ascii_alphanumeric() {
-            if dash && !slug.is_empty() && slug.len() < 48 {
-                slug.push('-');
+/// Most characters a generated name keeps, before the prefix and any
+/// collision suffix.
+const SLUG_MAX: usize = 48;
+
+/// Lowercase ASCII words joined by `-`, cut at a word boundary. Whole-word
+/// copies of the project's own name are left out, unless nothing else is
+/// left: "Shika background blur" in project `shika` is `background-blur`.
+/// None when the text has no ASCII letters or digits.
+pub fn branch_slug(text: &str, project: &str) -> Option<String> {
+    fn words(text: &str) -> Vec<String> {
+        text.split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect()
+    }
+    let mut words_left = words(text);
+    let name = words(project);
+    if !name.is_empty() {
+        let mut kept = Vec::new();
+        let mut at = 0;
+        while at < words_left.len() {
+            if words_left[at..].starts_with(&name) {
+                at += name.len();
+            } else {
+                kept.push(words_left[at].clone());
+                at += 1;
             }
-            dash = false;
-            if slug.len() < 48 {
-                slug.push(c.to_ascii_lowercase());
-            }
-        } else {
-            dash = true;
         }
-        if slug.len() >= 48 {
+        if !kept.is_empty() {
+            words_left = kept;
+        }
+    }
+    let mut slug = String::new();
+    for word in words_left {
+        let needed = if slug.is_empty() {
+            word.len()
+        } else {
+            word.len() + 1
+        };
+        if slug.len() + needed > SLUG_MAX {
+            if slug.is_empty() {
+                slug.push_str(&word[..SLUG_MAX]);
+            }
             break;
         }
+        if !slug.is_empty() {
+            slug.push('-');
+        }
+        slug.push_str(&word);
     }
-    let slug = slug.trim_end_matches('-').to_string();
-    if slug.is_empty() {
-        format!("task-{id}")
-    } else {
-        slug
-    }
+    (!slug.is_empty()).then_some(slug)
 }
 
-pub fn rename_from_prompt(
+/// The branch prefix setting, made safe for git: path parts of ASCII
+/// letters, digits, `.`, `_`, and `-`, joined by `/`. A prefix that does not
+/// already end in `-` or `_` gets a `/`, so `hieu` and `hieu/` both give
+/// `hieu/`. Empty means no prefix.
+pub fn normalize_prefix(raw: &str) -> String {
+    let parts: Vec<String> = raw
+        .split('/')
+        .map(|part| {
+            let mut part: String = part
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                .collect();
+            while part.contains("..") {
+                part = part.replace("..", ".");
+            }
+            loop {
+                let trimmed = part
+                    .trim_start_matches(['.', '-'])
+                    .trim_end_matches('.')
+                    .trim_end_matches(".lock");
+                if trimmed.len() == part.len() {
+                    break part;
+                }
+                part = trimmed.to_string();
+            }
+        })
+        .filter(|part| !part.is_empty())
+        .collect();
+    let mut prefix = parts.join("/");
+    if !prefix.is_empty() && !prefix.ends_with(['-', '_']) {
+        prefix.push('/');
+    }
+    prefix
+}
+
+/// Whether git accepts `name` as a branch name.
+pub fn is_valid_branch(git: &Path, path_env: &str, worktree: &Path, name: &str) -> Result<bool> {
+    let status = git_cmd(git, path_env, worktree)
+        .args(["check-ref-format", "--branch", name])
+        .output()
+        .map_err(|_| Error::RenameBranch(None))?
+        .status;
+    Ok(status.success())
+}
+
+/// The branch checked out in `worktree`, or None on a detached HEAD.
+pub fn head_branch(git: &Path, path_env: &str, worktree: &Path) -> Result<Option<String>> {
+    let output = git_cmd(git, path_env, worktree)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+/// Whether `branch` already exists on a remote: it has an upstream, or a
+/// remote-tracking branch has its name, as after `git push origin HEAD`.
+/// Renaming it then would leave the old name behind on the remote.
+pub fn is_published(git: &Path, path_env: &str, worktree: &Path, branch: &str) -> Result<bool> {
+    let upstream = git_cmd(git, path_env, worktree)
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name"])
+        .arg(format!("{branch}@{{upstream}}"))
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    if upstream.status.success() {
+        return Ok(true);
+    }
+    refs_exist(
+        git,
+        path_env,
+        worktree,
+        &[format!("refs/remotes/*/{branch}")],
+    )
+    .map_err(|_| Error::GitStatus(None))
+}
+
+fn refs_exist(git: &Path, path_env: &str, worktree: &Path, patterns: &[String]) -> Result<bool> {
+    let output = git_cmd(git, path_env, worktree)
+        .args(["for-each-ref", "--count=1", "--format=%(refname)"])
+        .args(patterns)
+        .output()
+        .map_err(|_| Error::RenameBranch(None))?;
+    if !output.status.success() {
+        return Err(Error::RenameBranch(first_line(&output.stderr)));
+    }
+    Ok(!output.stdout.trim_ascii().is_empty())
+}
+
+/// Renames `current` to `name`, or to `name-2`, `name-3`, and so on when a
+/// local branch or a remote-tracking branch already uses the name. Returns
+/// the name the branch has afterwards. Only the local ref changes; nothing
+/// is sent to a remote.
+pub fn rename_branch(
     git: &Path,
     path_env: &str,
     worktree: &Path,
-    prompt: &str,
-    id: &str,
+    current: &str,
+    name: &str,
 ) -> Result<String> {
-    let slug = prompt_slug(prompt, id);
     let mut suffix = 1;
     loop {
         let branch = if suffix == 1 {
-            slug.clone()
+            name.to_string()
         } else {
-            format!("{slug}-{suffix}")
+            format!("{name}-{suffix}")
         };
-        let exists = git_cmd(git, path_env, worktree)
-            .args([
-                "show-ref",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ])
-            .status()
-            .map_err(|_| Error::RenameBranch(None))?;
-        if !exists.success() {
-            if exists.code() != Some(1) {
-                return Err(Error::RenameBranch(None));
-            }
+        if branch == current {
+            return Ok(branch);
+        }
+        let taken = refs_exist(
+            git,
+            path_env,
+            worktree,
+            &[
+                format!("refs/heads/{branch}"),
+                format!("refs/remotes/*/{branch}"),
+            ],
+        )?;
+        if !taken {
             let output = git_cmd(git, path_env, worktree)
-                .args(["branch", "-m", &branch])
+                .args(["branch", "-m", "--", current, &branch])
                 .output()
                 .map_err(|_| Error::RenameBranch(None))?;
             if output.status.success() {
@@ -487,14 +607,107 @@ mod tests {
     }
 
     #[test]
-    fn slugs_collapse_trim_limit_and_fallback() {
-        assert_eq!(prompt_slug("  Fix / Login__Flow!  ", "1"), "fix-login-flow");
-        assert_eq!(prompt_slug("?!", "abc"), "task-abc");
-        assert_eq!(prompt_slug(&"A".repeat(80), "1"), "a".repeat(48));
+    fn slugs_collapse_trim_and_stop_at_a_word() {
         assert_eq!(
-            prompt_slug(&format!("{} xx", "A".repeat(47)), "1"),
-            "a".repeat(47)
+            branch_slug("  Fix / Login__Flow!  ", "").as_deref(),
+            Some("fix-login-flow")
         );
+        assert_eq!(branch_slug("?!", ""), None);
+        assert_eq!(branch_slug(&"A".repeat(80), ""), Some("a".repeat(48)));
+        assert_eq!(
+            branch_slug(&format!("{} xx", "A".repeat(47)), ""),
+            Some("a".repeat(47))
+        );
+        assert_eq!(
+            branch_slug(
+                "i'm not sure if this is expected but i tried to use Shika",
+                ""
+            )
+            .as_deref(),
+            Some("i-m-not-sure-if-this-is-expected-but-i-tried-to")
+        );
+    }
+
+    #[test]
+    fn slugs_leave_out_the_project_name() {
+        assert_eq!(
+            branch_slug("Shika background opacity and blur", "shika").as_deref(),
+            Some("background-opacity-and-blur")
+        );
+        assert_eq!(
+            branch_slug("Fix Job Hunting tracker", "job-hunting").as_deref(),
+            Some("fix-tracker")
+        );
+        // Only whole words, and never the whole name.
+        assert_eq!(
+            branch_slug("Shikari support", "shika").as_deref(),
+            Some("shikari-support")
+        );
+        assert_eq!(branch_slug("Shika", "shika").as_deref(), Some("shika"));
+        assert_eq!(
+            branch_slug("Setting Placement Query", "shika").as_deref(),
+            Some("setting-placement-query")
+        );
+    }
+
+    #[test]
+    fn prefixes_are_made_safe_for_git() {
+        assert_eq!(normalize_prefix(""), "");
+        assert_eq!(normalize_prefix("  "), "");
+        assert_eq!(normalize_prefix("hieu"), "hieu/");
+        assert_eq!(normalize_prefix("hieu/"), "hieu/");
+        assert_eq!(normalize_prefix("/hieu//feat/"), "hieu/feat/");
+        assert_eq!(normalize_prefix("hieu-"), "hieu-");
+        assert_eq!(normalize_prefix("hieu_"), "hieu_");
+        assert_eq!(normalize_prefix("Hi eu~^:?*[\\"), "Hieu/");
+        assert_eq!(normalize_prefix("-.hidden/x..y/z.lock/"), "hidden/x.y/z/");
+        assert_eq!(normalize_prefix("./../"), "");
+        for raw in ["hieu", "a.b", "-x", "x.lock", "Hieu Le/", "@{x"] {
+            let prefix = normalize_prefix(raw);
+            if !prefix.is_empty() {
+                assert!(
+                    is_valid_branch(&git(), "", Path::new("."), &format!("{prefix}fix")).unwrap(),
+                    "{raw} gave {prefix}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rename_skips_names_taken_locally_or_on_a_remote() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let draft = create_draft(&git(), "", &repo, "one").unwrap();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        run(&["branch", "fix-login"]);
+        run(&["update-ref", "refs/remotes/origin/fix-login-2", "HEAD"]);
+        let renamed = rename_branch(&git(), "", &draft.path, &draft.branch, "fix-login").unwrap();
+        assert_eq!(renamed, "fix-login-3");
+        assert_eq!(
+            head_branch(&git(), "", &draft.path).unwrap().as_deref(),
+            Some("fix-login-3")
+        );
+        // Asking for the name it already has changes nothing.
+        assert_eq!(
+            rename_branch(&git(), "", &draft.path, &renamed, "fix-login-3").unwrap(),
+            "fix-login-3"
+        );
+        assert!(!is_published(&git(), "", &draft.path, &renamed).unwrap());
+        run(&["update-ref", "refs/remotes/origin/fix-login-3", "HEAD"]);
+        assert!(is_published(&git(), "", &draft.path, &renamed).unwrap());
+
+        let prefixed = rename_branch(&git(), "", &draft.path, &renamed, "hieu/fix-login").unwrap();
+        assert_eq!(prefixed, "hieu/fix-login");
+        assert!(!is_published(&git(), "", &draft.path, &prefixed).unwrap());
+        remove_draft(&git(), "", &repo, &draft.path, &prefixed, true).unwrap();
     }
 
     #[test]

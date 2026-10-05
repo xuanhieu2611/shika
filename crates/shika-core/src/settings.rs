@@ -77,10 +77,13 @@ impl Default for Appearance {
 }
 
 /// `settings.json`. A missing file, or a missing field, takes the default.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub appearance: Appearance,
+    /// Put in front of every branch name Shika picks, like `hieu/`. Stored
+    /// as typed; [`crate::normalize_branch_prefix`] makes it safe for git.
+    pub branch_prefix: String,
 }
 
 pub struct SettingsFile {
@@ -166,10 +169,12 @@ mod tests {
                 blur: 30,
                 translucency: Translucency::SidebarAndTerminal,
             },
+            branch_prefix: "hieu/".into(),
         };
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"translucency\": \"sidebarAndTerminal\""));
+        assert!(text.contains("\"branchPrefix\": \"hieu/\""));
         assert_eq!(file.load().unwrap(), settings);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -187,6 +192,13 @@ mod tests {
         assert_eq!(appearance.opacity, Appearance::MAX_OPACITY);
         assert_eq!(appearance.blur, Appearance::MAX_BLUR);
         assert_eq!(appearance.translucency, Translucency::Sidebar);
+        assert_eq!(
+            SettingsFile::open(path.clone())
+                .load()
+                .unwrap()
+                .branch_prefix,
+            ""
+        );
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
