@@ -33,6 +33,18 @@ impl Rgb {
     }
 }
 
+/// Where bytes for the program came from, so a host can tell the user's own
+/// input from the traffic a terminal sends on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputSource {
+    /// Keys or a paste.
+    Typed,
+    /// Focus, mouse, and scroll reports from the view.
+    Report,
+    /// The engine answering a query in the program's output.
+    Reply,
+}
+
 /// Grid size in cells, plus the pixel size of one cell so the PTY can
 /// answer TIOCGWINSZ pixel queries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

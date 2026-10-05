@@ -330,7 +330,7 @@ impl TerminalView {
 
     fn focus_changed(&mut self, focused: bool, cx: &mut Context<Self>) {
         if self.terminal.modes().focus_reporting {
-            self.terminal.write(input::encode_focus(focused));
+            self.terminal.report(input::encode_focus(focused));
         }
         if !focused {
             self.marked_text = None;
@@ -390,7 +390,7 @@ impl TerminalView {
                 ..KeyMods::NONE
             };
             if let Some(bytes) = input::encode_key(key, mods, &modes) {
-                self.terminal.write(&bytes);
+                self.terminal.report(&bytes);
             }
             return;
         }
@@ -414,7 +414,7 @@ impl TerminalView {
                 mouse_mods(&event.modifiers),
                 &modes,
             ) {
-                self.terminal.write(&bytes);
+                self.terminal.report(&bytes);
             }
             self.reported_button = Some(button);
             self.last_motion_cell = Some(at);
@@ -469,7 +469,7 @@ impl TerminalView {
             mouse_mods(&event.modifiers),
             &modes,
         ) {
-            self.terminal.write(&bytes);
+            self.terminal.report(&bytes);
         }
     }
 
@@ -495,7 +495,7 @@ impl TerminalView {
             mouse_mods(&event.modifiers),
             &modes,
         ) {
-            self.terminal.write(&bytes);
+            self.terminal.report(&bytes);
         }
     }
 
@@ -527,7 +527,7 @@ impl TerminalView {
                 input::encode_mouse(Some(button), MouseAction::Press, at, mods, &modes)
             {
                 self.terminal
-                    .write(&bytes.repeat(count.min(MAX_WHEEL_REPORTS)));
+                    .report(&bytes.repeat(count.min(MAX_WHEEL_REPORTS)));
             }
             return;
         }
@@ -535,7 +535,7 @@ impl TerminalView {
             let key = if up { Key::Up } else { Key::Down };
             if let Some(bytes) = input::encode_key(key, KeyMods::NONE, &modes) {
                 self.terminal
-                    .write(&bytes.repeat(count.min(MAX_WHEEL_REPORTS)));
+                    .report(&bytes.repeat(count.min(MAX_WHEEL_REPORTS)));
             }
             return;
         }
