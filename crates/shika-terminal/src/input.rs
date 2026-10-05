@@ -188,6 +188,53 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     out
 }
 
+/// Paths dropped on the terminal, as text a shell or an agent CLI reads
+/// back as paths: each one backslash-escaped, joined by spaces. Claude
+/// Code and Cursor turn a pasted image path into an attachment.
+pub fn dropped_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> String {
+    paths
+        .into_iter()
+        .map(shell_escape)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Backslash-escape the characters a POSIX shell would split on or expand,
+/// the same set Ghostty escapes for a dropped file.
+fn shell_escape(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for ch in path.chars() {
+        if matches!(
+            ch,
+            '\\' | ' '
+                | '\t'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | '"'
+                | '\''
+                | '`'
+                | '!'
+                | '#'
+                | '$'
+                | '&'
+                | ';'
+                | '|'
+                | '*'
+                | '?'
+        ) {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Sent when the terminal gains or loses focus, if the program asked for it
 /// (DECSET 1004).
 pub fn encode_focus(focused: bool) -> &'static [u8] {
@@ -408,6 +455,18 @@ mod tests {
     #[test]
     fn paste_without_brackets_turns_newlines_into_cr() {
         assert_eq!(encode_paste("a\nb\r\nc", false), b"a\rb\rc");
+    }
+
+    #[test]
+    fn dropped_paths_escape_shell_characters() {
+        assert_eq!(
+            dropped_paths(["/tmp/Screenshot 2026-10-04 at 10.15.32\u{202f}AM.png"]),
+            "/tmp/Screenshot\\ 2026-10-04\\ at\\ 10.15.32\u{202f}AM.png"
+        );
+        assert_eq!(
+            dropped_paths(["/a/it's (1).png", "/b/$x&y.jpg"]),
+            "/a/it\\'s\\ \\(1\\).png /b/\\$x\\&y.jpg"
+        );
     }
 
     #[test]
