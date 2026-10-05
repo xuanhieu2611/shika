@@ -23,7 +23,7 @@ The user is a developer who does not watch agents work. They start a task, go to
 
 **Terminal.** `Palette::shika` and `Palette::shika_dark` in `crates/shika-terminal/src/theme.rs` are the terminal colors, including the ANSI 16. Font, size, line height, and padding are `TerminalConfig` in `crates/shika-terminal/src/view.rs`.
 
-**Translucency.** Opacity, blur, and whether it covers the sidebar alone or the sidebar and terminal: `crates/shika/src/appearance.rs`.
+**Glass.** Opacity, blur, and whether frost covers the sidebar alone or the sidebar and terminal: `crates/shika/src/appearance.rs`, saved by `crates/shika-core/src/settings.rs`. The values are under Glass below. There is no `tokens/glass.css`.
 
 ---
 
@@ -76,7 +76,7 @@ Names such as `--ink-1` and `--surface-app` are how this document talks about co
 
 **Corner radii.** 4 key caps · 6 icon buttons and segments · 8 buttons, list rows, toasts · 10 cards · 12 dialogs · 14 notifications · pill for status chips. Inner radii nest: segment 6 inside track 8 with 2px padding.
 
-**Backgrounds.** Flat fills only. No gradients, images, textures or illustrations. Blur is used only on the macOS-style notification (`backdrop-filter: blur(24px)`), matching the OS.
+**Backgrounds.** No gradients, images, textures, or illustrations. At 100% opacity the fills are flat. Below that, the window is glass, described next. The macOS notification may blur to match the OS.
 
 **Motion.** Short and functional. Hover/press 120ms, overlays fade up 4px in 180ms, column width changes in 220ms, all on `cubic-bezier(.2,.8,.2,1)`. The only loops: the working dot pulses (1.6s) and the terminal cursor blinks (1.1s, steps). Nothing bounces. `prefers-reduced-motion` zeroes durations.
 
@@ -84,9 +84,22 @@ Names such as `--ink-1` and `--surface-app` are how this document talks about co
 
 **Focus model.** Focus is either on the cards or in the terminal. Cards focused: selected card has the ink outline and key hints; terminal cursor is a hollow block. Terminal focused: card outline drops to a hairline; cursor is a solid blinking block; the terminal header reads "esc back to cards".
 
-**Transparency.** Used only for resting cards (so the column color shows through), hover washes, the scrim behind overlays (32% ink light, 50% black dark) and the notification.
+**Glass.** Frosted, and the look when background opacity is below 100%. At 100% the window is solid and blur does nothing. The saved default is opaque. Settings (`Cmd-,`) sets opacity from 0 to 100, blur radius from 0 to 255, and whether frost covers the sidebar alone or the sidebar and the terminal. The title bar uses the sidebar opacity, so the blur shows through it.
 
-**Dark mode.** Follows macOS. Same names, different values. Status colors get lighter and the tints become low-chroma charcoal. `Palette::shika_dark` is the dark terminal background. The chrome in `main.rs` currently paints the light values; the dark chrome values are the ones in this file and in `design/Shika v3.dc.html`.
+The app does this in `crates/shika/src/appearance.rs`. GPUI's window background is `Transparent`, not `Blurred`, because GPUI's blur has one fixed strength. The radius is the private `CGSSetWindowBackgroundBlurRadius`. A CSS `backdrop-filter` cannot see the desktop, so do not add one, and do not add `tokens/glass.css`. The browser mock's `blur(44px) saturate(1.9)` is only a stand-in for that native blur.
+
+When glass is on, `chrome_for` in `crates/shika/src/appearance.rs` paints these tints. The column alpha is the Settings opacity.
+
+- Light column: `#F6F8F2`. Dark column: `#181A17`. Solid mode stays `#F1F2EC` light and `#1A1C19` dark.
+- Terminal text never sits on a visible photo. Sidebar-only frost keeps the terminal at `1.0`. When frost covers the terminal, its alpha is the Settings opacity or `0.85`, whichever is higher. CLI-colored cells stay opaque. The header is a step more transparent than that surface, and not below `0.75`.
+- Resting cards are 48% white in light glass and 4.5% white in dark glass, with a 1px top highlight. The selected card stays solid. Ready cards use the ready tint at 78% in light glass and 62% in dark glass.
+- Dialogs and the picker use the overlay tint: light `rgba(250,251,247,0.80)`, dark `rgba(36,39,34,0.78)`. The toast is 86% of its solid color. The scrim is `rgba(16,18,15,0.22)` in light glass and 30% black in dark glass. Settings leaves the scrim off so the window is the preview.
+- Hairlines and meta ink shift so they stay visible on the frost. Light glass meta ink `#5F6459`, hairline 10% black. Dark glass meta ink `#A6AB9E`, hairline 8% white.
+- macOS Reduce transparency turns glass off: solid colors, no blur, terminal alpha `1.0`. The saved opacity is left as it is.
+
+Hover washes and the notification stay translucent in both modes. Solid mode's scrim is 32% ink in light and 50% black in dark.
+
+**Dark mode.** Follows macOS, from `window.appearance()`. Same names, different values. Status colors get lighter and the tints become low-chroma charcoal. `Palette::shika_dark` is the dark terminal background. Dark chrome and dark glass are painted by `chrome_for`.
 
 ---
 
@@ -115,4 +128,5 @@ Follow this file for color, type, spacing, layout, focus, motion, copy, and icon
 - Every action with a shortcut shows its key. Typing in the terminal or a text field never triggers app shortcuts.
 - Every UI change must work in both light and dark mode. Check both before finishing.
 - Theme the terminal with `Palette` in `crates/shika-terminal/src/theme.rs`. `shika` is the terminal under light chrome. `shika_dark` is the same palette with the darker background. JetBrains Mono is already bundled under `assets/fonts/` (OFL).
+- Glass is the Glass section of this file, applied by `crates/shika/src/appearance.rs`. At 100% opacity the window is solid. Below that, use the glass tints. When frost covers the terminal, keep its alpha at or above 0.85. Do not add a CSS glass file.
 - If you add a color, size, radius, or a new view, update this file in the same change.
