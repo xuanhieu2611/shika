@@ -23,6 +23,23 @@ impl Status {
         }
     }
 }
+/// Output this long after the user's last key, click, scroll, or resize is
+/// the agent's own work. Sooner, it is an echo or a redraw.
+pub const ECHO: Duration = Duration::from_secs(1);
+/// Whether a card turning Ready should notify. One notification per turn: a
+/// turn starts when the user types (`typed`), and `notified` is the `typed`
+/// that already notified. The agent must also have kept going on its own,
+/// with its last output (`acted`) at least [`ECHO`] after the user's last
+/// input of any kind, so typing a draft, focusing the terminal, or scrolling
+/// it never notifies.
+pub fn notify_ready(
+    typed: Option<Instant>,
+    notified: Option<Instant>,
+    input: Option<Instant>,
+    acted: Instant,
+) -> bool {
+    typed.is_some() && typed != notified && input.is_none_or(|input| acted >= input + ECHO)
+}
 /// Looking for the title the agent CLI gives its own session, which then
 /// names the card and branch. From the first submitted line, it checks
 /// every [`TitleWatch::EVERY`], one check at a time, and gives up after
@@ -231,6 +248,38 @@ mod tests {
         assert!(!w.due(t0 + Duration::from_secs(5)));
         w.start(t0);
         assert_eq!(w, TitleWatch::Done);
+    }
+    #[test]
+    fn one_notification_per_turn() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        // Nothing typed yet: the CLI's banner settling is not a turn.
+        assert!(!notify_ready(None, None, Some(at(0)), at(5)));
+        // Typed at 1, the agent wrote until 10.
+        assert!(notify_ready(Some(at(1)), None, Some(at(1)), at(10)));
+        // That turn notified. Focus or scroll at 20 redraws at once, and
+        // even output long after stays quiet until the user types again.
+        assert!(!notify_ready(
+            Some(at(1)),
+            Some(at(1)),
+            Some(at(20)),
+            at(20)
+        ));
+        assert!(!notify_ready(Some(at(1)), Some(at(1)), Some(at(1)), at(40)));
+        // A draft typed at 50 only echoes.
+        assert!(!notify_ready(
+            Some(at(50)),
+            Some(at(1)),
+            Some(at(50)),
+            at(50)
+        ));
+        // Submitted at 60, the agent answered until 63.
+        assert!(notify_ready(
+            Some(at(60)),
+            Some(at(1)),
+            Some(at(60)),
+            at(63)
+        ));
     }
     #[test]
     fn navigation_never_exceeds_three() {
