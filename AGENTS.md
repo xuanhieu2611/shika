@@ -12,7 +12,7 @@ In particular:
 
 - Desktop app, pure Rust on GPUI, Mac only. No kanban, no flat session list, no project tabs, no resizable split, no second visible terminal, no editor, no conversation history.
 - GPUI comes from the `zed-industries/zed` git repo at one pinned `rev`. The terminal engine is `alacritty_terminal`, and its types stay inside one module of `shika-terminal`. Never copy from Zed's `terminal` or `terminal_view` crates; they are GPL-3.0.
-- This build launches Claude Code and Cursor CLI only. Codex, Pi, and Kiro wait.
+- This build launches Claude Code, Codex, Cursor CLI, and Pi. Kiro waits.
 - Shika creates the worktree. Never pass Cursor's `--worktree`. Do not invent a CLI flag; the launch args in `PLAN.md` were taken from each binary's `--help`.
 - A `git push` in the shell does not remove the card. The author closes the card. A push typed inside the agent CLI is ignored.
 - Close asks before throwing away uncommitted work or unpushed commits: discard, or push when the tree is clean. The app does not commit.
@@ -23,7 +23,7 @@ In particular:
 
 The GPUI app is implemented in `crates/shika`. The Tauri, React, xterm.js, Node, and Vite app has been removed. The app includes project persistence, draft worktrees, cards, the keyboard map, shell toggle, task branch naming from the CLI's own session title, a two-second quiet timer, native notifications with the system alert sound, discard-or-push close, and explicit leftovers cleanup.
 
-Branch names: the first prompt line names the branch at once. About a second later the CLI's own session title, read from Claude Code's or Cursor's private files, renames it once, without the project name and with the optional Settings prefix. Those files are not a public API, so reading them is best effort; on any failure the prompt name stays. A branch already on a remote is never renamed. `PLAN.md` has the rules; `docs/branch-naming.md` explains the why, the code map, the CLI file formats, and how to debug it.
+Branch names: the first prompt line names the branch at once. About a second later the CLI's own session title, read from Claude Code's, Codex's, Cursor's, or Pi's private files, renames it once, without the project name and with the optional Settings prefix. Pi has a title only when one was set. Those files are not a public API, so reading them is best effort; on any failure the prompt name stays. A branch already on a remote is never renamed. `PLAN.md` has the rules; `docs/branch-naming.md` explains the why, the code map, the CLI file formats, and how to debug it.
 
 Asking is not parsed. Ready means the output became quiet or the process exited, including a non-zero exit. Notifications are titled `{project} - {task}` and route clicks to the matching card. A card notifies once per turn: a turn starts when the user types or pastes into the agent, and it notifies only if output kept arriving at least a second after the user's last input. Echoes and the redraws that focus, clicks, scrolling, or a resize do not notify and do not mark the card Working. A draft typed into the agent, without Enter, leaves a Ready card Ready, so Close still sees an idle agent. Permission denial is reported in the app.
 
@@ -39,7 +39,7 @@ Before any UI work, read `design/DESIGN.md` and follow it. That file is the sour
 
 ## Using the app
 
-`a` or Add project picks a git repo. A nested folder becomes the repo root. `n` opens the CLI picker (`j` / `k`, `1` / `2`, Enter, Escape). The new card is selected and the CLI is already in `<repo>/.worktrees/shika-draft-<id>`.
+`a` or Add project picks a git repo. A nested folder becomes the repo root. `n` opens the CLI picker (`j` / `k`, `1` / `2` / `3` / `4`, Enter, Escape). The new card is selected and the CLI is already in `<repo>/.worktrees/shika-draft-<id>`.
 
 The column is 540px. Its 48px top row is the title bar: traffic lights, the wordmark, the gear, and New agent; the terminal header fills the same row on the right, and empty space in both drags the window. The `+` on a project header, or its empty box, opens the picker for that project. A project's Remove appears when its header is hovered. Clicking a status chip selects the first card with that status, in row order.
 

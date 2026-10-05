@@ -13,7 +13,7 @@ Do not relitigate these.
 - Desktop app, not a terminal app. One monitor, fullscreen. The user already lives in WezTerm and in apps like Codex. Herdr stays the terminal multiplexer. Shika does not try to replace it.
 - Pure Rust on GPUI, Zed's GPU UI framework. Rust owns worktrees, processes, and the window. The product is terminals and keyboard, so the same process that reads each PTY parses it and draws it on the GPU. No web view, no Chromium, no bridge into JavaScript. This is lighter than the Electron shell Codex and T3 Code use, and it is what terminal multiplexer users expect.
 - Mac first. The author has an Apple Developer account. Windows can come from the same project later. Do not build Windows in the MVP.
-- The user brings their own CLIs and subscriptions: Claude Code and Cursor CLI in this build. Codex, Pi, and Kiro wait. Shika does not wrap a model API.
+- The user brings their own CLIs and subscriptions: Claude Code, Codex, Cursor CLI, and Pi in this build. Kiro waits. Shika does not wrap a model API.
 - Permissions are bypassed. Shika never asks the user to approve a shell command. Launch each CLI with its current flag for that, after checking `--help`. Do not invent a flag.
 - One agent, one fresh worktree. Do not reuse an old worktree. Reuse is how stale files leak into the next task.
 - Old conversations are not shown. Remembering them for a future prompt is a later backend problem, not this UI.
@@ -87,12 +87,14 @@ Typing in the terminal or in a text field must not trigger these keys. `Ctrl+Q` 
 
 ## Agents
 
-Ship Claude Code and Cursor CLI. If the binary is not on `PATH`, say so on the card or in the picker and do not pretend it launched.
+Ship Claude Code, Codex, Cursor CLI, and Pi. If the binary is not on `PATH`, say so on the card or in the picker and do not pretend it launched.
 
 | Preset | Command to resolve |
 | --- | --- |
 | Claude Code | `claude` |
+| Codex | `codex` |
 | Cursor CLI | `agent` |
+| Pi | `pi` |
 
 GUI apps on Mac do not see the shell's `PATH`. Resolve binaries the way a login shell would (Homebrew, nvm, cargo, Volta), or launching from the Dock will fail while launching from a terminal works. This is a known trap. Test a Dock launch, not only a run from a terminal.
 
@@ -145,7 +147,7 @@ Do these in order. Stop when the "Done when" script passes.
 
 1. GPUI app that opens a window on Mac. Rust for the UI, the terminal, git, and processes.
 2. Add a project by picking a git repo. Show it in the left column after restart.
-3. New agent: picker for Claude Code and Cursor CLI, create the worktree, spawn the CLI in a PTY with approval prompts skipped, show the PTY in the terminal, select that card.
+3. New agent: picker for Claude Code, Codex, Cursor CLI, and Pi, create the worktree, spawn the CLI in a PTY with approval prompts skipped, show the PTY in the terminal, select that card.
 4. Type a prompt, press enter, switch to another card, switch back, and find the draft or the running session intact.
 5. Cards show CLI, name, and status. A project with no agents still appears. More than three cards collapse.
 6. Keyboard map above works, including Dock launch finding the CLIs.

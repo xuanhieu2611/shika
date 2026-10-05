@@ -1360,26 +1360,31 @@ impl Shika {
                 return;
             }
             match &mut self.overlay {
-                Some(Overlay::Picker { index, project }) => match key {
-                    "j" | "down" => *index = (*index + 1) % 2,
-                    "k" | "up" => *index = (*index + 1) % 2,
-                    "1" => {
-                        *index = 0;
-                        self.launch(window, cx);
-                    }
-                    "2" => {
-                        *index = 1;
-                        self.launch(window, cx);
-                    }
-                    "enter" => self.launch(window, cx),
-                    "escape" => self.cancel_overlay(window, cx),
-                    "tab" => {
-                        if let Some(at) = self.projects.iter().position(|p| &p.id == project) {
-                            *project = self.projects[(at + 1) % self.projects.len()].id.clone();
+                Some(Overlay::Picker { index, project }) => {
+                    let len = self
+                        .catalog
+                        .as_ref()
+                        .map(|catalog| catalog.presets.len())
+                        .unwrap_or(0);
+                    let chosen = key.parse::<usize>().ok().filter(|n| (1..=len).contains(n));
+                    match key {
+                        "j" | "down" if len > 0 => *index = (*index + 1) % len,
+                        "k" | "up" if len > 0 => *index = (*index + len - 1) % len,
+                        "enter" => self.launch(window, cx),
+                        "escape" => self.cancel_overlay(window, cx),
+                        "tab" => {
+                            if let Some(at) = self.projects.iter().position(|p| &p.id == project) {
+                                *project = self.projects[(at + 1) % self.projects.len()].id.clone();
+                            }
+                        }
+                        _ => {
+                            if let Some(n) = chosen {
+                                *index = n - 1;
+                                self.launch(window, cx);
+                            }
                         }
                     }
-                    _ => {}
-                },
+                }
                 Some(Overlay::Close { index, state }) => {
                     let i = *index;
                     let can_push = state.can_push();

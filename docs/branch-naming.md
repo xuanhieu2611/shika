@@ -69,7 +69,7 @@ Both renames go through `rename_task_branch`, which adds the prefix, picks a fre
 
 | Piece | Location |
 | --- | --- |
-| Reading the CLIs' titles | `crates/shika-core/src/cli_title.rs`: `CliHome::detect`, `CliHome::read`, `claude`, `cursor`, `cwd_forms` |
+| Reading the CLIs' titles | `crates/shika-core/src/cli_title.rs`: `CliHome::detect`, `CliHome::read`, `claude`, `codex`, `cursor`, `pi`, `cwd_forms` |
 | Prompt rename (immediate fallback) | `Core::session_rename_from_prompt` in `crates/shika-core/src/lib.rs` |
 | CLI title rename (once) | `Core::session_apply_cli_title` in `crates/shika-core/src/lib.rs` |
 | Prefix, free name, journal update | `Core::rename_task_branch` in `crates/shika-core/src/lib.rs` |
@@ -97,7 +97,7 @@ Both renames go through `rename_task_branch`, which adds the prefix, picks a fre
 
 ## Where the CLIs keep their titles
 
-These are **private files, not a public API**. They were found by inspecting real data on 2026-10-04 and 2026-10-05 with Claude Code 2.1.289 and Cursor CLI 2026.10.01-e373342. A CLI update can move or change them without notice. When that happens, Shika's readers return None and naming falls back to the prompt slug. Nothing breaks, but names get worse. Fixing it means updating the reader in `cli_title.rs`.
+These are **private files, not a public API**. They were found by inspecting real data on 2026-10-04 and 2026-10-05 with Claude Code 2.1.289, Cursor CLI 2026.10.01-e373342, Codex CLI 0.160.0, and Pi 1.0.0. A CLI update can move or change them without notice. When that happens, Shika's readers return None and naming falls back to the prompt slug. Nothing breaks, but names get worse. Fixing it means updating the reader in `cli_title.rs`.
 
 ### Claude Code
 
@@ -113,9 +113,23 @@ These are **private files, not a public API**. They were found by inspecting rea
 - Shika reads every `meta.json` in that directory, keeps those whose `cwd` equals the worktree path and whose `title` is a string, and takes the most recently updated one.
 - Do not read `store.db` next to it. It holds the same name inside SQLite along with a `blobEncryptionKey`; `meta.json` is enough.
 
+### Codex
+
+- Database: the highest `state_<n>.sqlite` in `$CODEX_HOME` if that is set, otherwise `~/.codex`. On 2026-10-05 that file was `state_5.sqlite`. Sidecars such as `state_5.sqlite-wal` are not databases.
+- Table `threads`. The conversation name is `name`. It stays empty until Codex names the thread. `title` is often the raw first message, so Shika does not read it. `cwd` must equal the worktree.
+- Shika opens the database read-only and takes the newest matching `name` (`updated_at_ms`). A missing file, a lock, or an unexpected schema means no title.
+
+### Pi
+
+- Pi does not generate a conversation name. A name exists only after `/name`, `--name`, or `pi.setSessionName()` from an extension. Of the sessions inspected on 2026-10-05, none had one. When none is set, the prompt name stays.
+- Directory: `PI_CODING_AGENT_SESSION_DIR` if set, otherwise `<PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions/--<path>--/`.
+- `<path>`: the absolute working directory with the leading separator removed and `/`, `\`, and `:` replaced by `-`. `/Users/x/code/shika/.worktrees/shika-draft-18db` becomes `--Users-x-code-shika-.worktrees-shika-draft-18db--`.
+- One `<timestamp>_<session-id>.jsonl` per session. The name is a line like `{"type":"session_info","name":"Opacity and blur"}`.
+- Shika reads the newest `.jsonl` (by modified time) that has a `session_info` name, and takes the last one.
+
 ### Paths
 
-Both CLIs record the resolved working directory, so under `/tmp` they record `/private/tmp/...`. `cwd_forms` tries the worktree path as Shika has it and its canonical form.
+The CLIs record the resolved working directory, so under `/tmp` they record `/private/tmp/...`. `cwd_forms` tries the worktree path as Shika has it and its canonical form. Codex matches `threads.cwd` against those forms. Pi encodes each form into its session folder name.
 
 ## Guarantees
 
@@ -137,6 +151,13 @@ grep -h '"ai-title"' ~/.claude/projects/"$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"/*
 
 # Cursor CLI (one meta.json per chat started in this folder)
 cat ~/.cursor/chats/"$(printf %s "$(pwd -P)" | md5)"/*/meta.json
+
+# Codex. The number in state_<n>.sqlite moves; use the highest one.
+sqlite3 ~/.codex/state_5.sqlite "SELECT name, cwd FROM threads WHERE cwd = '$(pwd -P)' ORDER BY updated_at_ms DESC LIMIT 1;"
+
+# Pi. A name is present only when one was set.
+dir=$(pwd -P | sed 's#^/##; s#[/:\\]#-#g')
+grep -h '"session_info"' ~/.pi/agent/sessions/"--${dir}--"/*.jsonl | tail -1
 ```
 
 If these find nothing, check whether the CLI moved its files, then update `cli_title.rs`.
@@ -157,12 +178,12 @@ If these find nothing, check whether the CLI moved its files, then update `cli_t
 
 ## Tests
 
-- `cli_title.rs`: sample files for both CLIs, no title yet, broken JSON, wrong `cwd`, `CLAUDE_CONFIG_DIR`, a symlinked worktree path, an unknown CLI.
+- `cli_title.rs`: sample files for each CLI, no title yet, broken JSON or a broken database, wrong `cwd`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, Pi's session and agent directories, a symlinked worktree path, an unknown CLI.
 - `worktree.rs`: slugs and word-boundary cuts, project-name removal, prefix cleanup checked against `git check-ref-format`, renames that skip local and remote names, `is_published`.
 - `lib.rs`: the full flow on real git repositories: prompt rename, then CLI title rename, once; journal kept in step; the prefix; a branch pushed without `-u` keeps its name; a switched worktree keeps its branch.
 - `model.rs`: `TitleWatch` timing (one check at a time, gives up), and Option+Backspace in `PromptCapture`, using the real typing that produced a doubled branch name.
 
-Tests use a scratch `CliHome::at(...)` and never read the real `~/.claude` or `~/.cursor`.
+Tests use a scratch `CliHome::at(...)` and never read the real `~/.claude`, `~/.cursor`, `~/.codex`, or `~/.pi`.
 
 ## Extending
 
@@ -172,8 +193,6 @@ Tests use a scratch `CliHome::at(...)` and never read the real `~/.claude` or `~
 2. Add a reader to `CliHome` in `cli_title.rs` and match its preset id in `CliHome::read`. Keep it read-only and return None on anything unexpected.
 3. Add tests with sample files: title present, not yet named, broken file, a session for another folder.
 4. Record the location and the CLI version checked in `PLAN.md` and in this file.
-
-Codex is not in this build. On one machine in 2026-10, Codex kept thread titles in `~/.codex/state_<n>.sqlite`, table `threads`, columns `cwd`, `title`, and `name`. That would need a SQLite reader, and the versioned file name suggests it moves. Verify it again before relying on it.
 
 ### Ideas not built
 
