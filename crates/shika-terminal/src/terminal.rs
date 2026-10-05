@@ -13,17 +13,19 @@ use parking_lot::MutexGuard;
 
 use crate::engine::Engine;
 use crate::theme::Palette;
-use crate::types::{CellSide, Modes, SelectionKind, Snapshot, TerminalSize, ViewportPoint};
+use crate::types::{
+    CellSide, InputSource, Modes, SelectionKind, Snapshot, TerminalSize, ViewportPoint,
+};
 
 /// Where the terminal's output goes: bytes for the program's stdin, and grid
 /// size changes for the PTY.
 ///
-/// `write` is called on the UI thread (typing, paste, mouse reports) and on
-/// the PTY reader thread (answers to terminal queries). It must not block:
-/// queue the bytes and write them on another thread. [`crate::PtyWriter`]
-/// does exactly that.
+/// `write` is called on the UI thread (typing, paste, focus and mouse
+/// reports) and on the PTY reader thread (answers to terminal queries), with
+/// `source` saying which. It must not block: queue the bytes and write them
+/// on another thread. [`crate::PtyWriter`] does exactly that.
 pub trait PtyHost: Send + Sync + 'static {
-    fn write(&self, bytes: &[u8]);
+    fn write(&self, bytes: &[u8], source: InputSource);
     fn resize(&self, size: TerminalSize);
 }
 
@@ -122,7 +124,7 @@ impl Terminal {
         MutexGuard::unlock_fair(engine);
 
         for reply in &output.replies {
-            self.shared.host.write(reply);
+            self.shared.host.write(reply, InputSource::Reply);
         }
 
         let mut wake = false;
@@ -180,7 +182,15 @@ impl Terminal {
     /// Bytes for the program, as if typed.
     pub fn write(&self, bytes: &[u8]) {
         if !bytes.is_empty() {
-            self.shared.host.write(bytes);
+            self.shared.host.write(bytes, InputSource::Typed);
+        }
+    }
+
+    /// A focus, mouse, or scroll report for the program. The user did not
+    /// type it.
+    pub fn report(&self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.shared.host.write(bytes, InputSource::Report);
         }
     }
 
@@ -327,7 +337,7 @@ mod tests {
     }
 
     impl PtyHost for Recorder {
-        fn write(&self, bytes: &[u8]) {
+        fn write(&self, bytes: &[u8], _: InputSource) {
             lock(&self.written).extend_from_slice(bytes);
         }
 
