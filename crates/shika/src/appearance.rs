@@ -3,6 +3,7 @@
 //! one fixed strength. Ghostty, WezTerm, and winit set the radius the same
 //! way.
 
+use crate::model::Status;
 use gpui::{Rgba, Window, WindowAppearance, WindowBackgroundAppearance, rgb};
 use shika_core::{Appearance, Translucency};
 
@@ -99,47 +100,99 @@ fn macos_reduce_transparency() -> bool {
     }
 }
 
+/// One status hue: the dot, text that meets contrast on the column, and the
+/// summary chip fill.
+#[derive(Clone, Copy, Debug)]
+pub struct StatusColors {
+    pub dot: Rgba,
+    pub text: Rgba,
+    pub chip: Rgba,
+}
+
 /// Colors for one paint of the window. Solid at 100% opacity, and whenever
-/// macOS Reduce transparency is on. Glass uses the frosted tints.
+/// macOS Reduce transparency is on. Glass uses the frosted tints. The names
+/// follow `design/DESIGN.md`: `ink_1` is `--ink-1`, `line_2` is `--line-2`.
 #[derive(Clone, Copy, Debug)]
 pub struct Chrome {
     pub glass: bool,
     pub column: Rgba,
+    /// `--line-1`: the column edge.
     pub hairline: Rgba,
-    pub ink: Rgba,
-    pub meta: Rgba,
-    pub faint: Rgba,
+    /// `--line-2`: the footer and picker footer rules.
+    pub line_2: Rgba,
+    /// `--shadow-card`: the 1px ring on a resting card.
+    pub line_subtle: Rgba,
+    /// The ring on the selected card while the terminal has focus.
+    pub line_selected_dim: Rgba,
+    /// Borders of buttons and number fields.
+    pub line_control: Rgba,
+    /// The empty project box.
+    pub dashed: Rgba,
+    pub ink_1: Rgba,
+    pub ink_2: Rgba,
+    pub ink_3: Rgba,
+    pub ink_4: Rgba,
+    /// Meta separators (`·`).
+    pub ink_5: Rgba,
     pub focus: Rgba,
     pub card_rest: Rgba,
     pub card_selected: Rgba,
     pub card_ready: Rgba,
     pub card_highlight: Rgba,
+    /// The soft drop under the selected card, below its focus ring.
+    pub card_shadow: Rgba,
+    pub card_shadow_blur: f32,
     pub row_selected: Rgba,
     pub overlay: Rgba,
     pub toast_bg: Rgba,
     pub toast_fg: Rgba,
+    pub toast_shadow: Rgba,
     pub scrim: Rgba,
+    /// Key caps and segmented tracks.
     pub sunken: Rgba,
     pub raised: Rgba,
-    pub field_line: Rgba,
-    pub dashed: Rgba,
-    pub primary_bg: Rgba,
-    pub primary_fg: Rgba,
+    pub raised_hover: Rgba,
+    /// `--surface-hover`, a translucent ink wash.
     pub hover: Rgba,
-    pub icon: Rgba,
-    pub ready_dot: Rgba,
-    pub working_dot: Rgba,
-    pub waiting_dot: Rgba,
+    /// `--shadow-control`, light mode only. Transparent in dark.
+    pub control_shadow: Rgba,
+    pub dialog_ring: Rgba,
+    pub dialog_shadow: Rgba,
+    pub primary_bg: Rgba,
+    pub primary_hover: Rgba,
+    pub primary_fg: Rgba,
+    /// Key cap text on a primary button.
+    pub kbd_inverse: Rgba,
+    pub ready: StatusColors,
+    pub working: StatusColors,
+    pub waiting: StatusColors,
     pub term_header: Rgba,
     pub term_header_alpha: f32,
     pub term_line: Rgba,
     pub term_seg: Rgba,
     pub term_seg_active: Rgba,
+    pub term_hover: Rgba,
+    /// `--term-fg-ui`: chrome text on the terminal side.
     pub term_fg: Rgba,
+    /// The active segment's text.
+    pub term_white: Rgba,
     pub term_dim: Rgba,
+    /// `--term-faint-ui`: hints and the empty state line.
     pub term_faint: Rgba,
+    /// `--term-faint`: the empty state's key row.
+    pub term_fainter: Rgba,
     pub term_empty: Rgba,
     pub term_empty_alpha: f32,
+}
+
+impl Chrome {
+    pub fn status(&self, status: Status) -> StatusColors {
+        match status {
+            Status::Ready => self.ready,
+            Status::Working => self.working,
+            Status::Waiting => self.waiting,
+        }
+    }
 }
 
 pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool) -> Chrome {
@@ -151,122 +204,38 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
     };
     let term_alpha = terminal_alpha_for(appearance, reduce_transparency);
     let frost_term = glass && matches!(appearance.translucency, Translucency::SidebarAndTerminal);
-    let (column, hairline, ink, meta, faint, focus) = if dark {
-        (
-            tint(if glass { 0x181A17 } else { 0x1A1C19 }, alpha),
-            if glass {
-                tint(0xFFFFFF, 0.08)
-            } else {
-                rgb(0x2A2D27)
-            },
-            rgb(0xE8EBE3),
-            rgb(if glass { 0xA6AB9E } else { 0x8D9286 }),
-            rgb(if glass { 0x9A9F92 } else { 0x6B7065 }),
-            rgb(0xE8EBE3),
-        )
-    } else {
-        (
-            tint(if glass { 0xF6F8F2 } else { 0xF1F2EC }, alpha),
-            if glass {
-                tint(0x000000, 0.10)
-            } else {
-                rgb(0xDADDD3)
-            },
-            rgb(0x262824),
-            rgb(if glass { 0x5F6459 } else { 0x6C7166 }),
-            rgb(if glass { 0x868B7E } else { 0x9EA296 }),
-            rgb(0x2F332C),
-        )
-    };
-    let card_selected = if dark { rgb(0x272A25) } else { rgb(0xFFFFFF) };
-    let card_rest = if glass {
-        tint(0xFFFFFF, if dark { 0.045 } else { 0.48 })
-    } else if dark {
-        tint(0xFFFFFF, 0.03)
-    } else {
-        rgb(0xF8F9F5)
-    };
-    let card_ready = if glass && dark {
-        tint(0x1C3422, 0.62)
-    } else if glass {
-        tint(0xE7FEEB, 0.78)
-    } else if dark {
-        rgb(0x18241A)
-    } else {
-        rgb(0xF1F8F0)
-    };
-    let card_highlight = if glass {
-        tint(0xFFFFFF, if dark { 0.05 } else { 0.75 })
-    } else {
-        tint(0xFFFFFF, 0.0)
-    };
-    let overlay = if glass && dark {
-        tint(0x242722, 0.78)
-    } else if glass {
-        tint(0xFAFBF7, 0.80)
-    } else if dark {
-        rgb(0x242722)
-    } else {
-        rgb(0xFAFAF7)
-    };
-    let toast_bg = if glass {
-        tint(if dark { 0x363A33 } else { 0x252823 }, 0.86)
-    } else if dark {
-        rgb(0x363A33)
-    } else {
-        rgb(0x252823)
-    };
-    let scrim = if glass && dark {
-        tint(0x000000, 0.30)
-    } else if glass {
-        tint(0x10120F, 0.22)
-    } else if dark {
-        tint(0x000000, 0.50)
-    } else {
-        tint(0x10120F, 0.34)
-    };
-    let sunken = if glass && dark {
-        tint(0xFFFFFF, 0.09)
-    } else if glass {
-        tint(0x28341E, 0.08)
-    } else if dark {
-        rgb(0x30342E)
-    } else {
-        rgb(0xE3E6DD)
-    };
-    let hover = if glass && dark {
-        tint(0xFFFFFF, 0.06)
-    } else if glass {
-        tint(0x28341E, 0.06)
-    } else if dark {
-        rgb(0x2E322C)
-    } else {
-        rgb(0xE3E6DD)
-    };
-    let dashed = if glass && dark {
-        tint(0xFFFFFF, 0.16)
-    } else if glass {
-        tint(0x28341E, 0.22)
-    } else if dark {
-        rgb(0x383C35)
-    } else {
-        rgb(0xCFD3C7)
-    };
-    let field_line = if glass && dark {
-        tint(0xFFFFFF, 0.12)
-    } else if glass {
-        tint(0x000000, 0.10)
-    } else if dark {
-        rgb(0x383C35)
-    } else {
-        rgb(0xCFD3C7)
-    };
-    let (term_header, term_line, term_seg, term_seg_active, term_empty) = if frost_term {
+    // Pick by mode: solid light, solid dark, glass light, glass dark.
+    let pick =
+        |light: Rgba, dark_solid: Rgba, glass_light: Rgba, glass_dark: Rgba| match (glass, dark) {
+            (false, false) => light,
+            (false, true) => dark_solid,
+            (true, false) => glass_light,
+            (true, true) => glass_dark,
+        };
+    let column = tint(
+        match (glass, dark) {
+            (false, false) => 0xF1F2EC,
+            (false, true) => 0x1A1C19,
+            (true, false) => 0xF6F8F2,
+            (true, true) => 0x181A17,
+        },
+        alpha,
+    );
+    let hover = pick(
+        tint(0x141E0A, 0.045),
+        tint(0xFFFFFF, 0.05),
+        tint(0x28341E, 0.06),
+        tint(0xFFFFFF, 0.06),
+    );
+    let ink_3 = pick(rgb(0x6C7166), rgb(0x8D9286), rgb(0x5F6459), rgb(0xA6AB9E));
+    let (term_header, term_line, term_seg, term_seg_active, term_hover, term_empty) = if frost_term
+    {
         (
             rgb(if dark { 0x141613 } else { 0x1A1C19 }),
             tint(0xFFFFFF, 0.07),
             tint(0xFFFFFF, 0.06),
             tint(0xFFFFFF, 0.14),
+            tint(0xFFFFFF, 0.06),
             rgb(if dark { 0x0E100D } else { 0x131512 }),
         )
     } else if dark {
@@ -275,7 +244,8 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
             rgb(0x232621),
             rgb(0x1D201B),
             rgb(0x353932),
-            rgb(0x121211),
+            rgb(0x1D201B),
+            rgb(0x10120F),
         )
     } else {
         (
@@ -283,37 +253,151 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
             rgb(0x262924),
             rgb(0x20231F),
             rgb(0x353932),
+            rgb(0x20231F),
             rgb(0x131512),
         )
     };
     Chrome {
         glass,
         column,
-        hairline,
-        ink,
-        meta,
-        faint,
-        focus,
-        card_rest,
-        card_selected,
-        card_ready,
-        card_highlight,
+        hairline: pick(
+            rgb(0xDADDD3),
+            rgb(0x2A2D27),
+            tint(0x000000, 0.10),
+            tint(0xFFFFFF, 0.08),
+        ),
+        line_2: pick(
+            rgb(0xE0E3D9),
+            rgb(0x262923),
+            tint(0x000000, 0.08),
+            tint(0xFFFFFF, 0.07),
+        ),
+        line_subtle: if dark {
+            tint(0xFFFFFF, 0.055)
+        } else {
+            tint(0x141E0A, 0.05)
+        },
+        line_selected_dim: if dark { rgb(0x3A3E36) } else { rgb(0xD6DACE) },
+        line_control: pick(
+            rgb(0xD3D7CC),
+            rgb(0x383C35),
+            tint(0x000000, 0.10),
+            tint(0xFFFFFF, 0.12),
+        ),
+        dashed: pick(
+            rgb(0xCFD3C7),
+            rgb(0x383C35),
+            tint(0x28341E, 0.22),
+            tint(0xFFFFFF, 0.16),
+        ),
+        ink_1: if dark { rgb(0xE8EBE3) } else { rgb(0x262824) },
+        ink_2: if dark { rgb(0xB6BBAE) } else { rgb(0x4E524A) },
+        ink_3,
+        ink_4: pick(rgb(0x9EA296), rgb(0x6B7065), rgb(0x868B7E), rgb(0x9A9F92)),
+        ink_5: pick(rgb(0xC3C6BC), rgb(0x464A42), rgb(0xADB1A5), rgb(0x5E6359)),
+        focus: if dark { rgb(0xE8EBE3) } else { rgb(0x2F332C) },
+        card_rest: pick(
+            rgb(0xF8F9F5),
+            tint(0xFFFFFF, 0.03),
+            tint(0xFFFFFF, 0.48),
+            tint(0xFFFFFF, 0.045),
+        ),
+        card_selected: if dark { rgb(0x272A25) } else { rgb(0xFFFFFF) },
+        card_ready: pick(
+            rgb(0xEEFBF0),
+            rgb(0x18241A),
+            tint(0xE7FEEB, 0.78),
+            tint(0x1C3422, 0.62),
+        ),
+        card_highlight: if glass {
+            tint(0xFFFFFF, if dark { 0.05 } else { 0.75 })
+        } else {
+            tint(0xFFFFFF, 0.0)
+        },
+        card_shadow: if dark {
+            tint(0x000000, 0.30)
+        } else {
+            tint(0x141E0A, 0.07)
+        },
+        card_shadow_blur: if dark { 8. } else { 6. },
         row_selected: if dark { rgb(0x363A33) } else { rgb(0xE8EBE2) },
-        overlay,
-        toast_bg,
+        overlay: pick(
+            rgb(0xFAFAF7),
+            rgb(0x242722),
+            tint(0xFAFBF7, 0.80),
+            tint(0x242722, 0.78),
+        ),
+        toast_bg: tint(
+            if dark { 0x363A33 } else { 0x252823 },
+            if glass { 0.86 } else { 1.0 },
+        ),
         toast_fg: if dark { rgb(0xF1F4EC) } else { rgb(0xE9ECE3) },
-        scrim,
-        sunken,
+        toast_shadow: tint(0x000000, 0.35),
+        scrim: pick(
+            tint(0x10120F, 0.34),
+            tint(0x000000, 0.50),
+            tint(0x10120F, 0.22),
+            tint(0x000000, 0.30),
+        ),
+        sunken: pick(
+            rgb(0xE3E6DD),
+            rgb(0x30342E),
+            tint(0x28341E, 0.08),
+            tint(0xFFFFFF, 0.09),
+        ),
         raised: if dark { rgb(0x272A25) } else { rgb(0xFFFFFF) },
-        field_line,
-        dashed,
-        primary_bg: if dark { rgb(0xE8EBE3) } else { rgb(0x2F332C) },
-        primary_fg: if dark { rgb(0x1A1C19) } else { rgb(0xF2F5EC) },
+        raised_hover: if dark { rgb(0x2E322C) } else { rgb(0xFAFBF8) },
         hover,
-        icon: if dark { rgb(0xE8EBE3) } else { rgb(0x3C4038) },
-        ready_dot: rgb(if dark { 0x68CA80 } else { 0x399A62 }),
-        working_dot: rgb(if dark { 0x66ABE5 } else { 0x5A8AB3 }),
-        waiting_dot: rgb(if dark { 0x6B7065 } else { 0xA3A79B }),
+        control_shadow: tint(0x141E0A, if dark { 0.0 } else { 0.04 }),
+        dialog_ring: if dark {
+            tint(0xFFFFFF, 0.10)
+        } else {
+            tint(0x000000, 0.20)
+        },
+        dialog_shadow: if dark {
+            tint(0x000000, 0.55)
+        } else {
+            tint(0x0A0E08, 0.30)
+        },
+        primary_bg: if dark { rgb(0xE8EBE3) } else { rgb(0x262824) },
+        primary_hover: if dark { rgb(0xFFFFFF) } else { rgb(0x353A31) },
+        primary_fg: if dark { rgb(0x1A1C19) } else { rgb(0xF3F5EE) },
+        kbd_inverse: if dark {
+            tint(0x1A1C19, 0.70)
+        } else {
+            tint(0xF3F5EE, 0.72)
+        },
+        ready: if dark {
+            StatusColors {
+                dot: rgb(0x68CA80),
+                text: rgb(0x89DA9B),
+                chip: rgb(0x1C3723),
+            }
+        } else {
+            StatusColors {
+                dot: rgb(0x45B164),
+                text: rgb(0x21763C),
+                chip: rgb(0xD1F2D7),
+            }
+        },
+        working: if dark {
+            StatusColors {
+                dot: rgb(0x66ABE5),
+                text: rgb(0x8CC4F4),
+                chip: rgb(0x1E3243),
+            }
+        } else {
+            StatusColors {
+                dot: rgb(0x4493D0),
+                text: rgb(0x266EA4),
+                chip: rgb(0xD5EBFE),
+            }
+        },
+        waiting: StatusColors {
+            dot: if dark { rgb(0x6B7065) } else { rgb(0xA3A79B) },
+            text: ink_3,
+            chip: hover,
+        },
         term_header,
         term_header_alpha: if frost_term {
             (term_alpha - 0.1).max(0.75)
@@ -323,9 +407,12 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
         term_line,
         term_seg,
         term_seg_active,
-        term_fg: rgb(0xD5D9CF),
+        term_hover,
+        term_fg: rgb(0xC5CABE),
+        term_white: rgb(0xF2F5EC),
         term_dim: rgb(0x878C80),
         term_faint: rgb(0x757A6E),
+        term_fainter: rgb(0x5A5F55),
         term_empty,
         term_empty_alpha: term_alpha,
     }
