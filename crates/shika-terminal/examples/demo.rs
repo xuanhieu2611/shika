@@ -30,8 +30,8 @@ use gpui::{
 };
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use shika_terminal::{
-    Palette, PtyHost, PtyWriter, Terminal, TerminalConfig, TerminalEvent, TerminalOptions,
-    TerminalSize, TerminalView,
+    InputSource, Palette, PtyHost, PtyWriter, Terminal, TerminalConfig, TerminalEvent,
+    TerminalOptions, TerminalSize, TerminalView,
 };
 
 actions!(
@@ -95,7 +95,7 @@ struct Pty {
 }
 
 impl PtyHost for Pty {
-    fn write(&self, bytes: &[u8]) {
+    fn write(&self, bytes: &[u8], _: InputSource) {
         self.writer.write(bytes);
     }
 

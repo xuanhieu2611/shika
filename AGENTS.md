@@ -25,11 +25,15 @@ The GPUI app is implemented in `crates/shika`. The Tauri, React, xterm.js, Node,
 
 Branch names: the first prompt line names the branch at once. About a second later the CLI's own session title, read from Claude Code's or Cursor's private files, renames it once, without the project name and with the optional Settings prefix. Those files are not a public API, so reading them is best effort; on any failure the prompt name stays. A branch already on a remote is never renamed. `PLAN.md` has the rules; `docs/branch-naming.md` explains the why, the code map, the CLI file formats, and how to debug it.
 
-Asking is not parsed. Ready means the output became quiet or the process exited, including a non-zero exit. Notifications are titled `{project} - {task}` and route clicks to the matching card. Permission denial is reported in the app.
+Asking is not parsed. Ready means the output became quiet or the process exited, including a non-zero exit. Notifications are titled `{project} - {task}` and route clicks to the matching card. A card notifies once per turn: a turn starts when the user types or pastes into the agent, and it notifies only if output kept arriving at least a second after the user's last input. Echoes and the redraws that focus, clicks, scrolling, or a resize cause never notify. They can still flip the card to Working for two seconds. Permission denial is reported in the app.
 
 `MANUAL_CHECKS.md` records integrated acceptance results and remaining checks. `crates/shika-terminal/MANUAL_CHECKS.md` records terminal-specific checks. Implementation and passing unit tests do not establish every GUI check.
 
-Public code is MIT licensed. JetBrains Mono retains its separate OFL license. Original web mockups were removed; runtime icons live in `assets/macos/`.
+Public code is MIT licensed. JetBrains Mono retains its separate OFL license. `design/DESIGN.md` is the visual spec. `design/Shika v3.dc.html` is the reference prototype. Runtime icons live in `assets/macos/`.
+
+## Design
+
+Before any UI work, read `design/DESIGN.md` and follow it. That file is the source of truth for color, type, spacing, layout, focus, motion, copy, and icons.
 
 ## Using the app
 
@@ -41,7 +45,7 @@ The shell is the user's login shell, with its cwd on the worktree. `git status` 
 
 Typing in the terminal, a text field, the picker, or the close dialog does not run the card keys.
 
-Cmd-, (also the Shika menu and the gear at the right of the title bar) opens Settings. Hovering the gear shows Settings ⌘,. The dialog sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, the terminal font size, and the branch prefix. Opacity is 0 to 100%, blur radius 0 to 255, and font size is 8 to 32 (default 12.5). `j` / `k` choose a row. `h` / `l` or the arrows step opacity and blur by 5, and font size by 1. Typing digits (or clicking the number) edits a value: Enter applies, Escape cancels the edit, and out-of-range values are clamped. A font size can include one decimal, such as 12.5. On the prefix row, Enter or a click edits the text, Enter applies, and Escape cancels. Escape closes the dialog. Changes apply and save at once. At 100% opacity the window is opaque and blur does nothing. The title bar uses that same opacity, so the blur shows through it. Cards, dialogs, the toast, and cells with their own background color stay opaque. The font size changes the terminal text. The chrome stays at its own sizes.
+Cmd-, (also the Shika menu and the gear at the right of the title bar) opens Settings. Hovering the gear shows Settings ⌘,. The dialog sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, the terminal font size, and the branch prefix. Opacity is 0 to 100%, blur radius 0 to 255, and font size is 8 to 32 (default 12.5). `j` / `k` choose a row. `h` / `l` or the arrows step opacity and blur by 5, and font size by 1. Typing digits (or clicking the number) edits a value: Enter applies, Escape cancels the edit, and out-of-range values are clamped. A font size can include one decimal, such as 12.5. On the prefix row, Enter or a click edits the text, Enter applies, and Escape cancels. Escape closes the dialog. Changes apply and save at once. At 100% opacity the window is opaque and blur does nothing. Below that, the column, resting cards, dialogs, picker, and toast frost, unless macOS Reduce transparency is on. The selected card stays solid. The terminal background stays at or above 85% when frost covers it, and CLI-colored cells stay opaque. The title bar uses the sidebar opacity, so the blur shows through it. Light and dark follow the system appearance. The values are in `design/DESIGN.md`. The font size changes the terminal text. The chrome stays at its own sizes.
 
 ## Code
 
