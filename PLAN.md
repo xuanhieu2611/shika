@@ -115,7 +115,7 @@ crates/shika-terminal/        alacritty_terminal wrapper and the GPUI terminal v
 crates/shika/                 the GPUI app
                               window, project headers, cards, picker, close dialog, toast,
                               keyboard map, shell toggle, .app bundle
-design/                       visual reference, unchanged
+design/                       DESIGN.md, Shika v3.dc.html, logo artwork
 ```
 
 Persisted in `~/Library/Application Support/com.hieule.shika/`, the same directory the Tauri build used, so existing files keep working:
@@ -174,6 +174,7 @@ Put that PATH on every child. Resolve `claude` and `agent` inside that same envi
 - First Enter submits whatever line was buffered from keystrokes. Then Working, and the title is that line, shortened to about 80 characters.
 - Quiet for ~2s after output has arrived: Ready to check, and a notification named `{project} - {task}`.
 - Process exit: Ready to check, same notification if one was not just posted.
+- One notification per turn (author, 2026-10-04). A turn starts when the user types or pastes into the agent. Reading the result, focusing, scrolling, or typing a draft must not notify again.
 - Asking you, if implemented: only flip it when the tail of recent output clearly looks like a question, and post the same kind of notification. Otherwise leave the status at Ready to check. The user reads the real terminal either way.
 - Clicking the notification focuses the window and selects that card.
 
