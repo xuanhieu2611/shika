@@ -1,0 +1,24 @@
+/* Two families only. UI = macOS system font. Code, paths, keys, terminal = JetBrains Mono. */
+:root {
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Menlo, monospace;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Scale - sizes are exact; do not round to a grid */
+  --text-headline-size: 15px;  --text-headline-line: 20px;  /* column summary "6 agents across 2 projects" */
+  --text-title-size: 14px;     --text-title-line: 20px;     /* dialog and picker titles */
+  --text-card-size: 13.5px;    --text-card-line: 19px;      /* card task name */
+  --text-body-size: 13px;      --text-body-line: 19px;      /* dialog body, project name, empty states */
+  --text-label-size: 12.5px;   --text-label-line: 16px;     /* buttons, toasts */
+  --text-meta-size: 12px;      --text-meta-line: 16px;      /* card meta row, chips, segments */
+  --text-path-size: 11.5px;    --text-path-line: 16px;      /* mono: branch, worktree path, timers */
+  --text-caption-size: 11px;   --text-caption-line: 14px;   /* key-hint labels, project path */
+  --text-kbd-size: 10.5px;                                   /* mono key caps */
+  --text-term-size: 12.5px;    --text-term-line: 19px;      /* terminal */
+
+  --tracking-headline: -0.01em;
+  --tracking-caps: 0.02em;     /* only "SHIKA" in notifications */
+}

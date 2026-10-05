@@ -1,0 +1,185 @@
+/* Shika color tokens.
+   Neutrals carry a faint sage tint taken from the logo (hue ~120, very low chroma).
+   Light is the default. Dark applies under [data-theme="dark"]; the app sets it
+   on <html> from the macOS appearance. */
+
+:root {
+  /* Brand - logo, app icon, wordmark only. Never UI chrome. */
+  --brand-ink: #1A1C19;
+  --brand-sage: #6F8466;
+  --brand-cream: #E4E9D2;
+  --brand-mint: #B9F2BF;
+  --brand-tile: #F2F3EC;     /* app icon background */
+
+  /* Ink - text and icons */
+  --ink-1: #262824;          /* primary text, titles */
+  --ink-2: #4E524A;          /* body copy, secondary labels */
+  --ink-3: #6C7166;          /* meta, CLI name, hints */
+  --ink-4: #9EA296;          /* placeholder, disabled, project path */
+  --ink-5: #C3C6BC;          /* separators (·) */
+
+  /* Surfaces */
+  --surface-app: #F1F2EC;            /* the agent column */
+  --surface-card: rgba(255,255,255,0.5);
+  --surface-raised: #FFFFFF;         /* selected card, secondary button */
+  --surface-raised-hover: #FAFBF8;
+  --surface-overlay: #FAFAF7;        /* dialogs, picker */
+  --surface-sunken: #E3E6DD;         /* key caps, segmented track */
+  --surface-hover: rgba(20,30,10,0.045);
+  --surface-selected: #E8EBE2;       /* active row in a list */
+  --scrim: rgba(16,18,15,0.34);
+
+  /* Lines */
+  --line-1: #DADDD3;
+  --line-2: #E0E3D9;
+  --line-control: #D3D7CC;
+  --line-dashed: #CFD3C7;
+  --line-subtle: rgba(20,30,10,0.05);
+  --line-selected-dim: #D6DACE;
+
+  /* Selection and focus: ink, never a hue */
+  --focus-ring: #2F332C;
+
+  /* Primary button (ink) */
+  --btn-primary-bg: #262824;
+  --btn-primary-bg-hover: #353A31;
+  --btn-primary-fg: #F3F5EE;
+  --kbd-inverse-bg: rgba(255,255,255,0.14);
+  --kbd-inverse-fg: rgba(243,245,238,0.72);
+
+  /* Status - the only hues in the chrome */
+  --status-asking: oklch(0.72 0.16 58);
+  --status-asking-text: oklch(0.54 0.14 52);
+  --status-asking-tint: oklch(0.975 0.022 75);
+  --status-asking-chip: oklch(0.93 0.05 70);
+
+  --status-ready: oklch(0.68 0.15 150);
+  --status-ready-text: oklch(0.50 0.12 150);
+  --status-ready-tint: oklch(0.975 0.02 150);
+  --status-ready-chip: oklch(0.93 0.05 150);
+
+  --status-working: oklch(0.64 0.12 245);
+  --status-working-text: oklch(0.52 0.11 245);
+  --status-working-tint: var(--surface-card);
+  --status-working-chip: oklch(0.93 0.035 245);
+
+  --status-waiting: #A3A79B;          /* drawn as a hollow ring */
+  --status-waiting-text: var(--ink-3);
+  --status-waiting-tint: var(--surface-card);
+  --status-waiting-chip: var(--surface-hover);
+
+  /* Transient surfaces */
+  --toast-bg: #252823;
+  --toast-fg: #E9ECE3;
+  --notif-bg: rgba(244,245,240,0.94);
+  --notif-meta: #717668;
+  --notif-title: #1C1E1A;
+  --notif-body: #353931;
+  --app-icon-bg: var(--brand-tile);
+
+  /* Window controls (macOS, literal) */
+  --traffic-close: #FF5F57;
+  --traffic-min: #FEBC2E;
+  --traffic-zoom: #28C840;
+
+  /* Terminal chrome - always dark, in both themes */
+  --term-bg: #131512;
+  --term-header: #181A17;
+  --term-line: #262924;
+  --term-control: #262924;
+  --term-seg-bg: #20231F;
+  --term-seg-active: #353932;
+  --term-hover: #20231F;
+  --term-fg: #D5D9CF;
+  --term-fg-ui: #C5CABE;
+  --term-dim: #878C80;
+  --term-faint: #5A5F55;
+  --term-faint-ui: #757A6E;
+  --term-white: #F2F5EC;
+  --term-cursor: #D5D9CF;
+  --term-selection: rgba(213,217,207,0.18);
+
+  /* Elevation */
+  --shadow-control: 0 1px 1px rgba(20,30,10,0.04);
+  --shadow-card: 0 0 0 1px var(--line-subtle);
+  --shadow-card-selected: 0 0 0 1.5px var(--focus-ring), 0 2px 6px rgba(20,30,10,0.07);
+  --shadow-card-selected-dim: 0 0 0 1px var(--line-selected-dim);
+  --shadow-dialog: 0 0 0 0.5px rgba(0,0,0,0.2), 0 24px 60px rgba(10,14,8,0.3);
+  --shadow-toast: 0 6px 20px rgba(0,0,0,0.35);
+  --shadow-notification: 0 0 0 0.5px rgba(0,0,0,0.15), 0 10px 30px rgba(0,0,0,0.28);
+
+  /* Semantic aliases */
+  --text-primary: var(--ink-1);
+  --text-secondary: var(--ink-2);
+  --text-muted: var(--ink-3);
+  --text-faint: var(--ink-4);
+  --surface-column: var(--surface-app);
+}
+
+[data-theme="dark"] {
+  --ink-1: #E8EBE3;
+  --ink-2: #B6BBAE;
+  --ink-3: #8D9286;
+  --ink-4: #6B7065;
+  --ink-5: #464A42;
+
+  --surface-app: #1A1C19;
+  --surface-card: rgba(255,255,255,0.03);
+  --surface-raised: #272A25;
+  --surface-raised-hover: #2E322C;
+  --surface-overlay: #242722;
+  --surface-sunken: #30342E;
+  --surface-hover: rgba(255,255,255,0.05);
+  --surface-selected: #363A33;
+  --scrim: rgba(0,0,0,0.5);
+
+  --line-1: #2A2D27;
+  --line-2: #262923;
+  --line-control: #383C35;
+  --line-dashed: #383C35;
+  --line-subtle: rgba(255,255,255,0.055);
+  --line-selected-dim: #3A3E36;
+
+  --focus-ring: #E8EBE3;
+
+  --btn-primary-bg: #E8EBE3;
+  --btn-primary-bg-hover: #FFFFFF;
+  --btn-primary-fg: #1A1C19;
+  --kbd-inverse-bg: rgba(0,0,0,0.1);
+  --kbd-inverse-fg: rgba(26,28,25,0.7);
+
+  --status-asking: oklch(0.78 0.15 65);
+  --status-asking-text: oklch(0.82 0.12 70);
+  --status-asking-tint: oklch(0.25 0.03 70);
+  --status-asking-chip: oklch(0.32 0.05 65);
+
+  --status-ready: oklch(0.76 0.14 150);
+  --status-ready-text: oklch(0.82 0.12 150);
+  --status-ready-tint: oklch(0.245 0.025 150);
+  --status-ready-chip: oklch(0.31 0.05 150);
+
+  --status-working: oklch(0.72 0.11 245);
+  --status-working-text: oklch(0.80 0.09 245);
+  --status-working-chip: oklch(0.31 0.04 245);
+
+  --status-waiting: #6B7065;
+
+  --toast-bg: #363A33;
+  --toast-fg: #F1F4EC;
+  --notif-bg: rgba(40,43,38,0.92);
+  --notif-meta: #979C8F;
+  --notif-title: #F1F4EC;
+  --notif-body: #CBD0C3;
+
+  --term-bg: #10120F;
+  --term-header: #151714;
+  --term-line: #232621;
+  --term-control: #232621;
+  --term-seg-bg: #1D201B;
+  --term-hover: #1D201B;
+
+  --shadow-control: none;
+  --shadow-card-selected: 0 0 0 1.5px var(--focus-ring), 0 2px 8px rgba(0,0,0,0.3);
+  --shadow-dialog: 0 0 0 0.5px rgba(255,255,255,0.1), 0 24px 60px rgba(0,0,0,0.55);
+  --shadow-notification: 0 0 0 0.5px rgba(255,255,255,0.1), 0 10px 30px rgba(0,0,0,0.5);
+}

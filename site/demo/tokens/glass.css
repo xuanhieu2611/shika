@@ -1,0 +1,97 @@
+/* Glass (frosted) mode. Applies when <html data-glass="on">.
+   In the Tauri app: transparent window + native vibrancy (window-vibrancy crate,
+   NSVisualEffectMaterial::Sidebar behind the column, HudWindow or UnderWindowBackground
+   behind the terminal). The CSS here sets the tints that sit on top of that material;
+   the blur values are for browser mocks, where backdrop-filter stands in for vibrancy.
+   Turn glass off when macOS "Reduce transparency" is on. */
+
+:root {
+  --glass-term-alpha: 0.92;        /* terminal opacity, 0.85–1. Never below 0.85 */
+  --desktop-bg: none;              /* mock only: the wallpaper behind the window */
+  --window-inset: 0px;
+  --window-radius: 0px;
+  --window-shadow: none;
+  --window-edge: none;
+  --column-bg: var(--surface-app);
+  --column-blur: none;
+  --term-surface: var(--term-bg);
+  --term-header-surface: var(--term-header);
+  --term-blur: none;
+  --overlay-surface: var(--surface-overlay);
+  --overlay-blur: none;
+}
+
+[data-glass="on"] {
+  --window-inset: 32px;
+  --window-radius: 12px;
+  --window-shadow: 0 0 0 0.5px rgba(0,0,0,0.3), 0 30px 80px rgba(10,14,8,0.34), 0 8px 24px rgba(10,14,8,0.14);
+  --window-edge: inset 0 0 0 0.5px rgba(255,255,255,0.45);
+
+  --column-bg: rgba(246,248,242,0.58);
+  --column-blur: blur(44px) saturate(1.9);
+
+  --ink-3: #5F6459;
+  --ink-4: #868B7E;
+  --surface-card: rgba(255,255,255,0.48);
+  --surface-sunken: rgba(40,52,30,0.08);
+  --surface-hover: rgba(40,52,30,0.06);
+  --line-1: rgba(0,0,0,0.1);
+  --line-2: rgba(0,0,0,0.07);
+  --line-subtle: rgba(0,0,0,0.045);
+  --line-dashed: rgba(40,52,30,0.22);
+  --line-control: rgba(0,0,0,0.1);
+  --shadow-card: 0 0 0 1px rgba(0,0,0,0.04), inset 0 1px 0 rgba(255,255,255,0.75), 0 1px 2px rgba(20,30,10,0.04);
+  --shadow-card-selected: 0 0 0 1.5px var(--focus-ring), 0 6px 18px rgba(20,30,10,0.12);
+  --status-asking-tint: oklch(0.975 0.04 75 / 0.78);
+  --status-ready-tint: oklch(0.975 0.035 150 / 0.78);
+  --status-asking-chip: oklch(0.93 0.06 70 / 0.85);
+  --status-ready-chip: oklch(0.93 0.055 150 / 0.85);
+  --status-working-chip: oklch(0.93 0.04 245 / 0.85);
+
+  --term-surface: rgb(19 21 18 / var(--glass-term-alpha));
+  --term-header-surface: rgb(26 28 25 / calc(var(--glass-term-alpha) - 0.1));
+  --term-blur: blur(36px) saturate(1.4);
+  --term-line: rgba(255,255,255,0.07);
+  --term-seg-bg: rgba(255,255,255,0.06);
+  --term-seg-active: rgba(255,255,255,0.14);
+  --term-hover: rgba(255,255,255,0.06);
+
+  --overlay-surface: rgba(250,251,247,0.8);
+  --overlay-blur: blur(36px) saturate(1.9);
+  --scrim: rgba(16,18,15,0.22);
+  --toast-bg: rgba(37,40,35,0.86);
+}
+
+[data-theme="dark"][data-glass="on"] {
+  --window-shadow: 0 0 0 0.5px rgba(0,0,0,0.6), 0 30px 80px rgba(0,0,0,0.55), 0 8px 24px rgba(0,0,0,0.3);
+  --window-edge: inset 0 0 0 0.5px rgba(255,255,255,0.12);
+
+  --column-bg: rgba(24,26,23,0.7);
+  --column-blur: blur(44px) saturate(1.6);
+
+  --ink-3: #A6AB9E;
+  --ink-4: #9A9F92;
+  --ink-5: #5E6359;
+  --surface-card: rgba(255,255,255,0.045);
+  --surface-sunken: rgba(255,255,255,0.09);
+  --surface-hover: rgba(255,255,255,0.06);
+  --line-1: rgba(255,255,255,0.08);
+  --line-2: rgba(255,255,255,0.06);
+  --line-subtle: rgba(255,255,255,0.06);
+  --line-dashed: rgba(255,255,255,0.16);
+  --line-control: rgba(255,255,255,0.12);
+  --shadow-card: 0 0 0 1px rgba(255,255,255,0.055), inset 0 1px 0 rgba(255,255,255,0.05);
+  --shadow-card-selected: 0 0 0 1.5px var(--focus-ring), 0 6px 18px rgba(0,0,0,0.35);
+  --status-asking-tint: oklch(0.3 0.05 70 / 0.62);
+  --status-ready-tint: oklch(0.3 0.045 150 / 0.62);
+  --status-asking-chip: oklch(0.34 0.06 65 / 0.8);
+  --status-ready-chip: oklch(0.33 0.055 150 / 0.8);
+  --status-working-chip: oklch(0.33 0.045 245 / 0.8);
+
+  --term-surface: rgb(14 16 13 / var(--glass-term-alpha));
+  --term-header-surface: rgb(20 22 19 / calc(var(--glass-term-alpha) - 0.1));
+
+  --overlay-surface: rgba(36,39,34,0.78);
+  --scrim: rgba(0,0,0,0.3);
+  --toast-bg: rgba(54,58,51,0.86);
+}
