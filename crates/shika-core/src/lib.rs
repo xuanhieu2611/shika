@@ -10,7 +10,8 @@
 //!
 //! - **Blocking.** [`Core::add_project`], [`Core::create_session`],
 //!   [`Core::open_shell`], [`Core::session_dirty`], [`Core::session_git_state`],
-//!   [`Core::session_rename_from_prompt`], [`Core::session_discard`],
+//!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
+//!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
 //!   [`Core::remove_project`],
 //!   and the first call to [`Core::path_env`] or [`Core::cli_catalog`]. These
@@ -42,6 +43,7 @@
 //! `shika-terminal`.
 
 mod agents;
+mod cli_title;
 mod error;
 mod path_env;
 mod projects;
@@ -61,7 +63,9 @@ pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use session::{Session, SessionGitState, ShellOpen};
 pub use settings::{Appearance, Settings, Translucency};
 pub use worktree::JournalEntry;
+pub use worktree::normalize_prefix as normalize_branch_prefix;
 
+use cli_title::CliHome;
 use projects::ProjectDb;
 use pty::{PtyHub, SpawnRequest};
 use session::SessionStore;
@@ -90,6 +94,9 @@ pub struct Core {
     sessions: SessionStore,
     ptys: PtyHub,
     operations: Mutex<()>,
+    /// Where the agent CLIs keep their session titles. None without a home
+    /// directory, which only means cards keep their prompt names.
+    cli_home: Option<CliHome>,
 }
 
 impl Core {
@@ -108,6 +115,7 @@ impl Core {
             sessions: SessionStore::new(),
             ptys: PtyHub::new(),
             operations: Mutex::new(()),
+            cli_home: CliHome::detect(),
         })
     }
 
@@ -262,6 +270,7 @@ impl Core {
             worktree: draft.path,
             pty,
             shell_pty: None,
+            cli_titled: false,
         };
         self.sessions.insert(session.clone());
         Ok(session)
@@ -313,38 +322,106 @@ impl Core {
         worktree::is_dirty(&self.git()?, env.path(), &session.worktree)
     }
 
-    /// First submitted prompt names the task and branch. Its worktree folder
-    /// stays put, because the CLI is already running inside it. Blocking.
+    /// First submitted prompt names the task and branch, until the CLI's own
+    /// title replaces both through [`Core::session_apply_cli_title`]. Its
+    /// worktree folder stays put, because the CLI is already running inside
+    /// it. Blocking.
     pub fn session_rename_from_prompt(&self, id: &str, prompt: &str) -> Result<Session> {
         let _guard = self
             .operations
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        if session.branch != format!("shika-draft-{}", session.id) {
+        if session.branch != format!("shika-draft-{}", session.id) || session.cli_titled {
             return Ok(session);
         }
         let env = self.path_env();
         let git = self.git()?;
         self.ensure_session_branch(&session)?;
         let prompt = prompt.lines().next().unwrap_or("");
-        let branch = worktree::rename_from_prompt(&git, env.path(), &session.worktree, prompt, id)?;
+        let base = worktree::branch_slug(prompt, &self.project_name(&session))
+            .unwrap_or_else(|| format!("task-{id}"));
+        let branch = self.rename_task_branch(&git, env.path(), &session, &base)?;
+        let title = prompt.trim().chars().take(80).collect();
+        self.sessions.rename(id, branch, title)
+    }
+
+    /// Names the card and branch after the title the session's CLI gave its
+    /// own conversation, read from the CLI's files. Applies once. Ok(None)
+    /// until the CLI has written a title, and after one was applied. The
+    /// branch keeps its name when it is already on a remote or the worktree
+    /// is on another branch; the card still takes the title. Blocking: reads
+    /// the CLI's files and runs git.
+    pub fn session_apply_cli_title(&self, id: &str) -> Result<Option<Session>> {
+        let _guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        if session.cli_titled {
+            return Ok(None);
+        }
+        let Some(title) = self
+            .cli_home
+            .as_ref()
+            .and_then(|home| home.read(&session.preset_id, &session.worktree))
+        else {
+            return Ok(None);
+        };
+        let env = self.path_env();
+        let git = self.git()?;
+        let mut branch = session.branch.clone();
+        let on_branch =
+            worktree::head_branch(&git, env.path(), &session.worktree)?.as_ref() == Some(&branch);
+        if on_branch
+            && !worktree::is_published(&git, env.path(), &session.worktree, &branch)?
+            && let Some(base) = worktree::branch_slug(&title, &self.project_name(&session))
+        {
+            branch = self.rename_task_branch(&git, env.path(), &session, &base)?;
+        }
+        self.sessions.apply_cli_title(id, branch, title).map(Some)
+    }
+
+    /// Renames the session's branch to the prefix setting plus `base`, and
+    /// keeps the journal in step. Unreadable settings or a prefix git
+    /// refuses mean no prefix.
+    fn rename_task_branch(
+        &self,
+        git: &Path,
+        path_env: &str,
+        session: &Session,
+        base: &str,
+    ) -> Result<String> {
+        let prefix = self
+            .settings()
+            .map(|settings| worktree::normalize_prefix(&settings.branch_prefix))
+            .unwrap_or_default();
+        let mut name = format!("{prefix}{base}");
+        if !prefix.is_empty()
+            && !worktree::is_valid_branch(git, path_env, &session.worktree, &name)?
+        {
+            name = base.to_string();
+        }
+        let branch =
+            worktree::rename_branch(git, path_env, &session.worktree, &session.branch, &name)?;
+        if branch == session.branch {
+            return Ok(branch);
+        }
         if let Err(err) = self.journal.rename_branch(&session.worktree, &branch) {
             // Keep the in-memory record and journal consistent if saving fails.
-            let _ = worktree::git_cmd(&git, env.path(), &session.worktree)
-                .args(["branch", "-m", &session.branch])
+            let _ = worktree::git_cmd(git, path_env, &session.worktree)
+                .args(["branch", "-m", "--", &branch, &session.branch])
                 .output();
             return Err(err);
         }
-        let title = prompt
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .chars()
-            .take(80)
-            .collect();
-        self.sessions.rename(id, branch, title)
+        Ok(branch)
+    }
+
+    fn project_name(&self, session: &Session) -> String {
+        self.projects
+            .get(&session.project_id)
+            .map(|project| project.name)
+            .unwrap_or_default()
     }
 
     /// Blocking git facts, with the UI's coarse Working status.
@@ -469,13 +546,8 @@ impl Core {
     }
 
     fn ensure_session_branch(&self, session: &Session) -> Result<()> {
-        let output = worktree::git_cmd(&self.git()?, self.path_env().path(), &session.worktree)
-            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
-            .output()
-            .map_err(|_| Error::GitStatus(None))?;
-        if !output.status.success()
-            || String::from_utf8_lossy(&output.stdout).trim() != session.branch
-        {
+        let head = worktree::head_branch(&self.git()?, self.path_env().path(), &session.worktree)?;
+        if head.as_ref() != Some(&session.branch) {
             return Err(Error::GitStatus(Some(
                 "The worktree branch changed. Return to the task branch before closing.".into(),
             )));
@@ -887,6 +959,114 @@ mod tests {
         assert!(core.session(&second.id).is_some());
         core.write(second.pty, b"still alive\r").unwrap();
         core.session_discard(&second.id).unwrap();
+    }
+
+    fn write_claude_title(home: &Path, worktree: &Path, title: &str) {
+        let encoded: String = worktree
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let dir = home.join(".claude/projects").join(encoded);
+        fs::create_dir_all(&dir).unwrap();
+        let line = serde_json::json!({ "type": "ai-title", "aiTitle": title });
+        fs::write(dir.join("session.jsonl"), format!("{line}\n")).unwrap();
+    }
+
+    #[test]
+    fn the_cli_title_renames_the_branch_once_without_the_project_name() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("shika");
+        let mut core = core_with_fake_cli(&scratch);
+        let home = scratch.path.join("home");
+        core.cli_home = Some(CliHome::at(home.clone()));
+        let project = core.add_project(&repo).unwrap().project;
+        let session = create_fake_session(&core, &project.id);
+
+        // No title yet: nothing changes.
+        assert_eq!(core.session_apply_cli_title(&session.id).unwrap(), None);
+        let prompted = core
+            .session_rename_from_prompt(&session.id, "okay we need a way to blur")
+            .unwrap();
+        assert_eq!(prompted.branch, "okay-we-need-a-way-to-blur");
+
+        write_claude_title(
+            &home,
+            &session.worktree,
+            "Shika background opacity and blur",
+        );
+        let titled = core.session_apply_cli_title(&session.id).unwrap().unwrap();
+        assert_eq!(titled.branch, "background-opacity-and-blur");
+        assert_eq!(titled.title, "Shika background opacity and blur");
+        assert!(titled.cli_titled);
+        assert_eq!(titled.worktree, session.worktree);
+        assert_eq!(
+            git(&titled.worktree, &["branch", "--show-current"]).trim(),
+            titled.branch
+        );
+        assert_eq!(core.worktree_journal().unwrap()[0].branch, titled.branch);
+
+        // Applied once. A later title or prompt does not rename again.
+        write_claude_title(&home, &session.worktree, "Something else entirely");
+        assert_eq!(core.session_apply_cli_title(&session.id).unwrap(), None);
+        assert_eq!(
+            core.session_rename_from_prompt(&session.id, "another prompt")
+                .unwrap(),
+            titled
+        );
+        core.session_discard(&session.id).unwrap();
+    }
+
+    #[test]
+    fn the_cli_title_uses_the_prefix_and_never_renames_a_pushed_branch() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        local_remote(&scratch, &repo);
+        let mut core = core_with_fake_cli(&scratch);
+        let home = scratch.path.join("home");
+        core.cli_home = Some(CliHome::at(home.clone()));
+        core.save_settings(&Settings {
+            branch_prefix: "hieu".into(),
+            ..Settings::default()
+        })
+        .unwrap();
+        let project = core.add_project(&repo).unwrap().project;
+
+        let fresh = create_fake_session(&core, &project.id);
+        write_claude_title(&home, &fresh.worktree, "Fix login flow");
+        let titled = core.session_apply_cli_title(&fresh.id).unwrap().unwrap();
+        assert_eq!(titled.branch, "hieu/fix-login-flow");
+
+        // Pushed before the title arrived, without -u: the name stays.
+        let pushed = create_fake_session(&core, &project.id);
+        let pushed = core
+            .session_rename_from_prompt(&pushed.id, "add a readme")
+            .unwrap();
+        assert_eq!(pushed.branch, "hieu/add-a-readme");
+        git(
+            &pushed.worktree,
+            &["commit", "--allow-empty", "-m", "readme"],
+        );
+        git(&pushed.worktree, &["push", "origin", "HEAD"]);
+        write_claude_title(&home, &pushed.worktree, "Add project README");
+        let kept = core.session_apply_cli_title(&pushed.id).unwrap().unwrap();
+        assert_eq!(kept.branch, "hieu/add-a-readme");
+        assert_eq!(kept.title, "Add project README");
+
+        // A worktree switched to another branch keeps it too.
+        let switched = create_fake_session(&core, &project.id);
+        git(&switched.worktree, &["switch", "-c", "mine"]);
+        write_claude_title(&home, &switched.worktree, "Switch test");
+        let kept = core.session_apply_cli_title(&switched.id).unwrap().unwrap();
+        assert_eq!(kept.branch, switched.branch);
+        assert_eq!(
+            git(&switched.worktree, &["branch", "--show-current"]).trim(),
+            "mine"
+        );
+
+        for session in [&fresh, &pushed] {
+            core.session_discard(&session.id).unwrap();
+        }
     }
 
     #[test]

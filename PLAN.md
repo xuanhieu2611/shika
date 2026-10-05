@@ -43,6 +43,17 @@ Pressing New creates the worktree before the prompt exists, because the CLI has 
 
 The folder starts as `<repo>/.worktrees/shika-draft-<id>` on branch `shika-draft-<id>`. The first line you submit in that terminal becomes the card title, and Shika renames the git branch to a slug of that line with `git branch -m`. The folder stays where it is. The agent is already running inside it, so moving the directory out from under the process is not reliable. The path is only shown in the terminal header.
 
+Then the CLI's own session title replaces both, once (decided 2026-10-05). Claude Code and Cursor CLI each name their session with their own model call about a second after the first prompt, and save it on disk. Shika reads that title, so it sends no extra request:
+
+- Claude Code: the last `{"type":"ai-title","aiTitle":...}` line in `<config>/projects/<cwd>/<session>.jsonl`. `<config>` is `CLAUDE_CONFIG_DIR` or `~/.claude`, and `<cwd>` is the worktree path with every character other than an ASCII letter or digit replaced by `-`.
+- Cursor CLI: `title` in `~/.cursor/chats/<md5 of the cwd>/<agent>/meta.json`, whose `cwd` must equal the worktree. It is null until the chat is named.
+
+These are private files, not a public API. Shika only reads them. Anything missing, unreadable, or unexpected means no title, and the card keeps its prompt name. Starting at the first submitted line, the app checks every two seconds, one check at a time, for up to two minutes.
+
+Branch names are lowercase ASCII words joined by `-`, at most 48 characters, cut at a word boundary. Whole-word copies of the project name are left out ("Shika background opacity and blur" in `shika` becomes `background-opacity-and-blur`). The card shows the CLI's title as written. A name already taken by a local or remote-tracking branch gets `-2`, `-3`, and so on. Shika never renames a branch that is on a remote (it has an upstream, or a remote-tracking branch has its name), or a worktree switched to another branch; the card still takes the title. Renaming before a push is local only and changes no commits.
+
+The optional branch prefix in Settings (empty by default, like `hieu/`) goes in front of every name Shika picks. It is cleaned for git, gets a `/` unless it ends in `-` or `_`, and is dropped if git still refuses the name.
+
 You do not name the task in a separate field.
 
 ## Author decisions

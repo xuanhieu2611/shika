@@ -33,10 +33,22 @@ The author checked the first version by eye and it looked good. Typed values and
 - [ ] The title bar shows Shika on the left and a settings gear on the right. Hovering the gear shows Settings ⌘,, and clicking it opens the dialog. Dragging the bar moves the window.
 - [ ] The title bar uses the same opacity and blur as the sidebar. At 100% it is solid. Below that, the blurred desktop shows through the whole bar, including above the terminal.
 
+## Branch names from the CLI title, 2026-10-05
+
+Checked without the GUI: the installed Claude Code (2.1.289) and Cursor CLI (2026.10.01) were started in disposable worktrees under `/private/tmp` with the launch args from `PLAN.md` and given one conversational prompt. Each wrote its session title about 1.1 seconds after Enter: Claude "Shika settings dark mode toggle", Cursor "Shika Dark Mode". Shika's readers found both, and the slugs in project `shika` were `settings-dark-mode-toggle` and `dark-mode`.
+
+To check in the built app, with isolated data and a disposable repo:
+
+- [ ] With Claude, the branch shown on the card starts as the prompt slug and becomes the CLI title within a few seconds. The card title becomes the CLI title. `git branch --show-current` in the shell agrees, and the folder stays `shika-draft-<id>`.
+- [ ] The same with Cursor.
+- [ ] A prefix such as `hieu` set in Settings gives `hieu/<title>` on the next card. Enter or a click edits it, Escape cancels, and it survives a relaunch.
+- [ ] A branch pushed before the title arrives keeps its name; the card still takes the title.
+- [ ] Clearing a few words with Option+Backspace before the first Enter leaves them out of the first branch name.
+
 ## Automated checks
 
-Workspace tests cover PTY streaming, hidden terminal drains, terminal input, git exclusion, branch renaming, journal updates, unpushed commits, failed pushes, branch retention, safe close, branch-switch refusal, and leftovers. All use temporary app data and repositories.
+Workspace tests cover PTY streaming, hidden terminal drains, terminal input, git exclusion, branch renaming, CLI title reading (sample, missing, and broken files), branch slugs without the project name, prefix cleanup, renames that skip taken and pushed names, the title watch timing, Option+Backspace in prompt capture, journal updates, unpushed commits, failed pushes, branch retention, safe close, branch-switch refusal, and leftovers. All use temporary app data and repositories.
 
-Final checks passed: cargo fmt --all --check, cargo test --workspace (108 tests: 55 core, 44 terminal, 9 app), cargo clippy --workspace --all-targets -- -D warnings, and strict bundle signature verification.
+Final checks passed: cargo fmt --all --check, cargo test --workspace (130 tests: 72 core, 44 terminal, 14 app), cargo clippy --workspace --all-targets -- -D warnings, and strict bundle signature verification.
 
 IME candidate placement, sustained typing feel, and the broader terminal matrix remain human checks in crates/shika-terminal/MANUAL_CHECKS.md. They are not claimed as acceptance passes here.

@@ -1,4 +1,6 @@
-//! Navigation and first-prompt capture, independent of GPUI.
+//! Navigation, first-prompt capture, and the CLI title watch, independent
+//! of GPUI.
+use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Waiting,
@@ -19,6 +21,65 @@ impl Status {
             Self::Working => 1,
             Self::Waiting => 2,
         }
+    }
+}
+/// Looking for the title the agent CLI gives its own session, which then
+/// names the card and branch. From the first submitted line, it checks
+/// every [`TitleWatch::EVERY`], one check at a time, and gives up after
+/// [`TitleWatch::FOR`]. Without a title the card keeps its prompt name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TitleWatch {
+    #[default]
+    Idle,
+    Watching {
+        until: Instant,
+        next: Instant,
+        checking: bool,
+    },
+    Done,
+}
+impl TitleWatch {
+    pub const EVERY: Duration = Duration::from_secs(2);
+    pub const FOR: Duration = Duration::from_secs(120);
+    /// Starts once. Later calls change nothing.
+    pub fn start(&mut self, now: Instant) {
+        if *self == Self::Idle {
+            *self = Self::Watching {
+                until: now + Self::FOR,
+                next: now + Self::EVERY,
+                checking: false,
+            };
+        }
+    }
+    /// True when a check should run now, and marks it running.
+    pub fn due(&mut self, now: Instant) -> bool {
+        let Self::Watching {
+            until,
+            next,
+            checking,
+        } = self
+        else {
+            return false;
+        };
+        if *checking || now < *next {
+            return false;
+        }
+        if now >= *until {
+            *self = Self::Done;
+            return false;
+        }
+        *checking = true;
+        true
+    }
+    /// A check found no title yet.
+    pub fn checked(&mut self, now: Instant) {
+        if let Self::Watching { next, checking, .. } = self {
+            *checking = false;
+            *next = now + Self::EVERY;
+        }
+    }
+    pub fn finish(&mut self) {
+        *self = Self::Done;
     }
 }
 #[derive(Default)]
@@ -56,6 +117,11 @@ impl PromptCapture {
                     }
                     'O' => 3,
                     ']' => 4,
+                    // Option+Backspace deletes the word before the cursor.
+                    '\u{7f}' | '\u{8}' => {
+                        self.delete_word();
+                        0
+                    }
                     _ => 0,
                 };
                 continue;
@@ -108,19 +174,20 @@ impl PromptCapture {
                     self.line.pop();
                 }
                 '\u{15}' | '\u{3}' => self.line.clear(),
-                '\u{17}' => {
-                    while self.line.ends_with(char::is_whitespace) {
-                        self.line.pop();
-                    }
-                    while !self.line.is_empty() && !self.line.ends_with(char::is_whitespace) {
-                        self.line.pop();
-                    }
-                }
+                '\u{17}' => self.delete_word(),
                 ch if !ch.is_control() => self.line.push(ch),
                 _ => {}
             }
         }
         None
+    }
+    fn delete_word(&mut self) {
+        while self.line.ends_with(char::is_whitespace) {
+            self.line.pop();
+        }
+        while !self.line.is_empty() && !self.line.ends_with(char::is_whitespace) {
+            self.line.pop();
+        }
     }
 }
 pub fn card_title(title: &str) -> String {
@@ -142,6 +209,30 @@ pub fn visible_indices(len: usize, selected: Option<usize>) -> std::ops::Range<u
 mod tests {
     use super::*;
     #[test]
+    fn the_title_watch_checks_one_at_a_time_then_gives_up() {
+        let t0 = Instant::now();
+        let mut w = TitleWatch::default();
+        assert!(!w.due(t0 + Duration::from_secs(60)));
+        w.start(t0);
+        w.start(t0 + Duration::from_secs(30));
+        assert!(!w.due(t0 + Duration::from_secs(1)));
+        assert!(w.due(t0 + TitleWatch::EVERY));
+        // Still running: no second check, even when the next one is due.
+        assert!(!w.due(t0 + Duration::from_secs(10)));
+        w.checked(t0 + Duration::from_secs(10));
+        assert!(!w.due(t0 + Duration::from_secs(11)));
+        assert!(w.due(t0 + Duration::from_secs(12)));
+        w.checked(t0 + Duration::from_secs(12));
+        assert!(!w.due(t0 + TitleWatch::FOR));
+        assert_eq!(w, TitleWatch::Done);
+        let mut w = TitleWatch::default();
+        w.start(t0);
+        w.finish();
+        assert!(!w.due(t0 + Duration::from_secs(5)));
+        w.start(t0);
+        assert_eq!(w, TitleWatch::Done);
+    }
+    #[test]
     fn navigation_never_exceeds_three() {
         assert_eq!(visible_indices(6, Some(5)), 3..6);
         assert_eq!(visible_indices(6, Some(0)), 0..3);
@@ -162,6 +253,22 @@ mod tests {
             c.feed("fix 日本語 extra\u{17}\r".as_bytes()),
             Some("fix 日本語".into())
         );
+    }
+    #[test]
+    fn option_backspace_deletes_a_word() {
+        // Typed, then cleared with Option+Backspace (ESC DEL) and retyped.
+        // The capture used to keep the cleared words and named the branch
+        // `okay-we-need-to-do-somethiokay-we-need-a-way-to`.
+        let mut c = PromptCapture::default();
+        let mut typed = b"okay we need to do somethi".to_vec();
+        typed.extend(b"\x1b\x7f".repeat(6));
+        typed.extend(b"okay we need a way to send escape\r");
+        assert_eq!(
+            c.feed(&typed),
+            Some("okay we need a way to send escape".into())
+        );
+        let mut c = PromptCapture::default();
+        assert_eq!(c.feed(b"fix the  \x1b\x08bug\r"), Some("fix bug".into()));
     }
     #[test]
     fn split_utf8_is_preserved() {
