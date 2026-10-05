@@ -14,7 +14,8 @@
 //!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
 //!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
-//!   [`Core::remove_project`],
+//!   [`Core::remove_project`], [`Core::project_base`], [`Core::set_project_base`],
+//!   [`Core::prefetch_base`],
 //!   and the first call to [`Core::path_env`] or [`Core::cli_catalog`]. These
 //!   run git or the user's login shell and can take seconds (the login shell
 //!   is given up to 20). Call them from a background executor, never from the
@@ -53,8 +54,10 @@ mod session;
 mod settings;
 mod worktree;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub use agents::{CliCatalog, CliPreset};
 pub use error::{Error, Result};
@@ -72,6 +75,29 @@ use pty::{PtyHub, SpawnRequest};
 use session::SessionStore;
 use settings::SettingsFile;
 use worktree::Journal;
+
+/// A project's base branch as the app shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectBase {
+    /// As saved in `projects.json`. None means the remote default.
+    pub configured: Option<String>,
+    /// The branch New starts from now, such as `dev` or `main`. None when the
+    /// configured branch is missing, or the start is a detached HEAD.
+    pub name: Option<String>,
+    /// The branch New would start from with no base set.
+    pub default_name: Option<String>,
+}
+
+/// A fetch of one project's base branch, started at the picker or at New.
+struct BaseFetch {
+    branch: String,
+    started: Instant,
+    done: bool,
+}
+
+/// A fetch younger than this is fresh enough for New: it waits for one in
+/// flight instead of starting another.
+const FETCH_FRESH: Duration = Duration::from_secs(30);
 
 /// The bundle identifier the Tauri build shipped with. Its data directory
 /// is named after it, so it must not change.
@@ -98,6 +124,9 @@ pub struct Core {
     /// Where the agent CLIs keep their session titles. None without a home
     /// directory, which only means cards keep their prompt names.
     cli_home: Option<CliHome>,
+    /// The latest base branch fetch per project id, and a signal when one ends.
+    fetches: Mutex<HashMap<String, BaseFetch>>,
+    fetched: Condvar,
 }
 
 impl Core {
@@ -117,6 +146,8 @@ impl Core {
             ptys: PtyHub::new(),
             operations: Mutex::new(()),
             cli_home: CliHome::detect(),
+            fetches: Mutex::new(HashMap::new()),
+            fetched: Condvar::new(),
         })
     }
 
@@ -181,6 +212,124 @@ impl Core {
         Ok(gone)
     }
 
+    /// The project's base branch as New would resolve it now, without
+    /// fetching. Blocking: runs git.
+    pub fn project_base(&self, id: &str) -> Result<ProjectBase> {
+        let project = self.projects.get(id)?;
+        let git = self.git()?;
+        let env = self.path_env().path();
+        let default_name = worktree::resolve_base(&git, env, &project.path, None)?.name;
+        let name = match project.base_branch.as_deref() {
+            None => default_name.clone(),
+            Some(branch) => worktree::resolve_base(&git, env, &project.path, Some(branch))
+                .ok()
+                .and_then(|base| base.name),
+        };
+        Ok(ProjectBase {
+            configured: project.base_branch,
+            name,
+            default_name,
+        })
+    }
+
+    /// Sets the branch new agents in this project start from, once it exists
+    /// on origin or locally. A branch missing locally is fetched from origin
+    /// first, in case it is new there. `origin/dev` is taken as `dev`. Empty
+    /// clears it, back to the remote default. Running sessions keep the base
+    /// they started from. Blocking: runs git and may fetch.
+    pub fn set_project_base(&self, id: &str, branch: &str) -> Result<Project> {
+        let project = self.projects.get(id)?;
+        let branch = branch.trim();
+        if branch.is_empty() {
+            return self.projects.set_base_branch(id, None);
+        }
+        let git = self.git()?;
+        let env = self.path_env().path();
+        let repo = project.path.as_path();
+        let mut names = vec![branch];
+        if let Some(short) = branch.strip_prefix("origin/") {
+            names.push(short);
+        }
+        for name in &names {
+            if worktree::configured_ref(&git, env, repo, name)?.is_some() {
+                return self.projects.set_base_branch(id, Some(name.to_string()));
+            }
+        }
+        if worktree::has_origin(&git, env, repo) {
+            for name in &names {
+                if worktree::fetch_branch(&git, env, repo, name, worktree::FETCH_TIMEOUT)
+                    && worktree::configured_ref(&git, env, repo, name)?.is_some()
+                {
+                    return self.projects.set_base_branch(id, Some(name.to_string()));
+                }
+            }
+        }
+        Err(Error::NoSuchBranch(branch.to_string()))
+    }
+
+    /// Fetches the project's base branch from origin, so New starts from the
+    /// remote's latest. Call it when the picker opens: [`Core::create_session`]
+    /// then waits for this fetch, up to its timeout, instead of starting
+    /// another. Best effort; never fails because the fetch did. Blocking.
+    pub fn prefetch_base(&self, id: &str) -> Result<()> {
+        let project = self.projects.get(id)?;
+        self.freshen_base(&project);
+        Ok(())
+    }
+
+    /// Fetches the base branch unless a fetch of it started within
+    /// [`FETCH_FRESH`]. One still running is waited for, up to its timeout.
+    fn freshen_base(&self, project: &Project) {
+        let Ok(git) = self.git() else {
+            return;
+        };
+        let env = self.path_env().path();
+        let Some(branch) =
+            worktree::fetch_target(&git, env, &project.path, project.base_branch.as_deref())
+        else {
+            return;
+        };
+        {
+            let mut fetches = self.fetches.lock().unwrap_or_else(|err| err.into_inner());
+            let recent = fetches
+                .get(&project.id)
+                .filter(|fetch| fetch.branch == branch && fetch.started.elapsed() < FETCH_FRESH)
+                .map(|fetch| fetch.started + worktree::FETCH_TIMEOUT + Duration::from_secs(1));
+            if let Some(deadline) = recent {
+                loop {
+                    let finished = fetches
+                        .get(&project.id)
+                        .is_none_or(|fetch| fetch.done || fetch.branch != branch);
+                    let now = Instant::now();
+                    if finished || now >= deadline {
+                        return;
+                    }
+                    fetches = match self.fetched.wait_timeout(fetches, deadline - now) {
+                        Ok((guard, _)) => guard,
+                        Err(err) => err.into_inner().0,
+                    };
+                }
+            }
+            fetches.insert(
+                project.id.clone(),
+                BaseFetch {
+                    branch: branch.clone(),
+                    started: Instant::now(),
+                    done: false,
+                },
+            );
+        }
+        worktree::fetch_branch(&git, env, &project.path, &branch, worktree::FETCH_TIMEOUT);
+        let mut fetches = self.fetches.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(fetch) = fetches.get_mut(&project.id)
+            && fetch.branch == branch
+        {
+            fetch.done = true;
+        }
+        drop(fetches);
+        self.fetched.notify_all();
+    }
+
     /// Every Shika worktree recorded on disk, including ones a quit or a
     /// crash left behind.
     pub fn worktree_journal(&self) -> Result<Vec<JournalEntry>> {
@@ -195,10 +344,12 @@ impl Core {
         self.sessions.get(id)
     }
 
-    /// Creates `<repo>/.worktrees/shika-draft-<id>` on a new branch, journals
-    /// it, and starts the CLI there on a PTY of `size` that feeds `sink`.
-    /// Anything that fails after the worktree exists removes it again.
-    /// Blocking: runs git.
+    /// Creates `<repo>/.worktrees/shika-draft-<id>` on a new branch from the
+    /// project's base branch, journals it, and starts the CLI there on a PTY
+    /// of `size` that feeds `sink`. The base is fetched from origin first,
+    /// best effort and bounded (see [`Core::prefetch_base`]). A configured
+    /// base that exists nowhere is an error. Anything that fails after the
+    /// worktree exists removes it again. Blocking: runs git.
     pub fn create_session(
         &self,
         project_id: &str,
@@ -206,11 +357,6 @@ impl Core {
         size: PtySize,
         sink: impl PtySink,
     ) -> Result<Session> {
-        let _guard = self
-            .operations
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let project = self.projects.get(project_id)?;
         let env = self.path_env();
         let preset = agents::presets_from(env)
             .into_iter()
@@ -220,14 +366,23 @@ impl Core {
             .path
             .clone()
             .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+        // Outside the lock: a slow network must not hold up close or discard.
+        self.freshen_base(&self.projects.get(project_id)?);
+        let _guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let project = self.projects.get(project_id)?;
         let git = self.git()?;
         let id = session::new_id(&self.sessions.ids());
         let repo = project.path.as_path();
-        let draft = worktree::create_draft(&git, env.path(), repo, &id)?;
+        let base = worktree::resolve_base(&git, env.path(), repo, project.base_branch.as_deref())?;
+        let draft = worktree::create_draft(&git, env.path(), repo, &id, base.start())?;
         let entry = JournalEntry {
             project_id: project.id.clone(),
             branch: draft.branch.clone(),
             path: draft.path.clone(),
+            base_ref: base.reference.clone(),
         };
         if let Err(err) = self.journal.add(&entry) {
             let _ =
@@ -269,6 +424,7 @@ impl Core {
             branch: draft.branch,
             repo: project.path,
             worktree: draft.path,
+            base_ref: base.reference,
             pty,
             shell_pty: None,
             cli_titled: false,
@@ -434,13 +590,14 @@ impl Core {
             self.path_env().path(),
             &session.repo,
             &session.worktree,
+            session.base_ref.as_deref(),
             agent_working,
         )
     }
 
     /// Blocking. What the task changed: committed and uncommitted work
-    /// against where the branch left the default branch. Takes no lock, so a
-    /// background refresh never holds up close or discard.
+    /// against where the branch left the base it started from. Takes no lock,
+    /// so a background refresh never holds up close or discard.
     pub fn session_diff_stat(&self, id: &str) -> Result<DiffStat> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
         worktree::diff_stat(
@@ -448,6 +605,7 @@ impl Core {
             self.path_env().path(),
             &session.repo,
             &session.worktree,
+            session.base_ref.as_deref(),
         )
     }
 
@@ -494,12 +652,14 @@ impl Core {
         if worktree::is_dirty(&git, path, &session.worktree)? {
             return Err(Error::PushDirty);
         }
-        let after = worktree::git_state(&git, path, &session.repo, &session.worktree, false)?;
+        let base = session.base_ref.as_deref();
+        let after = worktree::git_state(&git, path, &session.repo, &session.worktree, base, false)?;
         if after.unpushed {
             return Err(Error::CloseNeedsConfirmation);
         }
         self.hang_up(&session);
-        let stopped = worktree::git_state(&git, path, &session.repo, &session.worktree, false)?;
+        let stopped =
+            worktree::git_state(&git, path, &session.repo, &session.worktree, base, false)?;
         if stopped.dirty {
             return Err(Error::PushDirty);
         }
@@ -528,7 +688,8 @@ impl Core {
         self.hang_up(&session);
         let git = self.git()?;
         let path = self.path_env().path();
-        let state = worktree::git_state(&git, path, &session.repo, &session.worktree, false)?;
+        let base = session.base_ref.as_deref();
+        let state = worktree::git_state(&git, path, &session.repo, &session.worktree, base, false)?;
         if state.dirty {
             return Err(Error::WorktreeHasChanges(None));
         }
@@ -652,6 +813,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -771,6 +933,7 @@ mod tests {
                 id: "18db38e2f78faa00".into(),
                 name: "job-hunting".into(),
                 path: PathBuf::from("/Users/x/code/job-hunting"),
+                base_branch: None,
             }]
         );
         assert_eq!(
@@ -779,6 +942,7 @@ mod tests {
                 project_id: "18db38e2f78faa00".into(),
                 branch: "shika-draft-1".into(),
                 path: PathBuf::from("/Users/x/code/job-hunting/.worktrees/shika-draft-1"),
+                base_ref: None,
             }]
         );
 
@@ -937,6 +1101,367 @@ mod tests {
         git(repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
         git(repo, &["push", "-u", "origin", "main"]);
         remote
+    }
+
+    /// `demo` on main, pushed to a bare `origin` whose HEAD is main, with a
+    /// `dev` one commit ahead of main that exists only on origin.
+    fn repo_with_dev_on_origin(scratch: &Scratch) -> (PathBuf, PathBuf) {
+        let repo = scratch.repo("demo");
+        let remote = local_remote(scratch, &repo);
+        git(&repo, &["remote", "set-head", "origin", "main"]);
+        git(&repo, &["switch", "-c", "dev"]);
+        fs::write(repo.join("dev.txt"), "dev\n").unwrap();
+        git(&repo, &["add", "dev.txt"]);
+        git(&repo, &["commit", "-m", "dev work"]);
+        git(&repo, &["push", "origin", "dev"]);
+        git(&repo, &["switch", "main"]);
+        git(&repo, &["branch", "-D", "dev"]);
+        (repo, remote)
+    }
+
+    fn rev(dir: &Path, reference: &str) -> String {
+        git(dir, &["rev-parse", reference]).trim().to_string()
+    }
+
+    fn has_upstream(worktree: &Path) -> bool {
+        Command::new("git")
+            .arg("-C")
+            .arg(worktree)
+            .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+
+    fn branch_exists(repo: &Path, branch: &str) -> bool {
+        !git(repo, &["branch", "--list", branch]).trim().is_empty()
+    }
+
+    #[test]
+    fn a_dev_base_starts_from_origin_dev_without_an_upstream() {
+        let scratch = Scratch::new();
+        let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        assert_eq!(
+            core.project_base(&project.id).unwrap(),
+            ProjectBase {
+                configured: None,
+                name: Some("main".into()),
+                default_name: Some("main".into()),
+            }
+        );
+        let saved = core.set_project_base(&project.id, " origin/dev ").unwrap();
+        assert_eq!(saved.base_branch.as_deref(), Some("dev"));
+        assert_eq!(
+            core.projects().unwrap()[0].base_branch.as_deref(),
+            Some("dev")
+        );
+        assert_eq!(
+            core.project_base(&project.id).unwrap(),
+            ProjectBase {
+                configured: Some("dev".into()),
+                name: Some("dev".into()),
+                default_name: Some("main".into()),
+            }
+        );
+
+        let session = create_fake_session(&core, &project.id);
+        assert_eq!(session.base_ref.as_deref(), Some("refs/remotes/origin/dev"));
+        assert_eq!(
+            rev(&session.worktree, "HEAD"),
+            rev(&repo, "refs/remotes/origin/dev")
+        );
+        assert!(!has_upstream(&session.worktree));
+        assert_eq!(
+            core.worktree_journal().unwrap()[0].base_ref.as_deref(),
+            Some("refs/remotes/origin/dev")
+        );
+        // Measured against main, dev's own commit would make this card look
+        // pushed and full of changes.
+        let state = core.session_git_state(&session.id, false).unwrap();
+        assert!(!state.dirty && !state.has_own_commits && !state.unpushed && !state.pushed);
+        assert_eq!(
+            core.session_diff_stat(&session.id).unwrap(),
+            DiffStat::default()
+        );
+        core.session_close(&session.id, false).unwrap();
+        assert!(!session.worktree.exists());
+        assert!(!branch_exists(&repo, &session.branch));
+    }
+
+    #[test]
+    fn a_commit_on_a_dev_card_is_its_own_and_unpushed() {
+        let scratch = Scratch::new();
+        let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        core.set_project_base(&project.id, "dev").unwrap();
+        let session = create_fake_session(&core, &project.id);
+        fs::write(session.worktree.join("task.txt"), "one\ntwo\n").unwrap();
+        git(&session.worktree, &["add", "task.txt"]);
+        git(&session.worktree, &["commit", "-m", "task"]);
+
+        assert_eq!(
+            git(
+                &session.worktree,
+                &["rev-list", "--count", "refs/remotes/origin/dev..HEAD"]
+            )
+            .trim(),
+            "1"
+        );
+        let state = core.session_git_state(&session.id, false).unwrap();
+        assert!(state.has_own_commits && state.unpushed && !state.pushed);
+        assert!(state.can_push());
+        assert_eq!(
+            core.session_diff_stat(&session.id).unwrap(),
+            DiffStat {
+                files: 1,
+                insertions: 2,
+                deletions: 0,
+            }
+        );
+        assert_eq!(
+            core.session_close(&session.id, false),
+            Err(Error::CloseNeedsConfirmation)
+        );
+        // Push and close sends the task branch, never dev.
+        let dev = rev(&repo, "refs/remotes/origin/dev");
+        core.session_push_and_close(&session.id).unwrap();
+        git(&repo, &["fetch", "origin"]);
+        assert_eq!(rev(&repo, "refs/remotes/origin/dev"), dev);
+        assert!(branch_exists(&repo, &session.branch));
+    }
+
+    #[test]
+    fn a_local_only_base_branch_works() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        git(&repo, &["switch", "-c", "staging"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "staging work"]);
+        git(&repo, &["switch", "main"]);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        core.set_project_base(&project.id, "staging").unwrap();
+
+        let session = create_fake_session(&core, &project.id);
+        assert_eq!(session.base_ref.as_deref(), Some("refs/heads/staging"));
+        assert_eq!(rev(&session.worktree, "HEAD"), rev(&repo, "staging"));
+        assert!(!has_upstream(&session.worktree));
+        let state = core.session_git_state(&session.id, false).unwrap();
+        assert!(!state.has_own_commits && !state.unpushed && !state.pushed);
+        core.session_close(&session.id, false).unwrap();
+        assert!(!branch_exists(&repo, &session.branch));
+    }
+
+    #[test]
+    fn a_missing_base_branch_is_refused_and_creates_nothing() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        git(&repo, &["branch", "staging"]);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        for typed in ["nope", "a..b", "-x", "*"] {
+            assert_eq!(
+                core.set_project_base(&project.id, typed),
+                Err(Error::NoSuchBranch(typed.into()))
+            );
+        }
+        assert_eq!(core.projects().unwrap()[0].base_branch, None);
+
+        // Set, then deleted: New refuses instead of starting from main.
+        core.set_project_base(&project.id, "staging").unwrap();
+        git(&repo, &["branch", "-D", "staging"]);
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.create_session(&project.id, "claude", PtySize::default(), sink)
+                .unwrap_err(),
+            Error::BaseBranchMissing("staging".into())
+        );
+        assert!(core.sessions().is_empty());
+        assert!(core.worktree_journal().unwrap().is_empty());
+        assert!(!repo.join(".worktrees").exists());
+        let base = core.project_base(&project.id).unwrap();
+        assert_eq!(base.configured.as_deref(), Some("staging"));
+        assert_eq!(base.name, None);
+
+        // Empty clears it, back to the default branch.
+        assert_eq!(
+            core.set_project_base(&project.id, "  ")
+                .unwrap()
+                .base_branch,
+            None
+        );
+        let session = create_fake_session(&core, &project.id);
+        assert_eq!(session.base_ref.as_deref(), Some("refs/heads/main"));
+        core.session_discard(&session.id).unwrap();
+    }
+
+    #[test]
+    fn an_unset_base_uses_origin_head_not_the_main_checkout() {
+        let scratch = Scratch::new();
+        let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+        git(&repo, &["switch", "-c", "elsewhere"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "local only"]);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        assert_eq!(
+            core.project_base(&project.id).unwrap().name.as_deref(),
+            Some("main")
+        );
+
+        let session = create_fake_session(&core, &project.id);
+        assert_eq!(
+            session.base_ref.as_deref(),
+            Some("refs/remotes/origin/main")
+        );
+        assert_eq!(
+            rev(&session.worktree, "HEAD"),
+            rev(&repo, "refs/remotes/origin/main")
+        );
+        assert_ne!(rev(&session.worktree, "HEAD"), rev(&repo, "elsewhere"));
+        assert!(!has_upstream(&session.worktree));
+        let state = core.session_git_state(&session.id, false).unwrap();
+        assert!(!state.has_own_commits && !state.pushed);
+        core.session_close(&session.id, false).unwrap();
+        assert!(!branch_exists(&repo, &session.branch));
+    }
+
+    #[test]
+    fn changing_the_base_leaves_a_running_card_alone() {
+        let scratch = Scratch::new();
+        let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        core.set_project_base(&project.id, "dev").unwrap();
+        let on_dev = create_fake_session(&core, &project.id);
+        core.set_project_base(&project.id, "").unwrap();
+
+        let on_main = create_fake_session(&core, &project.id);
+        assert_eq!(
+            on_main.base_ref.as_deref(),
+            Some("refs/remotes/origin/main")
+        );
+        let kept = core.session(&on_dev.id).unwrap();
+        assert_eq!(kept.base_ref.as_deref(), Some("refs/remotes/origin/dev"));
+        // Still measured against dev, not the project's new base, main.
+        let state = core.session_git_state(&on_dev.id, false).unwrap();
+        assert!(!state.has_own_commits && !state.pushed);
+        assert_eq!(
+            core.session_diff_stat(&on_dev.id).unwrap(),
+            DiffStat::default()
+        );
+        core.session_close(&on_dev.id, false).unwrap();
+        assert!(!branch_exists(&repo, &on_dev.branch));
+        core.session_discard(&on_main.id).unwrap();
+    }
+
+    #[test]
+    fn a_vanished_recorded_base_falls_back_to_the_default_branch() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        git(&repo, &["branch", "staging"]);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        core.set_project_base(&project.id, "staging").unwrap();
+        let session = create_fake_session(&core, &project.id);
+        git(&repo, &["branch", "-D", "staging"]);
+        git(
+            &session.worktree,
+            &["commit", "--allow-empty", "-m", "task"],
+        );
+        let state = core.session_git_state(&session.id, false).unwrap();
+        assert!(state.has_own_commits && state.unpushed);
+        core.session_discard(&session.id).unwrap();
+    }
+
+    #[test]
+    fn new_fetches_the_base_and_a_dead_remote_does_not_block_it() {
+        let scratch = Scratch::new();
+        let (repo, remote) = repo_with_dev_on_origin(&scratch);
+        // Someone else pushes to dev. New should start from that commit.
+        let other = scratch.path.join("other");
+        let cloned = Command::new("git")
+            .args(["clone", "--quiet", "--branch", "dev"])
+            .arg(&remote)
+            .arg(&other)
+            .status()
+            .unwrap();
+        assert!(cloned.success());
+        git(&other, &["commit", "--allow-empty", "-m", "newer dev"]);
+        git(&other, &["push", "origin", "dev"]);
+        let newest = rev(&other, "HEAD");
+        assert_ne!(rev(&repo, "refs/remotes/origin/dev"), newest);
+
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        core.set_project_base(&project.id, "dev").unwrap();
+        core.prefetch_base(&project.id).unwrap();
+        let fresh = create_fake_session(&core, &project.id);
+        assert_eq!(rev(&fresh.worktree, "HEAD"), newest);
+        core.session_discard(&fresh.id).unwrap();
+
+        // An unreachable origin: New uses the ref it already has.
+        git(
+            &repo,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "/nonexistent/shika-remote.git",
+            ],
+        );
+        let core = core_with_fake_cli(&scratch);
+        let started = Instant::now();
+        let offline = create_fake_session(&core, &project.id);
+        assert!(started.elapsed() < worktree::FETCH_TIMEOUT);
+        assert_eq!(rev(&offline.worktree, "HEAD"), newest);
+        assert_eq!(offline.base_ref.as_deref(), Some("refs/remotes/origin/dev"));
+        core.session_discard(&offline.id).unwrap();
+    }
+
+    #[test]
+    fn new_waits_for_the_picker_fetch_instead_of_starting_another() {
+        let scratch = Scratch::new();
+        let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+        // An origin that never answers, and counts how often it is asked.
+        let log = scratch.path.join("upload-pack.log");
+        let hang = scratch.path.join("hang.sh");
+        fs::write(
+            &hang,
+            format!("#!/bin/sh\necho asked >> '{}'\nsleep 30\n", log.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&hang, fs::Permissions::from_mode(0o755)).unwrap();
+        git(
+            &repo,
+            &["config", "remote.origin.uploadpack", hang.to_str().unwrap()],
+        );
+        let core = Arc::new(core_with_fake_cli(&scratch));
+        let project = core.add_project(&repo).unwrap().project;
+
+        let started = Instant::now();
+        let picker = {
+            let core = core.clone();
+            let id = project.id.clone();
+            std::thread::spawn(move || core.prefetch_base(&id).unwrap())
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        let session = create_fake_session(&core, &project.id);
+        picker.join().unwrap();
+        let took = started.elapsed();
+        assert!(took >= worktree::FETCH_TIMEOUT, "{took:?}");
+        assert!(
+            took < worktree::FETCH_TIMEOUT + Duration::from_secs(2),
+            "{took:?}"
+        );
+        assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
+        assert_eq!(
+            session.base_ref.as_deref(),
+            Some("refs/remotes/origin/main")
+        );
+        core.session_discard(&session.id).unwrap();
     }
 
     #[test]

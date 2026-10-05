@@ -12,14 +12,15 @@ use gpui::{
 use model::{PromptCapture, Status, TitleWatch, visible_indices};
 use notifications::Notifications;
 use shika_core::{
-    Appearance, CliCatalog, Core, DiffStat, FontSize, JournalEntry, Project, PtyEvent, PtyId,
-    PtySize, Session, SessionGitState, Settings, Translucency,
+    Appearance, CliCatalog, Core, DiffStat, FontSize, JournalEntry, Project, ProjectBase, PtyEvent,
+    PtyId, PtySize, Session, SessionGitState, Settings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize,
     TerminalView,
 };
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -201,6 +202,13 @@ enum Overlay {
         row: usize,
         edit: Option<String>,
     },
+    /// The branch New starts from in `project`. `text` is the field, always
+    /// being typed into; `error` is why the last Enter was refused.
+    Base {
+        project: String,
+        text: String,
+        error: Option<String>,
+    },
 }
 struct Shika {
     core: Arc<Core>,
@@ -232,6 +240,9 @@ struct Shika {
     branch_prefix: String,
     /// Play the system alert sound with a ready notification.
     notification_sound: bool,
+    /// Each project's base branch, resolved off the main thread. A project
+    /// missing here shows no base label.
+    bases: HashMap<String, ProjectBase>,
 }
 impl Shika {
     fn new(
@@ -302,6 +313,7 @@ impl Shika {
             title_drag: false,
             branch_prefix,
             notification_sound,
+            bases: HashMap::new(),
         };
         cx.spawn_in(window, async move |this, cx| {
             let catalog = cx
@@ -333,6 +345,8 @@ impl Shika {
                     this.message(format!("Login shell PATH: {error:?}"));
                 }
                 this.catalog = Some(catalog);
+                let ids = this.projects.iter().map(|p| p.id.clone()).collect();
+                this.refresh_bases(ids, cx);
                 cx.notify();
             });
             loop {
@@ -425,6 +439,7 @@ impl Shika {
             return;
         }
         if let Some(project) = self.project_id() {
+            self.prefetch_base(project.clone(), cx);
             self.overlay = Some(Overlay::Picker { project, index: 0 });
             window.focus(&self.focus, cx);
             cx.notify();
@@ -455,6 +470,7 @@ impl Shika {
                     match result {
                         Ok(added) => {
                             this.projects = this.core.projects().unwrap_or_default();
+                            this.refresh_bases(vec![added.project.id.clone()], cx);
                             this.selection = Some(Selection::Project(added.project.id));
                             if let Some(note) = added.note {
                                 this.message(note);
@@ -938,9 +954,117 @@ impl Shika {
         if self.busy || self.overlay.is_some() {
             return;
         }
+        self.prefetch_base(project.clone(), cx);
         self.overlay = Some(Overlay::Picker { project, index: 0 });
         window.focus(&self.focus, cx);
         cx.notify();
+    }
+    /// Resolves the base branch of each project in `ids`, off the main thread.
+    /// A project whose base cannot be read loses its label.
+    fn refresh_bases(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        cx.spawn(async move |this, cx| {
+            let resolved = cx
+                .background_executor()
+                .spawn(async move {
+                    ids.into_iter()
+                        .map(|id| {
+                            let base = core.project_base(&id).ok();
+                            (id, base)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                for (id, base) in resolved {
+                    match base {
+                        Some(base) => this.bases.insert(id, base),
+                        None => this.bases.remove(&id),
+                    };
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    /// Starts fetching the project's base branch while the picker is open,
+    /// so New starts from the remote's latest without waiting for it.
+    fn prefetch_base(&mut self, project: String, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        cx.spawn(async move |this, cx| {
+            let id = project.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    let _ = core.prefetch_base(&id);
+                })
+                .await;
+            // A branch that was only on origin may exist locally now.
+            let _ = this.update(cx, |this, cx| this.refresh_bases(vec![project], cx));
+        })
+        .detach();
+    }
+    /// The Base branch dialog for one project, from `b` or its header label.
+    fn open_base(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let text = self
+            .projects
+            .iter()
+            .find(|p| p.id == project)
+            .and_then(|p| p.base_branch.clone())
+            .unwrap_or_default();
+        self.refresh_bases(vec![project.clone()], cx);
+        self.overlay = Some(Overlay::Base {
+            project,
+            text,
+            error: None,
+        });
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+    /// Saves the typed base branch once core finds it, or shows why not.
+    /// Empty goes back to the default branch.
+    fn apply_base(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(Overlay::Base { project, text, .. }) = &self.overlay else {
+            return;
+        };
+        let (project, text) = (project.clone(), text.clone());
+        let core = self.core.clone();
+        self.busy = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let id = project.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { core.set_project_base(&id, &text) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(saved) => {
+                        if let Some(p) = this.projects.iter_mut().find(|p| p.id == saved.id) {
+                            *p = saved;
+                        }
+                        if matches!(&this.overlay, Some(Overlay::Base { project: open, .. }) if *open == project)
+                        {
+                            this.overlay = None;
+                        }
+                        this.refresh_bases(vec![project], cx);
+                    }
+                    Err(e) => {
+                        if let Some(Overlay::Base { error, .. }) = &mut this.overlay {
+                            *error = Some(e.to_string());
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
@@ -1073,6 +1197,7 @@ impl Shika {
                     Ok(_) => {
                         this.cards.retain(|c| c.project != removed_id);
                         this.projects.retain(|p| p.id != removed_id);
+                        this.bases.remove(&removed_id);
                         this.selection = this
                             .projects
                             .first()
@@ -1347,6 +1472,35 @@ impl Shika {
             cx.notify();
             return;
         }
+        if let Some(Overlay::Base { text, error, .. }) = &mut self.overlay {
+            if !self.busy {
+                match stroke.key.as_str() {
+                    "enter" => self.apply_base(cx),
+                    "escape" => self.cancel_overlay(window, cx),
+                    "backspace" => {
+                        text.pop();
+                        *error = None;
+                    }
+                    _ => {
+                        let typed = stroke.key_char.as_deref().filter(|_| {
+                            !stroke.modifiers.platform
+                                && !stroke.modifiers.control
+                                && !stroke.modifiers.alt
+                        });
+                        if let Some(ch) = typed.and_then(|t| t.chars().next())
+                            && model::branch_char(ch)
+                            && text.len() < model::BRANCH_MAX
+                        {
+                            text.push(ch);
+                            *error = None;
+                        }
+                    }
+                }
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if stroke.modifiers.platform
             || stroke.modifiers.control
             || stroke.modifiers.alt
@@ -1359,6 +1513,8 @@ impl Shika {
             if self.busy {
                 return;
             }
+            // A project the picker moved to, to fetch its base branch.
+            let mut moved_to = None;
             match &mut self.overlay {
                 Some(Overlay::Picker { index, project }) => {
                     let len = self
@@ -1375,6 +1531,7 @@ impl Shika {
                         "tab" => {
                             if let Some(at) = self.projects.iter().position(|p| &p.id == project) {
                                 *project = self.projects[(at + 1) % self.projects.len()].id.clone();
+                                moved_to = Some(project.clone());
                             }
                         }
                         _ => {
@@ -1474,7 +1631,11 @@ impl Shika {
                         _ => {}
                     }
                 }
-                None => {}
+                // Typed into above, before the modifier check.
+                Some(Overlay::Base { .. }) | None => {}
+            }
+            if let Some(project) = moved_to {
+                self.prefetch_base(project, cx);
             }
             cx.stop_propagation();
             cx.notify();
@@ -1491,6 +1652,14 @@ impl Shika {
             "enter" => self.focus_terminal(window, cx),
             "g" => self.toggle(false, window, cx),
             "c" => self.close(window, cx),
+            "b" => {
+                if self.busy || self.selection.is_none() {
+                    return;
+                }
+                if let Some(project) = self.project_id() {
+                    self.open_base(project, window, cx);
+                }
+            }
             _ => return,
         }
         cx.stop_propagation();
@@ -1751,9 +1920,10 @@ impl Shika {
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
                     .tooltip(move |_, cx| {
-                        cx.new(|_| SettingsHint {
+                        cx.new(|_| KeyTip {
                             bg: tip_bg,
                             fg: tip_fg,
+                            text: "Settings  \u{2318},".into(),
                         })
                         .into()
                     })
@@ -1861,6 +2031,9 @@ impl Shika {
         let select_id = id.clone();
         let remove_id = id.clone();
         let new_id = id.clone();
+        let base_id = id.clone();
+        let base_name = self.bases.get(&id).and_then(|b| b.name.clone());
+        let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
         let header = div()
             .id(SharedString::from(format!("project-{id}")))
             .group(group.clone())
@@ -1891,7 +2064,6 @@ impl Shika {
             )
             .child(
                 div()
-                    .flex_1()
                     .min_w_0()
                     .truncate()
                     .font_family(MONO)
@@ -1899,6 +2071,32 @@ impl Shika {
                     .text_color(chrome.ink_4)
                     .child(model::tilde(&project.path, home)),
             )
+            // The branch New starts from. A click or `b` changes it.
+            .when_some(base_name, |d, name| {
+                d.child(
+                    div()
+                        .id(SharedString::from(format!("base-{id}")))
+                        .flex_none()
+                        .font_family(MONO)
+                        .text_size(px(11.))
+                        .text_color(chrome.ink_4)
+                        .hover(move |style| style.text_color(ink_1))
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| KeyTip {
+                                bg: tip_bg,
+                                fg: tip_fg,
+                                text: "Base branch  b".into(),
+                            })
+                            .into()
+                        })
+                        .child(name)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.open_base(base_id.clone(), window, cx);
+                        })),
+                )
+            })
+            .child(div().flex_1())
             .child(
                 div()
                     .id(SharedString::from(format!("forget-{id}")))
@@ -2578,7 +2776,15 @@ impl Shika {
                         .text_color(chrome.ink_3)
                         .child("↵ start")
                         .child("esc cancel")
-                        .child("creates a branch and a worktree"),
+                        .child(match self.bases.get(project).and_then(|b| b.name.clone()) {
+                            // Where New will start, so it is never a surprise.
+                            Some(name) => div()
+                                .flex()
+                                .gap(px(4.))
+                                .child("branches from")
+                                .child(div().font_family(MONO).child(name)),
+                            None => div().child("creates a branch and a worktree"),
+                        }),
                 )
             }
             Overlay::Close { index, state } => {
@@ -2728,6 +2934,48 @@ impl Shika {
                             ),
                     )
             }
+            Overlay::Base {
+                project,
+                text,
+                error,
+            } => {
+                let name = self
+                    .projects
+                    .iter()
+                    .find(|p| &p.id == project)
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("");
+                let default = self.bases.get(project).and_then(|b| b.default_name.clone());
+                let field = text_field("base-branch-value", 360., true, chrome)
+                    .when(!text.is_empty(), |d| d.child(text.clone()))
+                    .child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
+                    .when_some(default.filter(|_| text.is_empty()), |d, default| {
+                        d.child(div().text_color(chrome.ink_4).child(default))
+                    });
+                let action = if text.is_empty() {
+                    "Use default branch"
+                } else {
+                    "Set base branch"
+                };
+                dialog(chrome, max_h)
+                    .child(dialog_title(div()).child(format!("Base branch for {name}")))
+                    .child(
+                        dialog_text(chrome)
+                            .child("New agents branch from it. Running agents keep their base."),
+                    )
+                    .child(field.mt(px(4.)))
+                    .when_some(error.clone(), |d, error| {
+                        d.child(dialog_text(chrome).text_color(chrome.ink_1).child(error))
+                    })
+                    .child(
+                        dialog_buttons()
+                            .child(self.cancel_button("Cancel", chrome, cx))
+                            .child(
+                                primary_button("set-base", action, "↵", chrome)
+                                    .on_click(cx.listener(|this, _, _, cx| this.apply_base(cx))),
+                            ),
+                    )
+            }
             Overlay::Settings { row, edit } => {
                 let opacity = self.appearance.opacity.to_string();
                 let blur = self.appearance.blur.to_string();
@@ -2855,12 +3103,14 @@ const WORDMARK_INSET: f32 = 90.;
 /// Filled gear. Drawn as an alpha mask and tinted by the element's text color.
 const SETTINGS_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" fill-rule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 0 0-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 0 0-2.282.819l-.922 1.597a1.875 1.875 0 0 0 .432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 0 0 0 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 0 0-.432 2.385l.922 1.597a1.875 1.875 0 0 0 2.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 0 0 2.28-.819l.923-1.597a1.875 1.875 0 0 0-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 0 0 0-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 0 0-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 0 0-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 0 0-1.85-1.567h-1.843ZM12 15.75a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z"/></svg>"##;
 
-struct SettingsHint {
+/// A tooltip naming a control and its key, such as `Settings ⌘,`.
+struct KeyTip {
     bg: Rgba,
     fg: Rgba,
+    text: SharedString,
 }
 
-impl Render for SettingsHint {
+impl Render for KeyTip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .px_2()
@@ -2870,7 +3120,7 @@ impl Render for SettingsHint {
             .text_color(self.fg)
             .text_size(px(12.))
             .font_family(UI_FONT)
-            .child("Settings  \u{2318},")
+            .child(self.text.clone())
     }
 }
 

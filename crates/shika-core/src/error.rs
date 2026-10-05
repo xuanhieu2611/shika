@@ -37,6 +37,13 @@ pub enum Error {
     DraftExists,
     #[error("Could not create the worktree.{}", detail(.0))]
     CreateWorktree(Option<String>),
+    /// The project's configured base branch is on neither origin nor this
+    /// clone. New never falls back to another branch.
+    #[error("Base branch {0} not found.")]
+    BaseBranchMissing(String),
+    /// A base branch typed in the app that does not exist.
+    #[error("No branch named {0} on origin or locally.")]
+    NoSuchBranch(String),
     #[error("Could not read git status.{}", detail(.0))]
     GitStatus(Option<String>),
     #[error("Could not remove the worktree.{}", detail(.0))]
@@ -112,6 +119,14 @@ mod tests {
         assert_eq!(
             Error::CliNotFound("Claude Code".into()).to_string(),
             "Claude Code was not found."
+        );
+        assert_eq!(
+            Error::BaseBranchMissing("dev".into()).to_string(),
+            "Base branch dev not found."
+        );
+        assert_eq!(
+            Error::NoSuchBranch("dev".into()).to_string(),
+            "No branch named dev on origin or locally."
         );
         assert_eq!(
             first_line(b"\n  \n  fatal: x  \nmore"),
