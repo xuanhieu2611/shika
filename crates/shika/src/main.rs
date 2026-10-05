@@ -2175,7 +2175,11 @@ impl Shika {
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover))
         };
+        // One row. `justify_between` already pins the hints to the right.
+        // `ml_auto` did that a second time and pushed `g` shell and `c` close
+        // past the column edge.
         div()
+            .w_full()
             .flex_shrink_0()
             .border_t_1()
             .border_color(chrome.line_2)
@@ -2183,17 +2187,20 @@ impl Shika {
             .px(px(12.))
             .pb(px(12.))
             .flex()
-            .flex_wrap()
+            .flex_nowrap()
             .items_center()
             .justify_between()
             .gap(px(12.))
             .child(
                 div()
+                    .flex_none()
                     .flex()
+                    .flex_nowrap()
                     .items_center()
                     .gap(px(4.))
                     .child(
                         text_button("add")
+                            .flex_none()
                             .child("Add project…")
                             .child(kbd("a", chrome.sunken, chrome.ink_3))
                             .on_click(cx.listener(|this, _, _, cx| this.add_project(cx))),
@@ -2201,6 +2208,7 @@ impl Shika {
                     .when(!self.leftovers.is_empty(), |d| {
                         d.child(
                             text_button("leftovers")
+                                .flex_none()
                                 .child(format!("Leftover worktrees ({})", self.leftovers.len()))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     if this.busy || this.overlay.is_some() {
@@ -2214,14 +2222,12 @@ impl Shika {
                     }),
             )
             .child(
-                // Stays on the right when the footer wraps.
                 div()
-                    .ml_auto()
+                    .flex_none()
                     .flex()
-                    .flex_wrap()
+                    .flex_nowrap()
+                    .items_center()
                     .gap_x(px(12.))
-                    .gap_y(px(6.))
-                    .pr(px(6.))
                     .child(hint("j k", "move", chrome))
                     .child(hint("↵", "terminal", chrome))
                     .child(hint("g", "shell", chrome))
@@ -2879,9 +2885,12 @@ fn kbd(text: impl Into<SharedString>, bg: Rgba, fg: Rgba) -> gpui::Div {
 }
 
 /// A key cap and the verb it does, as in the footer: `j k move`. An empty
-/// key leaves only the words.
+/// key leaves only the words. The pair stays on one line and does not shrink,
+/// so a wrapped row hides nothing.
 fn hint(key: &str, label: &str, chrome: &Chrome) -> gpui::Div {
     div()
+        .flex_none()
+        .whitespace_nowrap()
         .flex()
         .items_center()
         .gap(px(4.))
