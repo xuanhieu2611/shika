@@ -195,8 +195,8 @@ enum Overlay {
     RemoveLeftover(usize),
     RemoveProject(String),
     /// `row` is the selected setting: opacity, blur, translucency, font size,
-    /// then the branch prefix. `edit` holds digits typed into the selected
-    /// number, or the prefix being typed, not yet applied.
+    /// the branch prefix, then notification sound. `edit` holds digits typed
+    /// into the selected number, or the prefix being typed, not yet applied.
     Settings {
         row: usize,
         edit: Option<String>,
@@ -230,6 +230,8 @@ struct Shika {
     title_drag: bool,
     /// As typed in Settings, already normalized. Core reads it from disk.
     branch_prefix: String,
+    /// Play the system alert sound with a ready notification.
+    notification_sound: bool,
 }
 impl Shika {
     fn new(
@@ -260,6 +262,7 @@ impl Shika {
         let appearance = settings.appearance;
         let font_size = settings.font_size;
         let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
+        let notification_sound = settings.notification_sound;
         let reduce_transparency = appearance::reduce_transparency();
         let entity = cx.entity().downgrade();
         let appearance_watch = window.observe_window_appearance(move |window, cx| {
@@ -298,6 +301,7 @@ impl Shika {
             appearance_watch,
             title_drag: false,
             branch_prefix,
+            notification_sound,
         };
         cx.spawn_in(window, async move |this, cx| {
             let catalog = cx
@@ -756,7 +760,12 @@ impl Shika {
                             .find(|p| p.id == card.project)
                             .map(|p| p.name.as_str())
                             .unwrap_or("Shika");
-                        self.notifications.post(&session.id, project, &card.title);
+                        self.notifications.post(
+                            &session.id,
+                            project,
+                            &card.title,
+                            self.notification_sound,
+                        );
                         card.notified = state.last_typed;
                     }
                 }
@@ -772,7 +781,12 @@ impl Shika {
                         .find(|p| p.id == card.project)
                         .map(|p| p.name.as_str())
                         .unwrap_or("Shika");
-                    self.notifications.post(&session.id, project, &card.title);
+                    self.notifications.post(
+                        &session.id,
+                        project,
+                        &card.title,
+                        self.notification_sound,
+                    );
                 }
             }
         }
@@ -1128,6 +1142,10 @@ impl Shika {
             self.set_font_size(self.font_size.step(delta), cx);
             return;
         }
+        if row == SOUND_ROW {
+            self.set_notification_sound(delta > 0, cx);
+            return;
+        }
         let mut next = self.appearance;
         match row {
             0 => next = next.with_opacity(i64::from(next.opacity) + delta * 5),
@@ -1224,6 +1242,14 @@ impl Shika {
         self.save_settings();
         cx.notify();
     }
+    fn set_notification_sound(&mut self, on: bool, cx: &mut Context<Self>) {
+        if on == self.notification_sound {
+            return;
+        }
+        self.notification_sound = on;
+        self.save_settings();
+        cx.notify();
+    }
     fn terminal_opacity(&self) -> f32 {
         appearance::terminal_alpha_for(&self.appearance, self.reduce_transparency)
     }
@@ -1262,6 +1288,7 @@ impl Shika {
             appearance: self.appearance,
             branch_prefix: self.branch_prefix.clone(),
             font_size: self.font_size,
+            notification_sound: self.notification_sound,
         };
         if let Err(e) = self.core.save_settings(&settings) {
             self.message(e.to_string());
@@ -1464,10 +1491,12 @@ impl Shika {
         cx.stop_propagation();
     }
 }
-/// Settings rows: opacity, blur, translucency, font size, then the branch prefix.
-const SETTING_ROWS: usize = 5;
+/// Settings rows: opacity, blur, translucency, font size, the branch prefix,
+/// then notification sound.
+const SETTING_ROWS: usize = 6;
 const FONT_ROW: usize = 3;
 const PREFIX_ROW: usize = 4;
+const SOUND_ROW: usize = 5;
 impl Shika {
     /// The branch prefix row: a text field. Enter or a click starts typing.
     fn prefix_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1504,6 +1533,43 @@ impl Shika {
             .justify_between()
             .child("Branch prefix")
             .child(field)
+    }
+    /// Off or On. `h` turns the alert off, `l` turns it on.
+    fn sound_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = matches!(
+            &self.overlay,
+            Some(Overlay::Settings { row, .. }) if *row == SOUND_ROW
+        );
+        let on = self.notification_sound;
+        let shadow = chrome.control_shadow;
+        let choice = |id: &'static str, label: &'static str, chosen: bool, delta: i64| {
+            segment(id, label, chosen, chrome.raised, chrome.ink_1, chrome.ink_3)
+                .when(chosen, |d| {
+                    d.shadow(vec![
+                        BoxShadow::new(px(0.), px(1.), shadow.into()).blur_radius(px(1.)),
+                    ])
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.step_setting(SOUND_ROW, delta, window, cx);
+                    if let Some(Overlay::Settings { row, .. }) = &mut this.overlay {
+                        *row = SOUND_ROW;
+                    }
+                    cx.notify();
+                }))
+        };
+        list_row(selected, chrome)
+            .justify_between()
+            .child("Notification sound")
+            .child(
+                div()
+                    .flex()
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(px(7.))
+                    .bg(chrome.sunken)
+                    .child(choice("notification-sound-off", "Off", !on, -1))
+                    .child(choice("notification-sound-on", "On", on, 1)),
+            )
     }
     /// A settings row: minus, a number field that takes typed digits, plus.
     fn setting_row(
@@ -2656,11 +2722,14 @@ impl Shika {
                 let blur = self.appearance.blur.to_string();
                 let font = self.font_size.text();
                 let both = self.appearance.translucency == Translucency::SidebarAndTerminal;
-                let keys: &[(&str, &str)] = match (edit.is_some(), *row == PREFIX_ROW) {
-                    (true, true) => &[("", "type a prefix"), ("↵", "apply"), ("esc", "cancel")],
-                    (true, false) => &[("", "type a number"), ("↵", "apply"), ("esc", "cancel")],
-                    (false, true) => &[("j k", "choose"), ("↵", "edit"), ("esc", "done")],
-                    (false, false) => &[
+                let keys: &[(&str, &str)] = match (edit.is_some(), *row) {
+                    (true, PREFIX_ROW) => {
+                        &[("", "type a prefix"), ("↵", "apply"), ("esc", "cancel")]
+                    }
+                    (true, _) => &[("", "type a number"), ("↵", "apply"), ("esc", "cancel")],
+                    (false, PREFIX_ROW) => &[("j k", "choose"), ("↵", "edit"), ("esc", "done")],
+                    (false, SOUND_ROW) => &[("j k", "choose"), ("h l", "sound"), ("esc", "done")],
+                    (false, _) => &[
                         ("j k", "choose"),
                         ("h l", "change"),
                         ("", "type a number"),
@@ -2717,6 +2786,7 @@ impl Shika {
                     )
                     .child(self.setting_row(FONT_ROW, "Font size", &font, "px", chrome, cx))
                     .child(self.prefix_row(chrome, cx))
+                    .child(self.sound_row(chrome, cx))
                     .child(
                         div()
                             .mt(px(6.))
@@ -2725,7 +2795,7 @@ impl Shika {
                             .line_height(px(16.))
                             .text_color(chrome.ink_3)
                             .child(
-                                "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%. Font size is the terminal text, 8 to 32. The prefix starts each new branch name, like hieu/.",
+                                "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%. Font size is the terminal text, 8 to 32. The prefix starts each new branch name, like hieu/. Notification sound plays the system alert with the banner.",
                             ),
                     )
                     .child(
