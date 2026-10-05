@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Edges, Element, ElementId,
-    EventEmitter, FocusHandle, Focusable, Font, FontFeatures, FontStyle, FontWeight,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, Font, FontFeatures, FontStyle, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InputHandler, InspectorElementId,
     InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, Keystroke, LayoutId,
     MouseButton as GpuiButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
@@ -381,6 +381,20 @@ impl TerminalView {
         self.send_input(&bytes, cx);
     }
 
+    /// Files dropped from Finder or a screenshot thumbnail arrive as their
+    /// escaped paths, pasted like any other text, and focus the terminal so
+    /// the rest of the prompt can be typed.
+    fn drop_paths(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        let text = input::dropped_paths(paths.paths().iter().filter_map(|path| path.to_str()));
+        if text.is_empty() {
+            return;
+        }
+        window.focus(&self.focus_handle, cx);
+        let modes = self.terminal.modes();
+        let bytes = input::encode_paste(&text, modes.bracketed_paste);
+        self.send_input(&bytes, cx);
+    }
+
     fn scroll_page(&mut self, up: bool, cx: &mut Context<Self>) {
         let modes = self.terminal.modes();
         if modes.alt_screen {
@@ -451,6 +465,10 @@ impl TerminalView {
             let (at, side, _) = layout.cell_at(event.position);
             self.terminal.update_selection(at, side);
             cx.notify();
+            return;
+        }
+        // A file dragged over the view is not the user's mouse.
+        if cx.has_active_drag() {
             return;
         }
         let modes = self.terminal.modes();
@@ -635,6 +653,7 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::key_down))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::paste))
+            .on_drop(cx.listener(Self::drop_paths))
             .on_action(cx.listener(|view, _: &ScrollPageUp, _, cx| view.scroll_page(true, cx)))
             .on_action(cx.listener(|view, _: &ScrollPageDown, _, cx| view.scroll_page(false, cx)))
             .child(TerminalElement { view: cx.entity() })

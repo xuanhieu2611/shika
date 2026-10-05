@@ -80,6 +80,10 @@ transcripts saved: the child inherits `CLAUDE_CODE_CHILD_SESSION`.
       running them (bracketed paste); Enter runs them.
 - [ ] Cmd-V of several lines into Claude's prompt pastes as one block.
 - [ ] Cmd-V into `cat` (no bracketed paste) sends the lines as typed.
+- [ ] Drop a PNG from Finder, or a screenshot thumbnail, on Claude's prompt.
+      Claude shows it as an attached image. Same in Cursor's prompt.
+- [ ] Drop a file whose name has spaces and parentheses on zsh. The path is
+      escaped, `ls` of it works, and the terminal has focus afterwards.
 
 ## Pager: `seq 1 300 | less`
 
