@@ -19,6 +19,11 @@ pub struct Session {
     /// project list.
     pub repo: PathBuf,
     pub worktree: PathBuf,
+    /// The ref the task branch started from, such as `refs/remotes/origin/dev`.
+    /// Close and the diff stat measure the task against it, so changing the
+    /// project's base later leaves this card alone. None when it started from
+    /// the main checkout's HEAD; the default branch is used then.
+    pub base_ref: Option<String>,
     pub pty: PtyId,
     pub shell_pty: Option<PtyId>,
     /// Whether the CLI's own session title has named the card and branch.
@@ -228,6 +233,7 @@ mod tests {
             branch: "shika-draft-1".to_string(),
             repo: PathBuf::from("/repo"),
             worktree: PathBuf::from("/repo/.worktrees/shika-draft-1"),
+            base_ref: None,
             pty,
             shell_pty: None,
             cli_titled: false,

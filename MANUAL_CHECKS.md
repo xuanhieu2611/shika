@@ -51,10 +51,24 @@ To check in the built app, with isolated data and a disposable repo:
 - [ ] A branch pushed before the title arrives keeps its name; the card still takes the title.
 - [ ] Clearing a few words with Option+Backspace before the first Enter leaves them out of the first branch name.
 
+## Base branch, 2026-10-05
+
+Checked with isolated app data, a disposable repo, and a local bare remote with `main` and a `dev` one commit ahead (only on origin). This session had no Accessibility permission, so no synthetic key could reach any app. A scratch-only copy of the app (not in the repo) called the same handlers the keys and clicks call (`open_base`, `apply_base`, `picker`, `launch`, `close`) and saved frames with GPUI's `render_to_image`.
+
+- PASS: The header shows `main` after the path with no base set, and `dev` once set. With a saved base that no longer exists, the label is hidden.
+- PASS: The dialog opens empty with `main` as the placeholder and "Use default branch", or prefilled with `dev` and "Set base branch". `nope` shows "No branch named nope on origin or locally." and stays open. `dev` saves `"baseBranch": "dev"` and closes.
+- PASS: The picker footer reads "branches from `dev`".
+- PASS: With a newer commit pushed to origin's dev from another clone, opening the picker fetched it, and New with Claude Code started at that commit, with no upstream and `baseRef` in `worktrees.json`. Close on that Waiting card removed the worktree and the draft branch at once.
+- PASS: With the saved base renamed to a missing branch, New showed the toast "Base branch gone not found." and created no worktree.
+- PASS: Dark, light, and dark glass render the label, dialog, error, and picker footer with existing tokens.
+- [ ] `b` with a project header or a card selected opens the dialog; typing in the field runs no card keys; Enter applies; Escape cancels.
+- [ ] A click on the header label opens the dialog; hovering it shows "Base branch b".
+- [ ] A fresh card on a dev base shows no diff stat once Ready, and a commit in the shell shows its own stat and makes Close ask.
+
 ## Automated checks
 
-Workspace tests cover PTY streaming, hidden terminal drains, terminal input, git exclusion, branch renaming, CLI title reading (sample, missing, and broken files), branch slugs without the project name, prefix cleanup, renames that skip taken and pushed names, the title watch timing, Option+Backspace in prompt capture, journal updates, unpushed commits, failed pushes, branch retention, safe close, branch-switch refusal, and leftovers. All use temporary app data and repositories.
+Workspace tests cover PTY streaming, hidden terminal drains, terminal input, git exclusion, branch renaming, CLI title reading (sample, missing, and broken files), branch slugs without the project name, prefix cleanup, renames that skip taken and pushed names, the title watch timing, Option+Backspace in prompt capture, journal updates, base branch start points (origin, local, missing, unset with origin/HEAD, a changed base, a vanished base, fetch freshness, a dead remote, and waiting for the picker fetch), unpushed commits, failed pushes, branch retention, safe close, branch-switch refusal, and leftovers. All use temporary app data and repositories.
 
-Final checks passed: cargo fmt --all --check, cargo test --workspace (130 tests: 72 core, 44 terminal, 14 app), cargo clippy --workspace --all-targets -- -D warnings, and strict bundle signature verification.
+Final checks passed: cargo fmt --all --check, cargo test --workspace (158 tests: 92 core, 46 terminal, 20 app; base branch tests added 2026-10-05), cargo clippy --workspace --all-targets -- -D warnings, and strict bundle signature verification.
 
 IME candidate placement, sustained typing feel, and the broader terminal matrix remain human checks in crates/shika-terminal/MANUAL_CHECKS.md. They are not claimed as acceptance passes here.
