@@ -16,7 +16,8 @@ use shika_core::{
     SessionGitState, Settings, Translucency,
 };
 use shika_terminal::{
-    Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize, TerminalView,
+    InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize,
+    TerminalView,
 };
 use std::{
     path::PathBuf,
@@ -36,6 +37,11 @@ struct HostState {
     prompt: PromptCapture,
     title: Option<String>,
     last_output: Option<Instant>,
+    /// The user's last key or paste.
+    last_typed: Option<Instant>,
+    /// The user's last key, paste, focus change, click, scroll, or resize,
+    /// any of which can make the CLI redraw.
+    last_input: Option<Instant>,
     exited: bool,
     submission: u64,
     pending_input: Vec<Vec<u8>>,
@@ -46,8 +52,15 @@ struct Host {
     capture: bool,
 }
 impl PtyHost for Host {
-    fn write(&self, bytes: &[u8]) {
+    fn write(&self, bytes: &[u8], source: InputSource) {
         let mut s = lock(&self.state);
+        let now = Instant::now();
+        if source == InputSource::Typed {
+            s.last_typed = Some(now);
+        }
+        if source != InputSource::Reply {
+            s.last_input = Some(now);
+        }
         if self.capture {
             if let Some(title) = s.prompt.feed(bytes) {
                 s.title = Some(title);
@@ -67,6 +80,7 @@ impl PtyHost for Host {
     fn resize(&self, size: TerminalSize) {
         let mut s = lock(&self.state);
         s.measured = Some(size);
+        s.last_input = Some(Instant::now());
         if let Some(pty) = s.pty {
             let _ = self.core.resize(pty, PtySize::new(size.rows, size.cols));
         }
@@ -136,7 +150,8 @@ struct Card {
     shell: Option<Pane>,
     show_shell: bool,
     submitted: u64,
-    last_ready: Option<Instant>,
+    /// The `last_typed` whose turn already notified.
+    notified: Option<Instant>,
     creating: bool,
     title_watch: TitleWatch,
 }
@@ -443,7 +458,7 @@ impl Shika {
             shell: None,
             show_shell: false,
             submitted: 0,
-            last_ready: None,
+            notified: None,
             creating: true,
             title_watch: TitleWatch::default(),
         });
@@ -483,7 +498,9 @@ impl Shika {
                                     format!("\r\n[process exited with code {}]\r\n", exit.code)
                                         .as_bytes(),
                                 );
-                                lock(&output_state).exited = true;
+                                let mut state = lock(&output_state);
+                                state.last_output = Some(Instant::now());
+                                state.exited = true;
                             }
                         },
                     );
@@ -649,10 +666,12 @@ impl Shika {
                     card.status = Status::Ready;
                     card.since = now;
                     changed = true;
-                    if card
-                        .last_ready
-                        .is_none_or(|last| now.duration_since(last) > Duration::from_secs(2))
-                        && let Some(session) = &card.session
+                    if model::notify_ready(
+                        state.last_typed,
+                        card.notified,
+                        state.last_input,
+                        latest,
+                    ) && let Some(session) = &card.session
                     {
                         let project = self
                             .projects
@@ -661,8 +680,8 @@ impl Shika {
                             .map(|p| p.name.as_str())
                             .unwrap_or("Shika");
                         self.notifications.post(&session.id, project, &card.title);
+                        card.notified = state.last_typed;
                     }
-                    card.last_ready = Some(now);
                 }
             } else if state.exited {
                 card.status = Status::Ready;
