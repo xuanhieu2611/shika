@@ -1,0 +1,17 @@
+/* Motion is functional and short. Nothing bounces. */
+:root {
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 120ms;    /* hover, press */
+  --dur-base: 180ms;    /* dialogs, toasts fade */
+  --dur-slow: 220ms;    /* column width change */
+  --dur-pulse: 1.6s;    /* working dot */
+  --dur-blink: 1.1s;    /* terminal cursor */
+}
+
+@keyframes shika-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes shika-blink { 0% { opacity: 1; } 50% { opacity: 0; } }
+@keyframes shika-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-fast: 0ms; --dur-base: 0ms; --dur-slow: 0ms; }
+}
