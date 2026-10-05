@@ -30,7 +30,8 @@ The author checked the first version by eye and it looked good. Typed values and
 - [ ] Sidebar only keeps the terminal and its header opaque. Sidebar and terminal makes both translucent, with CLI-colored cells still opaque and text readable.
 - [ ] Changes apply live from the dialog, keyboard and mouse, and survive a relaunch.
 - [ ] Typing digits or clicking the number edits it. Enter applies, Escape cancels, 300 becomes 255, and blank keeps the old value.
-- [ ] The title bar shows Shika on the left and a settings gear on the right. Hovering the gear shows Settings ⌘,, and clicking it opens the dialog. Dragging the bar moves the window. The bar stays opaque and looks right on a translucent window.
+- [ ] The title bar shows Shika on the left and a settings gear on the right. Hovering the gear shows Settings ⌘,, and clicking it opens the dialog. Dragging the bar moves the window.
+- [ ] The title bar uses the same opacity and blur as the sidebar. At 100% it is solid. Below that, the blurred desktop shows through the whole bar, including above the terminal.
 
 ## Automated checks
 
