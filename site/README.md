@@ -19,6 +19,6 @@ The demo must be served over HTTP, not opened as a file: its runtime fetches its
 
 ## Deploying
 
-The site is served at https://useshika.com from Cloudflare Pages, connected to this repo: production branch `main`, root directory `site`, no build command, output directory `.`. A push to `main` deploys.
+The site is served at https://useshika.com from Cloudflare Pages, connected to this repo: production branch `main`, no build command, build output directory `site`, build watch paths `site/*`. A push to `main` that touches `site/` deploys, and each pull request gets a preview URL.
 
 The canonical, Open Graph and Twitter URLs in the `<head>` of `index.html` point at that domain. Change them if it moves.
