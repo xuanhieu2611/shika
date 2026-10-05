@@ -101,7 +101,7 @@ When glass is on, `chrome_for` in `crates/shika/src/appearance.rs` paints these 
 - Light column: `#F6F8F2`. Dark column: `#181A17`. Solid mode stays `#F1F2EC` light and `#1A1C19` dark.
 - Terminal text never sits on a visible photo. Sidebar-only frost keeps the terminal at `1.0`. When frost covers the terminal, its alpha is the Settings opacity or `0.85`, whichever is higher. CLI-colored cells stay opaque. The header is a step more transparent than that surface, and not below `0.75`.
 - Resting cards are 48% white in light glass and 4.5% white in dark glass, with a 1px top highlight. The selected card stays solid. Ready cards use the ready tint at 78% in light glass and 62% in dark glass.
-- Dialogs and the picker use the overlay tint: light `rgba(250,251,247,0.80)`, dark `rgba(36,39,34,0.78)`. The toast is 86% of its solid color. The scrim is `rgba(16,18,15,0.22)` in light glass and 30% black in dark glass. Settings leaves the scrim off so the window is the preview.
+- Dialogs, the picker, the toast, and tooltips stay solid: light `#FAFAF7`, dark `#242722` for the overlay, and the toast's solid color. The window-server blur only reaches what is behind the window, and GPUI has no backdrop blur, so a translucent popup would show the cards and terminal text under it, sharp. The scrim is `rgba(16,18,15,0.22)` in light glass and 30% black in dark glass. Settings leaves the scrim off so the window is the preview.
 - Hairlines and meta ink shift so they stay visible on the frost. Light glass meta ink `#5F6459`, hairline 10% black. Dark glass meta ink `#A6AB9E`, hairline 8% white.
 - macOS Reduce transparency turns glass off: solid colors, no blur, terminal alpha `1.0`. The saved opacity is left as it is.
 
