@@ -70,13 +70,13 @@ pub struct TerminalConfig {
 }
 
 impl Default for TerminalConfig {
-    /// JetBrains Mono, then Menlo, at 12.5px with a 19px row, and the
+    /// JetBrains Mono, then Menlo, at 14px with a 21px row, and the
     /// terminal pad from `design/DESIGN.md`. Menlo is on every Mac and
     /// has real bold and italic faces.
     fn default() -> Self {
         Self {
             font_families: vec!["JetBrains Mono".into(), "Menlo".into()],
-            font_size: px(12.5),
+            font_size: px(14.),
             line_height: 1.52,
             padding: Edges {
                 top: px(16.),

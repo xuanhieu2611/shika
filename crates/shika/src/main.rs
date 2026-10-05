@@ -2148,7 +2148,7 @@ impl Shika {
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(13.))
+                    .text_size(px(15.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(chrome.ink_1)
                     .child(project.name.clone()),
@@ -2158,8 +2158,8 @@ impl Shika {
                     .min_w_0()
                     .truncate()
                     .font_family(MONO)
-                    .text_size(px(11.))
-                    .text_color(chrome.ink_4)
+                    .text_size(px(12.))
+                    .text_color(chrome.ink_3)
                     .child(model::tilde(&project.path, home)),
             )
             // The branch New starts from. A click or `b` changes it.
@@ -2169,8 +2169,8 @@ impl Shika {
                         .id(SharedString::from(format!("base-{id}")))
                         .flex_none()
                         .font_family(MONO)
-                        .text_size(px(11.))
-                        .text_color(chrome.ink_4)
+                        .text_size(px(12.))
+                        .text_color(chrome.ink_3)
                         .hover(move |style| style.text_color(ink_1))
                         .tooltip(move |_, cx| {
                             cx.new(|_| KeyTip {
@@ -2322,8 +2322,8 @@ impl Shika {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(13.5))
-                    .line_height(px(19.))
+                    .text_size(px(14.))
+                    .line_height(px(20.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(if card.named {
                         chrome.ink_1
