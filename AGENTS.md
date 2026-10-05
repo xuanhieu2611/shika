@@ -4,6 +4,10 @@ Mac desktop app for running a few coding agents at once. The author adds a repo,
 
 Update this file when behavior, a checklist item, or a toolchain trap changes. Keep it short. `PRD.md` and `PLAN.md` stay the long spec.
 
+## Commit attribution
+
+Never add yourself or any AI agent (Cursor, Claude, Codex, Pi, or others) as a commit author or co-author. Do not add AI `Co-authored-by` trailers or agent attribution to commit messages. Keep authorship with the human author. This applies to every agent, including merge commits.
+
 ## Spec
 
 `PRD.md` is the spec. `PLAN.md` is the build order and records later decisions from the author. Where they disagree, `PLAN.md` wins. Do not relitigate either file.
