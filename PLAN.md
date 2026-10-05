@@ -6,7 +6,7 @@ The PRD is the spec, except where this file records a later decision from the au
 
 - A `git push` in the shell does not remove the card. The user removes it with Close.
 - Close asks what to do with work that is not on the remote: discard it, or push it.
-- This build launches Claude Code and Cursor CLI only. Kiro, Codex, and Pi wait.
+- This build launches Claude Code, Codex, Cursor CLI, and Pi. Kiro waits.
 - Shika creates the worktree. Never pass Cursor's `--worktree`.
 - Shika is a pure Rust app on GPUI, not Tauri 2 with a web view. Decided 2026-10-04. See "Stack change".
 - The agent column is 540px, fixed, replacing the 280px column. The window opens at 1400x880 with a 960x600 minimum. The 48px top row is the title bar: traffic lights, the wordmark, the settings gear, and New agent on the column side, the terminal header on the other. The summary is a headline and status chips; clicking a chip selects the first card with that status. Ready cards show a diff stat. Decided by the author 2026-10-04, following the designer's v3 prototype.
@@ -44,10 +44,12 @@ Pressing New creates the worktree before the prompt exists, because the CLI has 
 
 The folder starts as `<repo>/.worktrees/shika-draft-<id>` on branch `shika-draft-<id>`. The first line you submit in that terminal becomes the card title, and Shika renames the git branch to a slug of that line with `git branch -m`. The folder stays where it is. The agent is already running inside it, so moving the directory out from under the process is not reliable. The path is only shown in the terminal header.
 
-Then the CLI's own session title replaces both, once (decided 2026-10-05). Claude Code and Cursor CLI each name their session with their own model call about a second after the first prompt, and save it on disk. Shika reads that title, so it sends no extra request:
+Then the CLI's own session title replaces both, once (decided 2026-10-05). Claude Code, Codex, and Cursor CLI each name their session with their own model call about a second after the first prompt, and save it on disk. Pi does not. It only stores a name when the user runs `/name`, the process was started with `--name`, or an extension sets one. Shika reads that title, so it sends no extra request:
 
 - Claude Code: the last `{"type":"ai-title","aiTitle":...}` line in `<config>/projects/<cwd>/<session>.jsonl`. `<config>` is `CLAUDE_CONFIG_DIR` or `~/.claude`, and `<cwd>` is the worktree path with every character other than an ASCII letter or digit replaced by `-`.
+- Codex: `name` in the highest `$CODEX_HOME` or `~/.codex/state_<n>.sqlite`, table `threads`, for the row whose `cwd` is the worktree. `title` in that table is often the raw first message, so it is not read. `name` stays empty until Codex names the thread.
 - Cursor CLI: `title` in `~/.cursor/chats/<md5 of the cwd>/<agent>/meta.json`, whose `cwd` must equal the worktree. It is null until the chat is named.
+- Pi: the last `{"type":"session_info","name":...}` line in the newest session file under `PI_CODING_AGENT_SESSION_DIR`, or `<PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions/--<path>--/`. `<path>` is the worktree path with its leading separator removed and `/`, `\`, and `:` replaced by `-`. No `session_info` name means the prompt name stays.
 
 These are private files, not a public API. Shika only reads them. Anything missing, unreadable, or unexpected means no title, and the card keeps its prompt name. Starting at the first submitted line, the app checks every two seconds, one check at a time, for up to two minutes.
 
@@ -70,20 +72,22 @@ You do not name the task in a separate field.
 5. **One terminal view per live PTY, hidden when not selected.** Switching cards does not kill processes. Output keeps flowing into the hidden view so the CLI does not block on a full PTY buffer. The shell PTY is created the first time the user toggles to it, then kept.
 6. **Status stays coarse.** Waiting means the CLI is up and the first prompt has not been sent. Working means the agent's own output is still arriving. About two seconds of quiet after work has started becomes Ready to check, and that posts the notification. The echo of a keystroke, and a redraw after focus, a click, a scroll, or a resize, is not the agent working: typing a draft without Enter does not start Working and does not make Close ask. Asking you is a bonus if a cheap check of the recent output is obvious. Do not block the MVP on parsing each CLI's question UI. A non-zero exit is still Ready to check.
 7. **Fonts.** The system UI font, San Francisco, for the chrome. JetBrains Mono, bundled with the app under its OFL license, for the terminal, as in `design/`. Menlo if it fails to load. SF Mono is out: GPUI loads only its regular weight. Light chrome, dark terminal. Warm mark for asking, green mark for ready. No drag handle, 540px column (280px until 2026-10-04), at most three visible cards per project.
-8. **Extra keyboard keys the PRD table does not list, because the app has to work without a mouse.** `a` adds a project. `n` opens the CLI picker. In the picker, `j` / `k`, Enter, and `1`–`2` choose, Escape cancels. In the close dialog, `d` discards, `p` pushes when that action is available, Escape cancels.
+8. **Extra keyboard keys the PRD table does not list, because the app has to work without a mouse.** `a` adds a project. `n` opens the CLI picker. In the picker, `j` / `k`, Enter, and `1`–`4` choose, Escape cancels. In the close dialog, `d` discards, `p` pushes when that action is available, Escape cancels.
 
 ## CLIs in this build
 
-Checked 2026-10-03 from each binary's `--help`. Do not invent a flag. Do not pass `agent --worktree`.
+Checked from each binary's `--help`. Claude Code and Cursor CLI on 2026-10-03. Codex CLI 0.160.0 and Pi 1.0.0 on 2026-10-05. Do not invent a flag. Do not pass `agent --worktree` or `codex --worktree`.
 
 | Preset | Binary | Launch args |
 | --- | --- | --- |
 | Claude Code | `claude` | `--dangerously-skip-permissions` |
+| Codex | `codex` | `--dangerously-bypass-approvals-and-sandbox` |
 | Cursor CLI | `agent` | `--yolo --trust --sandbox disabled` |
+| Pi | `pi` | `--approve` |
 
-Both are installed under `~/.local/bin`. Codex, Pi, and Kiro are not in this build.
+Claude Code and Cursor CLI are installed under `~/.local/bin`. Codex is there too. Pi is on the Node path (`pi` from `@earendil-works/pi-coding-agent`). Pi does not ask before a tool call. `--approve` skips the project-trust prompt on a new worktree. Kiro is not in this build.
 
-Rust is installed with rustup for this machine. `~/.zshenv` is a Nix store symlink, so rustup must not try to edit it. The toolchain is on `PATH` after `source "$HOME/.cargo/env"`. GPUI needs full Xcode, not only the Command Line Tools, for the Metal shader compiler. It is installed. The GPUI app needs no Node. The Tauri and web build files have been removed. The current platform dependency enables `runtime_shaders` because the separate Xcode Metal Toolchain component is not installed. The app must resolve `claude` and `agent` through a login shell, or a Finder launch will not see `~/.local/bin`.
+Rust is installed with rustup for this machine. `~/.zshenv` is a Nix store symlink, so rustup must not try to edit it. The toolchain is on `PATH` after `source "$HOME/.cargo/env"`. GPUI needs full Xcode, not only the Command Line Tools, for the Metal shader compiler. It is installed. The GPUI app needs no Node. The Tauri and web build files have been removed. The current platform dependency enables `runtime_shaders` because the separate Xcode Metal Toolchain component is not installed. The app must resolve `claude`, `codex`, `agent`, and `pi` through a login shell, or a Finder launch will not see `~/.local/bin` or the Node path.
 
 ## Stack
 
@@ -108,7 +112,7 @@ crates/shika-core/            no UI code, no GPUI
   projects                    load/save projects.json
   worktree                    exclude, add, rename branch, remove, dirty and unpushed checks, worktrees.json
   path_env                    login-shell PATH and absolute CLI paths
-  agents                      Claude Code and Cursor CLI
+  agents                      Claude Code, Codex, Cursor CLI, and Pi
   pty                         spawn, write, resize, read, exit, child env
   session                     create, shell, git state, discard, push and close, close, leftovers
 crates/shika-terminal/        alacritty_terminal wrapper and the GPUI terminal view
@@ -216,9 +220,9 @@ Check: add two repos, quit, relaunch, both are there.
 
 ### 2. PATH and presets
 
-Login-shell PATH. Claude Code and Cursor CLI, with absolute paths. A missing binary stays in the picker and cannot be launched.
+Login-shell PATH. Claude Code, Codex, Cursor CLI, and Pi, with absolute paths. A missing binary stays in the picker and cannot be launched.
 
-Check: from a built app opened with `open` (not `cargo run`), both resolve. This is the Dock-launch trap. Do it here, before believing any later CLI test.
+Check: from a built app opened with `open` (not `cargo run`), the installed ones resolve. This is the Dock-launch trap. Do it here, before believing any later CLI test.
 
 ### 3. Worktree, PTY, and terminal view
 
@@ -226,7 +230,7 @@ This is the risk. Prove it before cards get fancy.
 
 Create the draft worktree, write `.worktrees/` into info/exclude, spawn the preset with the argv above and the login PATH, bind a terminal view to that PTY. Keep the terminal view alive when switching cards. Typing and the mouse scroll work. The CLI's own UI is usable, including a question the user can answer.
 
-Launch Claude with `--dangerously-skip-permissions` and Cursor with `--yolo --trust --sandbox disabled`. Do not pass `--worktree`. Confirm neither one asks Shika to approve a shell command. If Claude still shows a workspace trust prompt, check `claude --help` again for an existing flag before adding anything.
+Launch Claude with `--dangerously-skip-permissions`, Codex with `--dangerously-bypass-approvals-and-sandbox`, Cursor with `--yolo --trust --sandbox disabled`, and Pi with `--approve`. Do not pass `--worktree`. Confirm none of them asks Shika to approve a shell command. If Claude still shows a workspace trust prompt, check `claude --help` again for an existing flag before adding anything.
 
 Check, in the built app opened from Finder:
 
@@ -234,7 +238,7 @@ Check, in the built app opened from Finder:
 - A prompt runs, tools run, and a question can be answered in the embedded terminal.
 - Switch to the other card and back. The draft or the running session is intact.
 - `.worktrees/` is not showing up in `git status` on the main checkout.
-- Cursor did not create a worktree under `~/.cursor/worktrees`.
+- Cursor did not create a worktree under `~/.cursor/worktrees`. Codex did not create one either. Shika's worktree is the one in use.
 
 If the embedded terminal cannot drive Claude's or Cursor's UI, fix that before continuing. The rest of the MVP depends on it.
 
@@ -281,4 +285,4 @@ Then stop. Distribution (signed dmg, notarization, Homebrew) is out of scope unt
 
 ## Do not build
 
-Phone, web, Windows, Linux, Homebrew, accounts, sync, telemetry, a planner, pull requests, CI, review, worktree reuse, conversation history, more than one visible terminal, a resizable split, a code editor, installing the CLIs, a custom chat transcript, a per-CLI question parser, Codex, Pi, Kiro, Cursor's own worktree flag, auto-removing a card after `git push`, committing on behalf of the user.
+Phone, web, Windows, Linux, Homebrew, accounts, sync, telemetry, a planner, pull requests, CI, review, worktree reuse, conversation history, more than one visible terminal, a resizable split, a code editor, installing the CLIs, a custom chat transcript, a per-CLI question parser, Kiro, Codex's or Cursor's own worktree flag, auto-removing a card after `git push`, committing on behalf of the user.

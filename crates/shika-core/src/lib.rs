@@ -889,7 +889,7 @@ mod tests {
         );
         let (sink, _rx) = channel_sink();
         assert_eq!(
-            core.create_session(&added.project.id, "codex", PtySize::default(), sink)
+            core.create_session(&added.project.id, "kiro", PtySize::default(), sink)
                 .unwrap_err(),
             Error::UnknownCli
         );

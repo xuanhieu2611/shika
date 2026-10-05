@@ -9,7 +9,8 @@ struct PresetSpec {
     args: &'static [&'static str],
 }
 
-// Flags checked 2026-10-03 from each binary's --help.
+// Flags checked from each binary's --help. Claude Code and Cursor CLI on
+// 2026-10-03. Codex CLI 0.160.0 and Pi 1.0.0 on 2026-10-05.
 const PRESETS: &[PresetSpec] = &[
     PresetSpec {
         id: "claude",
@@ -18,10 +19,22 @@ const PRESETS: &[PresetSpec] = &[
         args: &["--dangerously-skip-permissions"],
     },
     PresetSpec {
+        id: "codex",
+        name: "Codex",
+        binary: "codex",
+        args: &["--dangerously-bypass-approvals-and-sandbox"],
+    },
+    PresetSpec {
         id: "cursor",
         name: "Cursor CLI",
         binary: "agent",
         args: &["--yolo", "--trust", "--sandbox", "disabled"],
+    },
+    PresetSpec {
+        id: "pi",
+        name: "Pi",
+        binary: "pi",
+        args: &["--approve"],
     },
 ];
 
@@ -86,13 +99,15 @@ mod tests {
             None,
             &[
                 ("claude", Some(PathBuf::from("/tmp/bin/claude"))),
+                ("codex", Some(PathBuf::from("/tmp/bin/codex"))),
                 ("agent", None),
+                ("pi", Some(PathBuf::from("/tmp/bin/pi"))),
             ],
         );
 
         let presets = presets_from(&env);
 
-        assert_eq!(presets.len(), 2);
+        assert_eq!(presets.len(), 4);
         assert_eq!(presets[0].id, "claude");
         assert_eq!(presets[0].name, "Claude Code");
         assert_eq!(presets[0].binary, "claude");
@@ -102,20 +117,33 @@ mod tests {
             Some(std::path::Path::new("/tmp/bin/claude"))
         );
         assert!(presets[0].found());
-        assert_eq!(presets[1].id, "cursor");
-        assert_eq!(presets[1].name, "Cursor CLI");
-        assert_eq!(presets[1].binary, "agent");
+        assert_eq!(presets[1].id, "codex");
+        assert_eq!(presets[1].name, "Codex");
+        assert_eq!(presets[1].binary, "codex");
         assert_eq!(
             presets[1].args,
+            ["--dangerously-bypass-approvals-and-sandbox"]
+        );
+        assert!(presets[1].found());
+        assert_eq!(presets[2].id, "cursor");
+        assert_eq!(presets[2].name, "Cursor CLI");
+        assert_eq!(presets[2].binary, "agent");
+        assert_eq!(
+            presets[2].args,
             ["--yolo", "--trust", "--sandbox", "disabled"]
         );
-        assert_eq!(presets[1].path, None);
-        assert!(!presets[1].found());
-        assert_eq!(binaries(), ["claude", "agent"]);
+        assert_eq!(presets[2].path, None);
+        assert!(!presets[2].found());
+        assert_eq!(presets[3].id, "pi");
+        assert_eq!(presets[3].name, "Pi");
+        assert_eq!(presets[3].binary, "pi");
+        assert_eq!(presets[3].args, ["--approve"]);
+        assert!(presets[3].found());
+        assert_eq!(binaries(), ["claude", "codex", "agent", "pi"]);
     }
 
     #[test]
-    fn a_login_shell_error_leaves_both_unresolved() {
+    fn a_login_shell_error_leaves_every_preset_unresolved() {
         let env = PathEnv::from_lookup(
             String::new(),
             Some(LoginShellError::Spawn),
