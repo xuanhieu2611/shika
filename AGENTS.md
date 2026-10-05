@@ -29,7 +29,11 @@ Asking is not parsed. Ready means the output became quiet or the process exited,
 
 `MANUAL_CHECKS.md` records integrated acceptance results and remaining checks. `crates/shika-terminal/MANUAL_CHECKS.md` records terminal-specific checks. Implementation and passing unit tests do not establish every GUI check.
 
-Public code is MIT licensed. JetBrains Mono retains its separate OFL license. Original web mockups were removed; runtime icons live in `assets/macos/`.
+Public code is MIT licensed. JetBrains Mono retains its separate OFL license. `design/DESIGN.md` is the visual spec. `design/Shika v3.dc.html` is the reference prototype. Runtime icons live in `assets/macos/`.
+
+## Design
+
+Before any UI work, read `design/DESIGN.md` and follow it. That file is the source of truth for color, type, spacing, layout, focus, motion, copy, and icons.
 
 ## Using the app
 
@@ -41,7 +45,7 @@ The shell is the user's login shell, with its cwd on the worktree. `git status` 
 
 Typing in the terminal, a text field, the picker, or the close dialog does not run the card keys.
 
-Cmd-, (also the Shika menu and the gear at the right of the title bar) opens Settings. Hovering the gear shows Settings ⌘,. The dialog sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, and the branch prefix. Opacity is 0 to 100%, blur radius 0 to 255. `j` / `k` choose a row, `h` / `l` or the arrows step by 5, and typing digits (or clicking the number) edits it: Enter applies, Escape cancels the edit, and out-of-range values are clamped. On the prefix row, Enter or a click edits the text, Enter applies, and Escape cancels. Escape closes the dialog. Changes apply and save at once. At 100% opacity the window is opaque and blur does nothing. The title bar uses that same opacity, so the blur shows through it. Cards, dialogs, the toast, and cells with their own background color stay opaque.
+Cmd-, (also the Shika menu and the gear at the right of the title bar) opens Settings. Hovering the gear shows Settings ⌘,. The dialog sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, and the branch prefix. Opacity is 0 to 100%, blur radius 0 to 255. `j` / `k` choose a row, `h` / `l` or the arrows step by 5, and typing digits (or clicking the number) edits it: Enter applies, Escape cancels the edit, and out-of-range values are clamped. On the prefix row, Enter or a click edits the text, Enter applies, and Escape cancels. Escape closes the dialog. Changes apply and save at once. At 100% opacity the window is opaque and blur does nothing. Below that, the column, resting cards, dialogs, picker, and toast frost, unless macOS Reduce transparency is on. The selected card stays solid. The terminal background stays at or above 85% when frost covers it, and CLI-colored cells stay opaque. The title bar uses the sidebar opacity, so the blur shows through it. Light and dark follow the system appearance. The values are in `design/DESIGN.md`.
 
 ## Code
 

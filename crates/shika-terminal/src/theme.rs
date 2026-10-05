@@ -1,5 +1,6 @@
-//! Terminal colors. The defaults come from `design/tokens/xterm-theme.json`,
-//! which is what the xterm.js terminal in the Tauri app uses today.
+//! Terminal colors. `Palette::shika` is the terminal under light chrome.
+//! `Palette::shika_dark` is the same palette with the darker background.
+//! The values are specified in `design/DESIGN.md`.
 
 use crate::types::Rgb;
 
