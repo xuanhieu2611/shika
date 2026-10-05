@@ -5,7 +5,7 @@ mod notifications;
 use appearance::tint;
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Render, SharedString,
+    IntoElement, KeyDownEvent, MouseButton, ParentElement, PathPromptOptions, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, div,
     prelude::FluentBuilder, px, rgb, size,
 };
@@ -179,6 +179,9 @@ struct Shika {
     notifications: Notifications,
     clicks: std::sync::mpsc::Receiver<String>,
     appearance: Appearance,
+    /// Mouse is down on the title bar and has not moved yet. The drag starts
+    /// on the first move, so a double-click can still zoom.
+    title_drag: bool,
 }
 impl Shika {
     fn new(
@@ -232,6 +235,7 @@ impl Shika {
             notifications,
             clicks,
             appearance,
+            title_drag: false,
         };
         cx.spawn_in(window, async move |this, cx| {
             let catalog = cx
@@ -1206,12 +1210,115 @@ impl Shika {
                     ),
             )
     }
+
+    /// The strip above the sidebar and the agent header. The system title is
+    /// hidden so this bar can hold the settings icon. It stays opaque.
+    fn title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let inset = if window.is_fullscreen() || window.is_simple_fullscreen() {
+            px(16.)
+        } else {
+            px(TITLE_BAR_INSET)
+        };
+        div()
+            .h(px(TITLE_BAR_HEIGHT))
+            .w_full()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .bg(rgb(0xF1F2EC))
+            .border_b_1()
+            .border_color(rgb(0xDADDD3))
+            .child(
+                div()
+                    .id("titlebar-drag")
+                    .flex_1()
+                    .h_full()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .pl(inset)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &gpui::MouseDownEvent, window, _| {
+                            if event.click_count >= 2 {
+                                this.title_drag = false;
+                                window.titlebar_double_click();
+                            } else {
+                                this.title_drag = true;
+                            }
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| {
+                            this.title_drag = false;
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| {
+                            this.title_drag = false;
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, _, window, _| {
+                        if this.title_drag {
+                            this.title_drag = false;
+                            window.start_window_move();
+                        }
+                    }))
+                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Shika")),
+            )
+            .child(
+                div()
+                    .id("settings")
+                    .mr(px(8.))
+                    .size(px(26.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(rgb(0xE3E6DD)))
+                    .tooltip(|_, cx| cx.new(|_| SettingsHint).into())
+                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
+                    .child(
+                        gpui::svg()
+                            .data(SETTINGS_ICON)
+                            .size(px(15.))
+                            .text_color(rgb(0x3C4038)),
+                    ),
+            )
+    }
 }
 impl Focusable for Shika {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
+/// Clears the traffic lights on macOS 26 before the title.
+const TITLE_BAR_INSET: f32 = 78.;
+/// Matches the traffic-light container: button height plus 9px above and below.
+const TITLE_BAR_HEIGHT: f32 = 34.;
+
+/// Filled gear. Drawn as an alpha mask and tinted by the element's text color.
+const SETTINGS_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" fill-rule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 0 0-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 0 0-2.282.819l-.922 1.597a1.875 1.875 0 0 0 .432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 0 0 0 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 0 0-.432 2.385l.922 1.597a1.875 1.875 0 0 0 2.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 0 0 2.28-.819l.923-1.597a1.875 1.875 0 0 0-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 0 0 0-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 0 0-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 0 0-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 0 0-1.85-1.567h-1.843ZM12 15.75a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z"/></svg>"##;
+
+struct SettingsHint;
+
+impl Render for SettingsHint {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(6.))
+            .bg(rgb(0x252823))
+            .text_color(rgb(0xE9ECE3))
+            .text_size(px(12.))
+            .font_family(".AppleSystemUIFont")
+            .child("Settings  \u{2318},")
+    }
+}
+
 fn button(
     id: impl Into<gpui::ElementId>,
     text: impl Into<SharedString>,
@@ -1480,9 +1587,6 @@ impl Render for Shika {
                         button("add", "Add project  a")
                             .on_click(cx.listener(|this, _, _, cx| this.add_project(cx))),
                     )
-                    .child(button("settings", "Settings  \u{2318},").on_click(
-                        cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
-                    ))
                     .when(!self.leftovers.is_empty(), |d| {
                         d.child(
                             button(
@@ -1633,11 +1737,20 @@ impl Render for Shika {
             .relative()
             .size_full()
             .flex()
+            .flex_col()
             .font_family(".AppleSystemUIFont")
             .text_size(px(12.))
             .text_color(rgb(0x262824))
-            .child(sidebar)
-            .child(right);
+            .child(self.title_bar(window, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(sidebar)
+                    .child(right),
+            );
         if let Some((text, _)) = &self.toast {
             root = root.child(
                 div()
@@ -1976,8 +2089,13 @@ fn main() -> anyhow::Result<()> {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("Shika".into()),
-                        ..Default::default()
+                        appears_transparent: true,
+                        // Centers the traffic lights in the 34px bar drawn below.
+                        traffic_light_position: Some(gpui::point(px(9.), px(9.))),
                     }),
+                    // The settings icon lives in the title bar, so clicks there
+                    // have to reach the app. The bar starts the drag itself.
+                    app_owns_titlebar_drag: true,
                     window_background: appearance::background(&start),
                     ..Default::default()
                 },

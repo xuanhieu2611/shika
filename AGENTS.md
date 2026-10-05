@@ -39,7 +39,7 @@ The shell is the user's login shell, with its cwd on the worktree. `git status` 
 
 Typing in the terminal, a text field, the picker, or the close dialog does not run the card keys.
 
-Cmd-, (also the Shika menu and the sidebar button) opens Settings: background opacity, blur radius, and whether the sidebar alone or the sidebar and terminal are translucent. Opacity is 0 to 100%, blur radius 0 to 255. `j` / `k` choose a row, `h` / `l` or the arrows step by 5, and typing digits (or clicking the number) edits it: Enter applies, Escape cancels the edit, and out-of-range values are clamped. Escape closes the dialog. Changes apply and save at once. At 100% opacity the window is opaque and blur does nothing. Cards, dialogs, the toast, and cells with their own background color stay opaque.
+Cmd-, (also the Shika menu and the gear at the right of the title bar) opens Settings. Hovering the gear shows Settings ⌘,. The dialog sets background opacity, blur radius, and whether translucency covers the sidebar alone or the sidebar and terminal. Opacity is 0 to 100%, blur radius 0 to 255. `j` / `k` choose a row, `h` / `l` or the arrows step by 5, and typing digits (or clicking the number) edits it: Enter applies, Escape cancels the edit, and out-of-range values are clamped. Escape closes the dialog. Changes apply and save at once. At 100% opacity the window is opaque and blur does nothing. The title bar, cards, dialogs, the toast, and cells with their own background color stay opaque.
 
 ## Code
 
