@@ -68,7 +68,7 @@ crates/shika/           the GPUI app: window, cards, picker, close dialog, setti
                         keys, shell toggle, translucency, .app bundle
 ```
 
-`assets/fonts/` holds JetBrains Mono and its OFL license. `assets/macos/` holds the bundle metadata and icon. `scripts/bundle-app.sh` builds a local ad hoc signed `.app`.
+`assets/fonts/` holds JetBrains Mono and its OFL license. `assets/macos/` holds the bundle metadata and icon. `scripts/bundle-app.sh` builds a local ad hoc signed `.app`. `site/` is the static landing page; see `site/README.md`.
 
 App data: `~/Library/Application Support/com.hieule.shika/`, the same directory used before the migration. `projects.json` and `worktrees.json` keep working there. `settings.json` holds the appearance, the terminal font size, `branchPrefix`, and `notificationSound`; a missing file or field takes the default (opaque, 12.5, no prefix, sound on). Sessions, titles, status, and PTY ids are memory only.
 

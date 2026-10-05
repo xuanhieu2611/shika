@@ -1,0 +1,36 @@
+:root {
+  /* Spacing */
+  --space-0_5: 2px;
+  --space-1: 4px;
+  --space-1_5: 6px;
+  --space-2: 8px;
+  --space-2_5: 10px;
+  --space-3: 12px;
+  --space-3_5: 14px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radius */
+  --radius-xs: 4px;    /* key caps */
+  --radius-sm: 6px;    /* icon buttons, segments, small buttons */
+  --radius-md: 8px;    /* buttons, segmented track, list rows, toast */
+  --radius-lg: 10px;   /* agent cards, empty project */
+  --radius-xl: 12px;   /* dialogs, picker */
+  --radius-2xl: 14px;  /* macOS notification */
+  --radius-pill: 999px;/* status chips */
+
+  /* Layout */
+  --titlebar-height: 48px;
+  --column-width: 540px;
+  --column-width-min: 400px;
+  --column-width-max: 760px;
+  --column-pad-x: 12px;
+  --card-pad: 12px 14px 11px;
+  --card-gap: 6px;         /* between cards in a project */
+  --project-gap: 20px;     /* between projects */
+  --dot-size: 8px;
+  --dot-indent: 18px;      /* meta row aligns with task text: dot 8 + gap 10 */
+  --terminal-pad: 16px 20px 28px;
+}
