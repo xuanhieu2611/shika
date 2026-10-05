@@ -37,6 +37,8 @@ struct HostState {
     prompt: PromptCapture,
     title: Option<String>,
     last_output: Option<Instant>,
+    /// Newest output that is the agent's own work, not an echo or a redraw.
+    last_agent_output: Option<Instant>,
     /// The user's last key or paste.
     last_typed: Option<Instant>,
     /// The user's last key, paste, focus change, click, scroll, or resize,
@@ -83,6 +85,16 @@ impl PtyHost for Host {
         s.last_input = Some(Instant::now());
         if let Some(pty) = s.pty {
             let _ = self.core.resize(pty, PtySize::new(size.rows, size.cols));
+        }
+    }
+}
+impl HostState {
+    /// Record PTY bytes. Echoes and redraws stay in `last_output` only, so a
+    /// draft typed into the prompt does not look like the agent working.
+    fn note_output(&mut self, now: Instant) {
+        self.last_output = Some(now);
+        if model::is_agent_output(self.last_input, now) {
+            self.last_agent_output = Some(now);
         }
     }
 }
@@ -524,7 +536,7 @@ impl Shika {
                         move |_, event| match event {
                             PtyEvent::Output(bytes) => {
                                 sink_terminal.feed(&bytes);
-                                lock(&output_state).last_output = Some(Instant::now());
+                                lock(&output_state).note_output(Instant::now());
                             }
                             PtyEvent::Exit(exit) => {
                                 sink_terminal.feed(
@@ -701,19 +713,23 @@ impl Shika {
                 changed = true;
             }
             if card.status != Status::Waiting {
-                let latest = state.last_output.unwrap_or(card.since);
-                if latest > card.since && card.status == Status::Ready {
-                    card.status = Status::Working;
-                    card.since = latest;
+                let (clock, settled) = model::advance_status(
+                    model::TurnClock {
+                        status: card.status,
+                        since: card.since,
+                    },
+                    state.last_input,
+                    state.last_agent_output,
+                    now,
+                    state.exited,
+                );
+                if clock.status != card.status || clock.since != card.since {
+                    card.status = clock.status;
+                    card.since = clock.since;
                     changed = true;
                 }
-                if card.status == Status::Working
-                    && (state.exited
-                        || now.duration_since(latest.max(card.since)) >= Duration::from_secs(2))
-                {
-                    card.status = Status::Ready;
-                    card.since = now;
-                    changed = true;
+                if settled {
+                    let latest = state.last_output.unwrap_or(card.since);
                     if model::notify_ready(
                         state.last_typed,
                         card.notified,
@@ -893,8 +909,8 @@ impl Shika {
                 && self.cards[index].status != Status::Waiting
                 && (host.submission != self.cards[index].submitted
                     || host
-                        .last_output
-                        .is_some_and(|t| t.elapsed() < Duration::from_secs(2)))
+                        .last_agent_output
+                        .is_some_and(|t| t.elapsed() < model::QUIET))
         };
         let core = self.core.clone();
         self.busy = true;
@@ -1831,10 +1847,7 @@ impl Render for Shika {
                                             .text_size(px(10.))
                                             .text_color(chrome.faint)
                                             .font_family("JetBrains Mono")
-                                            .child(format!(
-                                                "{}s",
-                                                card.since.elapsed().as_secs()
-                                            )),
+                                            .child(format!("{}s", card.since.elapsed().as_secs())),
                                     )
                                 }),
                         )
