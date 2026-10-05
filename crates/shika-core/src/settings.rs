@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::{Error, Result};
 
@@ -76,6 +76,85 @@ impl Default for Appearance {
     }
 }
 
+/// Terminal text size, in half-points so 12.5 can be stored exactly.
+/// The range is 8 to 32. A missing value is 12.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FontSize(u8);
+
+impl FontSize {
+    const MIN_HALF: u8 = 16;
+    const MAX_HALF: u8 = 64;
+    const DEFAULT_HALF: u8 = 25;
+
+    /// Size in points, for the terminal view.
+    pub fn points(self) -> f32 {
+        f32::from(self.0) / 2.0
+    }
+
+    /// `12.5` or `13`, for the settings field.
+    pub fn text(self) -> String {
+        let whole = self.0 / 2;
+        if self.0.is_multiple_of(2) {
+            whole.to_string()
+        } else {
+            format!("{whole}.5")
+        }
+    }
+
+    /// One point toward the next whole size. 12.5 becomes 13 or 12.
+    pub fn step(self, delta: i64) -> Self {
+        if delta == 0 {
+            return self;
+        }
+        let points = f64::from(self.0) / 2.0;
+        let next = if delta > 0 {
+            points.floor() + delta as f64
+        } else if self.0.is_multiple_of(2) {
+            points + delta as f64
+        } else {
+            points.ceil() + delta as f64
+        };
+        Self::from_points(next)
+    }
+
+    /// A typed size, rounded to the nearest half point and pulled into range.
+    /// Blank or nonsense keeps the current size.
+    pub fn from_text(text: &str) -> Option<Self> {
+        let points = text.parse::<f64>().ok()?;
+        points.is_finite().then(|| Self::from_points(points))
+    }
+
+    fn from_points(points: f64) -> Self {
+        if !points.is_finite() {
+            return Self::default();
+        }
+        let half = (points * 2.0).round();
+        Self(half.clamp(f64::from(Self::MIN_HALF), f64::from(Self::MAX_HALF)) as u8)
+    }
+}
+
+impl Default for FontSize {
+    fn default() -> Self {
+        Self(Self::DEFAULT_HALF)
+    }
+}
+
+impl Serialize for FontSize {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.0.is_multiple_of(2) {
+            serializer.serialize_u8(self.0 / 2)
+        } else {
+            serializer.serialize_f64(f64::from(self.0) / 2.0)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for FontSize {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::from_points(f64::deserialize(deserializer)?))
+    }
+}
+
 /// `settings.json`. A missing file, or a missing field, takes the default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -84,6 +163,8 @@ pub struct Settings {
     /// Put in front of every branch name Shika picks, like `hieu/`. Stored
     /// as typed; [`crate::normalize_branch_prefix`] makes it safe for git.
     pub branch_prefix: String,
+    /// Terminal text size. Missing means 12.5.
+    pub font_size: FontSize,
 }
 
 pub struct SettingsFile {
@@ -157,6 +238,7 @@ mod tests {
         let settings = file.load().unwrap();
         assert_eq!(settings, Settings::default());
         assert!(settings.appearance.is_opaque());
+        assert_eq!(settings.font_size.points(), 12.5);
     }
 
     #[test]
@@ -170,11 +252,13 @@ mod tests {
                 translucency: Translucency::SidebarAndTerminal,
             },
             branch_prefix: "hieu/".into(),
+            font_size: FontSize::from_text("14.5").unwrap(),
         };
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"translucency\": \"sidebarAndTerminal\""));
         assert!(text.contains("\"branchPrefix\": \"hieu/\""));
+        assert!(text.contains("\"fontSize\": 14.5"));
         assert_eq!(file.load().unwrap(), settings);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -185,20 +269,15 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
-            r#"{ "appearance": { "opacity": 250, "blur": 1000 } }"#,
+            r#"{ "appearance": { "opacity": 250, "blur": 1000 }, "fontSize": 99 }"#,
         )
         .unwrap();
-        let appearance = SettingsFile::open(path.clone()).load().unwrap().appearance;
-        assert_eq!(appearance.opacity, Appearance::MAX_OPACITY);
-        assert_eq!(appearance.blur, Appearance::MAX_BLUR);
-        assert_eq!(appearance.translucency, Translucency::Sidebar);
-        assert_eq!(
-            SettingsFile::open(path.clone())
-                .load()
-                .unwrap()
-                .branch_prefix,
-            ""
-        );
+        let settings = SettingsFile::open(path.clone()).load().unwrap();
+        assert_eq!(settings.appearance.opacity, Appearance::MAX_OPACITY);
+        assert_eq!(settings.appearance.blur, Appearance::MAX_BLUR);
+        assert_eq!(settings.appearance.translucency, Translucency::Sidebar);
+        assert_eq!(settings.branch_prefix, "");
+        assert_eq!(settings.font_size.points(), 32.0);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -211,6 +290,34 @@ mod tests {
         assert_eq!(appearance.with_blur(120).blur, 120);
         assert_eq!(appearance.with_blur(999).blur, 255);
         assert_eq!(appearance.with_blur(-1).blur, 0);
+    }
+
+    #[test]
+    fn font_size_steps_by_one_point_and_keeps_a_typed_half() {
+        let size = FontSize::default();
+        assert_eq!(size.points(), 12.5);
+        assert_eq!(size.text(), "12.5");
+        assert_eq!(size.step(1).points(), 13.0);
+        assert_eq!(size.step(-1).points(), 12.0);
+        assert_eq!(size.step(1).step(1).text(), "14");
+        assert_eq!(FontSize::from_text("12.5").unwrap().points(), 12.5);
+        assert_eq!(FontSize::from_text("12.2").unwrap().points(), 12.0);
+        assert_eq!(FontSize::from_text("12.3").unwrap().points(), 12.5);
+        assert_eq!(FontSize::from_text("7").unwrap().points(), 8.0);
+        assert!(FontSize::from_text("").is_none());
+        assert_eq!(FontSize::from_text("8").unwrap().step(-1).points(), 8.0);
+        assert_eq!(FontSize::from_text("32").unwrap().step(1).points(), 32.0);
+    }
+
+    #[test]
+    fn a_file_without_font_size_stays_at_12_5() {
+        let path = temp_file("no-font");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{ "branchPrefix": "hieu/" }"#).unwrap();
+        let settings = SettingsFile::open(path.clone()).load().unwrap();
+        assert_eq!(settings.font_size, FontSize::default());
+        assert_eq!(settings.branch_prefix, "hieu/");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
