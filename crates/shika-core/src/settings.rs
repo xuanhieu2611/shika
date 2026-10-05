@@ -77,14 +77,14 @@ impl Default for Appearance {
 }
 
 /// Terminal text size, in half-points so 12.5 can be stored exactly.
-/// The range is 8 to 32. A missing value is 12.5.
+/// The range is 8 to 32. A missing value is 14.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FontSize(u8);
 
 impl FontSize {
     const MIN_HALF: u8 = 16;
     const MAX_HALF: u8 = 64;
-    const DEFAULT_HALF: u8 = 25;
+    const DEFAULT_HALF: u8 = 28;
 
     /// Size in points, for the terminal view.
     pub fn points(self) -> f32 {
@@ -167,7 +167,7 @@ pub struct Settings {
     /// Put in front of every branch name Shika picks, like `hieu/`. Stored
     /// as typed; [`crate::normalize_branch_prefix`] makes it safe for git.
     pub branch_prefix: String,
-    /// Terminal text size. Missing means 12.5.
+    /// Terminal text size. Missing means 14.
     pub font_size: FontSize,
     /// Play the system alert sound with the ready banner. Missing means on.
     /// A bool's own default is false, so this field names its default.
@@ -257,7 +257,7 @@ mod tests {
         let settings = file.load().unwrap();
         assert_eq!(settings, Settings::default());
         assert!(settings.appearance.is_opaque());
-        assert_eq!(settings.font_size.points(), 12.5);
+        assert_eq!(settings.font_size.points(), 14.0);
         assert!(settings.notification_sound);
     }
 
@@ -318,12 +318,16 @@ mod tests {
     #[test]
     fn font_size_steps_by_one_point_and_keeps_a_typed_half() {
         let size = FontSize::default();
-        assert_eq!(size.points(), 12.5);
-        assert_eq!(size.text(), "12.5");
-        assert_eq!(size.step(1).points(), 13.0);
-        assert_eq!(size.step(-1).points(), 12.0);
-        assert_eq!(size.step(1).step(1).text(), "14");
-        assert_eq!(FontSize::from_text("12.5").unwrap().points(), 12.5);
+        assert_eq!(size.points(), 14.0);
+        assert_eq!(size.text(), "14");
+        assert_eq!(size.step(1).points(), 15.0);
+        assert_eq!(size.step(-1).points(), 13.0);
+        let half = FontSize::from_text("12.5").unwrap();
+        assert_eq!(half.points(), 12.5);
+        assert_eq!(half.text(), "12.5");
+        assert_eq!(half.step(1).points(), 13.0);
+        assert_eq!(half.step(-1).points(), 12.0);
+        assert_eq!(half.step(1).step(1).text(), "14");
         assert_eq!(FontSize::from_text("12.2").unwrap().points(), 12.0);
         assert_eq!(FontSize::from_text("12.3").unwrap().points(), 12.5);
         assert_eq!(FontSize::from_text("7").unwrap().points(), 8.0);
@@ -333,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_without_font_size_stays_at_12_5() {
+    fn a_file_without_font_size_uses_the_default() {
         let path = temp_file("no-font");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, r#"{ "branchPrefix": "hieu/" }"#).unwrap();
