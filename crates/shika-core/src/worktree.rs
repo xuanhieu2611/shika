@@ -1,4 +1,7 @@
+use std::ffi::OsStr;
 use std::fs;
+use std::io::{ErrorKind, Read};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -384,6 +387,133 @@ fn default_branch(git: &Path, path_env: &str, repo: &Path, worktree: &Path) -> R
         return Ok(String::from_utf8_lossy(&head.stdout).trim().to_string());
     }
     Err(Error::GitStatus(None))
+}
+
+/// What the task changed against where its branch left the default branch:
+/// committed and uncommitted tracked edits, plus untracked files that are not
+/// ignored. Reads only; never stages anything or writes the index.
+pub fn diff_stat(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    worktree: &Path,
+) -> Result<crate::DiffStat> {
+    let base = diff_base(git, path_env, repo, worktree);
+    // Comparing the base to the working tree covers commits and edits at once.
+    let output = read_only_git(git, path_env, worktree)
+        .args([
+            "diff",
+            "--numstat",
+            "--no-color",
+            "--no-ext-diff",
+            "--find-renames",
+            &base,
+            "--",
+        ])
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    if !output.status.success() {
+        return Err(Error::GitStatus(first_line(&output.stderr)));
+    }
+    let mut stat = crate::DiffStat::default();
+    // One line per file, renames included; unusual paths are quoted.
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.splitn(3, '\t');
+        let (Some(added), Some(deleted), Some(_)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        stat.files += 1;
+        // A binary file reports `-` for both counts.
+        stat.insertions += added.parse::<usize>().unwrap_or(0);
+        stat.deletions += deleted.parse::<usize>().unwrap_or(0);
+    }
+    let output = read_only_git(git, path_env, worktree)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    if !output.status.success() {
+        return Err(Error::GitStatus(first_line(&output.stderr)));
+    }
+    for path in output.stdout.split(|byte| *byte == 0) {
+        if path.is_empty() {
+            continue;
+        }
+        stat.files += 1;
+        stat.insertions += untracked_lines(&worktree.join(OsStr::from_bytes(path)));
+    }
+    Ok(stat)
+}
+
+/// Where the task branch left the default branch. Falls back to HEAD, so only
+/// uncommitted work counts, when there is no default branch to compare with or
+/// the two share no history.
+fn diff_base(git: &Path, path_env: &str, repo: &Path, worktree: &Path) -> String {
+    let Ok(default) = default_branch(git, path_env, repo, worktree) else {
+        return "HEAD".into();
+    };
+    let output = read_only_git(git, path_env, worktree)
+        .args(["merge-base", &default, "HEAD"])
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let base = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if base.is_empty() { "HEAD".into() } else { base }
+        }
+        _ => "HEAD".into(),
+    }
+}
+
+/// Lines in an untracked file, counted as `git diff` would count them for a
+/// new file. Binary, unreadable, and non-file entries count none; a symlink is
+/// one line, its target.
+fn untracked_lines(path: &Path) -> usize {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if meta.file_type().is_symlink() {
+        return 1;
+    }
+    if !meta.is_file() {
+        return 0;
+    }
+    let Ok(mut file) = fs::File::open(path) else {
+        return 0;
+    };
+    // Git calls a file binary when its first 8000 bytes hold a NUL.
+    const BINARY_PROBE: usize = 8000;
+    let mut buf = vec![0; 64 * 1024];
+    let mut probed = 0;
+    let mut lines = 0;
+    let mut last = b'\n';
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => return 0,
+        };
+        let chunk = &buf[..n];
+        if probed < BINARY_PROBE {
+            let take = (BINARY_PROBE - probed).min(n);
+            if chunk[..take].contains(&0) {
+                return 0;
+            }
+            probed += take;
+        }
+        lines += chunk.iter().filter(|byte| **byte == b'\n').count();
+        last = chunk[n - 1];
+    }
+    // A last line without a newline still counts.
+    lines + usize::from(last != b'\n')
+}
+
+/// A git call for background reads. Optional locks are off so a refresh never
+/// takes the index lock out from under the user's own git commands.
+fn read_only_git(program: &Path, path_env: &str, dir: &Path) -> Command {
+    let mut cmd = git_cmd(program, path_env, dir);
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
 }
 
 fn commits_not_in(git: &Path, path_env: &str, worktree: &Path, excluded: &[&str]) -> Result<bool> {
@@ -796,6 +926,132 @@ mod tests {
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&branches.stdout).trim().is_empty());
+    }
+
+    fn run(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Shika")
+            .env("GIT_AUTHOR_EMAIL", "shika@example.com")
+            .env("GIT_COMMITTER_NAME", "Shika")
+            .env("GIT_COMMITTER_EMAIL", "shika@example.com")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?} failed");
+    }
+
+    fn commit_all(dir: &Path, message: &str) {
+        run(dir, &["add", "-A"]);
+        run(dir, &["commit", "-m", message]);
+    }
+
+    /// A repository with a three-line tracked file, and a draft made from it.
+    fn repo_with_draft(scratch: &Scratch) -> (PathBuf, Draft) {
+        let repo = scratch.repo("demo");
+        fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        commit_all(&repo, "base");
+        let draft = create_draft(&git(), "", &repo, "one").unwrap();
+        (repo, draft)
+    }
+
+    fn stat(repo: &Path, draft: &Draft) -> crate::DiffStat {
+        diff_stat(&git(), "", repo, &draft.path).unwrap()
+    }
+
+    fn counts(files: usize, insertions: usize, deletions: usize) -> crate::DiffStat {
+        crate::DiffStat {
+            files,
+            insertions,
+            deletions,
+        }
+    }
+
+    #[test]
+    fn a_clean_branch_changed_nothing() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        assert_eq!(stat(&repo, &draft), crate::DiffStat::default());
+    }
+
+    #[test]
+    fn committed_work_counts_from_where_the_branch_left() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("a.txt"), "one\n2\nthree\nfour\n").unwrap();
+        commit_all(&draft.path, "task");
+        // Later work on the default branch is not the task's.
+        fs::write(repo.join("main.txt"), "main\n").unwrap();
+        commit_all(&repo, "main moves on");
+        assert_eq!(stat(&repo, &draft), counts(1, 2, 1));
+    }
+
+    #[test]
+    fn uncommitted_edits_count() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("a.txt"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+        assert_eq!(stat(&repo, &draft), counts(1, 2, 0));
+        // Staged and committed work add up with what is still in the tree.
+        run(&draft.path, &["add", "a.txt"]);
+        fs::write(draft.path.join("b.txt"), "b\n").unwrap();
+        commit_all(&draft.path, "task");
+        fs::write(draft.path.join("b.txt"), "b\nc\n").unwrap();
+        assert_eq!(stat(&repo, &draft), counts(2, 4, 0));
+    }
+
+    #[test]
+    fn untracked_files_count_their_lines_without_touching_the_index() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::create_dir_all(draft.path.join("src")).unwrap();
+        fs::write(draft.path.join("src/new.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+        fs::write(draft.path.join("tail.txt"), "no newline").unwrap();
+        fs::write(draft.path.join("empty.txt"), "").unwrap();
+        fs::write(draft.path.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(draft.path.join("build.log"), "ignored\n").unwrap();
+        assert_eq!(stat(&repo, &draft), counts(4, 4, 0));
+        let status = porcelain(&draft.path);
+        assert!(status.contains("?? src/"), "{status}");
+        assert!(!status.contains("A "), "{status}");
+    }
+
+    #[test]
+    fn binary_files_count_as_files_without_lines() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("logo.png"), [0x89, b'P', 0, 0, b'\n', 1]).unwrap();
+        commit_all(&draft.path, "binary");
+        fs::write(draft.path.join("loose.bin"), [1, 0, b'\n', b'\n']).unwrap();
+        assert_eq!(stat(&repo, &draft), counts(2, 0, 0));
+    }
+
+    #[test]
+    fn deletions_count() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::remove_file(draft.path.join("a.txt")).unwrap();
+        assert_eq!(stat(&repo, &draft), counts(1, 0, 3));
+        commit_all(&draft.path, "delete");
+        assert_eq!(stat(&repo, &draft), counts(1, 0, 3));
+    }
+
+    #[test]
+    fn without_a_default_branch_only_uncommitted_work_counts() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("b.txt"), "b\n").unwrap();
+        commit_all(&draft.path, "task");
+        // The main checkout on the task branch hides the default branch.
+        run(&repo, &["branch", "-m", "trunk"]);
+        run(
+            &repo,
+            &["checkout", "--ignore-other-worktrees", &draft.branch],
+        );
+        assert_eq!(stat(&repo, &draft), crate::DiffStat::default());
+        fs::write(draft.path.join("b.txt"), "b\nc\n").unwrap();
+        assert_eq!(stat(&repo, &draft), counts(1, 1, 0));
     }
 
     #[test]

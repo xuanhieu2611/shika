@@ -1,6 +1,7 @@
 //! Terminal colors. `Palette::shika` is the terminal under light chrome.
 //! `Palette::shika_dark` is the same palette with the darker background.
-//! The values are specified in `design/DESIGN.md`.
+//! The values are specified in `design/DESIGN.md`: `--term-bg`, `--term-fg`,
+//! `--term-cursor`, `--term-selection`, and the soft ANSI 16.
 
 use crate::types::Rgb;
 
@@ -27,11 +28,11 @@ impl Palette {
     pub fn shika() -> Self {
         Self {
             ansi: ANSI,
-            foreground: Rgb::hex(0xD9D7D1),
-            background: Rgb::hex(0x161615),
-            cursor: Rgb::hex(0xD9D7D1),
-            cursor_text: Rgb::hex(0x161615),
-            selection: Rgb::hex(0xD9D7D1),
+            foreground: Rgb::hex(0xD5D9CF),
+            background: Rgb::hex(0x131512),
+            cursor: Rgb::hex(0xD5D9CF),
+            cursor_text: Rgb::hex(0x131512),
+            selection: Rgb::hex(0xD5D9CF),
             selection_alpha: 0.18,
             bold_is_bright: true,
         }
@@ -40,8 +41,8 @@ impl Palette {
     /// The terminal under the dark app chrome. Only the background changes.
     pub fn shika_dark() -> Self {
         Self {
-            background: Rgb::hex(0x121211),
-            cursor_text: Rgb::hex(0x121211),
+            background: Rgb::hex(0x10120F),
+            cursor_text: Rgb::hex(0x10120F),
             ..Self::shika()
         }
     }

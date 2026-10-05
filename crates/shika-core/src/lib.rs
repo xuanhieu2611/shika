@@ -10,6 +10,7 @@
 //!
 //! - **Blocking.** [`Core::add_project`], [`Core::create_session`],
 //!   [`Core::open_shell`], [`Core::session_dirty`], [`Core::session_git_state`],
+//!   [`Core::session_diff_stat`],
 //!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
 //!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
@@ -60,7 +61,7 @@ pub use error::{Error, Result};
 pub use path_env::{LoginShellError, PathEnv};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
-pub use session::{Session, SessionGitState, ShellOpen};
+pub use session::{DiffStat, Session, SessionGitState, ShellOpen};
 pub use settings::{Appearance, FontSize, Settings, Translucency};
 pub use worktree::JournalEntry;
 pub use worktree::normalize_prefix as normalize_branch_prefix;
@@ -434,6 +435,19 @@ impl Core {
             &session.repo,
             &session.worktree,
             agent_working,
+        )
+    }
+
+    /// Blocking. What the task changed: committed and uncommitted work
+    /// against where the branch left the default branch. Takes no lock, so a
+    /// background refresh never holds up close or discard.
+    pub fn session_diff_stat(&self, id: &str) -> Result<DiffStat> {
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        worktree::diff_stat(
+            &self.git()?,
+            self.path_env().path(),
+            &session.repo,
+            &session.worktree,
         )
     }
 
@@ -1269,6 +1283,36 @@ mod tests {
                 .is_empty()
         );
     }
+    #[test]
+    fn diff_stat_reports_the_session_worktree() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let session = create_fake_session(&core, &project.id);
+        assert_eq!(
+            core.session_diff_stat(&session.id).unwrap(),
+            DiffStat::default()
+        );
+        fs::write(session.worktree.join("a.txt"), "one\ntwo\n").unwrap();
+        git(&session.worktree, &["add", "a.txt"]);
+        git(&session.worktree, &["commit", "-m", "task"]);
+        fs::write(session.worktree.join("b.txt"), "b\n").unwrap();
+        assert_eq!(
+            core.session_diff_stat(&session.id).unwrap(),
+            DiffStat {
+                files: 2,
+                insertions: 3,
+                deletions: 0,
+            }
+        );
+        assert_eq!(
+            core.session_diff_stat("missing"),
+            Err(Error::UnknownSession)
+        );
+        core.session_discard(&session.id).unwrap();
+    }
+
     #[test]
     fn custom_default_branch_and_stale_origin_head_are_checked_safely() {
         let scratch = Scratch::new();

@@ -713,7 +713,7 @@ mod tests {
         feed(&mut e, "\x1b]11;?\x07");
         let out = e.take_output();
         let reply = String::from_utf8(out.replies[0].clone()).unwrap();
-        assert!(reply.starts_with("\x1b]11;rgb:1616/1616/1515"), "{reply:?}");
+        assert!(reply.starts_with("\x1b]11;rgb:1313/1515/1212"), "{reply:?}");
     }
 
     #[test]

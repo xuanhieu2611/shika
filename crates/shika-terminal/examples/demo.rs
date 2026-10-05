@@ -216,7 +216,7 @@ impl Render for Demo {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x161615))
+            .bg(rgb(0x131512))
             .font_family("Menlo")
             .text_size(px(11.5))
             .on_action(cx.listener(|this, _: &ShowShell, window, cx| this.show(0, window, cx)))
