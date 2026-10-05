@@ -9,6 +9,7 @@ The PRD is the spec, except where this file records a later decision from the au
 - This build launches Claude Code and Cursor CLI only. Kiro, Codex, and Pi wait.
 - Shika creates the worktree. Never pass Cursor's `--worktree`.
 - Shika is a pure Rust app on GPUI, not Tauri 2 with a web view. Decided 2026-10-04. See "Stack change".
+- The agent column is 540px, fixed, replacing the 280px column. The window opens at 1400x880 with a 960x600 minimum. The 48px top row is the title bar: traffic lights, the wordmark, the settings gear, and New agent on the column side, the terminal header on the other. The summary is a headline and status chips; clicking a chip selects the first card with that status. Ready cards show a diff stat. Decided by the author 2026-10-04, following the designer's v3 prototype.
 - A Settings dialog (Cmd-,) sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, the terminal font size (8 to 32, default 12.5), and whether a notification plays the system alert sound (on by default). The title bar uses that same opacity, so the window blur shows through it. Saved in `settings.json`. The default is opaque. Decided 2026-10-04.
 
 ## Stack change, 2026-10-04
@@ -67,8 +68,8 @@ You do not name the task in a separate field.
 3. **Nothing to lose closes immediately.** If the agent is not working, the worktree is clean, and the branch is already on the remote or has no commits of its own, Close removes the card and the worktree without asking. A pushed branch stays. An empty draft branch is deleted.
 4. **Projects persist. Live sessions do not restore.** Relaunch shows the project list and an empty terminal. A journal of Shika worktrees is kept so a quit or crash can list leftovers. Nothing is deleted automatically. The user removes leftovers from that list.
 5. **One terminal view per live PTY, hidden when not selected.** Switching cards does not kill processes. Output keeps flowing into the hidden view so the CLI does not block on a full PTY buffer. The shell PTY is created the first time the user toggles to it, then kept.
-6. **Status stays coarse.** Waiting means the CLI is up and the first prompt has not been sent. Working means output is still arriving. About two seconds of quiet after work has started becomes Ready to check, and that posts the notification. Asking you is a bonus if a cheap check of the recent output is obvious. Do not block the MVP on parsing each CLI's question UI. A non-zero exit is still Ready to check.
-7. **Fonts.** The system UI font, San Francisco, for the chrome. JetBrains Mono, bundled with the app under its OFL license, for the terminal, as in `design/`. Menlo if it fails to load. SF Mono is out: GPUI loads only its regular weight. Light chrome, dark terminal. Warm mark for asking, green mark for ready. No drag handle, 280px column, at most three visible cards per project.
+6. **Status stays coarse.** Waiting means the CLI is up and the first prompt has not been sent. Working means the agent's own output is still arriving. About two seconds of quiet after work has started becomes Ready to check, and that posts the notification. The echo of a keystroke, and a redraw after focus, a click, a scroll, or a resize, is not the agent working: typing a draft without Enter does not start Working and does not make Close ask. Asking you is a bonus if a cheap check of the recent output is obvious. Do not block the MVP on parsing each CLI's question UI. A non-zero exit is still Ready to check.
+7. **Fonts.** The system UI font, San Francisco, for the chrome. JetBrains Mono, bundled with the app under its OFL license, for the terminal, as in `design/`. Menlo if it fails to load. SF Mono is out: GPUI loads only its regular weight. Light chrome, dark terminal. Warm mark for asking, green mark for ready. No drag handle, 540px column (280px until 2026-10-04), at most three visible cards per project.
 8. **Extra keyboard keys the PRD table does not list, because the app has to work without a mouse.** `a` adds a project. `n` opens the CLI picker. In the picker, `j` / `k`, Enter, and `1`–`2` choose, Escape cancels. In the close dialog, `d` discards, `p` pushes when that action is available, Escape cancels.
 
 ## CLIs in this build
@@ -188,11 +189,11 @@ Ignore this map while the terminal is focused, except `Ctrl+Q`. Also ignore it w
 
 ### Layout
 
-- Left column, fixed 280px. Every project. Under each, up to three cards. Further cards show as a count and stay reachable from the keyboard.
+- Left column, fixed 540px (was 280px; see the decisions at the top). Every project. Under each, up to three cards. Further cards show as a count and stay reachable from the keyboard.
 - A card shows the CLI name, the task name, and the status. The worktree path is only in the terminal header.
 - Right side: the selected agent's terminal, or empty if a project header is selected or there are no sessions. At most one terminal on screen.
 - Header controls: agent/shell toggle, Close.
-- Top of the column: one line of counts: agents, working, asking, ready.
+- Top of the column: a headline (agents across projects) and one chip per status: ready, working, waiting.
 - No kanban, no flat session list, no project tabs, no divider drag, no second terminal, no editor.
 
 ## Build order

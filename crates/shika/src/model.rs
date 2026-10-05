@@ -15,6 +15,14 @@ impl Status {
             Self::Ready => "Ready to check",
         }
     }
+    /// The short form used by the summary chips.
+    pub fn chip(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::Working => "working",
+            Self::Ready => "ready",
+        }
+    }
     pub fn rank(self) -> u8 {
         match self {
             Self::Ready => 0,
@@ -26,19 +34,78 @@ impl Status {
 /// Output this long after the user's last key, click, scroll, or resize is
 /// the agent's own work. Sooner, it is an echo or a redraw.
 pub const ECHO: Duration = Duration::from_secs(1);
+/// Quiet this long after the agent's own output, the card is Ready to check.
+pub const QUIET: Duration = Duration::from_secs(2);
+/// Whether `acted` is the agent's own work. Output sooner than [`ECHO`] after
+/// `input` is the terminal echoing a key or redrawing after focus, a click,
+/// a scroll, or a resize.
+pub fn is_agent_output(input: Option<Instant>, acted: Instant) -> bool {
+    input.is_none_or(|input| acted >= input + ECHO)
+}
 /// Whether a card turning Ready should notify. One notification per turn: a
 /// turn starts when the user types (`typed`), and `notified` is the `typed`
 /// that already notified. The agent must also have kept going on its own,
-/// with its last output (`acted`) at least [`ECHO`] after the user's last
-/// input of any kind, so typing a draft, focusing the terminal, or scrolling
-/// it never notifies.
+/// past [`ECHO`], so typing a draft, focusing the terminal, or scrolling it
+/// never notifies.
 pub fn notify_ready(
     typed: Option<Instant>,
     notified: Option<Instant>,
     input: Option<Instant>,
     acted: Instant,
 ) -> bool {
-    typed.is_some() && typed != notified && input.is_none_or(|input| acted >= input + ECHO)
+    typed.is_some() && typed != notified && is_agent_output(input, acted)
+}
+/// Status and the instant it last changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TurnClock {
+    pub status: Status,
+    pub since: Instant,
+}
+/// Move Working and Ready from the agent's own output.
+///
+/// `agent_output` is the newest PTY bytes that [`is_agent_output`] accepted.
+/// A draft's echo is not in there. While the echo window is still open the
+/// clock holds: a Ready card stays Ready, and a Working card does not finish
+/// its quiet timer, so a keystroke cannot hide output that is still arriving.
+/// Once the window closes, only `agent_output` can start Working or postpone
+/// Ready. `settled` is true when this call ends a turn at Ready, including a
+/// turn that started and finished before the clock was painted.
+pub fn advance_status(
+    mut clock: TurnClock,
+    input: Option<Instant>,
+    agent_output: Option<Instant>,
+    now: Instant,
+    exited: bool,
+) -> (TurnClock, bool) {
+    if clock.status == Status::Waiting {
+        return if exited {
+            (
+                TurnClock {
+                    status: Status::Ready,
+                    since: now,
+                },
+                false,
+            )
+        } else {
+            (clock, false)
+        };
+    }
+    let agent = agent_output.unwrap_or(clock.since);
+    let echo_open = input.is_some_and(|input| now < input + ECHO);
+    let mut worked = clock.status == Status::Working;
+    if clock.status == Status::Ready && !echo_open && agent > clock.since {
+        clock.status = Status::Working;
+        clock.since = agent;
+        worked = true;
+    }
+    if clock.status == Status::Working
+        && (exited || (!echo_open && now.duration_since(agent.max(clock.since)) >= QUIET))
+    {
+        clock.status = Status::Ready;
+        clock.since = now;
+    }
+    let settled = worked && clock.status == Status::Ready;
+    (clock, settled)
 }
 /// Looking for the title the agent CLI gives its own session, which then
 /// names the card and branch. From the first submitted line, it checks
@@ -214,6 +281,54 @@ pub fn card_title(title: &str) -> String {
         format!("{}…", title.chars().take(79).collect::<String>())
     }
 }
+/// `1 agent`, `2 agents`.
+pub fn plural(n: usize, word: &str) -> String {
+    if n == 1 {
+        format!("1 {word}")
+    } else {
+        format!("{n} {word}s")
+    }
+}
+/// The summary headline: every card, and the projects that have one.
+pub fn headline(agents: usize, projects: usize) -> String {
+    if agents == 0 {
+        "No agents running".into()
+    } else {
+        format!(
+            "{} across {}",
+            plural(agents, "agent"),
+            plural(projects, "project")
+        )
+    }
+}
+/// Time on a card: `42s`, `51m`, `1h 3m`.
+pub fn short_time(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else {
+        format!("{}h {}m", minutes / 60, minutes % 60)
+    }
+}
+/// What a ready task changed: `2 files +64 −3`, with a real minus sign.
+pub fn diff_stat_label(files: usize, insertions: usize, deletions: usize) -> String {
+    format!(
+        "{} +{insertions} \u{2212}{deletions}",
+        plural(files, "file")
+    )
+}
+/// A path with the home directory written as `~`.
+pub fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
 /// Keep the selected card inside the three-card window.
 pub fn visible_indices(len: usize, selected: Option<usize>) -> std::ops::Range<usize> {
     let start = selected
@@ -280,6 +395,80 @@ mod tests {
             Some(at(60)),
             at(63)
         ));
+    }
+    #[test]
+    fn a_draft_does_not_start_or_hold_working() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        // Ready since 7s, after the agent output at 5s. At 10s the user types
+        // and the terminal echoes. The card stays Ready through that window.
+        let ready = TurnClock {
+            status: Status::Ready,
+            since: at(7_000),
+        };
+        let (clock, settled) =
+            advance_status(ready, Some(at(10_000)), Some(at(5_000)), at(10_050), false);
+        assert_eq!(clock, ready);
+        assert!(!settled);
+        let (clock, settled) =
+            advance_status(ready, Some(at(10_000)), Some(at(5_000)), at(11_000), false);
+        assert_eq!(clock.status, Status::Ready);
+        assert!(!settled);
+        // Real output after the window starts Working, then two quiet seconds
+        // ends it.
+        let ready = TurnClock {
+            status: Status::Ready,
+            since: at(0),
+        };
+        let (clock, settled) =
+            advance_status(ready, Some(at(1_000)), Some(at(3_000)), at(3_200), false);
+        assert_eq!(clock.status, Status::Working);
+        assert_eq!(clock.since, at(3_000));
+        assert!(!settled);
+        let (clock, settled) =
+            advance_status(clock, Some(at(1_000)), Some(at(3_000)), at(5_000), false);
+        assert_eq!(clock.status, Status::Ready);
+        assert!(settled);
+        // Enter already set Working. Typing a draft holds that turn only
+        // while the echo window is open, then the old agent output can settle.
+        let working = TurnClock {
+            status: Status::Working,
+            since: at(0),
+        };
+        let (clock, settled) =
+            advance_status(working, Some(at(3_000)), Some(at(1_000)), at(3_400), false);
+        assert_eq!(clock.status, Status::Working);
+        assert!(!settled);
+        let (clock, settled) =
+            advance_status(working, Some(at(3_000)), Some(at(1_000)), at(4_000), false);
+        assert_eq!(clock.status, Status::Ready);
+        assert!(settled);
+        // Output that is still arriving after the draft keeps the card Working.
+        let (clock, _) =
+            advance_status(working, Some(at(3_000)), Some(at(4_200)), at(4_200), false);
+        assert_eq!(clock.status, Status::Working);
+    }
+    #[test]
+    fn summary_and_card_text() {
+        assert_eq!(headline(0, 0), "No agents running");
+        assert_eq!(headline(1, 1), "1 agent across 1 project");
+        assert_eq!(headline(6, 2), "6 agents across 2 projects");
+        assert_eq!(short_time(Duration::from_secs(42)), "42s");
+        assert_eq!(short_time(Duration::from_secs(51 * 60 + 59)), "51m");
+        assert_eq!(short_time(Duration::from_secs(63 * 60 + 5)), "1h 3m");
+        assert_eq!(diff_stat_label(2, 64, 3), "2 files +64 \u{2212}3");
+        assert_eq!(diff_stat_label(1, 0, 0), "1 file +0 \u{2212}0");
+        let home = std::path::Path::new("/Users/kai");
+        let path = std::path::Path::new("/Users/kai/code/shika");
+        assert_eq!(tilde(path, Some(home)), "~/code/shika");
+        assert_eq!(tilde(home, Some(home)), "~");
+        assert_eq!(tilde(std::path::Path::new("/opt/x"), Some(home)), "/opt/x");
+        assert_eq!(tilde(path, None), "/Users/kai/code/shika");
+        // A sibling that only shares the prefix text is not under home.
+        assert_eq!(
+            tilde(std::path::Path::new("/Users/kaiser"), Some(home)),
+            "/Users/kaiser"
+        );
     }
     #[test]
     fn navigation_never_exceeds_three() {
