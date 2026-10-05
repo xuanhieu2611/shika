@@ -2,11 +2,11 @@ mod appearance;
 mod model;
 mod notifications;
 
-use appearance::tint;
+use appearance::{Chrome, with_alpha};
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, ParentElement, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, WindowBounds, WindowOptions, div,
+    StatefulInteractiveElement, Styled, Subscription, Window, WindowBounds, WindowOptions, div,
     prelude::FluentBuilder, px, rgb, size,
 };
 use model::{PromptCapture, Status, TitleWatch, visible_indices};
@@ -92,6 +92,7 @@ impl Pane {
         core: Arc<Core>,
         capture: bool,
         opacity: f32,
+        palette: Palette,
         window: &mut Window,
         cx: &mut Context<Shika>,
     ) -> Self {
@@ -111,7 +112,7 @@ impl Pane {
             let mut view = TerminalView::new(
                 terminal.clone(),
                 TerminalConfig::default(),
-                Palette::shika(),
+                palette,
                 window,
                 cx,
             );
@@ -181,6 +182,11 @@ struct Shika {
     notifications: Notifications,
     clicks: std::sync::mpsc::Receiver<String>,
     appearance: Appearance,
+    /// Last read of macOS Reduce transparency. Glass stays off while this is set.
+    reduce_transparency: bool,
+    /// Keeps the light and dark listener alive for the life of the window.
+    #[allow(dead_code)]
+    appearance_watch: Subscription,
     /// Mouse is down on the title bar and has not moved yet. The drag starts
     /// on the first move, so a double-click can still zoom.
     title_drag: bool,
@@ -215,6 +221,15 @@ impl Shika {
         });
         let appearance = settings.appearance;
         let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
+        let reduce_transparency = appearance::reduce_transparency();
+        let entity = cx.entity().downgrade();
+        let appearance_watch = window.observe_window_appearance(move |window, cx| {
+            let dark = appearance::is_dark(window.appearance());
+            let _ = entity.update(cx, |this, cx| {
+                this.push_terminal_theme(dark, cx);
+                cx.notify();
+            });
+        });
         let this = Self {
             core: core.clone(),
             projects,
@@ -239,6 +254,8 @@ impl Shika {
             notifications,
             clicks,
             appearance,
+            reduce_transparency,
+            appearance_watch,
             title_drag: false,
             branch_prefix,
         };
@@ -427,8 +444,15 @@ impl Shika {
         let project = project.clone();
         self.overlay = None;
         self.busy = true;
-        let opacity = appearance::terminal_alpha(&self.appearance);
-        let pane = Pane::new(self.core.clone(), true, opacity, window, cx);
+        let opacity = self.terminal_opacity();
+        let pane = Pane::new(
+            self.core.clone(),
+            true,
+            opacity,
+            self.terminal_palette(window),
+            window,
+            cx,
+        );
         let terminal = pane.terminal.clone();
         let state = pane.state.clone();
         let index = self.cards.len();
@@ -543,8 +567,15 @@ impl Shika {
         let Some(session) = self.cards[index].session.clone() else {
             return;
         };
-        let opacity = appearance::terminal_alpha(&self.appearance);
-        let pane = Pane::new(self.core.clone(), false, opacity, window, cx);
+        let opacity = self.terminal_opacity();
+        let pane = Pane::new(
+            self.core.clone(),
+            false,
+            opacity,
+            self.terminal_palette(window),
+            window,
+            cx,
+        );
         let state = pane.state.clone();
         let terminal = pane.terminal.clone();
         self.cards[index].shell = Some(pane);
@@ -605,6 +636,13 @@ impl Shika {
         if now.duration_since(self.clock) >= Duration::from_secs(1) {
             self.clock = now;
             changed = !self.cards.is_empty();
+            let reduce = appearance::reduce_transparency();
+            if reduce != self.reduce_transparency {
+                self.reduce_transparency = reduce;
+                appearance::apply(&self.appearance, window);
+                self.push_terminal_theme(appearance::is_dark(window.appearance()), cx);
+                changed = true;
+            }
         }
         for warning in self.notifications.warnings() {
             self.message(warning);
@@ -1031,16 +1069,44 @@ impl Shika {
             return;
         }
         self.appearance = next;
+        self.reduce_transparency = appearance::reduce_transparency();
         appearance::apply(&next, window);
-        let opacity = appearance::terminal_alpha(&next);
-        for card in &self.cards {
-            for pane in std::iter::once(&card.agent).chain(card.shell.as_ref()) {
-                pane.view
-                    .update(cx, |view, cx| view.set_background_opacity(opacity, cx));
-            }
-        }
+        self.push_terminal_theme(appearance::is_dark(window.appearance()), cx);
         self.save_settings();
         cx.notify();
+    }
+    fn terminal_opacity(&self) -> f32 {
+        appearance::terminal_alpha_for(&self.appearance, self.reduce_transparency)
+    }
+    fn terminal_palette(&self, window: &Window) -> Palette {
+        if appearance::is_dark(window.appearance()) {
+            Palette::shika_dark()
+        } else {
+            Palette::shika()
+        }
+    }
+    fn chrome(&self, window: &Window) -> Chrome {
+        appearance::chrome_for(
+            &self.appearance,
+            appearance::is_dark(window.appearance()),
+            self.reduce_transparency,
+        )
+    }
+    fn push_terminal_theme(&mut self, dark: bool, cx: &mut Context<Self>) {
+        let opacity = self.terminal_opacity();
+        let palette = if dark {
+            Palette::shika_dark()
+        } else {
+            Palette::shika()
+        };
+        for card in &self.cards {
+            for pane in std::iter::once(&card.agent).chain(card.shell.as_ref()) {
+                pane.view.update(cx, |view, cx| {
+                    view.set_palette(palette, cx);
+                    view.set_background_opacity(opacity, cx);
+                });
+            }
+        }
     }
     fn save_settings(&mut self) {
         let settings = Settings {
@@ -1247,7 +1313,7 @@ const SETTING_ROWS: usize = 4;
 const PREFIX_ROW: usize = 3;
 impl Shika {
     /// The branch prefix row: a text field. Enter or a click starts typing.
-    fn prefix_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn prefix_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let (selected, edit) = match &self.overlay {
             Some(Overlay::Settings { row, edit }) => (
                 *row == PREFIX_ROW,
@@ -1266,17 +1332,21 @@ impl Shika {
             .items_center()
             .gap(px(2.))
             .rounded(px(6.))
-            .bg(rgb(0xFFFFFF))
+            .bg(chrome.raised)
             .border_1()
-            .border_color(rgb(if edit.is_some() { 0x2F332C } else { 0xCFD3C7 }))
+            .border_color(if edit.is_some() {
+                chrome.focus
+            } else {
+                chrome.field_line
+            })
             .font_family("JetBrains Mono")
             .cursor_text()
             .when(!empty, |d| d.child(text))
             .when(edit.is_some(), |d| {
-                d.child(div().w(px(1.)).h(px(14.)).bg(rgb(0x2F332C)))
+                d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
             })
             .when(empty && edit.is_none(), |d| {
-                d.child(div().text_color(rgb(0x9EA296)).child("none"))
+                d.child(div().text_color(chrome.faint).child("none"))
             })
             .on_click(cx.listener(|this, _, window, cx| {
                 if !matches!(
@@ -1293,7 +1363,7 @@ impl Shika {
         div()
             .p_2()
             .rounded(px(8.))
-            .when(selected, |d| d.bg(rgb(0xE8EBE2)))
+            .when(selected, |d| d.bg(chrome.row_selected))
             .flex()
             .items_center()
             .justify_between()
@@ -1307,6 +1377,7 @@ impl Shika {
         label: &'static str,
         value: u8,
         unit: &'static str,
+        chrome: &Chrome,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (selected, edit) = match &self.overlay {
@@ -1337,27 +1408,31 @@ impl Shika {
             .justify_end()
             .gap(px(2.))
             .rounded(px(6.))
-            .bg(rgb(0xFFFFFF))
+            .bg(chrome.raised)
             .border_1()
-            .border_color(rgb(if edit.is_some() { 0x2F332C } else { 0xCFD3C7 }))
+            .border_color(if edit.is_some() {
+                chrome.focus
+            } else {
+                chrome.field_line
+            })
             .font_family("JetBrains Mono")
             .cursor_text()
             .child(
                 div()
-                    .when(edit == Some(""), |d| d.text_color(rgb(0x9EA296)))
+                    .when(edit == Some(""), |d| d.text_color(chrome.faint))
                     .child(text),
             )
             .when(edit.is_some(), |d| {
-                d.child(div().w(px(1.)).h(px(14.)).bg(rgb(0x2F332C)))
+                d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
             })
-            .child(div().text_color(rgb(0x9EA296)).child(unit))
+            .child(div().text_color(chrome.faint).child(unit))
             .on_click(
                 cx.listener(move |this, _, window, cx| this.edit_setting(row, "", window, cx)),
             );
         div()
             .p_2()
             .rounded(px(8.))
-            .when(selected, |d| d.bg(rgb(0xE8EBE2)))
+            .when(selected, |d| d.bg(chrome.row_selected))
             .flex()
             .items_center()
             .justify_between()
@@ -1368,12 +1443,20 @@ impl Shika {
                     .items_center()
                     .gap_2()
                     .child(
-                        button(SharedString::from(format!("setting-{row}-less")), "-")
-                            .on_click(step(-1)),
+                        button(
+                            SharedString::from(format!("setting-{row}-less")),
+                            "-",
+                            chrome.sunken,
+                        )
+                        .on_click(step(-1)),
                     )
                     .child(field)
                     .child(
-                        button(SharedString::from(format!("setting-{row}-more")), "+")
+                        button(
+                            SharedString::from(format!("setting-{row}-more")),
+                            "+",
+                            chrome.sunken,
+                        )
                             .on_click(step(1)),
                     ),
             )
@@ -1382,7 +1465,12 @@ impl Shika {
     /// The strip above the sidebar and the agent header. The system title is
     /// hidden so this bar can hold the settings icon. Its fill uses the same
     /// opacity as the sidebar, so the window blur shows through it.
-    fn title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn title_bar(
+        &self,
+        chrome: &Chrome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let inset = if window.is_fullscreen() || window.is_simple_fullscreen() {
             px(16.)
         } else {
@@ -1394,9 +1482,9 @@ impl Shika {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .bg(tint(0xF1F2EC, appearance::sidebar_alpha(&self.appearance)))
+            .bg(chrome.column)
             .border_b_1()
-            .border_color(rgb(0xDADDD3))
+            .border_color(chrome.hairline)
             .child(
                 div()
                     .id("titlebar-drag")
@@ -1447,14 +1535,17 @@ impl Shika {
                     .justify_center()
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(0xE3E6DD)))
+                    .hover({
+                        let hover = chrome.hover;
+                        move |style| style.bg(hover)
+                    })
                     .tooltip(|_, cx| cx.new(|_| SettingsHint).into())
                     .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
                     .child(
                         gpui::svg()
                             .data(SETTINGS_ICON)
                             .size(px(15.))
-                            .text_color(rgb(0x3C4038)),
+                            .text_color(chrome.icon),
                     ),
             )
     }
@@ -1491,19 +1582,21 @@ impl Render for SettingsHint {
 fn button(
     id: impl Into<gpui::ElementId>,
     text: impl Into<SharedString>,
+    bg: gpui::Rgba,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .px_3()
         .py_2()
         .rounded(px(8.))
-        .bg(rgb(0xE3E6DD))
+        .bg(bg)
         .cursor_pointer()
         .child(text.into())
 }
 impl Render for Shika {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let cards_focused = self.focus.is_focused(window);
+        let chrome = self.chrome(window);
         let icon = Arc::new(gpui::Image::from_bytes(
             gpui::ImageFormat::Png,
             include_bytes!("../../../assets/macos/shika-app-icon-256.png").to_vec(),
@@ -1539,7 +1632,7 @@ impl Render for Shika {
                     .px_2()
                     .py_2()
                     .rounded(px(6.))
-                    .when(selected, |d| d.bg(rgb(0xE8EBE2)))
+                    .when(selected, |d| d.bg(chrome.row_selected))
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if this.busy || this.overlay.is_some() {
@@ -1561,7 +1654,7 @@ impl Render for Shika {
                                     .id(SharedString::from(format!("forget-{id}")))
                                     .text_size(px(10.))
                                     .font_weight(gpui::FontWeight::NORMAL)
-                                    .text_color(rgb(0x9EA296))
+                                    .text_color(chrome.faint)
                                     .child("Remove")
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         if !this.busy && this.overlay.is_none() {
@@ -1577,7 +1670,7 @@ impl Render for Shika {
                     .child(
                         div()
                             .text_size(px(10.5))
-                            .text_color(rgb(0x9EA296))
+                            .text_color(chrome.faint)
                             .truncate()
                             .child(project.path.display().to_string()),
                     ),
@@ -1593,9 +1686,9 @@ impl Render for Shika {
                     div()
                         .p_3()
                         .border_1()
-                        .border_color(rgb(0xCFD3C7))
+                        .border_color(chrome.dashed)
                         .rounded(px(10.))
-                        .text_color(rgb(0x9EA296))
+                        .text_color(chrome.faint)
                         .child("No agents. Press n to start."),
                 );
             }
@@ -1604,29 +1697,42 @@ impl Render for Shika {
                 let card = &self.cards[i];
                 let selected = self.selected_card() == Some(i);
                 let color = match card.status {
-                    Status::Ready => 0x399A62,
-                    Status::Working => 0x5A8AB3,
-                    Status::Waiting => 0xA3A79B,
+                    Status::Ready => chrome.ready_dot,
+                    Status::Working => chrome.working_dot,
+                    Status::Waiting => chrome.waiting_dot,
+                };
+                let card_bg = if selected {
+                    chrome.card_selected
+                } else if card.status == Status::Ready {
+                    chrome.card_ready
+                } else {
+                    chrome.card_rest
                 };
                 group = group.child(
                     div()
                         .id(SharedString::from(format!("card-{i}")))
+                        .relative()
                         .p_3()
                         .overflow_hidden()
                         .rounded(px(10.))
-                        .bg(rgb(if selected {
-                            0xFFFFFF
-                        } else if card.status == Status::Ready {
-                            0xF1F8F0
-                        } else {
-                            0xF8F9F5
-                        }))
+                        .bg(card_bg)
                         .border_1()
-                        .border_color(rgb(if selected && cards_focused {
-                            0x2F332C
+                        .border_color(if selected && cards_focused {
+                            chrome.focus
                         } else {
-                            0xDADDD3
-                        }))
+                            chrome.hairline
+                        })
+                        .when(chrome.glass && !selected, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .right_0()
+                                    .h(px(1.))
+                                    .bg(chrome.card_highlight),
+                            )
+                        })
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if this.busy || this.overlay.is_some() {
@@ -1641,7 +1747,7 @@ impl Render for Shika {
                                 .flex()
                                 .gap_2()
                                 .items_start()
-                                .child(div().mt_1().size(px(7.)).rounded_full().bg(rgb(color)))
+                                .child(div().mt_1().size(px(7.)).rounded_full().bg(color))
                                 .child(
                                     div()
                                         .flex_1()
@@ -1654,7 +1760,7 @@ impl Render for Shika {
                                 .child(
                                     div()
                                         .text_size(px(10.))
-                                        .text_color(rgb(0x9EA296))
+                                        .text_color(chrome.faint)
                                         .font_family("JetBrains Mono")
                                         .child(format!("{}s", card.since.elapsed().as_secs())),
                                 ),
@@ -1663,7 +1769,7 @@ impl Render for Shika {
                             div()
                                 .mt_2()
                                 .text_size(px(10.5))
-                                .text_color(rgb(0x6C7166))
+                                .text_color(chrome.meta)
                                 .flex()
                                 .gap_1()
                                 .min_w_0()
@@ -1688,7 +1794,7 @@ impl Render for Shika {
                                 div()
                                     .mt_2()
                                     .text_size(px(10.))
-                                    .text_color(rgb(0x9EA296))
+                                    .text_color(chrome.faint)
                                     .child("enter terminal   g shell   c close"),
                             )
                         }),
@@ -1699,7 +1805,7 @@ impl Render for Shika {
                     div()
                         .px_2()
                         .text_size(px(11.))
-                        .text_color(rgb(0x6C7166))
+                        .text_color(chrome.meta)
                         .child(format!("+ {} more · j to reach", indices.len() - visible)),
                 );
             }
@@ -1714,9 +1820,9 @@ impl Render for Shika {
             .h_full()
             .flex()
             .flex_col()
-            .bg(tint(0xF1F2EC, appearance::sidebar_alpha(&self.appearance)))
+            .bg(chrome.column)
             .border_r_1()
-            .border_color(rgb(0xDADDD3))
+            .border_color(chrome.hairline)
             .child(
                 div()
                     .h(px(48.))
@@ -1725,10 +1831,10 @@ impl Render for Shika {
                     .items_center()
                     .justify_between()
                     .border_b_1()
-                    .border_color(rgb(0xDADDD3))
+                    .border_color(chrome.hairline)
                     .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Shika"))
                     .child(
-                        button("new", "New agent  n")
+                        button("new", "New agent  n", chrome.sunken)
                             .on_click(cx.listener(|this, _, window, cx| this.picker(window, cx))),
                     ),
             )
@@ -1737,7 +1843,7 @@ impl Render for Shika {
                     .px_4()
                     .py_4()
                     .text_size(px(9.))
-                    .text_color(rgb(0x6C7166))
+                    .text_color(chrome.meta)
                     .child(format!(
                         "{} agents · {working} working · 0 asking · {ready} ready",
                         self.cards.len()
@@ -1748,12 +1854,12 @@ impl Render for Shika {
                 div()
                     .p_3()
                     .border_t_1()
-                    .border_color(rgb(0xDADDD3))
+                    .border_color(chrome.hairline)
                     .flex()
                     .flex_col()
                     .gap_2()
                     .child(
-                        button("add", "Add project  a")
+                        button("add", "Add project  a", chrome.sunken)
                             .on_click(cx.listener(|this, _, _, cx| this.add_project(cx))),
                     )
                     .when(!self.leftovers.is_empty(), |d| {
@@ -1761,6 +1867,7 @@ impl Render for Shika {
                             button(
                                 "leftovers",
                                 format!("Leftover worktrees ({})", self.leftovers.len()),
+                                chrome.sunken,
                             )
                             .on_click(cx.listener(
                                 |this, _, window, cx| {
@@ -1774,20 +1881,19 @@ impl Render for Shika {
                     .child(
                         div()
                             .text_size(px(10.5))
-                            .text_color(rgb(0x6C7166))
+                            .text_color(chrome.meta)
                             .child("j / k move   enter terminal   ctrl+q cards"),
                     ),
             );
         // Each child paints its own background, so a translucent terminal is
         // not stacked over a second translucent fill.
-        let terminal_alpha = appearance::terminal_alpha(&self.appearance);
         let mut right = div()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
-            .text_color(rgb(0xD5D9CF));
+            .text_color(chrome.term_fg);
         if let Some(i) = self.selected_card() {
             let card = &self.cards[i];
             let shell = card.show_shell;
@@ -1804,16 +1910,20 @@ impl Render for Shika {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .bg(tint(0x181A17, terminal_alpha))
+                    .bg(with_alpha(chrome.term_header, chrome.term_header_alpha))
                     .border_b_1()
-                    .border_color(rgb(0x262924))
+                    .border_color(chrome.term_line)
                     .child(
                         div()
                             .id("agent")
                             .px_3()
                             .py_1()
                             .rounded(px(6.))
-                            .bg(rgb(if shell { 0x20231F } else { 0x353932 }))
+                            .bg(if shell {
+                                chrome.term_seg
+                            } else {
+                                chrome.term_seg_active
+                            })
                             .cursor_pointer()
                             .child("Agent")
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -1832,7 +1942,11 @@ impl Render for Shika {
                             .px_3()
                             .py_1()
                             .rounded(px(6.))
-                            .bg(rgb(if shell { 0x353932 } else { 0x20231F }))
+                            .bg(if shell {
+                                chrome.term_seg_active
+                            } else {
+                                chrome.term_seg
+                            })
                             .cursor_pointer()
                             .child("Shell")
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -1852,7 +1966,7 @@ impl Render for Shika {
                             .truncate()
                             .font_family("JetBrains Mono")
                             .text_size(px(10.5))
-                            .text_color(rgb(0x757A6E))
+                            .text_color(chrome.term_faint)
                             .child(path),
                     )
                     .child(
@@ -1860,7 +1974,7 @@ impl Render for Shika {
                             .id("close")
                             .px_2()
                             .cursor_pointer()
-                            .text_color(rgb(0x878C80))
+                            .text_color(chrome.term_dim)
                             .child(if cards_focused {
                                 "Close  c"
                             } else {
@@ -1884,12 +1998,12 @@ impl Render for Shika {
                     .items_center()
                     .justify_center()
                     .gap_3()
-                    .bg(tint(0x131512, terminal_alpha))
-                    .text_color(rgb(0x757A6E))
+                    .bg(with_alpha(chrome.term_empty, chrome.term_empty_alpha))
+                    .text_color(chrome.term_faint)
                     .child(
                         div()
                             .text_size(px(20.))
-                            .text_color(rgb(0xC5CABE))
+                            .text_color(chrome.term_fg)
                             .child("Shika"),
                     )
                     .child(gpui::img(icon).size(px(64.)).rounded(px(14.)))
@@ -1909,8 +2023,8 @@ impl Render for Shika {
             .flex_col()
             .font_family(".AppleSystemUIFont")
             .text_size(px(12.))
-            .text_color(rgb(0x262824))
-            .child(self.title_bar(window, cx))
+            .text_color(chrome.ink)
+            .child(self.title_bar(&chrome, window, cx))
             .child(
                 div()
                     .flex()
@@ -1929,8 +2043,8 @@ impl Render for Shika {
                     .right(px(20.))
                     .p_3()
                     .rounded(px(8.))
-                    .bg(rgb(0x252823))
-                    .text_color(rgb(0xE9ECE3))
+                    .bg(chrome.toast_bg)
+                    .text_color(chrome.toast_fg)
                     .child(text.clone()),
             );
         }
@@ -1942,7 +2056,7 @@ impl Render for Shika {
                 .w(px(460.))
                 .p_5()
                 .rounded(px(12.))
-                .bg(rgb(0xFAFAF7))
+                .bg(chrome.overlay)
                 .flex()
                 .flex_col()
                 .gap_3();
@@ -1967,12 +2081,16 @@ impl Render for Shika {
                                     .id(SharedString::from(format!("preset-{i}")))
                                     .p_3()
                                     .rounded(px(8.))
-                                    .bg(rgb(if i == *index { 0xE8EBE2 } else { 0xFAFAF7 }))
-                                    .text_color(rgb(if preset.found() {
-                                        0x262824
+                                    .bg(if i == *index {
+                                        chrome.row_selected
                                     } else {
-                                        0x9EA296
-                                    }))
+                                        chrome.overlay
+                                    })
+                                    .text_color(if preset.found() {
+                                        chrome.ink
+                                    } else {
+                                        chrome.faint
+                                    })
                                     .cursor_pointer()
                                     .child(format!(
                                         "{}  {}{}",
@@ -2019,12 +2137,12 @@ impl Render for Shika {
                         "Discard stops the session and deletes the worktree and local branch.",
                     );
                     let i = *index;
-                    panel = panel.child(button("discard", "Discard changes  d").on_click(
+                    panel = panel.child(button("discard", "Discard changes  d", chrome.sunken).on_click(
                         cx.listener(move |this, _, window, cx| this.finish_close(i, 1, window, cx)),
                     ));
                     if state.can_push() {
                         panel =
-                            panel.child(button("push", "Push changes  p").on_click(cx.listener(
+                            panel.child(button("push", "Push changes  p", chrome.sunken).on_click(cx.listener(
                                 move |this, _, window, cx| this.finish_close(i, 2, window, cx),
                             )));
                     }
@@ -2044,7 +2162,7 @@ impl Render for Shika {
                             div()
                                 .p_2()
                                 .rounded(px(8.))
-                                .when(i == self.leftover_selected, |d| d.bg(rgb(0xE8EBE2)))
+                                .when(i == self.leftover_selected, |d| d.bg(chrome.row_selected))
                                 .flex()
                                 .flex_col()
                                 .gap_1()
@@ -2057,13 +2175,14 @@ impl Render for Shika {
                                 .child(
                                     div()
                                         .text_size(px(10.5))
-                                        .text_color(rgb(0x6C7166))
+                                        .text_color(chrome.meta)
                                         .child(entry.path.display().to_string()),
                                 )
                                 .child(
                                     button(
                                         SharedString::from(format!("remove-{i}")),
                                         "Remove worktree",
+                                        chrome.sunken,
                                     )
                                     .on_click(cx.listener(
                                         move |this, _, _, cx| {
@@ -2077,7 +2196,7 @@ impl Render for Shika {
                 }
                 Overlay::RemoveProject(id) => {
                     let id = id.clone();
-                    panel = panel.child(div().text_size(px(16.)).child("Remove project?" )).child("Stops its sessions and forgets this project. Worktrees remain on disk in the leftovers list.").child(button("remove-project", "Remove project  r").on_click(cx.listener(move |this, _, _, cx| this.remove_project(id.clone(), cx))));
+                    panel = panel.child(div().text_size(px(16.)).child("Remove project?" )).child("Stops its sessions and forgets this project. Worktrees remain on disk in the leftovers list.").child(button("remove-project", "Remove project  r", chrome.sunken).on_click(cx.listener(move |this, _, _, cx| this.remove_project(id.clone(), cx))));
                 }
                 Overlay::RemoveLeftover(i) => {
                     let i = *i;
@@ -2085,7 +2204,7 @@ impl Render for Shika {
                         .child(div().text_size(px(16.)).child("Remove leftover worktree?"))
                         .child(self.leftovers[i].path.display().to_string())
                         .child("This deletes any uncommitted work and the local branch.")
-                        .child(button("remove-confirm", "Discard worktree  d").on_click(
+                        .child(button("remove-confirm", "Discard worktree  d", chrome.sunken).on_click(
                             cx.listener(move |this, _, _, cx| this.remove_leftover(i, cx)),
                         ));
                 }
@@ -2093,7 +2212,9 @@ impl Render for Shika {
                     let a = &self.appearance;
                     let both = a.translucency == Translucency::SidebarAndTerminal;
                     let choice = |id: &'static str, text: &'static str, on: bool| {
-                        button(id, text).when(on, |d| d.bg(rgb(0x2F332C)).text_color(rgb(0xF2F5EC)))
+                        button(id, text, chrome.sunken).when(on, |d| {
+                            d.bg(chrome.primary_bg).text_color(chrome.primary_fg)
+                        })
                     };
                     panel = panel
                         .child(
@@ -2102,13 +2223,13 @@ impl Render for Shika {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child("Settings"),
                         )
-                        .child(self.setting_row(0, "Background opacity", a.opacity, "%", cx))
-                        .child(self.setting_row(1, "Background blur", a.blur, "", cx))
+                        .child(self.setting_row(0, "Background opacity", a.opacity, "%", &chrome, cx))
+                        .child(self.setting_row(1, "Background blur", a.blur, "", &chrome, cx))
                         .child(
                             div()
                                 .p_2()
                                 .rounded(px(8.))
-                                .when(*row == 2, |d| d.bg(rgb(0xE8EBE2)))
+                                .when(*row == 2, |d| d.bg(chrome.row_selected))
                                 .flex()
                                 .items_center()
                                 .justify_between()
@@ -2137,11 +2258,11 @@ impl Render for Shika {
                                         ),
                                 ),
                         )
-                        .child(self.prefix_row(cx))
+                        .child(self.prefix_row(&chrome, cx))
                         .child(
                             div()
                                 .text_size(px(10.5))
-                                .text_color(rgb(0x6C7166))
+                                .text_color(chrome.meta)
                                 .child(
                                     "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%. The prefix starts each new branch name, like hieu/.",
                                 ),
@@ -2167,6 +2288,7 @@ impl Render for Shika {
                     } else {
                         "Cancel  esc"
                     },
+                    chrome.sunken,
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     if !this.busy {
@@ -2180,7 +2302,7 @@ impl Render for Shika {
                     .occlude()
                     .inset_0()
                     // Settings leaves the window undimmed, so it is the preview.
-                    .when(!settings, |d| d.bg(gpui::rgba(0x10120F57)))
+                    .when(!settings, |d| d.bg(chrome.scrim))
                     .flex()
                     .items_center()
                     .justify_center()
