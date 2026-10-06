@@ -66,7 +66,7 @@ The app has to be usable without the mouse. Focus starts on the cards.
 
 | Key | Action |
 | --- | --- |
-| `j` / `k` or arrows | Move between project headers and every card, including hidden cards |
+| `j` / `k` or arrows | Move between every card, including hidden cards. Project headers are skipped |
 | `a` | Add a project with the folder picker |
 | `n` | New agent on the selected card's project. If nothing is selected, the first project |
 | `Enter` | Focus the terminal |

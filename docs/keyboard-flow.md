@@ -9,7 +9,7 @@ Start here for keyboard-related contributions. [PLAN.md](../PLAN.md#keyboard-and
 Previously, working in a terminal meant returning to the cards for most app actions:
 
 - Switch to shell: `Ctrl+Q`, `g`, `Enter`.
-- Switch agents: `Ctrl+Q`, `j`/`k`, `Enter`, potentially passing project headers.
+- Switch agents: `Ctrl+Q`, `j`/`k`, `Enter`. `j`/`k` moves from card to card and skips project headers.
 - Create another agent: `Ctrl+Q`, `n`, choose a CLI.
 
 The card-navigation model is still available. A small native Command shortcut layer now makes these transitions directly:
@@ -37,7 +37,7 @@ Other improvements:
 
 ## What did not change
 
-- `j`/`k` and arrows navigate headers and cards while the cards are focused.
+- `j`/`k` and arrows navigate cards while the cards are focused, skipping project headers. An empty project is not a stop.
 - `Enter` enters the selected task's currently shown terminal.
 - `Ctrl+Q` returns from the terminal to the cards.
 - `g` previews/toggles agent and shell without moving card focus. This is intentionally different from `Cmd+Enter`.
@@ -82,7 +82,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 
 ### Agent navigation
 
-`rows()` includes project headers and every card, not just the three currently visible cards per project. `adjacent_agent()` walks that order in the requested direction until it finds a card. `move_agent()` guards overlay/busy state, records whether cards had focus, selects the result, and focuses its terminal only if the user was already in a terminal.
+`rows()` includes project headers and every card, not just the three currently visible cards per project. `adjacent_agent()` walks that order in the requested direction until it finds a card. `move_selection()` uses it for `j`/`k` and the arrows, so those keys never land on a header. `move_agent()` uses the same walk for Cmd+] / Cmd+[, guards overlay/busy state, records whether cards had focus, selects the result, and focuses its terminal only if the user was already in a terminal.
 
 The selected task's `active_tab` determines which terminal receives focus (zero is the pinned agent; shell indices start at one). Do not force every destination to the agent view: returning to a task should preserve where the user was working. `visible_indices()` reveals collapsed cards around the selection without changing the three-card cap.
 
