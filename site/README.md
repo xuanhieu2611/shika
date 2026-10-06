@@ -26,4 +26,22 @@ Select a card, press Enter, and use `+` to add a shell. Try `git diff`, `git add
 
 ## Deployment
 
-The site's deployment configuration serves `site/` at https://useshika.com. The canonical, Open Graph, and Twitter URLs in `index.html` use that domain. Change them if it moves. Pushing or deploying is separate from editing this directory.
+The root `wrangler.jsonc` configures the Cloudflare Worker `shika` to serve `site/`, with an empty `previews` block required for PR previews. There is no build step. The existing Cloudflare custom domains serve production at https://useshika.com. The canonical, Open Graph, and Twitter URLs in `index.html` use that domain. Change them if it moves.
+
+Cloudflare Workers Builds settings (Worker > Settings > Build):
+
+- Root directory: repository root.
+- Build command: empty.
+- Production branch: `main`.
+- Deploy command: `npx wrangler@4.147.0 deploy`.
+- Preview command: `npx wrangler@4.147.0 preview`.
+- Keep non-production branch builds enabled for PR previews.
+- Build watch paths: include `site/*` and `wrangler.jsonc`; remove the default `*` include. Leave excludes empty. This skips desktop-only changes, including those in `crates/`.
+
+From the repository root, validate without uploading:
+
+```sh
+npx wrangler@4.147.0 deploy --dry-run
+```
+
+After `npx wrangler@4.147.0 login`, `npx wrangler@4.147.0 preview` creates a branch preview; `npx wrangler@4.147.0 deploy` updates production. Neither is needed just to edit the site. Wrangler OAuth supports deployment but does not grant Workers Builds log/settings access; those require the dashboard or a separately scoped Workers CI API token. Older branches without `wrangler.jsonc` must incorporate it before their previews can succeed.
