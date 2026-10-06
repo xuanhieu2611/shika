@@ -933,17 +933,18 @@ impl Core {
         if head.as_ref() == Some(&session.branch) {
             return Ok(session.clone());
         }
-        if let Some(branch) = head
-            && worktree::was_renamed(&git, path, &session.worktree, &session.branch, &branch)?
+        if let Some(branch) = head.as_ref()
+            && worktree::was_renamed(&git, path, &session.worktree, &session.branch, branch)?
         {
-            self.journal.rename_branch(&session.worktree, &branch)?;
+            self.journal.rename_branch(&session.worktree, branch)?;
             return self
                 .sessions
-                .rename(&session.id, branch, session.title.clone());
+                .rename(&session.id, branch.clone(), session.title.clone());
         }
-        Err(Error::GitStatus(Some(
-            "The worktree branch changed. Return to the task branch before closing.".into(),
-        )))
+        Err(Error::TaskBranchChanged {
+            expected: session.branch.clone(),
+            current: head.unwrap_or_else(|| "detached HEAD".into()),
+        })
     }
 
     fn forget_session(&self, session: &Session) -> Result<()> {
@@ -2242,15 +2243,15 @@ mod tests {
             }
             assert!(matches!(
                 core.session_refresh_branch(&session.id),
-                Err(Error::GitStatus(_))
+                Err(Error::TaskBranchChanged { .. })
             ));
             assert!(matches!(
                 core.session_close(&session.id, false),
-                Err(Error::GitStatus(_))
+                Err(Error::TaskBranchChanged { .. })
             ));
             assert!(matches!(
                 core.session_discard(&session.id),
-                Err(Error::GitStatus(_))
+                Err(Error::TaskBranchChanged { .. })
             ));
             assert!(session.worktree.exists());
             assert_eq!(core.session(&session.id).unwrap().branch, session.branch);
@@ -2270,7 +2271,7 @@ mod tests {
         git(&repo, &["branch", "-D", "renamed"]);
         assert!(matches!(
             core.session_close(&session.id, false),
-            Err(Error::GitStatus(_))
+            Err(Error::TaskBranchChanged { .. })
         ));
         assert!(session.worktree.exists());
         assert_eq!(core.session(&session.id).unwrap().branch, session.branch);
@@ -2295,10 +2296,45 @@ mod tests {
             }
             assert!(matches!(
                 core.session_close(&session.id, false),
-                Err(Error::GitStatus(_))
+                Err(Error::TaskBranchChanged { .. })
             ));
             assert!(session.worktree.exists());
         }
+    }
+
+    #[test]
+    fn switching_to_a_pr_branch_after_a_rename_can_recover_before_close() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let session = create_fake_session(&core, &project.id);
+        git(&session.worktree, &["branch", "-m", "conflict-resolver"]);
+        let session = core.session_refresh_branch(&session.id).unwrap();
+        git(
+            &session.worktree,
+            &["checkout", "-b", "existing-pr", "main"],
+        );
+        let expected = Error::TaskBranchChanged {
+            expected: "conflict-resolver".into(),
+            current: "existing-pr".into(),
+        };
+        assert_eq!(
+            core.session_git_state(&session.id, false),
+            Err(expected.clone())
+        );
+        assert_eq!(
+            core.session_close(&session.id, false),
+            Err(expected.clone())
+        );
+        assert_eq!(core.session_discard(&session.id), Err(expected.clone()));
+        assert_eq!(core.session_push_and_close(&session.id), Err(expected));
+        assert!(session.worktree.exists());
+        assert!(branch_exists(&repo, "conflict-resolver"));
+        git(&session.worktree, &["switch", "conflict-resolver"]);
+        core.session_close(&session.id, false).unwrap();
+        assert!(!session.worktree.exists());
+        assert!(branch_exists(&repo, "existing-pr"));
     }
 
     #[test]
@@ -2318,11 +2354,11 @@ mod tests {
         );
         assert!(matches!(
             core.session_close(&session.id, false),
-            Err(Error::GitStatus(_))
+            Err(Error::TaskBranchChanged { .. })
         ));
         assert!(matches!(
             core.session_push_and_close(&session.id),
-            Err(Error::GitStatus(_))
+            Err(Error::TaskBranchChanged { .. })
         ));
         assert!(session.worktree.exists());
         assert!(
