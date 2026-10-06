@@ -37,6 +37,10 @@ gpui::actions!(
         OpenSettings,
         NewAgent,
         SwitchTerminal,
+        NewTerminal,
+        CloseTerminal,
+        NextTerminal,
+        PreviousTerminal,
         NextAgent,
         PreviousAgent
     ]
@@ -154,6 +158,7 @@ fn bind_host(core: &Core, state: &Mutex<HostState>, pty: PtyId) {
     }
 }
 struct Pane {
+    shell_number: usize,
     view: Entity<TerminalView>,
     terminal: Terminal,
     state: Arc<Mutex<HostState>>,
@@ -195,6 +200,7 @@ impl Pane {
             view
         });
         Self {
+            shell_number: 0,
             view,
             terminal,
             state,
@@ -209,8 +215,11 @@ struct Card {
     status: Status,
     since: Instant,
     agent: Pane,
-    shell: Option<Pane>,
-    show_shell: bool,
+    shells: Vec<Pane>,
+    /// Zero is the pinned agent tab; shells use their index plus one.
+    active_tab: usize,
+    shell_serial: usize,
+    tab_scroll: gpui::ScrollHandle,
     submitted: u64,
     /// The `last_typed` whose turn already notified.
     notified: Option<Instant>,
@@ -225,6 +234,14 @@ struct Card {
     launch_control: Option<PreparationControl>,
     launch_error: Option<String>,
     stage: String,
+}
+impl Card {
+    fn active_pane(&self) -> &Pane {
+        self.active_tab
+            .checked_sub(1)
+            .and_then(|index| self.shells.get(index))
+            .unwrap_or(&self.agent)
+    }
 }
 impl Drop for Card {
     fn drop(&mut self) {
@@ -513,11 +530,8 @@ impl Shika {
         }
         if let Some(i) = self.selected_card() {
             let c = &self.cards[i];
-            let pane = if c.show_shell {
-                c.shell.as_ref().unwrap_or(&c.agent)
-            } else {
-                &c.agent
-            };
+            c.tab_scroll.scroll_to_item(c.active_tab);
+            let pane = c.active_pane();
             window.focus(&pane.view.focus_handle(cx), cx);
             cx.notify();
         }
@@ -807,8 +821,10 @@ impl Shika {
             status: Status::Waiting,
             since: Instant::now(),
             agent: pane,
-            shell: None,
-            show_shell: false,
+            shells: Vec::new(),
+            active_tab: 0,
+            shell_serial: 0,
+            tab_scroll: gpui::ScrollHandle::new(),
             submitted: 0,
             notified: None,
             creating: true,
@@ -971,30 +987,45 @@ impl Shika {
         let Some(index) = self.selected_card() else {
             return;
         };
-        if self.cards[index].creating || self.busy {
+        if self.cards[index].creating || self.busy || self.overlay.is_some() {
             return;
         }
-        if self.cards[index].show_shell {
-            self.cards[index].show_shell = false;
+        if self.cards[index].active_tab != 0 {
+            self.cards[index].active_tab = 0;
+            self.cards[index].tab_scroll.scroll_to_item(0);
             if focus {
                 self.focus_terminal(window, cx);
             }
             cx.notify();
             return;
         }
-        self.cards[index].show_shell = true;
-        if self.cards[index].shell.is_some() {
+        if !self.cards[index].shells.is_empty() {
+            self.cards[index].active_tab = 1;
+            self.cards[index].tab_scroll.scroll_to_item(1);
             if focus {
                 self.focus_terminal(window, cx);
             }
             cx.notify();
+            return;
+        }
+        self.new_shell(focus, window, cx);
+    }
+
+    fn new_shell(&mut self, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let Some(index) = self.selected_card() else {
+            return;
+        };
+        if self.cards[index].creating {
             return;
         }
         let Some(session) = self.cards[index].session.clone() else {
             return;
         };
         let opacity = self.terminal_opacity();
-        let pane = Pane::new(
+        let mut pane = Pane::new(
             self.core.clone(),
             false,
             opacity,
@@ -1005,7 +1036,12 @@ impl Shika {
         );
         let state = pane.state.clone();
         let terminal = pane.terminal.clone();
-        self.cards[index].shell = Some(pane);
+        self.cards[index].shell_serial += 1;
+        pane.shell_number = self.cards[index].shell_serial;
+        self.cards[index].shells.push(pane);
+        let tab = self.cards[index].shells.len();
+        self.cards[index].active_tab = tab;
+        self.cards[index].tab_scroll.scroll_to_item(tab);
         if focus {
             // Focus the new view now. Its host queues typeahead until the
             // PTY is bound, and startup must not steal focus back later.
@@ -1043,16 +1079,20 @@ impl Shika {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok(opened) => {
-                        bind_host(&this.core, &state, opened.pty);
+                    Ok(pty) => {
+                        bind_host(&this.core, &state, pty);
                     }
                     Err(e) => {
-                        let shell_focused = this.cards[index]
-                            .shell
-                            .as_ref()
-                            .is_some_and(|pane| pane.view.focus_handle(cx).is_focused(window));
-                        this.cards[index].shell = None;
-                        this.cards[index].show_shell = false;
+                        let shell_focused = this.cards[index].shells[tab - 1]
+                            .view
+                            .focus_handle(cx)
+                            .is_focused(window);
+                        this.cards[index].shells.remove(tab - 1);
+                        this.cards[index].active_tab = model::tab_after_close(
+                            this.cards[index].active_tab,
+                            tab,
+                            this.cards[index].shells.len(),
+                        );
                         if shell_focused {
                             this.focus_terminal(window, cx);
                         }
@@ -1064,6 +1104,64 @@ impl Shika {
         })
         .detach();
     }
+    fn select_tab(&mut self, tab: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let Some(index) = self.selected_card() else {
+            return;
+        };
+        if tab > self.cards[index].shells.len() {
+            return;
+        }
+        self.cards[index].active_tab = tab;
+        self.focus_terminal(window, cx);
+    }
+
+    fn cycle_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.selected_card() else {
+            return;
+        };
+        let card = &self.cards[index];
+        let tab = model::adjacent_tab(card.active_tab, card.shells.len(), forward);
+        self.select_tab(tab, window, cx);
+    }
+
+    fn close_tab(&mut self, tab: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() || tab == 0 {
+            return;
+        }
+        let Some(index) = self.selected_card() else {
+            return;
+        };
+        let card = &self.cards[index];
+        let Some(pane) = card.shells.get(tab - 1) else {
+            return;
+        };
+        let Some(session) = card.session.as_ref() else {
+            return;
+        };
+        let Some(pty) = lock(&pane.state).pty else {
+            return;
+        };
+        let id = session.id.clone();
+        let focused = pane.view.focus_handle(cx).is_focused(window);
+        let card = &mut self.cards[index];
+        card.shells.remove(tab - 1);
+        card.active_tab = model::tab_after_close(card.active_tab, tab, card.shells.len());
+        // Process teardown may block; never do it on the UI thread.
+        let core = self.core.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let _ = core.close_shell(&id, pty);
+            })
+            .detach();
+        if focused {
+            self.focus_terminal(window, cx);
+        }
+        cx.notify();
+    }
+
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.notifications.refresh_diagnostics();
         let now = Instant::now();
@@ -1591,7 +1689,7 @@ impl Shika {
             self.overlay_return_focus = None;
             self.selection = Some(Selection::Card(i));
             if let Some(i) = self.selected_card() {
-                if !self.cards[i].show_shell {
+                if self.cards[i].active_tab == 0 {
                     self.toggle(true, window, cx);
                 } else {
                     self.focus_terminal(window, cx);
@@ -1780,7 +1878,7 @@ impl Shika {
         self.font_size = next;
         let size = px(next.points());
         for card in &self.cards {
-            for pane in std::iter::once(&card.agent).chain(card.shell.as_ref()) {
+            for pane in std::iter::once(&card.agent).chain(card.shells.iter()) {
                 pane.view.update(cx, |view, cx| {
                     let mut config = view.config().clone();
                     config.font_size = size;
@@ -1824,7 +1922,7 @@ impl Shika {
             Palette::shika()
         };
         for card in &self.cards {
-            for pane in std::iter::once(&card.agent).chain(card.shell.as_ref()) {
+            for pane in std::iter::once(&card.agent).chain(card.shells.iter()) {
                 pane.view.update(cx, |view, cx| {
                     view.set_palette(palette, cx);
                     view.set_background_opacity(opacity, cx);
@@ -2963,7 +3061,7 @@ impl Shika {
             .text_color(chrome.term_fg);
         if let Some(i) = self.selected_card() {
             let card = &self.cards[i];
-            let shell = card.show_shell;
+            let active_tab = card.active_tab;
             let path = card
                 .session
                 .as_ref()
@@ -2971,6 +3069,83 @@ impl Shika {
                 .unwrap_or_else(|| card.stage.clone());
             let term_hover = chrome.term_hover;
             let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+            let mut tabs = div()
+                .id("terminal-tabs")
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .overflow_x_scroll()
+                .track_scroll(&card.tab_scroll)
+                .p(px(2.))
+                .gap(px(2.))
+                .rounded(px(7.))
+                .bg(chrome.term_seg)
+                .child(
+                    segment(
+                        "agent",
+                        card.preset.clone(),
+                        active_tab == 0,
+                        chrome.term_seg_active,
+                        chrome.term_white,
+                        chrome.term_dim,
+                    )
+                    .occlude()
+                    .on_click(cx.listener(|this, _, window, cx| this.select_tab(0, window, cx))),
+                );
+            for (index, pane) in card.shells.iter().enumerate() {
+                let tab = index + 1;
+                let label = if pane.shell_number == 1 {
+                    "Shell".to_string()
+                } else {
+                    format!("Shell {}", pane.shell_number)
+                };
+                tabs = tabs.child(
+                    div()
+                        .id(("shell-tab", tab))
+                        .occlude()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .rounded(px(5.))
+                        .when(active_tab == tab, |d| d.bg(chrome.term_seg_active))
+                        .child(
+                            segment(
+                                ("shell-select", tab),
+                                label,
+                                active_tab == tab,
+                                chrome.term_seg_active,
+                                chrome.term_white,
+                                chrome.term_dim,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.select_tab(tab, window, cx),
+                            )),
+                        )
+                        .child(
+                            segment(
+                                ("shell-close", tab),
+                                "×",
+                                false,
+                                chrome.term_seg_active,
+                                chrome.term_white,
+                                chrome.term_dim,
+                            )
+                            .hover(move |style| style.bg(term_hover))
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| KeyTip {
+                                    bg: tip_bg,
+                                    fg: tip_fg,
+                                    text: "Close shell tab (stops its processes)  ⌘W".into(),
+                                })
+                                .into()
+                            })
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.close_tab(tab, window, cx),
+                            )),
+                        ),
+                );
+            }
             let header = div()
                 .id("terminal-header")
                 .h(px(BAR_HEIGHT))
@@ -2983,95 +3158,27 @@ impl Shika {
                 .bg(with_alpha(chrome.term_header, chrome.term_header_alpha))
                 .border_b_1()
                 .border_color(chrome.term_line)
+                .child(tabs)
                 .child(
-                    div()
-                        .id("terminal-toggle")
-                        .occlude()
-                        .flex_none()
-                        .flex()
-                        .p(px(2.))
-                        .gap(px(2.))
-                        .rounded(px(7.))
-                        .bg(chrome.term_seg)
-                        .tooltip(move |_, cx| {
-                            cx.new(|_| KeyTip {
-                                bg: tip_bg,
-                                fg: tip_fg,
-                                text: "Switch agent/shell  ⌘↵".into(),
-                            })
-                            .into()
+                    segment(
+                        "new-terminal",
+                        "+",
+                        false,
+                        chrome.term_seg_active,
+                        chrome.term_white,
+                        chrome.term_dim,
+                    )
+                    .occlude()
+                    .hover(move |style| style.bg(term_hover))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| KeyTip {
+                            bg: tip_bg,
+                            fg: tip_fg,
+                            text: "New shell tab  ⌘T".into(),
                         })
-                        .child(
-                            segment(
-                                "agent",
-                                card.preset.clone(),
-                                !shell,
-                                chrome.term_seg_active,
-                                chrome.term_white,
-                                chrome.term_dim,
-                            )
-                            .on_click(cx.listener(
-                                |this, _, window, cx| {
-                                    if this.busy || this.overlay.is_some() {
-                                        return;
-                                    }
-                                    if let Some(i) = this.selected_card() {
-                                        this.cards[i].show_shell = false;
-                                    }
-                                    this.focus_terminal(window, cx);
-                                },
-                            )),
-                        )
-                        .child(
-                            segment(
-                                "shell",
-                                "Shell",
-                                shell,
-                                chrome.term_seg_active,
-                                chrome.term_white,
-                                chrome.term_dim,
-                            )
-                            .on_click(cx.listener(
-                                |this, _, window, cx| {
-                                    if let Some(i) = this.selected_card() {
-                                        if this.cards[i].show_shell {
-                                            this.focus_terminal(window, cx);
-                                        } else {
-                                            this.toggle(true, window, cx);
-                                        }
-                                    }
-                                },
-                            )),
-                        ),
-                )
-                .child(
-                    // Ellipsis at the start keeps the end of the path, the
-                    // worktree's own folder, in view.
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis_start()
-                        .font_family(MONO)
-                        .text_size(px(11.5))
-                        .text_color(chrome.term_dim)
-                        .child(path),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .text_size(px(11.5))
-                        .text_color(chrome.term_faint)
-                        .child(if card.creating && cards_focused {
-                            "setup is non-interactive"
-                        } else if card.launch_error.is_some() && cards_focused {
-                            "r retry setup"
-                        } else if cards_focused {
-                            "↵ type here"
-                        } else {
-                            "ctrl q back to cards"
-                        }),
+                        .into()
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| this.new_shell(true, window, cx))),
                 )
                 .child(
                     div()
@@ -3095,18 +3202,47 @@ impl Shika {
                         .child(if card.creating {
                             "Cancel setup"
                         } else {
-                            "Close"
+                            "Close task"
                         })
                         .child(kbd("c", chrome.term_line, chrome.term_dim).py_0())
                         .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
                 );
-            let pane = if shell {
-                card.shell.as_ref().unwrap_or(&card.agent)
-            } else {
-                &card.agent
-            };
+            let pane = card.active_pane();
             right = right
                 .child(self.title_drag(header, cx))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .px(px(14.))
+                        .py(px(4.))
+                        .flex_shrink_0()
+                        .bg(with_alpha(chrome.term_header, chrome.term_header_alpha))
+                        .text_size(px(11.5))
+                        .text_color(chrome.term_dim)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis_start()
+                                .font_family(MONO)
+                                .child(path),
+                        )
+                        .child(div().flex_none().text_color(chrome.term_faint).child(
+                            if card.creating && cards_focused {
+                                "setup is non-interactive"
+                            } else if card.launch_error.is_some() && cards_focused {
+                                "r retry setup"
+                            } else if cards_focused {
+                                "↵ type here"
+                            } else {
+                                "ctrl q back to cards"
+                            },
+                        )),
+                )
                 .when(card.launch_error.is_some(), |d| {
                     d.child(
                         div()
@@ -3894,7 +4030,7 @@ fn text_field(
 
 /// One segment of a segmented control.
 fn segment(
-    id: &'static str,
+    id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     active: bool,
     active_bg: Rgba,
@@ -4031,6 +4167,20 @@ impl Render for Shika {
                 }
             }))
             .on_action(
+                cx.listener(|this, _: &NewTerminal, window, cx| this.new_shell(true, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &CloseTerminal, window, cx| {
+                if let Some(i) = this.selected_card() {
+                    this.close_tab(this.cards[i].active_tab, window, cx);
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &NextTerminal, window, cx| this.cycle_tab(true, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &PreviousTerminal, window, cx| {
+                this.cycle_tab(false, window, cx)
+            }))
+            .on_action(
                 cx.listener(|this, _: &NextAgent, window, cx| this.move_agent(1, window, cx)),
             )
             .on_action(
@@ -4094,6 +4244,10 @@ fn main() -> anyhow::Result<()> {
         cx.bind_keys([
             gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-enter", SwitchTerminal, Some("Shika")),
+            gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
+            gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
+            gpui::KeyBinding::new("cmd-shift-]", NextTerminal, Some("Shika")),
+            gpui::KeyBinding::new("cmd-shift-[", PreviousTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-[", PreviousAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-q", Quit, None),
@@ -4126,6 +4280,10 @@ fn main() -> anyhow::Result<()> {
             gpui::Menu::new("Agent").items([
                 gpui::MenuItem::action("New agent", NewAgent),
                 gpui::MenuItem::action("Switch agent/shell", SwitchTerminal),
+                gpui::MenuItem::action("New terminal tab", NewTerminal),
+                gpui::MenuItem::action("Close terminal tab", CloseTerminal),
+                gpui::MenuItem::action("Next terminal tab", NextTerminal),
+                gpui::MenuItem::action("Previous terminal tab", PreviousTerminal),
                 gpui::MenuItem::separator(),
                 gpui::MenuItem::action("Next agent", NextAgent),
                 gpui::MenuItem::action("Previous agent", PreviousAgent),
