@@ -83,6 +83,13 @@ pub enum Error {
     ResizePty,
     #[error("Could not prepare the shell.")]
     PrepareShell,
+
+    #[error("Worktree preparation failed: {0}")]
+    Preparation(String),
+    #[error("Approve the current worktree preparation configuration before starting an agent.")]
+    PreparationNeedsApproval,
+    #[error("Worktree preparation was cancelled.")]
+    PreparationCancelled,
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

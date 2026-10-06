@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::preparation::PreparationConfig;
 use crate::worktree::git_cmd;
 
 /// A saved repository. The JSON shape is the one `projects.json` has always
@@ -21,6 +22,10 @@ pub struct Project {
     /// None means the remote default branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    /// Local consent for the exact parsed setup configuration. Copied file
+    /// contents are never stored here. Missing means setup is unapproved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_preparation: Option<PreparationConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +82,7 @@ impl ProjectDb {
             name: name.clone(),
             path: toplevel,
             base_branch: None,
+            approved_preparation: None,
         };
         projects.push(project.clone());
         save(&self.path, &projects)?;
@@ -97,6 +103,17 @@ impl ProjectDb {
         let project = project.clone();
         save(&self.path, &projects)?;
         Ok(project)
+    }
+
+    pub fn approve_preparation(&self, id: &str, config: PreparationConfig) -> Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut projects = load(&self.path)?;
+        let project = projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .ok_or(Error::UnknownProject)?;
+        project.approved_preparation = Some(config);
+        save(&self.path, &projects)
     }
 
     pub fn remove(&self, id: &str) -> Result<()> {

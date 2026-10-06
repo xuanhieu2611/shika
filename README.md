@@ -1,10 +1,10 @@
 # Shika
 
-Keyboard-first Mac app for running Claude Code and Cursor CLI in separate git worktrees. Pure Rust on GPUI, with one real terminal visible at a time. Shika launches the CLI tools you already use, without wrapping a model API. Early-stage, macOS-only software. See `PRD.md` for scope and `PLAN.md` for implementation decisions.
+Keyboard-first Mac app for running Claude Code, Codex, Cursor CLI, and Pi in separate git worktrees. Pure Rust on GPUI, with one real terminal visible at a time. Shika launches the CLI tools you already use, without wrapping a model API. Early-stage, macOS-only software. See `PRD.md` for scope and `PLAN.md` for implementation decisions.
 
 ## Build and run
 
-Requires macOS, Rust, full Xcode, and an installed, authenticated Claude Code or Cursor CLI. GPUI is pinned in the root `Cargo.toml`. The current build uses runtime Metal shaders because the separate Metal Toolchain component is not installed.
+Requires macOS, Rust, full Xcode, and an installed, authenticated supported CLI. GPUI is pinned in the root `Cargo.toml`. The current build uses runtime Metal shaders because the separate Metal Toolchain component is not installed.
 
 ```sh
 source "$HOME/.cargo/env"
@@ -21,7 +21,7 @@ open target/debug/Shika.app
 
 Without `--debug`, the script builds the release bundle. Local bundles are ad hoc signed; distribution signing and notarization are outside this MVP.
 
-JetBrains Mono and its OFL license are bundled. The chrome uses the macOS system font. The app captures the login-shell PATH at startup to find `claude` and `agent` when launched from Finder.
+JetBrains Mono and its OFL license are bundled. The chrome uses the macOS system font. The app captures the login-shell PATH at startup to find `claude`, `codex`, `agent`, and `pi` when launched from Finder.
 
 ## Isolated checks
 
@@ -41,9 +41,23 @@ The first submitted prompt names the card and branch, and about a second later t
 
 Projects and the worktree journal live in `~/Library/Application Support/com.hieule.shika/`. Live sessions do not restore.
 
+## Optional worktree preparation
+
+Create `.shika/worktrees.json` in a project's main checkout to prepare each fresh worktree before its agent starts:
+
+```json
+{
+  "copy-files": [".env.local"],
+  "setup-worktree": ["npm ci"],
+  "timeout-seconds": 600
+}
+```
+
+Use your project's commands. Copied files must already be ignored by Git on both the main checkout and the task's base. Shika asks for local approval, shows progress, and offers cancel or fresh-worktree retry. Configuration changes ask again. Without this file, the existing workflow stays unchanged. See [worktree preparation](docs/worktree-preparation.md) for trust, path, command, and cleanup rules.
+
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks.
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for onboarding, feature guides, and development checks. The [preparation contributor guide](docs/worktree-preparation.md#contributor-guide) covers the launch lifecycle, safety boundaries, debugging, and regression tests.
 
 ## License
 

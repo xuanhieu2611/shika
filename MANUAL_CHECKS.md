@@ -77,6 +77,36 @@ Implemented with automated coverage for agent-only traversal (headers, wrapping,
 - [ ] Command flow shortcuts do nothing while an overlay is open, including text editing, and never send input to the PTY. Escape and ordinary CLI bindings still reach the CLI.
 - [ ] The Agent menu lists shortcuts. New and agent/shell tooltips show their Command keys. Check light and dark appearance.
 
+## Optional worktree preparation
+
+Checked the built debug `.app` opened with `open -n`, isolated `--data-dir`, a disposable repository, and native macOS keyboard input. The foreground process was checked before each input. The real Claude CLI was started only after successful setup, at its workspace-trust prompt; no model prompt was sent and no actual dependency installation was performed. Normal app data was not used. Light/dark appearance was restored after screenshots.
+
+Evidence: `/private/tmp/shika-preparation-ui-iy5Ih7/` contains the reusable check script, JSON report, logs, screenshots, and captured approval/journal JSON. Disposable repositories and test data were removed after verification. This evidence is machine-local, not committed, and may disappear. Contributors can reproduce the flow with the versioned fixture recipe and test map in [worktree preparation](docs/worktree-preparation.md#reproducible-native-smoke-fixture).
+
+- PASS: New shows the exact configuration for approval before a worktree is allocated. Escape cancels. Approval persists locally.
+- PASS: Two cards run setup concurrently; a third shows Waiting for setup slot. Keyboard cancellation removes its untouched queued worktree without disturbing the other jobs.
+- PASS: Nonzero setup stops before the agent starts. Both failed cards remain readable, with output and Retry setup. Their untouched worktrees are removed.
+- PASS: `r` retries into a fresh worktree without asking again for unchanged configuration.
+- PASS: Changing configuration asks again, before allocation; cancel keeps the existing task intact.
+- PASS: Selected ignored local files are copied and the setup marker exists before the real CLI starts. Ctrl+Q and ordinary idle-card close remove that prepared worktree.
+- PASS: Quit during setup stops the setup process group and keeps the pending worktree journaled.
+- PASS: Approval and failure controls are readable in light and dark appearance. The terminal keeps its dark background.
+- AUTOMATED: Consent changes/persistence, invalid/oversized/nonregular configuration, independent copy permissions, missing/unsafe paths, source/destination symlinks, source-only ignore rules, command order, preserved edits/files/commits, timeout, pre-start cancellation, descendant termination, setup-slot limits, shutdown/project removal, abandoned launch preservation, unrelated-session responsiveness, and setup-input/startup-query isolation.
+- [ ] Mouse Cancel setup from a focused setup terminal restores card navigation. Mouse Retry setup behaves like `r`.
+- [ ] A setup completes while another live terminal or dialog has focus, without stealing it; test the hidden fourth card and selected-row scrolling as well.
+- [ ] Long configuration and copy paths remain usable at the minimum window size, including scrolling the approval dialog.
+- [ ] Exercise a real project's dependency installation and all four CLIs, including existing shells, prompts, branch naming, notifications, dirty close, and pushed close after preparation. These are not claimed as new GUI acceptance passes.
+
+Validation passed: cargo fmt --all --check, cargo test --workspace (191 tests: 119 core, 46 terminal, 26 app), strict workspace Clippy, debug `.app` build, and strict bundle signature verification. The broader existing GUI/IME checks below and above remain as recorded.
+
+### Documentation follow-up
+
+The contributor guide's local links/anchors, JSON examples, shell syntax, and regression-test symbols were checked. Its fixture setup and command were exercised in a disposable Git worktree, then removed; no app or model was launched for this documentation check.
+
+- PASS: All 22 preparation tests with `--test-threads=1`, plus both app host tests for setup-input suppression and prepared-agent startup replies.
+- KNOWN TEST-HARNESS ISSUE: The initial parallel preparation rerun passed 21 tests and failed one in `Fixture::new` with `AlreadyExists` while creating `repo with spaces`, before setup. Its PID-plus-timestamp directory naming permits a parallel collision. The guide records a serial diagnostic workaround and the need for atomic unique-directory allocation; this docs-only pass does not fix it. A serial pass does not establish that parallel validation is reliable.
+- No additional native GUI acceptance results are claimed here. The original implementation validation above is historical evidence.
+
 ## Automated checks
 
 Workspace tests cover PTY streaming, hidden terminal drains, terminal input, git exclusion, branch renaming, CLI title reading (sample, missing, and broken files), branch slugs without the project name, prefix cleanup, renames that skip taken and pushed names, the title watch timing, Option+Backspace in prompt capture, journal updates, base branch start points (origin, local, missing, unset with origin/HEAD, a changed base, a vanished base, fetch freshness, a dead remote, and waiting for the picker fetch), unpushed commits, failed pushes, branch retention, safe close, branch-switch refusal, and leftovers. All use temporary app data and repositories.

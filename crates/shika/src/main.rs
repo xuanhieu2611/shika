@@ -12,8 +12,9 @@ use gpui::{
 use model::{PromptCapture, Status, TitleWatch, visible_indices};
 use notifications::Notifications;
 use shika_core::{
-    Appearance, CliCatalog, Core, DiffStat, FontSize, JournalEntry, Project, ProjectBase, PtyEvent,
-    PtyId, PtySize, Session, SessionGitState, Settings, Translucency,
+    Appearance, CliCatalog, CliPreset, Core, DiffStat, FontSize, JournalEntry, PreparationConfig,
+    PreparationControl, PreparationEvent, Project, ProjectBase, PtyEvent, PtyId, PtySize, Session,
+    SessionGitState, Settings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize,
@@ -83,6 +84,9 @@ struct HostState {
     exited: bool,
     submission: u64,
     pending_input: Vec<Vec<u8>>,
+    preparing: bool,
+    agent_starting: bool,
+    preparation_stage: String,
 }
 struct Host {
     core: Arc<Core>,
@@ -92,6 +96,11 @@ struct Host {
 impl PtyHost for Host {
     fn write(&self, bytes: &[u8], source: InputSource) {
         let mut s = lock(&self.state);
+        // Setup is non-interactive. Never queue installer input and later send
+        // it as an unintended prompt to the agent.
+        if s.preparing && !(s.agent_starting && source == InputSource::Reply) {
+            return;
+        }
         let now = Instant::now();
         if source == InputSource::Typed {
             s.last_typed = Some(now);
@@ -212,6 +221,17 @@ struct Card {
     named: bool,
     /// What the task changed, fetched each time the card turns Ready.
     diff: Option<DiffStat>,
+    launch_preset: String,
+    launch_control: Option<PreparationControl>,
+    launch_error: Option<String>,
+    stage: String,
+}
+impl Drop for Card {
+    fn drop(&mut self) {
+        if let Some(control) = &self.launch_control {
+            control.cancel_preserving_worktree();
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Selection {
@@ -226,6 +246,12 @@ enum Overlay {
     Close {
         index: usize,
         state: SessionGitState,
+    },
+    Preparation {
+        project: String,
+        preset: CliPreset,
+        config: PreparationConfig,
+        retry: Option<Arc<Mutex<HostState>>>,
     },
     Leftovers,
     RemoveLeftover(usize),
@@ -548,6 +574,9 @@ impl Shika {
         .detach();
     }
     fn launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         let Some(Overlay::Picker { project, index }) = &self.overlay else {
             return;
         };
@@ -559,15 +588,192 @@ impl Shika {
         else {
             return;
         };
+        self.request_launch(project.clone(), preset, None, window, cx);
+    }
+
+    fn request_launch(
+        &mut self,
+        project: String,
+        preset: CliPreset,
+        retry: Option<Arc<Mutex<HostState>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
         if !preset.found() {
             self.message(format!("{} not found on PATH", preset.binary));
             cx.notify();
             return;
         }
-        let project = project.clone();
+        self.busy = true;
+        let core = self.core.clone();
+        let lookup = project.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let config = core.project_preparation(&lookup)?;
+                    let approved = match &config {
+                        Some(config) => core.preparation_approved(&lookup, config)?,
+                        None => true,
+                    };
+                    Ok::<_, shika_core::Error>((config, approved))
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok((Some(config), false)) => {
+                        if this.overlay_return_focus.is_none() {
+                            this.overlay_return_focus = window.focused(cx);
+                        }
+                        this.overlay = Some(Overlay::Preparation {
+                            project,
+                            preset,
+                            config,
+                            retry,
+                        });
+                        window.focus(&this.focus, cx);
+                    }
+                    Ok((config, _)) => {
+                        this.begin_launch(project, preset, config.is_some(), retry, window, cx)
+                    }
+                    Err(error) => this.message(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn approve_preparation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(Overlay::Preparation {
+            project,
+            preset,
+            config,
+            retry,
+        }) = &self.overlay
+        else {
+            return;
+        };
+        let (project, preset, config, retry) = (
+            project.clone(),
+            preset.clone(),
+            config.clone(),
+            retry.clone(),
+        );
+        self.busy = true;
+        let core = self.core.clone();
+        let lookup = project.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { core.approve_preparation(&lookup, &config) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok(()) => this.begin_launch(project, preset, true, retry, window, cx),
+                    Err(error) => {
+                        this.overlay = None;
+                        this.restore_overlay_focus(window, cx);
+                        this.message(error.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn retry_preparation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let Some(i) = self.selected_card() else {
+            return;
+        };
+        let card = &self.cards[i];
+        if card.creating || card.launch_error.is_none() {
+            return;
+        }
+        let Some(preset) = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.presets.iter().find(|p| p.id == card.launch_preset))
+            .cloned()
+        else {
+            return;
+        };
+        self.request_launch(
+            card.project.clone(),
+            preset,
+            Some(card.agent.state.clone()),
+            window,
+            cx,
+        );
+    }
+
+    fn stop_cancelled_launch(&mut self, id: String, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        cx.spawn(async move |this, cx| {
+            let _ = cx
+                .background_executor()
+                .spawn(async move { core.cancel_session_start(&id) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.leftovers = this.core.leftovers_list().unwrap_or_default();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn remove_card(&mut self, index: usize) {
+        self.cards.remove(index);
+        self.selection = match self.selection.take() {
+            Some(Selection::Card(at)) if at > index => Some(Selection::Card(at - 1)),
+            Some(Selection::Card(at)) if at == index => {
+                if self.cards.is_empty() {
+                    self.projects
+                        .first()
+                        .map(|p| Selection::Project(p.id.clone()))
+                } else {
+                    Some(Selection::Card(index.min(self.cards.len() - 1)))
+                }
+            }
+            selection => selection,
+        };
+        self.last_revealed_selection = None;
+    }
+
+    fn begin_launch(
+        &mut self,
+        project: String,
+        preset: CliPreset,
+        configured: bool,
+        retry: Option<Arc<Mutex<HostState>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(retry) = retry
+            && let Some(i) = self
+                .cards
+                .iter()
+                .position(|c| Arc::ptr_eq(&c.agent.state, &retry))
+        {
+            self.remove_card(i);
+        }
         self.overlay = None;
         self.overlay_return_focus = None;
-        self.busy = true;
+        // Long setup must not prevent starting another card or using a live
+        // terminal. Keep the existing short-launch behavior without config.
+        self.busy = !configured;
         let opacity = self.terminal_opacity();
         let pane = Pane::new(
             self.core.clone(),
@@ -580,6 +786,18 @@ impl Shika {
         );
         let terminal = pane.terminal.clone();
         let state = pane.state.clone();
+        lock(&state).preparing = configured;
+        if configured {
+            // A second launch can hide this pane before its first layout.
+            // Give it a real initial grid so setup does not wait forever for
+            // a visible view; the next layout/PTY binding uses the actual fit.
+            let fallback = self
+                .selected_card()
+                .and_then(|i| lock(&self.cards[i].agent.state).measured)
+                .unwrap_or(TerminalSize::new(32, 100));
+            terminal.resize(fallback);
+        }
+        let control = PreparationControl::default();
         let index = self.cards.len();
         self.cards.push(Card {
             session: None,
@@ -597,6 +815,10 @@ impl Shika {
             title_watch: TitleWatch::default(),
             named: false,
             diff: None,
+            launch_preset: preset.id.clone(),
+            launch_control: Some(control.clone()),
+            launch_error: None,
+            stage: "Creating worktree...".into(),
         });
         self.selection = Some(Selection::Card(index));
         window.focus(&self.focus, cx);
@@ -617,10 +839,13 @@ impl Shika {
             let output_state = state.clone();
             let sink_terminal = terminal.clone();
             let state_bind = state.clone();
+            let progress_state = state.clone();
+            let progress_terminal = terminal.clone();
+            let callback_core = core.clone();
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let result = core.create_session(
+                    let result = core.create_session_with_preparation(
                         &project,
                         &preset.id,
                         PtySize::new(measured.rows, measured.cols),
@@ -639,6 +864,29 @@ impl Shika {
                                 state.exited = true;
                             }
                         },
+                        control,
+                        move |event| match event {
+                            PreparationEvent::Stage(stage) => {
+                                lock(&progress_state).preparation_stage = stage;
+                            }
+                            PreparationEvent::StartingAgent => {
+                                let mut host = lock(&progress_state);
+                                host.agent_starting = true;
+                                host.preparation_stage = "Starting agent...".into();
+                            }
+                            PreparationEvent::Output(bytes) => {
+                                // Pipes emit LF; the terminal needs CRLF. Preserve
+                                // existing CRLF rather than doubling its CR.
+                                let mut output = Vec::with_capacity(bytes.len());
+                                for byte in bytes {
+                                    if byte == b'\n' && output.last() != Some(&b'\r') {
+                                        output.push(b'\r');
+                                    }
+                                    output.push(byte);
+                                }
+                                progress_terminal.feed(&output);
+                            }
+                        },
                     );
                     if let Ok(s) = &result {
                         bind_host(&core, &state_bind, s.pty);
@@ -646,27 +894,76 @@ impl Shika {
                     result
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.busy = false;
-                match result {
-                    Ok(session) => {
-                        if let Some(card) = this.cards.get_mut(index) {
-                            card.session = Some(session);
-                            card.creating = false;
-                        }
-                        this.focus_terminal(window, cx);
+            let orphan = result.as_ref().ok().map(|s| s.id.clone());
+            let completion_core = callback_core.clone();
+            let updated = this.update_in(cx, |this, window, cx| {
+                if !configured {
+                    this.busy = false;
+                }
+                let Some(index) = this
+                    .cards
+                    .iter()
+                    .position(|c| Arc::ptr_eq(&c.agent.state, &state))
+                else {
+                    if let Ok(session) = result {
+                        let core = completion_core.clone();
+                        cx.background_executor()
+                            .spawn(async move {
+                                let _ = core.cancel_session_start(&session.id);
+                            })
+                            .detach();
                     }
-                    Err(e) => {
-                        this.cards.remove(index);
-                        this.selection = this
-                            .projects
-                            .first()
-                            .map(|p| Selection::Project(p.id.clone()));
-                        this.message(e.to_string());
-                    }
+                    return;
                 };
+                this.cards[index].creating = false;
+                match result {
+                    Ok(session)
+                        if !this.cards[index]
+                            .launch_control
+                            .as_ref()
+                            .is_some_and(|c| c.is_cancelled()) =>
+                    {
+                        lock(&state).preparing = false;
+                        this.cards[index].session = Some(session);
+                        this.cards[index].launch_control = None;
+                        // Completion never steals focus from another card or
+                        // an overlay opened while installation was running.
+                        if this.selection == Some(Selection::Card(index)) && this.overlay.is_none()
+                        {
+                            this.focus_terminal(window, cx);
+                        }
+                    }
+                    Ok(session) => {
+                        this.stop_cancelled_launch(session.id, cx);
+                        this.cards[index].launch_error =
+                            Some("Worktree preparation was cancelled.".into());
+                    }
+                    Err(error) if configured => {
+                        lock(&state).agent_starting = false;
+                        this.cards[index].agent.terminal.feed(
+                            format!("\r\n{error}\r\nRetry creates a fresh worktree.\r\n")
+                                .as_bytes(),
+                        );
+                        this.cards[index].launch_error = Some(error.to_string());
+                        this.cards[index].stage = "Setup failed".into();
+                    }
+                    Err(error) => {
+                        this.remove_card(index);
+                        this.message(error.to_string());
+                    }
+                }
+                this.leftovers = this.core.leftovers_list().unwrap_or_default();
                 cx.notify();
             });
+            if updated.is_err()
+                && let Some(id) = orphan
+            {
+                cx.background_executor()
+                    .spawn(async move {
+                        let _ = callback_core.cancel_session_start(&id);
+                    })
+                    .detach();
+            }
         })
         .detach();
     }
@@ -789,9 +1086,45 @@ impl Shika {
             self.message(warning);
             changed = true;
         }
+        // Cancelled cards are removed only between other card operations;
+        // existing short async close/shell paths retain their stable indices.
+        if !self.busy && self.overlay.is_none() {
+            for i in (0..self.cards.len()).rev() {
+                let card = &self.cards[i];
+                if !card.creating
+                    && card.session.is_none()
+                    && card
+                        .launch_control
+                        .as_ref()
+                        .is_some_and(|c| c.is_cancelled())
+                {
+                    let return_to_cards = self.selection == Some(Selection::Card(i))
+                        || card.agent.view.focus_handle(cx).is_focused(window);
+                    self.remove_card(i);
+                    if return_to_cards {
+                        window.focus(&self.focus, cx);
+                    }
+                    changed = true;
+                }
+            }
+        }
         for card in &mut self.cards {
             let mut state = lock(&card.agent.state);
             if card.creating {
+                if card
+                    .launch_control
+                    .as_ref()
+                    .is_some_and(|c| c.is_cancelled())
+                {
+                    state.preparation_stage = "Cancelling setup...".into();
+                }
+                if !state.preparation_stage.is_empty() && card.stage != state.preparation_stage {
+                    card.stage = state.preparation_stage.clone();
+                    changed = true;
+                }
+                continue;
+            }
+            if card.session.is_none() {
                 continue;
             }
             if let Some(title) = state.title.take() {
@@ -1149,6 +1482,19 @@ impl Shika {
         let Some(index) = self.selected_card() else {
             return;
         };
+        if self.cards[index].creating {
+            if let Some(control) = &self.cards[index].launch_control {
+                control.cancel();
+            }
+            cx.notify();
+            return;
+        }
+        if self.cards[index].launch_error.is_some() {
+            self.remove_card(index);
+            window.focus(&self.focus, cx);
+            cx.notify();
+            return;
+        }
         let Some(session) = &self.cards[index].session else {
             return;
         };
@@ -1620,6 +1966,11 @@ impl Shika {
                         }
                     }
                 }
+                Some(Overlay::Preparation { .. }) => match key {
+                    "enter" => self.approve_preparation(window, cx),
+                    "escape" => self.cancel_overlay(window, cx),
+                    _ => {}
+                },
                 Some(Overlay::Close { index, state }) => {
                     let i = *index;
                     let can_push = state.can_push();
@@ -1727,6 +2078,7 @@ impl Shika {
             "k" | "up" => self.move_selection(-1, window, cx),
             "a" => self.add_project(cx),
             "n" => self.picker(window, cx),
+            "r" => self.retry_preparation(window, cx),
             "enter" => self.focus_terminal(window, cx),
             "g" => self.toggle(false, window, cx),
             "c" => self.close(window, cx),
@@ -2302,10 +2654,16 @@ impl Shika {
         let selected = self.selected_card() == Some(i);
         let colors = chrome.status(card.status);
         let separator = || div().flex_none().text_color(chrome.ink_5).child("·");
-        let hints: &[(&str, &str)] = match card.status {
-            Status::Ready => &[("↵", "read"), ("g", "shell")],
-            Status::Working => &[("↵", "watch")],
-            Status::Waiting => &[("↵", "write prompt")],
+        let hints: &[(&str, &str)] = if card.creating {
+            &[("↵", "view setup"), ("c", "cancel")]
+        } else if card.launch_error.is_some() {
+            &[("r", "retry"), ("c", "close")]
+        } else {
+            match card.status {
+                Status::Ready => &[("↵", "read"), ("g", "shell")],
+                Status::Working => &[("↵", "watch")],
+                Status::Waiting => &[("↵", "write prompt")],
+            }
         };
         let stat = card
             .diff
@@ -2356,14 +2714,21 @@ impl Shika {
             .child(separator())
             .child(
                 div()
-                    .flex_none()
+                    .min_w_0()
+                    .truncate()
                     .text_color(colors.text)
                     .font_weight(match card.status {
                         Status::Ready => FontWeight::SEMIBOLD,
                         Status::Working => FontWeight::MEDIUM,
                         Status::Waiting => FontWeight::NORMAL,
                     })
-                    .child(card.status.label()),
+                    .child(if card.creating {
+                        card.stage.clone()
+                    } else if card.launch_error.is_some() {
+                        "Setup failed".to_string()
+                    } else {
+                        card.status.label().to_string()
+                    }),
             )
             .when_some(card.session.as_ref(), |d, session| {
                 d.child(separator()).child(
@@ -2603,7 +2968,7 @@ impl Shika {
                 .session
                 .as_ref()
                 .map(|s| model::tilde(&s.worktree, home))
-                .unwrap_or("Creating worktree...".into());
+                .unwrap_or_else(|| card.stage.clone());
             let term_hover = chrome.term_hover;
             let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
             let header = div()
@@ -2698,7 +3063,11 @@ impl Shika {
                         .flex_none()
                         .text_size(px(11.5))
                         .text_color(chrome.term_faint)
-                        .child(if cards_focused {
+                        .child(if card.creating && cards_focused {
+                            "setup is non-interactive"
+                        } else if card.launch_error.is_some() && cards_focused {
+                            "r retry setup"
+                        } else if cards_focused {
                             "↵ type here"
                         } else {
                             "ctrl q back to cards"
@@ -2723,7 +3092,11 @@ impl Shika {
                         .text_color(chrome.term_fg)
                         .cursor_pointer()
                         .hover(move |style| style.bg(term_hover))
-                        .child("Close")
+                        .child(if card.creating {
+                            "Cancel setup"
+                        } else {
+                            "Close"
+                        })
                         .child(kbd("c", chrome.term_line, chrome.term_dim).py_0())
                         .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
                 );
@@ -2734,6 +3107,27 @@ impl Shika {
             };
             right = right
                 .child(self.title_drag(header, cx))
+                .when(card.launch_error.is_some(), |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .px(px(14.))
+                            .py(px(8.))
+                            .text_size(px(12.5))
+                            .child(
+                                dialog_button("retry-setup", "Retry setup", "r", chrome).on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.retry_preparation(window, cx)
+                                    }),
+                                ),
+                            )
+                            .child(div().text_color(chrome.term_dim).child(
+                                "Creates a fresh worktree. Changed files remain in leftovers.",
+                            )),
+                    )
+                })
                 .child(div().flex_1().min_h_0().child(pane.view.clone()));
         } else {
             let icon = Arc::new(gpui::Image::from_bytes(
@@ -2936,6 +3330,46 @@ impl Shika {
                             None => div().child("creates a branch and a worktree"),
                         }),
                 )
+            }
+            Overlay::Preparation {
+                project, config, ..
+            } => {
+                let name = self
+                    .projects
+                    .iter()
+                    .find(|p| &p.id == project)
+                    .map(|p| p.name.as_str())
+                    .unwrap_or("");
+                let mut panel = dialog(chrome, max_h)
+                    .child(dialog_title(div()).child(format!("Prepare worktrees for {name}?")))
+                    .child(dialog_text(chrome).child("These commands run with your permissions before each agent starts. Approve only a repository you trust, including its scripts."))
+                    .child(dialog_text(chrome).font_family(MONO).child(".shika/worktrees.json"));
+                for path in &config.copy_files {
+                    panel = panel.child(
+                        dialog_text(chrome)
+                            .font_family(MONO)
+                            .child(format!("Copy {path}")),
+                    );
+                }
+                for command in &config.commands {
+                    panel =
+                        panel.child(dialog_text(chrome).font_family(MONO).child(command.clone()));
+                }
+                panel
+                    .child(dialog_text(chrome).child(format!(
+                        "Setup timeout: {} seconds. Configuration changes ask again.",
+                        config.timeout_seconds
+                    )))
+                    .child(
+                        dialog_buttons()
+                            .child(self.cancel_button("Cancel", chrome, cx))
+                            .child(
+                                primary_button("approve-setup", "Approve and start", "↵", chrome)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.approve_preparation(window, cx)
+                                    })),
+                            ),
+                    )
             }
             Overlay::Close { index, state } => {
                 let i = *index;
@@ -3667,6 +4101,12 @@ fn main() -> anyhow::Result<()> {
             gpui::KeyBinding::new("cmd-h", Hide, None),
             gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
         ]);
+        let quitting_core = core.clone();
+        cx.on_app_quit(move |_| {
+            quitting_core.cancel_preparations();
+            async {}
+        })
+        .detach();
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
@@ -3780,6 +4220,76 @@ mod host_tests {
             adjacent_agent(&rows, Some(&Selection::Card(9)), -1),
             Some(0)
         );
+    }
+
+    #[test]
+    fn setup_input_is_not_queued_as_a_future_agent_prompt() {
+        let path = std::env::temp_dir().join(format!(
+            "shika-preparation-host-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let core = Arc::new(Core::open(&path).unwrap());
+        let state = Arc::new(Mutex::new(HostState {
+            preparing: true,
+            ..HostState::default()
+        }));
+        let host = Host {
+            core,
+            state: state.clone(),
+            capture: true,
+        };
+        host.write(b"installer answer\r", InputSource::Typed);
+        host.write(b"\x1b[1;1R", InputSource::Reply);
+        let state = lock(&state);
+        assert!(state.pending_input.is_empty());
+        assert!(state.title.is_none());
+        assert_eq!(state.submission, 0);
+        assert!(state.last_typed.is_none());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn prepared_agent_startup_preserves_query_replies_but_not_setup_input() {
+        let path = std::env::temp_dir().join(format!(
+            "shika-prepared-start-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let core = Arc::new(Core::open(&path).unwrap());
+        let state = Arc::new(Mutex::new(HostState {
+            preparing: true,
+            agent_starting: true,
+            ..HostState::default()
+        }));
+        let terminal = Terminal::new(
+            TerminalOptions {
+                size: TerminalSize::new(10, 40),
+                ..Default::default()
+            },
+            Host {
+                core: core.clone(),
+                state: state.clone(),
+                capture: true,
+            },
+        );
+        terminal.feed(b"\x1b[6n");
+        terminal.write(b"installer answer\r");
+        let host = lock(&state);
+        assert_eq!(host.pending_input.concat(), b"\x1b[1;1R");
+        assert!(host.title.is_none());
+        assert!(host.last_typed.is_none());
+        assert_eq!(host.submission, 0);
+        drop(host);
+        drop(terminal);
+        drop(core);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
