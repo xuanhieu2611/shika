@@ -46,7 +46,8 @@ gpui::actions!(
     ]
 );
 
-/// Agent-only traversal follows visible row order, skipping project headers.
+/// Card traversal follows row order and skips project headers.
+/// `j` / `k` and Cmd+] / Cmd+[ both use it.
 fn adjacent_agent(
     rows: &[Selection],
     selection: Option<&Selection>,
@@ -494,17 +495,11 @@ impl Shika {
         if self.busy {
             return;
         }
-        let rows = self.rows();
-        if rows.is_empty() {
+        // Headers, including a project with no cards, are not stops.
+        let Some(i) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) else {
             return;
-        }
-        let at = self
-            .selection
-            .as_ref()
-            .and_then(|s| rows.iter().position(|r| r == s))
-            .unwrap_or(0);
-        self.selection =
-            Some(rows[(at as isize + delta).rem_euclid(rows.len() as isize) as usize].clone());
+        };
+        self.selection = Some(Selection::Card(i));
         window.focus(&self.focus, cx);
         cx.notify();
     }
