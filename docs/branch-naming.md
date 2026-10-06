@@ -199,3 +199,11 @@ Tests use a scratch `CliHome::at(...)` and never read the real `~/.claude`, `~/.
 - A manual "rename branch" action on the card.
 - Transliterating non-ASCII titles (for example Vietnamese with diacritics) instead of dropping those letters.
 - Stripping `CLAUDE_CODE_CHILD_SESSION` and related variables from the PTY environment, so a Shika started inside Claude Code still gets titles. It affects more than naming, so decide it on its own.
+
+## External branch renames
+
+An agent or shell can run `git branch -m` before committing, pushing, or opening a PR. Shika refreshes branch names off-thread every two seconds and also before Close, push-and-close, or discard. It adopts a new name only when the branch reflog contains an explicit rename chain from the recorded name and the original local branch no longer exists. Multiple renames with commits between them work. The card title, worktree folder, and recorded base stay unchanged; the journal saves before the session publishes the new name.
+
+A branch switch, detached HEAD, recreated original branch, or missing rename evidence keeps Close blocked. The proof reads at most the latest 256 branch reflog entries; disabled, expired, or older history is conservatively refused. Matching commit hashes or a missing original ref alone never counts as proof. Dirty work and unpushed commits still require the existing confirmation. A clean pushed branch is retained; an empty task or confirmed discard deletes the current task branch. Close rechecks branch identity after stopping the PTYs.
+
+Code: `worktree::was_renamed`, `Core::ensure_session_branch`, `Core::session_refresh_branch`, and the independent branch refresh in `Shika::tick`. Regression tests cover dirty, empty, unpushed, pushed and merged renamed tasks, rename chains, missing history, recreated refs, unrelated branches, and detached HEADs.

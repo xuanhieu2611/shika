@@ -132,3 +132,12 @@ Workspace tests cover PTY streaming, hidden terminal drains, terminal input, git
 Final checks passed: cargo fmt --all --check, cargo test --workspace (158 tests: 92 core, 46 terminal, 20 app; base branch tests added 2026-10-05), cargo clippy --workspace --all-targets -- -D warnings, and strict bundle signature verification.
 
 IME candidate placement, sustained typing feel, and the broader terminal matrix remain human checks in crates/shika-terminal/MANUAL_CHECKS.md. They are not claimed as acceptance passes here.
+
+## External branch renames
+
+- [ ] In an isolated app session, rename the task branch in its shell. Within a few seconds the card shows the new branch, while the title and worktree folder stay unchanged.
+- [ ] Commit, rename, push, create/merge a PR, then press `c`. The clean pushed task closes and its local branch remains.
+- [ ] Rename with dirty files or unpushed commits. Close still asks; dirty work cannot be pushed, cancel keeps work, and explicit discard removes the renamed task branch.
+- [ ] Switch to an unrelated branch or detach HEAD. Close still refuses and preserves the worktree.
+
+Automated core tests exercise these Git lifecycles in disposable repositories. GUI checks above remain pending.

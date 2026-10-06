@@ -440,6 +440,51 @@ pub fn head_branch(git: &Path, path_env: &str, worktree: &Path) -> Result<Option
     ))
 }
 
+/// Proves a rename chain from the recorded task branch to the current branch.
+/// Missing refs or equal commits alone cannot distinguish a rename from a
+/// branch switch. Git preserves explicit rename entries in the branch reflog.
+/// Missing/expired history is a refusal, and a recreated old branch must keep
+/// its protection even if the current branch once carried that name.
+pub fn was_renamed(
+    git: &Path,
+    path_env: &str,
+    worktree: &Path,
+    recorded: &str,
+    current: &str,
+) -> Result<bool> {
+    if ref_exists(git, path_env, worktree, &format!("refs/heads/{recorded}"))? {
+        return Ok(false);
+    }
+    let output = read_only_git(git, path_env, worktree)
+        .args(["reflog", "show", "-n", "256", "--format=%gs"])
+        .arg(format!("refs/heads/{current}"))
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let mut name = format!("refs/heads/{current}");
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        // `git branch -c` copies reflog history too. A copy is a new branch,
+        // even when its older entries include the recorded task's name.
+        if line.starts_with("Branch: copied ") {
+            return Ok(false);
+        }
+        if let Some(rename) = line.strip_prefix("Branch: renamed ")
+            && let Some((from, to)) = rename.split_once(" to ")
+        {
+            if to != name {
+                return Ok(false);
+            }
+            if from == format!("refs/heads/{recorded}") {
+                return Ok(true);
+            }
+            name = from.to_string();
+        }
+    }
+    Ok(false)
+}
+
 /// Whether `branch` already exists on a remote: it has an upstream, or a
 /// remote-tracking branch has its name, as after `git push origin HEAD`.
 /// Renaming it then would leave the old name behind on the remote.
