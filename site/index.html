@@ -34,6 +34,7 @@
   <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12l14 0"/><path d="M13 18l6 -6"/><path d="M13 6l6 6"/></symbol>
   <symbol id="i-out" viewBox="0 0 24 24"><path d="M17 7l-10 10"/><path d="M8 7l9 0l0 9"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24"><path d="M10 5a2 2 0 1 1 4 0a7 7 0 0 1 4 6v3a4 4 0 0 0 2 3h-16a4 4 0 0 0 2 -3v-3a7 7 0 0 1 4 -6"/><path d="M9 17v1a3 3 0 0 0 6 0v-1"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><path d="M7 7m0 2.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667z"/><path d="M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1"/></symbol>
 </svg>
@@ -261,23 +262,25 @@
     <div class="wrap install-grid">
       <div class="reveal">
         <h2>Free and open source.</h2>
-        <p class="section-lede">Early-stage, macOS-only software. Build a local app from source; signed and notarized downloads are not available yet.</p>
+        <p class="section-lede">Early-stage, macOS-only software. Download the signed and notarized app, or build it from source.</p>
         <ul class="reqs">
-          <li><svg class="icon"><use href="#i-check"/></svg>macOS 13 or later</li>
-          <li><svg class="icon"><use href="#i-check"/></svg><span>Rust, installed with <a href="https://rustup.rs">rustup</a></span></li>
-          <li><svg class="icon"><use href="#i-check"/></svg>Full Xcode, not only the Command Line Tools</li>
+          <li><svg class="icon"><use href="#i-check"/></svg>Apple silicon Mac with macOS 13 or later</li>
           <li><svg class="icon"><use href="#i-check"/></svg>Claude Code, Codex, Cursor CLI, or Pi, installed and signed in</li>
         </ul>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg"><svg class="icon"><use href="#i-download"/></svg>Download for Mac</a>
+          <a class="btn btn-ghost" href="https://github.com/xuanhieu2611/shika/releases">Release notes</a>
+        </div>
       </div>
       <div class="reveal" style="--i:1">
         <div class="code">
-          <div class="code-bar"><span>Terminal</span><button class="copy" type="button" id="copy" aria-label="Copy install commands"><svg class="icon i-copy"><use href="#i-copy"/></svg><svg class="icon i-check"><use href="#i-check"/></svg><span id="copy-label">Copy</span></button></div>
+          <div class="code-bar"><span>Build from source</span><button class="copy" type="button" id="copy" aria-label="Copy install commands"><svg class="icon i-copy"><use href="#i-copy"/></svg><svg class="icon i-check"><use href="#i-check"/></svg><span id="copy-label">Copy</span></button></div>
 <pre id="install-cmds"><span class="p">$ </span>git clone https://github.com/xuanhieu2611/shika.git
 <span class="p">$ </span>cd shika
 <span class="p">$ </span>./scripts/bundle-app.sh
 <span class="p">$ </span>open target/release/Shika.app</pre>
         </div>
-        <p class="install-foot">Local bundles are ad hoc signed. Read the <a href="https://github.com/xuanhieu2611/shika#agent-permissions">agent permission model</a> before running Shika. Move <code class="mono">Shika.app</code> to Applications to keep it in the Dock.</p>
+        <p class="install-foot">Building needs Rust, installed with <a href="https://rustup.rs">rustup</a>, and full Xcode, not only the Command Line Tools. Local bundles are ad hoc signed. Read the <a href="https://github.com/xuanhieu2611/shika#agent-permissions">agent permission model</a> before running Shika. Move <code class="mono">Shika.app</code> to Applications to keep it in the Dock.</p>
       </div>
     </div>
   </section>

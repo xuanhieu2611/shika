@@ -15,4 +15,8 @@ Terminal font: JetBrains Mono v2.304, JetBrains s.r.o.
 https://github.com/JetBrains/JetBrainsMono/tree/v2.304
 SIL Open Font License 1.1: licenses/JetBrainsMono-OFL.txt inside the app bundle.
 
+Rust crates compiled into the app, including GPUI and alacritty_terminal:
+licenses/RUST_CRATES.txt inside the app bundle lists each crate and the full
+text of its license.
+
 Repository-wide attribution: THIRD_PARTY_NOTICES.md at the repository root.
