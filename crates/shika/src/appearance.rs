@@ -148,7 +148,6 @@ pub struct Chrome {
     pub toast_bg: Rgba,
     pub toast_fg: Rgba,
     pub toast_shadow: Rgba,
-    pub scrim: Rgba,
     /// Key caps and segmented tracks.
     pub sunken: Rgba,
     pub raised: Rgba,
@@ -351,12 +350,6 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
         toast_bg: if dark { rgb(0x363A33) } else { rgb(0x252823) },
         toast_fg: if dark { rgb(0xF1F4EC) } else { rgb(0xE9ECE3) },
         toast_shadow: tint(0x000000, 0.35),
-        scrim: pick(
-            tint(0x10120F, 0.34),
-            tint(0x000000, 0.50),
-            tint(0x10120F, 0.22),
-            tint(0x000000, 0.30),
-        ),
         sunken: pick(
             rgb(0xE3E6DD),
             rgb(0x30342E),

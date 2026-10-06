@@ -2613,6 +2613,7 @@ impl Shika {
         let new_id = id.clone();
         let base_id = id.clone();
         let base_name = self.bases.get(&id).and_then(|b| b.name.clone());
+        let base_group = SharedString::from(format!("base-group-{id}"));
         let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
         let header = div()
             .id(SharedString::from(format!("project-{id}")))
@@ -2660,7 +2661,11 @@ impl Shika {
                 d.child(
                     div()
                         .id(SharedString::from(format!("base-{id}")))
+                        .group(base_group.clone())
                         .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
                         .font_family(MONO)
                         .text_size(px(12.))
                         .text_color(chrome.ink_3)
@@ -2673,6 +2678,15 @@ impl Shika {
                             })
                             .into()
                         })
+                        // The glyph tells the branch apart from the path before it.
+                        .child(
+                            gpui::svg()
+                                .data(BRANCH_ICON)
+                                .flex_none()
+                                .size(px(12.))
+                                .text_color(chrome.ink_3)
+                                .group_hover(base_group, move |style| style.text_color(ink_1)),
+                        )
                         .child(name)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
@@ -3442,7 +3456,8 @@ impl Shika {
         right
     }
 
-    /// The picker, a dialog, or Settings, over a scrim near the top.
+    /// The picker, a dialog, or Settings, near the top. No overlay dims the
+    /// window: Settings previews opacity and blur on it, and the rest match.
     fn overlay_view(
         &self,
         overlay: &Overlay,
@@ -3455,7 +3470,6 @@ impl Shika {
         let picker = matches!(overlay, Overlay::Picker { .. });
         let top = height * if picker { 0.18 } else { 0.20 };
         let max_h = (height - top - px(24.)).max(px(120.));
-        let settings = matches!(overlay, Overlay::Settings { .. });
         let panel = match overlay {
             Overlay::Picker { project, index } => {
                 let name = self
@@ -3827,14 +3841,7 @@ impl Shika {
                     .w(px(440.))
                     .gap(px(4.))
                     .child(dialog_title(div()).mb(px(4.)).child("Settings"))
-                    .child(self.setting_row(
-                        0,
-                        "Background opacity",
-                        &opacity,
-                        "%",
-                        chrome,
-                        cx,
-                    ))
+                    .child(self.setting_row(0, "Background opacity", &opacity, "%", chrome, cx))
                     .child(self.setting_row(1, "Background blur", &blur, "", chrome, cx))
                     .child(
                         list_row(*row == 2, chrome)
@@ -3847,11 +3854,13 @@ impl Shika {
                                     .gap(px(2.))
                                     .rounded(px(7.))
                                     .bg(chrome.sunken)
-                                    .child(choice("translucent-sidebar", "Sidebar", !both).on_click(
-                                        cx.listener(|this, _, window, cx| {
-                                            this.step_setting(2, -1, window, cx)
-                                        }),
-                                    ))
+                                    .child(
+                                        choice("translucent-sidebar", "Sidebar", !both).on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.step_setting(2, -1, window, cx)
+                                            }),
+                                        ),
+                                    )
                                     .child(
                                         choice("translucent-both", "Sidebar and terminal", both)
                                             .on_click(cx.listener(|this, _, window, cx| {
@@ -3860,20 +3869,16 @@ impl Shika {
                                     ),
                             ),
                     )
-                    .child(self.setting_row(FONT_ROW, "Font size", &font, "px", chrome, cx))
+                    .child(self.setting_row(
+                        FONT_ROW,
+                        "Terminal font size",
+                        &font,
+                        "px",
+                        chrome,
+                        cx,
+                    ))
                     .child(self.prefix_row(chrome, cx))
                     .child(self.sound_row(chrome, cx))
-                    .child(
-                        div()
-                            .mt(px(6.))
-                            .px(px(10.))
-                            .text_size(px(11.5))
-                            .line_height(px(16.))
-                            .text_color(chrome.ink_3)
-                            .child(
-                                "Opacity 0 to 100%. Blur radius 0 to 255, shown when opacity is below 100%. Font size is the terminal text, 8 to 32. The prefix starts each new branch name, like hieu/. Notification sound plays the system alert with the banner.",
-                            ),
-                    )
                     .child(
                         div()
                             .flex()
@@ -3891,8 +3896,6 @@ impl Shika {
             .absolute()
             .occlude()
             .inset_0()
-            // Settings leaves the window undimmed, so it is the preview.
-            .when(!settings, |d| d.bg(chrome.scrim))
             .flex()
             .items_start()
             .justify_center()
@@ -3921,6 +3924,10 @@ const WORDMARK_INSET: f32 = 90.;
 
 /// Filled gear. Drawn as an alpha mask and tinted by the element's text color.
 const SETTINGS_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" fill-rule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 0 0-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 0 0-2.282.819l-.922 1.597a1.875 1.875 0 0 0 .432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 0 0 0 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 0 0-.432 2.385l.922 1.597a1.875 1.875 0 0 0 2.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 0 0 2.28-.819l.923-1.597a1.875 1.875 0 0 0-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 0 0 0-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 0 0-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 0 0-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 0 0-1.85-1.567h-1.843ZM12 15.75a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z"/></svg>"##;
+
+/// Octicons git-branch, before the base branch on a project header. Drawn as
+/// an alpha mask and tinted by the element's text color.
+const BRANCH_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#000" fill-rule="evenodd" d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"/></svg>"##;
 
 /// A tooltip naming a control and its key, such as `Settings ⌘,`.
 struct KeyTip {
