@@ -3069,81 +3069,113 @@ impl Shika {
                 .unwrap_or_else(|| card.stage.clone());
             let term_hover = chrome.term_hover;
             let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+            // Connected tabs: the active tab is filled like the terminal and
+            // the header's bottom line breaks under it. The line is drawn by
+            // each piece of the row, not the header, because the active tab
+            // cannot cover a line it is painted over while translucent.
+            let line = chrome.term_line;
+            let (tab_fill, term_fg, term_white) =
+                (chrome.term_tab, chrome.term_fg, chrome.term_white);
+            let baseline = |d: gpui::Div| d.flex_none().h_full().border_b_1().border_color(line);
             let mut tabs = div()
                 .id("terminal-tabs")
-                .flex_1()
                 .min_w_0()
+                .h_full()
                 .flex()
-                .items_center()
                 .overflow_x_scroll()
-                .track_scroll(&card.tab_scroll)
-                .p(px(2.))
-                .gap(px(2.))
-                .rounded(px(7.))
-                .bg(chrome.term_seg)
-                .child(
-                    segment(
-                        "agent",
-                        card.preset.clone(),
-                        active_tab == 0,
-                        chrome.term_seg_active,
-                        chrome.term_white,
-                        chrome.term_dim,
-                    )
+                .track_scroll(&card.tab_scroll);
+            let labels = std::iter::once((card.preset.to_string(), false)).chain(
+                card.shells.iter().map(|pane| {
+                    let label = if pane.shell_number == 1 {
+                        "Shell".to_string()
+                    } else {
+                        format!("Shell {}", pane.shell_number)
+                    };
+                    (label, true)
+                }),
+            );
+            for (tab, (label, closable)) in labels.enumerate() {
+                let active = active_tab == tab;
+                let group = SharedString::from(format!("terminal-tab-{tab}"));
+                let body = div()
+                    .id(("terminal-tab", tab))
                     .occlude()
-                    .on_click(cx.listener(|this, _, window, cx| this.select_tab(0, window, cx))),
-                );
-            for (index, pane) in card.shells.iter().enumerate() {
-                let tab = index + 1;
-                let label = if pane.shell_number == 1 {
-                    "Shell".to_string()
-                } else {
-                    format!("Shell {}", pane.shell_number)
-                };
-                tabs = tabs.child(
-                    div()
-                        .id(("shell-tab", tab))
-                        .occlude()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .rounded(px(5.))
-                        .when(active_tab == tab, |d| d.bg(chrome.term_seg_active))
-                        .child(
-                            segment(
-                                ("shell-select", tab),
-                                label,
-                                active_tab == tab,
-                                chrome.term_seg_active,
-                                chrome.term_white,
-                                chrome.term_dim,
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| this.select_tab(tab, window, cx),
-                            )),
-                        )
-                        .child(
-                            segment(
-                                ("shell-close", tab),
-                                "×",
-                                false,
-                                chrome.term_seg_active,
-                                chrome.term_white,
-                                chrome.term_dim,
-                            )
-                            .hover(move |style| style.bg(term_hover))
-                            .tooltip(move |_, cx| {
-                                cx.new(|_| KeyTip {
-                                    bg: tip_bg,
-                                    fg: tip_fg,
-                                    text: "Close shell tab (stops its processes)  ⌘W".into(),
+                    .group(group.clone())
+                    .h(px(TAB_HEIGHT))
+                    .min_w(px(88.))
+                    .max_w(px(180.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .pl(px(12.))
+                    .pr(px(if closable { 6. } else { 12. }))
+                    .rounded_t(px(7.))
+                    .text_size(px(12.))
+                    .line_height(px(16.))
+                    .cursor_pointer()
+                    .when(active, |d| {
+                        d.bg(tab_fill)
+                            .border_t_1()
+                            .border_l_1()
+                            .border_r_1()
+                            .border_color(line)
+                            .text_color(term_white)
+                    })
+                    .when(!active, |d| {
+                        d.text_color(chrome.term_dim)
+                            .hover(move |style| style.bg(term_hover).text_color(term_fg))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(label),
+                    )
+                    .when(closable, |d| {
+                        d.child(
+                            div()
+                                .id(("shell-close", tab))
+                                .flex_none()
+                                .size(px(16.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(4.))
+                                .text_color(chrome.term_dim)
+                                .when(!active, |d| {
+                                    d.opacity(0.).group_hover(group, |style| style.opacity(1.))
                                 })
-                                .into()
-                            })
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| this.close_tab(tab, window, cx),
-                            )),
-                        ),
+                                .hover(move |style| style.bg(term_hover).text_color(term_white))
+                                .child("×")
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| KeyTip {
+                                        bg: tip_bg,
+                                        fg: tip_fg,
+                                        text: "Close shell tab (stops its processes)  ⌘W".into(),
+                                    })
+                                    .into()
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(tab, window, cx)
+                                })),
+                        )
+                    })
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.select_tab(tab, window, cx)),
+                    );
+                // Under the active tab the line takes the tab's own fill, so
+                // the tab runs into the terminal without a seam.
+                tabs = tabs.child(
+                    baseline(div())
+                        .flex()
+                        .flex_col()
+                        .justify_end()
+                        .when(active, |d| d.border_color(tab_fill))
+                        .child(body),
                 );
             }
             let header = div()
@@ -3151,61 +3183,83 @@ impl Shika {
                 .h(px(BAR_HEIGHT))
                 .flex_shrink_0()
                 .flex()
-                .items_center()
-                .gap(px(12.))
-                .pl(px(14.))
-                .pr(px(12.))
                 .bg(with_alpha(chrome.term_header, chrome.term_header_alpha))
-                .border_b_1()
-                .border_color(chrome.term_line)
+                .child(baseline(div()).w(px(8.)))
                 .child(tabs)
                 .child(
-                    segment(
-                        "new-terminal",
-                        "+",
-                        false,
-                        chrome.term_seg_active,
-                        chrome.term_white,
-                        chrome.term_dim,
-                    )
-                    .occlude()
-                    .hover(move |style| style.bg(term_hover))
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| KeyTip {
-                            bg: tip_bg,
-                            fg: tip_fg,
-                            text: "New shell tab  ⌘T".into(),
-                        })
-                        .into()
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| this.new_shell(true, window, cx))),
-                )
-                .child(
-                    div()
-                        .id("close")
-                        .occlude()
-                        .flex_none()
+                    baseline(div())
                         .flex()
-                        .items_center()
-                        .gap(px(7.))
-                        .border_1()
-                        .border_color(chrome.term_seg_active)
-                        .rounded(px(6.))
-                        .pl(px(10.))
-                        .pr(px(6.))
-                        .py(px(4.))
-                        .text_size(px(12.))
-                        .line_height(px(16.))
-                        .text_color(chrome.term_fg)
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(term_hover))
-                        .child(if card.creating {
-                            "Cancel setup"
-                        } else {
-                            "Close task"
-                        })
-                        .child(kbd("c", chrome.term_line, chrome.term_dim).py_0())
-                        .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+                        .flex_col()
+                        .justify_end()
+                        .px(px(4.))
+                        .child(
+                            div().h(px(TAB_HEIGHT)).flex().items_center().child(
+                                div()
+                                    .id("new-terminal")
+                                    .occlude()
+                                    .size(px(24.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(6.))
+                                    .text_size(px(15.))
+                                    .text_color(chrome.term_dim)
+                                    .cursor_pointer()
+                                    .hover(move |style| style.bg(term_hover).text_color(term_white))
+                                    .child("+")
+                                    .tooltip(move |_, cx| {
+                                        cx.new(|_| KeyTip {
+                                            bg: tip_bg,
+                                            fg: tip_fg,
+                                            text: "New shell tab  ⌘T".into(),
+                                        })
+                                        .into()
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.new_shell(true, window, cx)
+                                    })),
+                            ),
+                        ),
+                )
+                .child(baseline(div()).flex_1().min_w_0())
+                .child(
+                    baseline(div())
+                        .flex()
+                        .flex_col()
+                        .justify_end()
+                        .pl(px(12.))
+                        .pr(px(12.))
+                        .child(
+                            div().h(px(TAB_HEIGHT)).flex().items_center().child(
+                                div()
+                                    .id("close")
+                                    .occlude()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(7.))
+                                    .border_1()
+                                    .border_color(chrome.term_seg_active)
+                                    .rounded(px(6.))
+                                    .pl(px(10.))
+                                    .pr(px(6.))
+                                    .py(px(4.))
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(chrome.term_fg)
+                                    .cursor_pointer()
+                                    .hover(move |style| style.bg(term_hover))
+                                    .child(if card.creating {
+                                        "Cancel setup"
+                                    } else {
+                                        "Close task"
+                                    })
+                                    .child(kbd("c", chrome.term_line, chrome.term_dim).py_0())
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.close(window, cx)),
+                                    ),
+                            ),
+                        ),
                 );
             let pane = card.active_pane();
             right = right
@@ -3215,10 +3269,11 @@ impl Shika {
                         .flex()
                         .items_center()
                         .gap(px(12.))
-                        .px(px(14.))
-                        .py(px(4.))
+                        .px(px(20.))
+                        .pt(px(8.))
+                        .pb(px(2.))
                         .flex_shrink_0()
-                        .bg(with_alpha(chrome.term_header, chrome.term_header_alpha))
+                        .bg(chrome.term_surface)
                         .text_size(px(11.5))
                         .text_color(chrome.term_dim)
                         .child(
@@ -3813,6 +3868,8 @@ const MONO: &str = "JetBrains Mono";
 const COLUMN_WIDTH: f32 = 540.;
 /// The top row of both halves of the window, which is the title bar.
 const BAR_HEIGHT: f32 = 48.;
+/// A terminal tab, sitting on the bottom of the 48px header.
+const TAB_HEIGHT: f32 = 34.;
 /// The traffic lights sit 18px from the left, centered in the 48px bar.
 /// AppKit's buttons are 14px tall on macOS 26, so 17px above and below.
 const TRAFFIC_LIGHTS: (f32, f32) = (18., 17.);
