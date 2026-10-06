@@ -48,6 +48,9 @@ mod agents;
 mod cli_title;
 mod error;
 mod path_env;
+mod preparation;
+#[cfg(test)]
+mod preparation_tests;
 mod projects;
 mod pty;
 mod session;
@@ -62,6 +65,7 @@ use std::time::{Duration, Instant};
 pub use agents::{CliCatalog, CliPreset};
 pub use error::{Error, Result};
 pub use path_env::{LoginShellError, PathEnv};
+pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use session::{DiffStat, Session, SessionGitState, ShellOpen};
@@ -127,6 +131,10 @@ pub struct Core {
     /// The latest base branch fetch per project id, and a signal when one ends.
     fetches: Mutex<HashMap<String, BaseFetch>>,
     fetched: Condvar,
+    /// Journaled but not yet live. Their setup can be cancelled when a project
+    /// is removed, and leftovers never offers a tree with an active writer.
+    preparing: Mutex<HashMap<PathBuf, (String, PreparationControl)>>,
+    preparation_slots: preparation::PreparationLimiter,
 }
 
 impl Core {
@@ -148,6 +156,8 @@ impl Core {
             cli_home: CliHome::detect(),
             fetches: Mutex::new(HashMap::new()),
             fetched: Condvar::new(),
+            preparing: Mutex::new(HashMap::new()),
+            preparation_slots: preparation::PreparationLimiter::default(),
         })
     }
 
@@ -205,11 +215,53 @@ impl Core {
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         self.projects.remove(id)?;
+        for (project, control) in self
+            .preparing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            if project == id {
+                control.cancel_preserving_worktree();
+            }
+        }
         let gone = self.sessions.remove_project(id);
         for session in &gone {
             self.hang_up(session);
         }
         Ok(gone)
+    }
+
+    /// Called synchronously before app shutdown. Stops setup process groups,
+    /// but never removes their worktrees, matching quit's preservation rule.
+    pub fn cancel_preparations(&self) {
+        for (_, control) in self
+            .preparing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            control.cancel_preserving_worktree();
+        }
+    }
+
+    /// Reads the opt-in repository configuration without executing it. A
+    /// missing file is the existing launch path, not inferred preparation.
+    pub fn project_preparation(&self, id: &str) -> Result<Option<PreparationConfig>> {
+        preparation::load(&self.projects.get(id)?.path)
+    }
+
+    pub fn preparation_approved(&self, id: &str, config: &PreparationConfig) -> Result<bool> {
+        Ok(self.projects.get(id)?.approved_preparation.as_ref() == Some(config))
+    }
+
+    /// Consent is local and scoped to the parsed config. Re-read before saving
+    /// so an approval dialog cannot approve a replacement it never displayed.
+    pub fn approve_preparation(&self, id: &str, config: &PreparationConfig) -> Result<()> {
+        if self.project_preparation(id)?.as_ref() != Some(config) {
+            return Err(Error::PreparationNeedsApproval);
+        }
+        self.projects.approve_preparation(id, config.clone())
     }
 
     /// The project's base branch as New would resolve it now, without
@@ -348,14 +400,37 @@ impl Core {
     /// project's base branch, journals it, and starts the CLI there on a PTY
     /// of `size` that feeds `sink`. The base is fetched from origin first,
     /// best effort and bounded (see [`Core::prefetch_base`]). A configured
-    /// base that exists nowhere is an error. Anything that fails after the
-    /// worktree exists removes it again. Blocking: runs git.
+    /// base that exists nowhere is an error. Failed launches remove only a
+    /// provably untouched worktree; changed or unverifiable work is journaled
+    /// for explicit cleanup. Blocking: runs git and optional setup commands.
     pub fn create_session(
         &self,
         project_id: &str,
         preset_id: &str,
         size: PtySize,
         sink: impl PtySink,
+    ) -> Result<Session> {
+        self.create_session_with_preparation(
+            project_id,
+            preset_id,
+            size,
+            sink,
+            PreparationControl::default(),
+            |_| {},
+        )
+    }
+
+    /// Same launch, with cancellable preparation and live progress. Commands
+    /// run off the app thread, outside the operation lock. At most two setups
+    /// run at once. No agent PTY exists until all preparation succeeds.
+    pub fn create_session_with_preparation(
+        &self,
+        project_id: &str,
+        preset_id: &str,
+        size: PtySize,
+        sink: impl PtySink,
+        control: PreparationControl,
+        mut report: impl FnMut(PreparationEvent),
     ) -> Result<Session> {
         let env = self.path_env();
         let preset = agents::presets_from(env)
@@ -366,71 +441,174 @@ impl Core {
             .path
             .clone()
             .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
-        // Outside the lock: a slow network must not hold up close or discard.
-        self.freshen_base(&self.projects.get(project_id)?);
-        let _guard = self
-            .operations
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let project = self.projects.get(project_id)?;
-        let git = self.git()?;
-        let id = session::new_id(&self.sessions.ids());
-        let repo = project.path.as_path();
-        let base = worktree::resolve_base(&git, env.path(), repo, project.base_branch.as_deref())?;
-        let draft = worktree::create_draft(&git, env.path(), repo, &id, base.start())?;
-        let entry = JournalEntry {
-            project_id: project.id.clone(),
-            branch: draft.branch.clone(),
-            path: draft.path.clone(),
-            base_ref: base.reference.clone(),
-        };
-        if let Err(err) = self.journal.add(&entry) {
-            let _ =
-                worktree::remove_draft(&git, env.path(), repo, &draft.path, &draft.branch, true);
-            return Err(err);
+        let config = self.project_preparation(project_id)?;
+        if let Some(config) = &config
+            && !self.preparation_approved(project_id, config)?
+        {
+            return Err(Error::PreparationNeedsApproval);
         }
-        let opened = self.ptys.open(
-            SpawnRequest {
-                program,
-                args: preset.args.clone(),
-                cwd: draft.path.clone(),
-                path: env.path().to_string(),
-                size,
-                env: Vec::new(),
-            },
-            sink,
-        );
-        let pty = match opened {
-            Ok(pty) => pty,
-            Err(err) => {
-                let _ = self.journal.remove_path(&entry.path);
+        control.check()?;
+        report(PreparationEvent::Stage("Creating worktree...".into()));
+        // Neither fetching nor installation holds up close or discard.
+        self.freshen_base(&self.projects.get(project_id)?);
+        let (project, base, draft) = {
+            let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+            control.check()?;
+            let project = self.projects.get(project_id)?;
+            if preparation::load(&project.path)? != config {
+                return Err(Error::PreparationNeedsApproval);
+            }
+            let git = self.git()?;
+            let mut ids = self.sessions.ids();
+            ids.extend(
+                self.journal
+                    .list()?
+                    .iter()
+                    .filter_map(|e| e.branch.strip_prefix("shika-draft-").map(str::to_owned)),
+            );
+            let id = session::new_id(&ids);
+            let base = worktree::resolve_base(
+                &git,
+                env.path(),
+                &project.path,
+                project.base_branch.as_deref(),
+            )?;
+            let draft = worktree::create_draft(&git, env.path(), &project.path, &id, base.start())?;
+            let entry = JournalEntry {
+                project_id: project.id.clone(),
+                branch: draft.branch.clone(),
+                path: draft.path.clone(),
+                base_ref: base.reference.clone(),
+            };
+            if let Err(err) = self.journal.add(&entry) {
                 let _ = worktree::remove_draft(
                     &git,
                     env.path(),
-                    repo,
+                    &project.path,
                     &draft.path,
                     &draft.branch,
                     true,
                 );
                 return Err(err);
             }
+            self.preparing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(draft.path.clone(), (project.id.clone(), control.clone()));
+            (project, base, draft)
         };
-        let session = Session {
-            id,
-            project_id: project.id,
-            preset_id: preset.id,
-            title: format!("New {}", preset.name),
-            preset_name: preset.name,
-            branch: draft.branch,
-            repo: project.path,
-            worktree: draft.path,
-            base_ref: base.reference,
-            pty,
-            shell_pty: None,
-            cli_titled: false,
-        };
-        self.sessions.insert(session.clone());
-        Ok(session)
+        let prepared = (|| {
+            if let Some(config) = &config {
+                report(PreparationEvent::Stage("Waiting for setup slot...".into()));
+                let _slot = self.preparation_slots.acquire(&control)?;
+                preparation::prepare(
+                    config,
+                    &project.path,
+                    &draft.path,
+                    &self.git()?,
+                    env.path(),
+                    &control,
+                    &mut report,
+                )?;
+            }
+            control.check()
+        })();
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        let result = (|| {
+            prepared?;
+            control.check()?;
+            self.projects.get(project_id)?;
+            if preparation::load(&project.path)? != config {
+                return Err(Error::PreparationNeedsApproval);
+            }
+            // A setup script must not move the task onto another branch.
+            if worktree::head_branch(&self.git()?, env.path(), &draft.path)?.as_ref()
+                != Some(&draft.branch)
+            {
+                return Err(Error::Preparation(
+                    "Setup changed the task branch; return to it before launching".into(),
+                ));
+            }
+            report(PreparationEvent::StartingAgent);
+            let pty = self.ptys.open(
+                SpawnRequest {
+                    program,
+                    args: preset.args.clone(),
+                    cwd: draft.path.clone(),
+                    path: env.path().to_string(),
+                    size,
+                    env: Vec::new(),
+                },
+                sink,
+            )?;
+            if control.is_cancelled() {
+                self.ptys.close(pty);
+                return Err(Error::PreparationCancelled);
+            }
+            let session = Session {
+                id: draft.branch.trim_start_matches("shika-draft-").to_string(),
+                project_id: project.id.clone(),
+                preset_id: preset.id,
+                title: format!("New {}", preset.name),
+                preset_name: preset.name,
+                branch: draft.branch.clone(),
+                repo: project.path.clone(),
+                worktree: draft.path.clone(),
+                base_ref: base.reference.clone(),
+                pty,
+                shell_pty: None,
+                cli_titled: false,
+            };
+            self.sessions.insert(session.clone());
+            Ok(session)
+        })();
+        self.preparing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&draft.path);
+        match result {
+            Ok(session) => Ok(session),
+            Err(err) => {
+                // Remove only a provably untouched failed task. Scripts can
+                // produce valuable tracked edits or commits; preserve those
+                // and any unverified tree in the journal for explicit cleanup.
+                let git = self.git()?;
+                let safe = !control.preserves_worktree()
+                    && worktree::head_branch(&git, env.path(), &draft.path)
+                        .ok()
+                        .flatten()
+                        .as_ref()
+                        == Some(&draft.branch)
+                    && worktree::git_state(
+                        &git,
+                        env.path(),
+                        &project.path,
+                        &draft.path,
+                        base.reference.as_deref(),
+                        false,
+                    )
+                    .is_ok_and(|state| !state.dirty && !state.has_own_commits && !state.pushed);
+                if safe
+                    && worktree::remove_draft(
+                        &git,
+                        env.path(),
+                        &project.path,
+                        &draft.path,
+                        &draft.branch,
+                        false,
+                    )
+                    .is_ok()
+                {
+                    self.journal.remove_path(&draft.path)?;
+                    Err(err)
+                } else {
+                    Err(Error::Preparation(format!(
+                        "{err} Worktree kept at {}; inspect it in Leftover worktrees.",
+                        draft.path.display()
+                    )))
+                }
+            }
+        }
     }
 
     /// Starts the user's login shell in the session's worktree the first
@@ -609,6 +787,17 @@ impl Core {
         )
     }
 
+    /// A launch completed after its UI was cancelled or dropped. Stop it,
+    /// preserving the journal and any setup output; no user prompt was sent.
+    pub fn cancel_session_start(&self, id: &str) -> Result<()> {
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(session) = self.sessions.get(id) {
+            self.hang_up(&session);
+            self.sessions.remove(id);
+        }
+        Ok(())
+    }
+
     /// Explicitly confirmed discard. Stops both PTYs, then deletes the tree
     /// and local branch. No commit is created. Blocking.
     pub fn session_discard(&self, id: &str) -> Result<()> {
@@ -740,11 +929,15 @@ impl Core {
     /// stale journal entry can be removed on request. Never cleans automatically.
     pub fn leftovers_list(&self) -> Result<Vec<JournalEntry>> {
         let live = self.sessions.all();
+        let preparing = self.preparing.lock().unwrap_or_else(|e| e.into_inner());
         Ok(self
             .journal
             .list()?
             .into_iter()
-            .filter(|entry| !live.iter().any(|session| session.worktree == entry.path))
+            .filter(|entry| {
+                !live.iter().any(|session| session.worktree == entry.path)
+                    && !preparing.contains_key(&entry.path)
+            })
             .collect())
     }
 
@@ -934,6 +1127,7 @@ mod tests {
                 name: "job-hunting".into(),
                 path: PathBuf::from("/Users/x/code/job-hunting"),
                 base_branch: None,
+                approved_preparation: None,
             }]
         );
         assert_eq!(

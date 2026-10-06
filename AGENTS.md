@@ -27,6 +27,8 @@ In particular:
 
 The GPUI app is implemented in `crates/shika`. The Tauri, React, xterm.js, Node, and Vite app has been removed. The app includes project persistence, draft worktrees, cards, the keyboard map, shell toggle, task branch naming from the CLI's own session title, a two-second quiet timer, native notifications with the system alert sound, discard-or-push close, and explicit leftovers cleanup.
 
+Optional preparation: `.shika/worktrees.json` in the main checkout declares `setup-worktree` commands, literal ignored `copy-files`, and `timeout-seconds` (default 600). New asks for local approval, again on parsed configuration changes. Copy/setup finish before the CLI starts, with two setup slots, output in the existing terminal, cancel, and fresh-worktree retry. Setup typing is suppressed; startup query replies must still reach the agent. Active preparations stay journaled but out of disposable leftovers. Failures remove only provably untouched trees; changed or unverifiable work stays for explicit cleanup. Quit/project removal cancel setup and retain trees. No configuration means the existing flow, no pooling, inferred installs, or execution of Cursor/Codex configuration. Commands are trusted code, not a sandbox, and must not daemonize. Before modifying this feature, read `docs/worktree-preparation.md`: decisions, launch/cleanup lifecycle, symbol map, input-phase traps, debugging fixture, and extension guardrails.
+
 Branch names: the first prompt line names the branch at once. About a second later the CLI's own session title, read from Claude Code's, Codex's, Cursor's, or Pi's private files, renames it once, without the project name and with the optional Settings prefix. Pi has a title only when one was set. Those files are not a public API, so reading them is best effort; on any failure the prompt name stays. A branch already on a remote is never renamed. `PLAN.md` has the rules; `docs/branch-naming.md` explains the why, the code map, the CLI file formats, and how to debug it.
 
 Asking is not parsed. Ready means the output became quiet or the process exited, including a non-zero exit. Notifications are titled `{project} - {task}` and route clicks to the matching card. A card notifies once per turn: a turn starts when the user types or pastes into the agent, and it notifies only if output kept arriving at least a second after the user's last input. Echoes and the redraws that focus, clicks, scrolling, or a resize do not notify and do not mark the card Working. A draft typed into the agent, without Enter, leaves a Ready card Ready, so Close still sees an idle agent. Permission denial is reported in the app.
@@ -43,7 +45,7 @@ Before any UI work, read `design/DESIGN.md` and follow it. That file is the sour
 
 ## Using the app
 
-`a` or Add project picks a git repo. A nested folder becomes the repo root. `n` opens the CLI picker (`j` / `k`, `1` / `2` / `3` / `4`, Enter, Escape). The new card is selected and the CLI is already in `<repo>/.worktrees/shika-draft-<id>`.
+`a` or Add project picks a git repo. A nested folder becomes the repo root. `n` opens the CLI picker (`j` / `k`, `1` / `2` / `3` / `4`, Enter, Escape). The new card is selected and the CLI starts in `<repo>/.worktrees/shika-draft-<id>`, after approval and setup when preparation is configured.
 
 The column is 540px. Its 48px top row is the title bar: traffic lights, the wordmark, the gear, and New agent; the terminal header fills the same row on the right, and empty space in both drags the window. The `+` on a project header, or its empty box, opens the picker for that project. A project's Remove appears when its header is hovered. Clicking a status chip selects the first card with that status, in row order.
 
@@ -76,7 +78,7 @@ crates/shika/           the GPUI app: window, cards, picker, close dialog, setti
 
 `assets/fonts/` holds JetBrains Mono and its OFL license. `assets/macos/` holds the bundle metadata and icon. `scripts/bundle-app.sh` builds a local ad hoc signed `.app`. `site/` is the static landing page; see `site/README.md`.
 
-App data: `~/Library/Application Support/com.hieule.shika/`, the same directory used before the migration. `projects.json` and `worktrees.json` keep working there. `projects.json` holds each project's optional `baseBranch`; `worktrees.json` records each worktree's `baseRef`. `settings.json` holds the appearance, the terminal font size, `branchPrefix`, and `notificationSound`; a missing file or field takes the default (opaque, 14, no prefix, sound on). Sessions, titles, status, and PTY ids are memory only.
+App data: `~/Library/Application Support/com.hieule.shika/`, the same directory used before the migration. `projects.json` and `worktrees.json` keep working there. `projects.json` holds each project's optional `baseBranch` and locally consented `approvedPreparation`; `worktrees.json` records each worktree's `baseRef`. `settings.json` holds the appearance, the terminal font size, `branchPrefix`, and `notificationSound`; a missing file or field takes the default (opaque, 14, no prefix, sound on). Sessions, titles, status, and PTY ids are memory only.
 
 Worktrees live at `<repo>/.worktrees/<branch>`. `.worktrees/` is appended to that repo's `info/exclude`. Do not edit the user's `.gitignore` when the exclude file works.
 
@@ -102,6 +104,8 @@ open target/debug/Shika.app
 `cargo run` inherits a terminal `PATH` and hides the Dock-launch bug. GUI apps do not see Homebrew, nvm, or `~/.local/bin`. `path_env` runs the login shell once at startup from a short `PATH`, with the environment cleared, because Nix's `__NIX_DARWIN_SET_ENVIRONMENT_DONE` stops a login shell from rebuilding `PATH`. Claude and Cursor on this machine are under `~/.local/bin`. The real check is a built `.app` opened with `open`, not only `cargo run`.
 
 Claude Code saves no transcript, and so writes no session title, when it inherits `CLAUDE_CODE_CHILD_SESSION`. A Shika started with `cargo run` from inside a Claude Code session passes that variable to its PTYs, so branch titles fall back to the prompt there. Launch with `open` to test naming.
+
+Preparation integration tests currently have a known parallel PID/timestamp temp-directory collision. `docs/worktree-preparation.md` records diagnosis and a serial workaround, not a fix; retain parallel workspace validation.
 
 Never test against the author's normal `projects.json`. Use disposable git repositories and local bare remotes, with `open -n target/debug/Shika.app --args --data-dir /absolute/test/data`. Before sending synthetic keystrokes, confirm Shika's own window is in front. `--diagnostics-file /absolute/report` writes CLI discovery there and metadata-only native notification diagnostics to `/absolute/report.notifications`.
 

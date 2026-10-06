@@ -13,6 +13,14 @@ The PRD is the spec, except where this file records a later decision from the au
 - Each project has an optional base branch, the branch New starts from, for repos where work happens on a branch such as `dev` and merges to `main` later. Unset, New starts from the remote default branch. The project header shows it, and `b` or a click on it opens the Base branch dialog. A card measures its diff stat and its close checks against the base it started from, so changing the base later does not touch running cards. Decided by the author 2026-10-05. See "Worktree".
 - A Settings dialog (Cmd-,) sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, the terminal font size (8 to 32, default 14), and whether a notification plays the system alert sound (on by default). The title bar uses that same opacity, so the window blur shows through it. Saved in `settings.json`. The default is opaque. Decided 2026-10-04.
 
+## Optional worktree preparation
+
+Later author decision: keep fresh task worktrees and add opt-in preparation, rather than pooling or compiler-cache work. Repository configuration lives at `.shika/worktrees.json`, with ordered `setup-worktree` commands, selected ignored `copy-files`, and an optional `timeout-seconds` (default 600). No inferred package manager, automatic build, shared mutable dependency directory, or automatic execution of another app's configuration.
+
+Adding a project does not run code. New requires locally persisted approval for the parsed configuration; changes ask again. Copy and setup finish before the agent PTY opens. Stages and output use the existing terminal, input is suppressed during setup, and cards offer cancel or fresh-worktree retry. Two preparations can run concurrently without holding the core operation lock. Failed untouched tasks are removed; changed or unverifiable work remains journaled for explicit leftovers cleanup. Quit and project removal cancel setup while retaining worktrees. Existing branch, CLI flags, shell, notification, and safe-close rules remain unchanged.
+
+See `docs/worktree-preparation.md` for the decision rationale and benchmark caveats, configuration, launch/cleanup lifecycle, trust boundaries, symbol map, debugging fixture, and extension guardrails. `MANUAL_CHECKS.md` records acceptance evidence, not a guarantee that every GUI case was tested.
+
 ## Stack change, 2026-10-04
 
 Shika moves from Tauri 2, React, and xterm.js to a pure Rust app on GPUI, Zed's GPU UI framework. Everything, including the UI, is Rust.
@@ -126,7 +134,7 @@ design/                       DESIGN.md, Shika v3.dc.html, logo artwork
 
 Persisted in `~/Library/Application Support/com.hieule.shika/`, the same directory the Tauri build used, so existing files keep working:
 
-- `projects.json` - `{ id, name, path, baseBranch? }[]`. Name is the folder name. `baseBranch` is the short name the user typed, such as `dev`; missing means the remote default.
+- `projects.json` - `{ id, name, path, baseBranch?, approvedPreparation? }[]`. Name is the folder name. `baseBranch` is the short name the user typed, such as `dev`; missing means the remote default. `approvedPreparation` is local consent for the parsed `.shika/worktrees.json` configuration, never repository-provided consent.
 - `worktrees.json` - journal of `{ projectId, branch, path, baseRef? }` for crash cleanup. `baseRef` is the ref the branch started from. Not a session history.
 - `settings.json` - `{ appearance: { opacity, blur, translucency }, fontSize, branchPrefix, notificationSound }`. Opacity 0 to 100 percent, blur radius 0 to 255, translucency `sidebar` or `sidebarAndTerminal`. `notificationSound` plays the system alert with the banner and defaults to true.
 

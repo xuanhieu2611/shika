@@ -4900,6 +4900,7 @@ name = "shika-core"
 version = "0.1.0"
 dependencies = [
  "dirs 7.0.0",
+ "libc",
  "md-5",
  "portable-pty",
  "rusqlite",
