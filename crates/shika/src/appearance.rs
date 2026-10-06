@@ -101,13 +101,11 @@ fn macos_reduce_transparency() -> bool {
     }
 }
 
-/// One status hue: the dot, text that meets contrast on the column, and the
-/// summary chip fill.
+/// One status hue: the dot, and text that meets contrast on the column.
 #[derive(Clone, Copy, Debug)]
 pub struct StatusColors {
     pub dot: Rgba,
     pub text: Rgba,
-    pub chip: Rgba,
 }
 
 /// Colors for one paint of the window. Solid at 100% opacity, and whenever
@@ -382,32 +380,27 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
             StatusColors {
                 dot: rgb(0x68CA80),
                 text: rgb(0x89DA9B),
-                chip: rgb(0x1C3723),
             }
         } else {
             StatusColors {
                 dot: rgb(0x45B164),
                 text: rgb(0x21763C),
-                chip: rgb(0xD1F2D7),
             }
         },
         working: if dark {
             StatusColors {
                 dot: rgb(0x66ABE5),
                 text: rgb(0x8CC4F4),
-                chip: rgb(0x1E3243),
             }
         } else {
             StatusColors {
                 dot: rgb(0x4493D0),
                 text: rgb(0x266EA4),
-                chip: rgb(0xD5EBFE),
             }
         },
         waiting: StatusColors {
             dot: if dark { rgb(0x6B7065) } else { rgb(0xA3A79B) },
             text: ink_3,
-            chip: hover,
         },
         term_header,
         term_header_alpha,
