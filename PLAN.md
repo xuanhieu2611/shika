@@ -18,7 +18,7 @@ The PRD is the spec, except where this file records a later decision from the au
 
 Later author decision: replace the fixed Agent/Shell control with optional terminal tabs per task. New creates only the pinned CLI tab. `+` or Cmd+T creates an independent login shell in that task's worktree; multiple shells support tools such as Neovim, lazygit, and dev servers. Shell tabs have stable numbered labels and individual close controls. Closing a shell stops its processes without closing the agent, changing git, or deleting the worktree. The agent tab cannot be individually closed; Close task keeps the existing safe-close flow and stops every owned PTY.
 
-Each card retains its selected tab. Hidden terminals keep draining; only one terminal is visible. Tabs are memory only, with no global tabs, splits, session restoration, or built-in editor. Cmd+W closes the selected shell (does nothing on the agent). Cmd+Shift+] / Cmd+Shift+[ cycle tabs and wrap. Existing Cmd+] / Cmd+[ still navigate tasks; Cmd+N still creates an agent. `g` and Cmd+Enter retain a quick agent/first-shell toggle, creating the first shell only when none exists. Dirty Close cancellation keeps an already-selected shell or opens/selects the first shell. New shell typing queues before binding, and startup completion does not reclaim focus.
+Each card retains its selected tab. Hidden terminals keep draining; only one terminal is visible. Tabs are memory only, with no global tabs, splits, session restoration, or built-in editor. Cmd+W closes the selected shell and does nothing on the agent, so it never starts Close task. Ctrl+Tab / Ctrl+Shift+Tab cycle tabs and wrap. Cmd+1 through Cmd+9 jump to a tab, with the agent on Cmd+1, and do nothing when that tab is absent. Existing Cmd+] / Cmd+[ still navigate tasks; Cmd+N still creates an agent. Dirty Close cancellation keeps an already-selected shell or opens/selects the first shell. New shell typing queues before binding, and startup completion does not reclaim focus.
 
 The 48px terminal title row contains connected tabs (the active tab opens into the terminal), `+` after the last tab, and Close task. A metadata row beneath it, on the terminal background, carries the worktree path and focus hint. Existing theme, spacing, and type tokens are reused. See `docs/terminal-tabs.md` for rationale, architecture, lifecycle, debugging, and extension guardrails; `docs/keyboard-flow.md` for cross-surface keyboard behavior; and `MANUAL_CHECKS.md` for validation.
 
@@ -196,7 +196,7 @@ Put that PATH on every child. Resolve `claude` and `agent` inside that same envi
 
 ### Shell
 
-`g` opens the user's login shell with its cwd set to the worktree. No command hook and no push watcher. `git status` and `git diff` in that shell show this task's files. The user commits and pushes there themselves.
+A shell tab is the user's login shell with its cwd set to the worktree. No command hook and no push watcher. `git status` and `git diff` in that shell show this task's files. The user commits and pushes there themselves.
 
 ### Status and notifications
 
@@ -212,11 +212,11 @@ Put that PATH on every child. Resolve `claude` and `agent` inside that same envi
 
 Focus starts on the cards. `j` / `k` and arrows move through every card, including cards hidden by the three-card cap, and skip project headers. The three visible cards follow the selection. A project with no agents is still a row, but it is not a keyboard stop. `n` or Cmd+N opens the picker for the selected card's project, or the first project when nothing is selected, and Tab in the picker changes the project. `b` follows the selected card. An empty project's base branch is the click on its header label.
 
-`Enter` focuses the terminal. `Ctrl+Q` returns to the cards. `Escape` is typed into the terminal. `g` toggles agent and shell. `c` closes.
+`Enter` focuses the terminal. `Ctrl+Q` returns to the cards. `Escape` is typed into the terminal. `c` closes.
 
 Ignore the plain-key map while the terminal is focused, except `Ctrl+Q`. Also ignore it while a text field is focused, and while the picker or close dialog is open.
 
-The native Command flow layer works from cards or a terminal: `Cmd+Enter` switches agent/shell and focuses the destination, `Cmd+]` / `Cmd+[` select the next/previous agent in current row order (skip project headers, wrap, and preserve terminal versus card focus), and `Cmd+N` opens New for the current project. These actions are blocked while busy or while any overlay is open. The Agent menu exposes task and terminal-tab actions; New, new shell, and shell close have tooltips. `j` / `k` uses that same card-only order. Picker cancel, Settings dismissal, and Base branch completion/cancel restore the previous focus. Close cancel keeps its shell-routing rule. Selection changes reveal the selected row with minimal scrolling; ordinary redraws do not override manual scrolling. Shell focus moves immediately to the new view, which queues typeahead during startup; completion does not reclaim focus if the user left.
+The native shortcut layer works from cards or a terminal: `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle the selected task's tabs, `Cmd+1` through `Cmd+9` jump to a tab (`Cmd+1` is the agent), `Cmd+]` / `Cmd+[` select the next/previous agent in current row order (skip project headers, wrap, and preserve terminal versus card focus), and `Cmd+N` opens New for the current project. `Cmd+W` closes a shell and does nothing on the agent. These actions are blocked while busy or while any overlay is open. The Agent menu exposes task and terminal-tab actions; New, new shell, and shell close have tooltips. `j` / `k` uses that same card-only order. Picker cancel, Settings dismissal, and Base branch completion/cancel restore the previous focus. Close cancel keeps its shell-routing rule. Selection changes reveal the selected row with minimal scrolling; ordinary redraws do not override manual scrolling. Shell focus moves immediately to the new view, which queues typeahead during startup; completion does not reclaim focus if the user left.
 
 ### Layout
 
@@ -279,11 +279,11 @@ Check: two agents under one project show the right titles and statuses. A third 
 
 The map in the PRD, plus `a` and the picker keys. Keys do nothing while typing in the terminal.
 
-Check: add, new, move, focus terminal, ctrl+q back to the cards, toggle shell, close, all without the mouse.
+Check: add, new, move, focus terminal, ctrl+q back to the cards, close, all without the mouse.
 
 ### 6. Shell and close
 
-`g` opens the user's shell with cwd on the worktree. `git status` and `git diff` show that task. `git push` leaves the card in place.
+A shell tab is the user's shell with cwd on the worktree. `git status` and `git diff` show that task. `git push` leaves the card in place.
 
 Close with nothing to lose removes the card and the worktree. Close while the agent is working, the tree is dirty, or commits are unpushed asks: discard, or push when the tree is clean. Discard removes the worktree and the local branch. Push, on success, removes the card and the worktree and keeps the branch. A dirty tree sends the user back to the shell to commit. Shika does not commit.
 

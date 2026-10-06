@@ -45,16 +45,15 @@ With tools:     Pi   │ Shell × │ Shell 2   +                [Close task c]
 | --- | --- |
 | `+`, Cmd+T | Add and focus a new shell in the selected task |
 | Shell `×` | Close that specific shell, whether selected or not |
-| Cmd+W | Close the selected shell; no-op on the pinned agent |
-| Cmd+Shift+] / Cmd+Shift+[ | Next/previous task-local tab, wrapping; focus the destination |
-| `g` from cards | Toggle agent/first remaining shell without moving card focus; create a shell if none exists |
-| Cmd+Enter | Same quick toggle, but focus the destination terminal |
+| Cmd+W | Close the selected shell. On the pinned agent it does nothing, and it does not start Close task |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next/previous task-local tab, wrapping; focus the destination |
+| Cmd+1 through Cmd+9 | Jump to that tab and focus it. Cmd+1 is the pinned agent. A missing tab does nothing |
 | Cmd+] / Cmd+[ | Navigate tasks, not tabs; preserve card versus terminal focus |
 | Cmd+N | New agent, not new shell |
 | Enter from cards / Ctrl+Q from terminal | Focus the selected tab / return to cards |
 | Close task, `c` from cards | Existing safe-close flow for the whole task |
 
-The legacy quick toggle selects the **first remaining shell**, not the most recently used shell. Tab actions are blocked while an overlay is open or the app is busy; adding shells is also blocked while the card is being created/prepared. Ordinary typing and Escape still belong to the terminal program. Command shortcuts are app actions, not PTY input.
+Tab actions are blocked while an overlay is open or the app is busy; adding shells is also blocked while the card is being created/prepared. Ordinary typing and Escape still belong to the terminal program. Command shortcuts, Ctrl+Tab, and Ctrl+Shift+Tab are app actions, not PTY input.
 
 The title row stays 48px high. Tabs are connected tabs, not the old segmented control: the active tab takes the terminal's fill and the header's bottom line breaks under it. `+` follows the last tab, outside the scrolling strip, so it stays visible when tabs overflow; Close task stays at the right. The worktree path and focus hint sit in a row beneath, on the terminal background, as part of the active tab's page. Tabs, `+`, and Close occlude title dragging; empty title-row space, including above the tabs, still drags the window.
 
@@ -69,7 +68,7 @@ All UI symbols below are in `crates/shika/src/main.rs` unless otherwise noted. S
 | Task UI state | `Card`, `Card::active_pane` | Own agent and shell panes; resolve the selected terminal |
 | Terminal pane | `Pane`, `Pane::new` | Own one GPUI `TerminalView`, terminal engine, and shared `HostState` per PTY |
 | Header rendering | `terminal_side`, `TAB_HEIGHT`, `KeyTip`, `title_drag`; `appearance.rs`: `Chrome::term_tab`, `over_to_match` | Tab strip, shell close/add controls, metadata row, task close, and drag behavior |
-| Tab actions | `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `toggle` | Shell startup, selection, quick toggle, removal, and focus |
+| Tab actions | `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `toggle`, `SelectTerminal` | Shell startup, selection, numbered jump, removal, focus, and the close-cancel shell route |
 | Native dispatch | `gpui::actions!`, `Shika::render`, `main` | Root action handlers, Shika key context, key bindings, and Agent menu |
 | Focus and scroll | `focus_terminal`, `Card::tab_scroll`, `move_agent` | Focus the selected view and reveal tabs without resetting manual scrolling on every render |
 | Selection arithmetic | `crates/shika/src/model.rs`: `adjacent_tab`, `tab_after_close` | GPUI-independent wrap and removal rules |
@@ -77,7 +76,7 @@ All UI symbols below are in `crates/shika/src/main.rs` unless otherwise noted. S
 | Task shell ownership | `crates/shika-core/src/session.rs`: `Session`, `SessionStore` | Record shell PTYs and validate ownership on removal |
 | Core lifecycle | `crates/shika-core/src/lib.rs`: `open_shell`, `close_shell`, `hang_up` | Spawn independent shells, close one shell, or stop every task-owned PTY |
 | PTY implementation | `crates/shika-core/src/pty.rs`: `PtyHub` | Process/PTY ownership, reader threads, writes, resize, and teardown |
-| Terminal keyboard | `crates/shika-terminal/src/view.rs`: `key_for` | Keep Command combinations out of terminal key encoding |
+| Terminal keyboard | `crates/shika-terminal/src/view.rs`: `key_for` | Keep Command combinations, Ctrl+Tab, and Ctrl+Shift+Tab out of terminal key encoding |
 | Appearance updates | `set_font_size`, `push_terminal_theme` | Update the agent and every shell, including hidden ones |
 
 ### State and identity
@@ -176,7 +175,7 @@ Relevant automated coverage:
 - `session::tests::shells_are_independent_and_only_owned_shells_can_be_removed`: multiple shells and agent/cross-task ownership protection.
 - `tests::a_session_runs_in_its_worktree_and_close_removes_it` in core: independent PTY IDs, individual close, surviving shell writes, and full task teardown.
 - `startup_query_replies_and_typeahead_survive_until_pty_binding` in the app: ordered pre-bind replies/input.
-- `view::tests::command_is_left_to_the_app` in terminal: tab shortcuts remain excluded from PTY key encoding.
+- `view::tests::command_is_left_to_the_app` and `control_tab_is_left_to_the_app` in terminal: tab shortcuts, including Ctrl+Tab, remain excluded from PTY key encoding.
 
 Unit tests do not establish native shortcut dispatch, rendered overflow, focus restoration, or actual Neovim/lazygit behavior. Use the dedicated [manual checklist](../MANUAL_CHECKS.md#task-scoped-terminal-tabs), including light/dark, translucency, narrow windows, multiple tasks/shells, exited shells, startup failure, and safe Close cancellation. Keep passed evidence distinct from pending checks.
 

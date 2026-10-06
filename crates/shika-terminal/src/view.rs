@@ -665,7 +665,8 @@ impl Render for TerminalView {
 fn key_for(keystroke: &Keystroke, option_as_meta: bool) -> Option<(Key, KeyMods)> {
     let m = &keystroke.modifiers;
     // Command belongs to the app. Fn with a letter is a system shortcut.
-    if m.platform || m.function {
+    // Ctrl+Tab and Ctrl+Shift+Tab cycle Shika's tabs, so they stay out of the PTY.
+    if m.platform || m.function || (keystroke.key == "tab" && m.control && !m.alt) {
         return None;
     }
     let named = match keystroke.key.as_str() {
@@ -1554,6 +1555,25 @@ mod tests {
         for key in ["[", "]"] {
             assert_eq!(key_for(&stroke(key, command_shift), true), None);
         }
+    }
+
+    #[test]
+    fn control_tab_is_left_to_the_app() {
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::none()
+        };
+        let control_shift = Modifiers {
+            control: true,
+            shift: true,
+            ..Modifiers::none()
+        };
+        assert_eq!(key_for(&stroke("tab", control), true), None);
+        assert_eq!(key_for(&stroke("tab", control_shift), true), None);
+        assert_eq!(
+            key_for(&stroke("tab", Modifiers::none()), true),
+            Some((Key::Tab, KeyMods::NONE))
+        );
     }
 
     #[test]
