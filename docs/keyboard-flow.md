@@ -22,6 +22,7 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+1` through `Cmd+9` | Jump to that tab. `Cmd+1` is the pinned agent. A missing number does nothing | That terminal |
 | `Cmd+]` | Next agent in current row order | Terminal if invoked from a terminal; cards if invoked from cards |
 | `Cmd+[` | Previous agent in current row order | Same preservation rule |
+| `Cmd+B` | Hide or show the agent column | Unchanged; with the column hidden, `j`/`k` from cards still change the agent on screen |
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
 
 Next/previous agent skips project headers, includes collapsed cards, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.

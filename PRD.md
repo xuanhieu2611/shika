@@ -36,7 +36,7 @@ Switching cards does not stop an agent and does not delete anything.
 
 ## Layout
 
-Fixed split. No drag handle.
+`PLAN.md` records later decisions: the column is 540px by default, and since 2026-10-06 it can be resized by dragging its edge and hidden with Cmd+B. The original text follows.
 
 - Left column, 280px. Every added project is visible, including a project with no agents, so "is anyone on this repo?" is obvious.
 - Under each project, up to three cards. If there are more, show the count and let the rest be reached from the keyboard. People rarely run more than three.
@@ -128,7 +128,7 @@ When status becomes Asking you or Ready to check, post a macOS notification nami
 - Reusing or archiving worktrees
 - A history browser of closed conversations
 - Showing more than one terminal at once
-- A resizable divider
+- A resizable divider (superseded 2026-10-06: the agent column is resizable, see `PLAN.md`)
 - Editing code in Shika
 - Installing Claude, Codex, or the other CLIs
 

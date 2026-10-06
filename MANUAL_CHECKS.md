@@ -2,6 +2,15 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Resizable and hideable agent column, 2026-10-06
+
+Automated validation: workspace tests (including `column` settings defaults, clamping, and round trip), formatting, and Clippy passed. A debug build with disposable data was driven with synthetic mouse and key events while its own window was frontmost: dragging the edge saved the new width once the drag ended, the footer dropped its hints at 364px, double-click restored 540px, the icon buttons and Cmd+B (from a focused shell) hid and showed it, and the hidden header placed the button after the traffic lights. Card truncation at 320px was checked once. Light mode, full screen, and translucency were not checked.
+
+- [ ] Drag the edge with a real mouse all the way to the window's left edge: the column stops at 320px and stays on screen. The resize cursor stays through the drag, the line shows on hover and while dragging, and a TUI (Claude Code, Codex) redraws cleanly at the new width without the card turning Working.
+- [ ] Hidden column: Cmd+B, View menu, and both buttons toggle it from cards and from a terminal; Cmd+]/Cmd+[ and `j`/`k` change the agent on screen; dialogs and the picker still open centered.
+- [ ] A small window clamps the column so the terminal keeps 420px; growing the window brings the saved width back. Quit and relaunch keeps width and hidden state.
+- [ ] Light and dark, opaque and translucent, and full screen (button at the 18px inset with no traffic lights).
+
 ## Close after a branch switch, 2026-10-05
 
 Automated validation: all 204 workspace tests passed, including rename-then-PR-checkout recovery, protection across Close/Discard/Push, and distinguishing detached HEAD from a genuine git failure. Formatting and diff checks passed. The reported live worktree was inspected read-only; its checkout was not changed.

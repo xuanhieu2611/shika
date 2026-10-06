@@ -12,9 +12,9 @@ use gpui::{
 use model::{PromptCapture, Status, TitleWatch, visible_indices};
 use notifications::Notifications;
 use shika_core::{
-    Appearance, CliCatalog, CliPreset, Core, DiffStat, FontSize, JournalEntry, PreparationConfig,
-    PreparationControl, PreparationEvent, Project, ProjectBase, PtyEvent, PtyId, PtySize, Session,
-    SessionGitState, Settings, Translucency,
+    Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize, JournalEntry,
+    PreparationConfig, PreparationControl, PreparationEvent, Project, ProjectBase, PtyEvent, PtyId,
+    PtySize, Session, SessionGitState, Settings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize,
@@ -41,9 +41,19 @@ gpui::actions!(
         NextTerminal,
         PreviousTerminal,
         NextAgent,
-        PreviousAgent
+        PreviousAgent,
+        ToggleColumn
     ]
 );
+
+/// The drag on the agent column's edge. It draws nothing: the column itself
+/// follows the pointer.
+struct ColumnDrag;
+impl Render for ColumnDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
 
 /// Jump to a task-local tab. Zero is the pinned agent, so Cmd+1 selects it.
 #[derive(Clone, PartialEq, Eq, Debug, gpui::Action)]
@@ -337,6 +347,11 @@ struct Shika {
     branch_prefix: String,
     /// Play the system alert sound with a ready notification.
     notification_sound: bool,
+    /// The agent column's stored width and whether it is hidden.
+    column: Column,
+    /// The column as it was when the current drag on its edge began. The
+    /// file is written once the drag ends.
+    column_drag_from: Option<Column>,
     /// Each project's base branch, resolved off the main thread. A project
     /// missing here shows no base label.
     bases: HashMap<String, ProjectBase>,
@@ -371,6 +386,7 @@ impl Shika {
         let font_size = settings.font_size;
         let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
         let notification_sound = settings.notification_sound;
+        let column = settings.column;
         let reduce_transparency = appearance::reduce_transparency();
         let entity = cx.entity().downgrade();
         let appearance_watch = window.observe_window_appearance(move |window, cx| {
@@ -416,6 +432,8 @@ impl Shika {
             title_drag: false,
             branch_prefix,
             notification_sound,
+            column,
+            column_drag_from: None,
             bases: HashMap::new(),
         };
         cx.spawn_in(window, async move |this, cx| {
@@ -1178,6 +1196,16 @@ impl Shika {
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.notifications.refresh_diagnostics();
+        // A drag moves the column every frame; the file is written once it ends.
+        if let Some(from) = self.column_drag_from
+            && !cx.has_active_drag()
+        {
+            self.column_drag_from = None;
+            if from != self.column {
+                self.save_settings();
+            }
+            cx.notify();
+        }
         let now = Instant::now();
         let mut changed = false;
         // Reconcile agent/shell branch renames independently of the one-shot
@@ -1958,6 +1986,38 @@ impl Shika {
         self.save_settings();
         cx.notify();
     }
+    /// Hide or show the agent column. Focus stays where it is: with the
+    /// column hidden, `j` / `k` still change the agent on screen.
+    fn toggle_column(&mut self, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        self.column.hidden = !self.column.hidden;
+        self.save_settings();
+        cx.notify();
+    }
+    /// The column's width on screen, or `None` while it is hidden. A window
+    /// too narrow for the stored width and a readable terminal shows less.
+    fn column_width(&self, window: &Window) -> Option<Pixels> {
+        if self.column.hidden {
+            return None;
+        }
+        let room = window.viewport_size().width - px(MIN_TERMINAL_WIDTH);
+        let min = px(f32::from(Column::MIN_WIDTH));
+        Some(px(f32::from(self.column.width)).min(room).max(min))
+    }
+    /// The column's edge follows the pointer and stops at the narrowest
+    /// width. A drag never hides the column; only the toggle does.
+    fn drag_column(&mut self, x: Pixels, window: &mut Window, cx: &mut Context<Self>) {
+        cx.set_active_drag_cursor_style(gpui::CursorStyle::ResizeLeftRight, window);
+        self.column_drag_from.get_or_insert(self.column);
+        let room = window.viewport_size().width - px(MIN_TERMINAL_WIDTH);
+        let next = self.column.with_width(f32::from(x.min(room)));
+        if next != self.column {
+            self.column = next;
+            cx.notify();
+        }
+    }
     fn terminal_opacity(&self) -> f32 {
         appearance::terminal_alpha_for(&self.appearance, self.reduce_transparency)
     }
@@ -1997,6 +2057,7 @@ impl Shika {
             branch_prefix: self.branch_prefix.clone(),
             font_size: self.font_size,
             notification_sound: self.notification_sound,
+            column: self.column,
         };
         if let Err(e) = self.core.save_settings(&settings) {
             self.message(e.to_string());
@@ -2462,19 +2523,111 @@ impl Shika {
             }))
     }
 
+    /// An invisible strip over the column's edge. Dragging it resizes the
+    /// column, and a double-click puts back the default width. Its line shows
+    /// on hover and for the length of a drag.
+    fn column_handle(
+        &self,
+        width: Pixels,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let line = chrome.ink_4;
+        div()
+            .id("column-handle")
+            .group("column-handle")
+            .occlude()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(width - px(COLUMN_HANDLE_WIDTH / 2.))
+            .w(px(COLUMN_HANDLE_WIDTH))
+            .flex()
+            .justify_center()
+            .cursor_col_resize()
+            .on_drag(ColumnDrag, |_, _, _, cx| cx.new(|_| ColumnDrag))
+            .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
+                if event.click_count() == 2 {
+                    this.column = this.column.with_width(f32::from(Column::DEFAULT_WIDTH));
+                    this.save_settings();
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .w(px(2.))
+                    .h_full()
+                    .when(self.column_drag_from.is_some(), |d| d.bg(line))
+                    .group_hover("column-handle", move |style| style.bg(line)),
+            )
+    }
+
+    /// The button that hides the column, in its top row, or shows it again,
+    /// in the terminal's top row after the traffic lights.
+    fn column_toggle(
+        &self,
+        ink: Rgba,
+        ink_hover: Rgba,
+        hover: Rgba,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+        let tip = if self.column.hidden {
+            "Show agent column  \u{2318}B"
+        } else {
+            "Hide agent column  \u{2318}B"
+        };
+        div()
+            .id("column-toggle")
+            .group("column-toggle")
+            .occlude()
+            .flex_none()
+            .size(px(24.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .tooltip(move |_, cx| {
+                cx.new(|_| KeyTip {
+                    bg: tip_bg,
+                    fg: tip_fg,
+                    text: tip.into(),
+                })
+                .into()
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_column(cx)))
+            .child(
+                gpui::svg()
+                    .data(COLUMN_ICON)
+                    .size(px(15.))
+                    .text_color(ink)
+                    .group_hover("column-toggle", move |style| style.text_color(ink_hover)),
+            )
+    }
+
+    /// Where the title bar's content starts on the left: after the traffic
+    /// lights, or near the edge in full screen, where macOS hides them.
+    fn title_inset(window: &Window) -> Pixels {
+        if window.is_fullscreen() || window.is_simple_fullscreen() {
+            px(18.)
+        } else {
+            px(WORDMARK_INSET)
+        }
+    }
+
     /// The sidebar half of the title bar: the real traffic lights, the
-    /// wordmark, the settings gear, and New agent. The system title is hidden.
+    /// wordmark, the column toggle, the settings gear, and New agent. The
+    /// system title is hidden.
     fn top_row(
         &self,
         chrome: &Chrome,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let inset = if window.is_fullscreen() || window.is_simple_fullscreen() {
-            px(18.)
-        } else {
-            px(WORDMARK_INSET)
-        };
+        let inset = Self::title_inset(window);
         let hover = chrome.hover;
         let gear_hover = chrome.ink_1;
         let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
@@ -2495,6 +2648,7 @@ impl Shika {
                     .child("Shika"),
             )
             .child(div().flex_1())
+            .child(self.column_toggle(chrome.ink_3, chrome.ink_1, hover, chrome, cx))
             .child(
                 div()
                     .id("settings")
@@ -2823,10 +2977,12 @@ impl Shika {
             .text_color(chrome.ink_3)
             .child(div().flex_none().child(card.preset.clone()))
             .child(separator())
+            // The branch truncates first. Only a long setup stage gives way.
             .child(
                 div()
                     .min_w_0()
                     .truncate()
+                    .when(!card.creating, |d| d.flex_none())
                     .text_color(colors.text)
                     .font_weight(match card.status {
                         Status::Ready => FontWeight::SEMIBOLD,
@@ -2976,8 +3132,15 @@ impl Shika {
         )
     }
 
-    /// Add project, leftovers, and the key hints.
-    fn footer(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Add project, leftovers, and the key hints. A column too narrow for
+    /// the hints drops them; the keys still work.
+    fn footer(&self, chrome: &Chrome, width: Pixels, cx: &mut Context<Self>) -> impl IntoElement {
+        let hints_fit = width
+            >= px(if self.leftovers.is_empty() {
+                FOOTER_HINTS_FIT
+            } else {
+                FOOTER_HINTS_FIT_WITH_LEFTOVERS
+            });
         let hover = chrome.hover;
         let text_button = |id: &'static str| {
             div()
@@ -3040,17 +3203,19 @@ impl Shika {
                         )
                     }),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .flex_nowrap()
-                    .items_center()
-                    .gap_x(px(12.))
-                    .child(hint("j k", "move", chrome))
-                    .child(hint("↵", "terminal", chrome))
-                    .child(hint("c", "close", chrome)),
-            )
+            .when(hints_fit, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .flex_nowrap()
+                        .items_center()
+                        .gap_x(px(12.))
+                        .child(hint("j k", "move", chrome))
+                        .child(hint("↵", "terminal", chrome))
+                        .child(hint("c", "close", chrome)),
+                )
+            })
     }
 
     /// The selected card's terminal under its header, or the empty state.
@@ -3059,8 +3224,27 @@ impl Shika {
         chrome: &Chrome,
         cards_focused: bool,
         home: Option<&std::path::Path>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // With the column hidden, this row is the whole title bar: it starts
+        // after the traffic lights with the button that shows the column.
+        let show_column = self.column.hidden.then(|| {
+            div()
+                .flex_none()
+                .h(px(BAR_HEIGHT))
+                .flex()
+                .items_center()
+                .pl(Self::title_inset(window))
+                .pr(px(4.))
+                .child(self.column_toggle(
+                    chrome.term_dim,
+                    chrome.term_white,
+                    chrome.term_hover,
+                    chrome,
+                    cx,
+                ))
+        });
         // Each child paints its own background, so a translucent terminal is
         // not stacked over a second translucent fill.
         let mut right = div()
@@ -3196,6 +3380,7 @@ impl Shika {
                 .flex_shrink_0()
                 .flex()
                 .bg(with_alpha(chrome.term_header, chrome.term_header_alpha))
+                .children(show_column.map(baseline))
                 .child(baseline(div()).w(px(8.)))
                 .child(tabs)
                 .child(
@@ -3365,7 +3550,8 @@ impl Shika {
                                 .top_0()
                                 .left_0()
                                 .right_0()
-                                .h(px(BAR_HEIGHT)),
+                                .h(px(BAR_HEIGHT))
+                                .children(show_column),
                             cx,
                         ),
                     )
@@ -3865,8 +4051,15 @@ impl Focusable for Shika {
 }
 const UI_FONT: &str = ".AppleSystemUIFont";
 const MONO: &str = "JetBrains Mono";
-/// The agent column. Fixed: there is no drag handle.
-const COLUMN_WIDTH: f32 = 540.;
+/// The terminal keeps at least this much of the window beside the column.
+/// The 960px window minimum leaves room for the default 540px column.
+const MIN_TERMINAL_WIDTH: f32 = 420.;
+/// The narrowest column that fits the footer's key hints, without and with
+/// the Leftover worktrees button.
+const FOOTER_HINTS_FIT: f32 = 400.;
+const FOOTER_HINTS_FIT_WITH_LEFTOVERS: f32 = 560.;
+/// The invisible strip over the column's edge that starts a resize.
+const COLUMN_HANDLE_WIDTH: f32 = 8.;
 /// The top row of both halves of the window, which is the title bar.
 const BAR_HEIGHT: f32 = 48.;
 /// A terminal tab, sitting on the bottom of the 48px header.
@@ -3880,6 +4073,10 @@ const WORDMARK_INSET: f32 = 90.;
 /// Heroicons cog-6-tooth (24px solid). MIT notice: assets/licenses/Heroicons-MIT.txt.
 /// Drawn as an alpha mask and tinted by the element's text color.
 const SETTINGS_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" fill-rule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 0 0-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 0 0-2.282.819l-.922 1.597a1.875 1.875 0 0 0 .432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 0 0 0 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 0 0-.432 2.385l.922 1.597a1.875 1.875 0 0 0 2.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 0 0 2.28-.819l.923-1.597a1.875 1.875 0 0 0-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 0 0 0-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 0 0-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 0 0-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 0 0-1.85-1.567h-1.843ZM12 15.75a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z"/></svg>"##;
+
+/// The agent column toggle: a window with its left pane split off. Drawn for
+/// Shika at 16px.
+const COLUMN_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#000" fill-rule="evenodd" d="M3 2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm3 1.5H3a.5.5 0 0 0-.5.5v8a.5.5 0 0 0 .5.5h3v-9Zm1.5 0v9H13a.5.5 0 0 0 .5-.5V4a.5.5 0 0 0-.5-.5H7.5Z"/></svg>"##;
 
 /// Octicons git-branch, before the base branch on a project header. Drawn as
 /// an alpha mask and tinted by the element's text color.
@@ -4227,19 +4424,22 @@ impl Render for Shika {
                 cx,
             ));
         }
-        let sidebar = div()
-            .w(px(COLUMN_WIDTH))
-            .flex_shrink_0()
-            .h_full()
-            .overflow_hidden()
-            .flex()
-            .flex_col()
-            .bg(chrome.column)
-            .border_r_1()
-            .border_color(chrome.hairline)
-            .child(self.top_row(&chrome, window, cx))
-            .child(projects)
-            .child(self.footer(&chrome, cx));
+        let column_width = self.column_width(window);
+        let sidebar = column_width.map(|width| {
+            div()
+                .w(width)
+                .flex_shrink_0()
+                .h_full()
+                .overflow_hidden()
+                .flex()
+                .flex_col()
+                .bg(chrome.column)
+                .border_r_1()
+                .border_color(chrome.hairline)
+                .child(self.top_row(&chrome, window, cx))
+                .child(projects)
+                .child(self.footer(&chrome, width, cx))
+        });
         let mut root = div()
             .track_focus(&self.focus)
             .key_context("Shika")
@@ -4271,6 +4471,12 @@ impl Render for Shika {
             .on_action(
                 cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleColumn, _, cx| this.toggle_column(cx)))
+            .on_drag_move(cx.listener(
+                |this, event: &gpui::DragMoveEvent<ColumnDrag>, window, cx| {
+                    this.drag_column(event.event.position.x, window, cx)
+                },
+            ))
             .relative()
             .size_full()
             .flex()
@@ -4278,8 +4484,9 @@ impl Render for Shika {
             .text_size(px(12.))
             .line_height(gpui::relative(1.3))
             .text_color(chrome.ink_1)
-            .child(sidebar)
-            .child(self.terminal_side(&chrome, cards_focused, home.as_deref(), cx));
+            .children(sidebar)
+            .child(self.terminal_side(&chrome, cards_focused, home.as_deref(), window, cx))
+            .children(column_width.map(|width| self.column_handle(width, &chrome, cx)));
         if let Some(overlay) = &self.overlay {
             root = root.child(self.overlay_view(overlay, &chrome, home.as_deref(), window, cx));
         }
@@ -4330,6 +4537,7 @@ fn main() -> anyhow::Result<()> {
             gpui::KeyBinding::new("ctrl-shift-tab", PreviousTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-[", PreviousAgent, Some("Shika")),
+            gpui::KeyBinding::new("cmd-b", ToggleColumn, Some("Shika")),
             gpui::KeyBinding::new("cmd-q", Quit, None),
             gpui::KeyBinding::new("cmd-,", OpenSettings, None),
             gpui::KeyBinding::new("cmd-h", Hide, None),
@@ -4377,6 +4585,10 @@ fn main() -> anyhow::Result<()> {
                 gpui::MenuItem::action("Next agent", NextAgent),
                 gpui::MenuItem::action("Previous agent", PreviousAgent),
             ]),
+            gpui::Menu::new("View").items([gpui::MenuItem::action(
+                "Hide or show agent column",
+                ToggleColumn,
+            )]),
         ]);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -4400,7 +4612,7 @@ fn main() -> anyhow::Result<()> {
                             px(TRAFFIC_LIGHTS.1),
                         )),
                     }),
-                    // The 540px column plus a terminal wide enough to read.
+                    // The default 540px column plus a terminal wide enough to read.
                     window_min_size: Some(size(px(960.), px(600.))),
                     // The gear and New agent live in the title bar, so clicks
                     // there have to reach the app. The bar starts the drag itself.

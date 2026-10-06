@@ -76,6 +76,54 @@ impl Default for Appearance {
     }
 }
 
+/// The agent column beside the terminal. A drag on its edge sets the width,
+/// and it can be hidden so the terminal fills the window.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Column {
+    /// Points, from [`Column::MIN_WIDTH`] to [`Column::MAX_WIDTH`]. A narrow
+    /// window can show less; the stored width comes back when it grows.
+    #[serde(deserialize_with = "saturating_u16")]
+    pub width: u16,
+    pub hidden: bool,
+}
+
+impl Column {
+    pub const MIN_WIDTH: u16 = 320;
+    pub const MAX_WIDTH: u16 = 800;
+    pub const DEFAULT_WIDTH: u16 = 540;
+
+    /// A dragged width, rounded to a whole point and pulled into range.
+    pub fn with_width(self, width: f32) -> Self {
+        let width = if width.is_finite() {
+            width
+                .round()
+                .clamp(f32::from(Self::MIN_WIDTH), f32::from(Self::MAX_WIDTH)) as u16
+        } else {
+            Self::DEFAULT_WIDTH
+        };
+        Self { width, ..self }
+    }
+
+    /// Values from a hand-edited file, pulled into range.
+    pub fn clamped(self) -> Self {
+        self.with_width(f32::from(self.width))
+    }
+}
+
+impl Default for Column {
+    fn default() -> Self {
+        Self {
+            width: Self::DEFAULT_WIDTH,
+            hidden: false,
+        }
+    }
+}
+
+fn saturating_u16<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
+    Ok(u64::deserialize(deserializer)?.min(u64::from(u16::MAX)) as u16)
+}
+
 /// Terminal text size, in half-points so 12.5 can be stored exactly.
 /// The range is 8 to 32. A missing value is 14.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +221,9 @@ pub struct Settings {
     /// A bool's own default is false, so this field names its default.
     #[serde(default = "notification_sound_on")]
     pub notification_sound: bool,
+    /// The agent column's width and whether it is hidden. Missing means a
+    /// 540px column on screen.
+    pub column: Column,
 }
 
 impl Default for Settings {
@@ -182,6 +233,7 @@ impl Default for Settings {
             branch_prefix: String::new(),
             font_size: FontSize::default(),
             notification_sound: true,
+            column: Column::default(),
         }
     }
 }
@@ -220,6 +272,7 @@ fn load(path: &Path) -> Result<Settings> {
     }
     let mut settings: Settings = serde_json::from_str(&text).map_err(|_| Error::ReadSettings)?;
     settings.appearance = settings.appearance.clamped();
+    settings.column = settings.column.clamped();
     Ok(settings)
 }
 
@@ -274,6 +327,10 @@ mod tests {
             branch_prefix: "dev/".into(),
             font_size: FontSize::from_text("14.5").unwrap(),
             notification_sound: false,
+            column: Column {
+                width: 400,
+                hidden: true,
+            },
         };
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -281,6 +338,9 @@ mod tests {
         assert!(text.contains("\"branchPrefix\": \"dev/\""));
         assert!(text.contains("\"fontSize\": 14.5"));
         assert!(text.contains("\"notificationSound\": false"));
+        assert!(text.contains("\"column\": {"));
+        assert!(text.contains("\"width\": 400"));
+        assert!(text.contains("\"hidden\": true"));
         assert_eq!(file.load().unwrap(), settings);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -301,6 +361,28 @@ mod tests {
         assert_eq!(settings.branch_prefix, "");
         assert_eq!(settings.font_size.points(), 32.0);
         assert!(settings.notification_sound);
+        assert_eq!(settings.column, Column::default());
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn column_width_is_pulled_into_range() {
+        let column = Column::default();
+        assert_eq!(column.width, 540);
+        assert!(!column.hidden);
+        assert_eq!(column.with_width(412.6).width, 413);
+        assert_eq!(column.with_width(10.).width, Column::MIN_WIDTH);
+        assert_eq!(column.with_width(5000.).width, Column::MAX_WIDTH);
+        assert_eq!(column.with_width(f32::NAN).width, Column::DEFAULT_WIDTH);
+        let path = temp_file("column");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{ "column": { "width": 99999, "hidden": true } }"#).unwrap();
+        let settings = SettingsFile::open(path.clone()).load().unwrap();
+        assert_eq!(settings.column.width, Column::MAX_WIDTH);
+        assert!(settings.column.hidden);
+        fs::write(&path, r#"{ "column": { "hidden": true } }"#).unwrap();
+        let settings = SettingsFile::open(path.clone()).load().unwrap();
+        assert_eq!(settings.column.width, Column::DEFAULT_WIDTH);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

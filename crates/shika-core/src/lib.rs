@@ -69,7 +69,7 @@ pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use session::{DiffStat, Session, SessionGitState};
-pub use settings::{Appearance, FontSize, Settings, Translucency};
+pub use settings::{Appearance, Column, FontSize, Settings, Translucency};
 pub use worktree::JournalEntry;
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 
