@@ -35,7 +35,7 @@ Confirm Shika's own window is in front before sending keystrokes. `cargo run` al
 
 ## Use
 
-`a` adds a git repository. `n` opens the CLI picker. `j` / `k` or arrows select project headers and cards. Enter focuses the terminal; Ctrl+Q returns to cards. Escape is typed into the terminal. `g` toggles the agent and the worktree shell. `c` closes the selected task.
+`a` adds a git repository. `n` opens the CLI picker. `j` / `k` or arrows select cards and skip project headers. Enter focuses the terminal; Ctrl+Q returns to cards. Escape is typed into the terminal. `g` toggles the agent and the worktree shell. `c` closes the selected task.
 
 The first submitted prompt names the card and branch, and about a second later the CLI's own session title renames them to something short (see `docs/branch-naming.md`). A push keeps the card open. Close offers discard or push when work would be lost. The app never commits. Quit keeps worktrees; the next launch lists leftovers for explicit cleanup.
 
