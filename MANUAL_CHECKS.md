@@ -2,6 +2,13 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Close after a branch switch, 2026-10-05
+
+Automated validation: all 204 workspace tests passed, including rename-then-PR-checkout recovery, protection across Close/Discard/Push, and distinguishing detached HEAD from a genuine git failure. Formatting and diff checks passed. The reported live worktree was inspected read-only; its checkout was not changed.
+
+- [ ] In an isolated app, rename a task branch, let the card refresh, and switch to an existing PR branch. Close names the current and task branches, without the misleading git-status prefix, in light and dark mode.
+- [ ] Return to the renamed task branch in that card's shell and Close again. The task closes through the normal checks, and the separate PR branch remains.
+
 ## Task-scoped terminal tabs
 
 Automated validation: 193 workspace tests, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Coverage includes independent shell PTYs, refusing to close the agent or another task's shell, closing all remaining PTYs with the task, tab wrap navigation, selection after removal, and Command keys staying out of PTY input.

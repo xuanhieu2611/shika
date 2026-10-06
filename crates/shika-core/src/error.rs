@@ -46,6 +46,10 @@ pub enum Error {
     NoSuchBranch(String),
     #[error("Could not read git status.{}", detail(.0))]
     GitStatus(Option<String>),
+    #[error(
+        "Cannot close while the worktree is on {current}. Switch back to task branch {expected} in the shell, then close again."
+    )]
+    TaskBranchChanged { expected: String, current: String },
     #[error("Could not remove the worktree.{}", detail(.0))]
     RemoveWorktree(Option<String>),
     /// `git worktree remove` refused because the tree has changes. Only a

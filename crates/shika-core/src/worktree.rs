@@ -432,8 +432,11 @@ pub fn head_branch(git: &Path, path_env: &str, worktree: &Path) -> Result<Option
         .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
         .output()
         .map_err(|_| Error::GitStatus(None))?;
-    if !output.status.success() {
+    if output.status.code() == Some(1) {
         return Ok(None);
+    }
+    if !output.status.success() {
+        return Err(Error::GitStatus(first_line(&output.stderr)));
     }
     Ok(Some(
         String::from_utf8_lossy(&output.stdout).trim().to_string(),
@@ -1043,6 +1046,26 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    #[test]
+    fn head_branch_distinguishes_detached_head_from_git_failure() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        assert!(head_branch(&git(), "", &repo).unwrap().is_some());
+        assert!(
+            Command::new("git")
+                .current_dir(&repo)
+                .args(["checkout", "--detach"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(head_branch(&git(), "", &repo).unwrap(), None);
+        assert!(matches!(
+            head_branch(&git(), "", &scratch.path),
+            Err(Error::GitStatus(Some(_)))
+        ));
     }
 
     #[test]
