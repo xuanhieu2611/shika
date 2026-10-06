@@ -2,7 +2,7 @@
 
 How Shika lets users move between tasks without leaving their working context, why the shortcuts use Command, and where to look when focus or navigation goes wrong.
 
-Start here for keyboard-related contributions. [PLAN.md](../PLAN.md#keyboard-and-focus) holds the behavior rules; [design/DESIGN.md](../design/DESIGN.md) holds the visual and focus specification. This document explains the implementation, not a separate spec. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow) tracks GUI validation.
+Start here for keyboard-related contributions. [PLAN.md](../PLAN.md#keyboard-and-focus) holds the behavior rules; [design/DESIGN.md](../design/DESIGN.md) holds the visual and focus specification. This document explains the implementation, not a separate spec. For task-local shell ownership, terminal-tab lifecycle, and extension traps, read [terminal-tabs.md](terminal-tabs.md). [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow) tracks GUI validation.
 
 ## What changed
 
@@ -16,12 +16,15 @@ The card-navigation model is still available. A small native Command shortcut la
 
 | Shortcut | Action | Focus afterward |
 | --- | --- | --- |
-| `Cmd+Enter` | Toggle the selected task's agent/shell | Destination terminal, even when invoked from the cards |
+| `Cmd+Enter` | Toggle the task's agent/first-shell (create shell if none exists) | Destination terminal, even when invoked from the cards |
+| `Cmd+T` | New independent shell tab in this task's worktree | New shell; startup input is queued |
+| `Cmd+W` | Close selected shell tab; no-op on the pinned agent | Preceding tab if the closed view had focus; otherwise preserve focus |
+| `Cmd+Shift+]` / `Cmd+Shift+[` | Next/previous tab in this task, wrapping | Destination terminal |
 | `Cmd+]` | Next agent in current row order | Terminal if invoked from a terminal; cards if invoked from cards |
 | `Cmd+[` | Previous agent in current row order | Same preservation rule |
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
 
-Next/previous agent skips project headers, includes collapsed cards, crosses projects, and wraps. Each task keeps its own agent/shell choice and terminal contents. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
+Next/previous agent skips project headers, includes collapsed cards, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
 
 These actions do nothing while the app is busy or any overlay is open. `Cmd+N` uses the first project when nothing is selected and opens Add project when there are no projects.
 
@@ -30,7 +33,7 @@ Other improvements:
 - Picker cancellation, Settings dismissal, and Base branch completion/cancellation restore the focus that opened the overlay.
 - A selection change scrolls the selected header/card into view with minimal movement. Ordinary redraws do not undo manual scrolling.
 - First shell open focuses the new view immediately. Early typing is queued until the PTY is bound; startup completion does not reclaim focus if the user has returned to the cards.
-- The native Agent menu lists the new actions and shortcuts. New and the terminal toggle expose Command shortcuts in tooltips.
+- The native Agent menu lists the new actions and shortcuts. New agent, new shell, and shell close expose Command shortcuts in tooltips.
 
 ## What did not change
 
@@ -43,7 +46,7 @@ Other improvements:
 - Close cancellation still routes dirty or unpushed work to the task shell. It is a workflow transition, not generic focus restoration.
 - Cards remain sorted by attention within each project. This improvement does not stabilize their order during status changes.
 - One terminal is visible at a time. Hidden views and PTYs stay alive.
-- There is no prefix mode, configurable keymap, or saved keyboard preference. These changes add no persistence or core session schema.
+- There is no prefix mode, configurable keymap, or saved keyboard preference. Terminal tabs add no persistence. Core's memory-only Session now records `shell_ptys`; `open_shell` creates a fresh PTY on each call and `close_shell` validates task ownership before stopping one.
 
 ## Why Command, not a multiplexer prefix
 
@@ -69,7 +72,9 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 | Focus-preserving navigation | `move_agent`, `focus_terminal` | Changes selection and, only when needed, focuses the destination task's shown terminal |
 | Overlay restoration | `overlay_return_focus`, `restore_overlay_focus` | Stores a `FocusHandle`, restores it once, defaults to card focus when none was saved |
 | Overlay entry/exit | `picker`, `picker_for`, `open_settings`, `open_base`, `cancel_overlay`, `apply_base`, `launch` | Captures focus before opening; restores on dismissal; launch intentionally clears restoration |
-| Terminal switching | `toggle`, `Pane::new`, `bind_host`, `Host::write` | Reuses shell views or creates one; queues startup input; binds/resizes PTY and drains queued bytes in order |
+| Terminal switching | `toggle`, `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `Card::active_pane` | Task-local tabs, pinned agent, independent shells, selected-view focus and asynchronous PTY teardown |
+| Shell startup | `Pane::new`, `bind_host`, `Host::write` | Queues startup input; binds/resizes PTY and drains queued bytes in order |
+| Tab navigation | `model::adjacent_tab`, `model::tab_after_close`, `Card::tab_scroll` | Wrap navigation, preserve selection on removal, reveal selected tab horizontally |
 | Sidebar reveal | `sidebar_scroll`, `last_revealed_selection`, `render`, `selection_reveal` | Tracks viewport and selection, measures the selected row, adjusts offset on the next frame |
 | Scroll arithmetic | `crates/shika/src/model.rs`: `reveal_delta` | Minimal offset adjustment; oversized rows align their top |
 | Terminal ownership | `crates/shika-terminal/src/view.rs`: `init`, `key_for` | Keeps Command shortcuts out of PTY key encoding; retains terminal copy/paste and history bindings |
@@ -79,7 +84,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 
 `rows()` includes project headers and every card, not just the three currently visible cards per project. `adjacent_agent()` walks that order in the requested direction until it finds a card. `move_agent()` guards overlay/busy state, records whether cards had focus, selects the result, and focuses its terminal only if the user was already in a terminal.
 
-The selected task's `show_shell` determines which terminal receives focus. Do not force every destination to the agent view: returning to a task should preserve where the user was working. `visible_indices()` reveals collapsed cards around the selection without changing the three-card cap.
+The selected task's `active_tab` determines which terminal receives focus (zero is the pinned agent; shell indices start at one). Do not force every destination to the agent view: returning to a task should preserve where the user was working. `visible_indices()` reveals collapsed cards around the selection without changing the three-card cap.
 
 ### Overlay focus
 
@@ -91,9 +96,9 @@ Do not apply restoration indiscriminately to Close: dirty/unpushed cancellation 
 
 ### Shell startup
 
-For a new shell, `toggle(true, ...)` installs the `Pane`, then focuses its view before setting `busy`. The host may not yet have a PTY ID. `Host::write` stores incoming bytes in `pending_input`; `bind_host` registers the PTY, applies the measured size, and flushes bytes in order.
+For a new shell, `new_shell(true, ...)` installs the `Pane`, then focuses its view before setting `busy`. The host may not yet have a PTY ID. `Host::write` stores incoming bytes in `pending_input`; `bind_host` registers the PTY, applies the measured size, and flushes bytes in order.
 
-Successful asynchronous completion only binds the host. It does not focus again. If startup fails while the shell view is still focused, the app returns focus to the agent. If the user already left, failure does not pull them back into the terminal.
+Successful asynchronous completion only binds the host. It does not focus again. If startup fails while the shell view is still focused, the app removes that tab and focuses the preceding tab (or the agent if it was the only shell). If the user already left, failure does not pull them back into the terminal.
 
 Preserve this sequence. Delaying focus can send early typing to the previous view; unconditionally focusing on completion can override `Ctrl+Q`.
 
@@ -111,11 +116,11 @@ Do not run this on every redraw: terminal output and timer updates must not prev
 | --- | --- |
 | Command action does not fire in the terminal | Check binding spelling, root `Shika` context, action listeners, and busy/overlay guards. Check for a conflicting terminal binding before changing PTY encoding. |
 | App shortcut sends bytes to the CLI | Inspect `key_for`'s early Command exclusion and terminal input handling. Do not implement these app actions as terminal input sequences. |
-| Switching agents loses focus or lands in the wrong terminal | Inspect `move_agent`, `selected_card`, `focus_terminal`, and the destination's `show_shell`. |
+| Switching agents loses focus or lands in the wrong terminal | Inspect `move_agent`, `selected_card`, `focus_terminal`, and the destination's `active_tab`. |
 | Next agent changes unexpectedly | Inspect `sorted_cards` and status updates. Attention sorting is still live; stable navigation order was not implemented here. |
 | Picker/Settings dismissal lands on cards instead of the original terminal | Check that the opener saved `window.focused(cx)` before focusing the overlay, and that exit consumes the saved handle. |
 | Close cancellation lands in shell | Expected for dirty/unpushed work. Check `cancel_overlay` before treating it as a restoration bug. |
-| Early shell typing goes to agent, or startup steals focus | Check `toggle`'s immediate focus and completion branch, then `pending_input` / `bind_host`. |
+| Early shell typing goes to agent, or startup steals focus | Check `new_shell`'s immediate focus and completion branch, then `pending_input` / `bind_host`. |
 | Selected row remains offscreen | Check sidebar tracking, selection-change detection, selected-row canvas prepaint, `reveal_delta`, and the deferred callback's selection guard. Test with enough projects to overflow the sidebar. |
 | Manual scrolling snaps back | Verify reveal is triggered by selection changes only, not every render/tick. |
 
@@ -148,7 +153,9 @@ Automated coverage added or extended:
 
 These are unit tests, not proof of native shortcut dispatch, actual focus restoration, or rendered scrolling. Implementation validation passed 166 workspace tests, formatting, strict Clippy, a debug bundle build, and strict signature verification. The hands-on keyboard-flow checks remain unverified in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow); do not report them as passed without exercising them.
 
-For a keyboard contribution, exercise both terminal surfaces, both focus modes, first shell creation, dialog cancel/apply, busy state, collapsed cards, sidebar overflow, and light/dark appearance. Verify unsent drafts survive and ordinary CLI input, Escape, copy, and paste still work.
+For terminal-tab validation, see the separate Task-scoped terminal tabs checklist in `MANUAL_CHECKS.md`. Unit coverage includes wrap/empty tab navigation, selection preservation on removal, independent core shells, ownership checks, and teardown of all shells on task close.
+
+For a keyboard contribution, exercise the agent and multiple shell tabs, both focus modes, first shell creation, dialog cancel/apply, busy state, collapsed cards, sidebar overflow, and light/dark appearance. Verify unsent drafts survive and ordinary CLI input, Escape, copy, and paste still work.
 
 ## Contributor guardrails
 

@@ -13,6 +13,14 @@ The PRD is the spec, except where this file records a later decision from the au
 - Each project has an optional base branch, the branch New starts from, for repos where work happens on a branch such as `dev` and merges to `main` later. Unset, New starts from the remote default branch. The project header shows it, and `b` or a click on it opens the Base branch dialog. A card measures its diff stat and its close checks against the base it started from, so changing the base later does not touch running cards. Decided by the author 2026-10-05. See "Worktree".
 - A Settings dialog (Cmd-,) sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, the terminal font size (8 to 32, default 14), and whether a notification plays the system alert sound (on by default). The title bar uses that same opacity, so the window blur shows through it. Saved in `settings.json`. The default is opaque. Decided 2026-10-04.
 
+## Task-scoped terminal tabs
+
+Later author decision: replace the fixed Agent/Shell control with optional terminal tabs per task. New creates only the pinned CLI tab. `+` or Cmd+T creates an independent login shell in that task's worktree; multiple shells support tools such as Neovim, lazygit, and dev servers. Shell tabs have stable numbered labels and individual close controls. Closing a shell stops its processes without closing the agent, changing git, or deleting the worktree. The agent tab cannot be individually closed; Close task keeps the existing safe-close flow and stops every owned PTY.
+
+Each card retains its selected tab. Hidden terminals keep draining; only one terminal is visible. Tabs are memory only, with no global tabs, splits, session restoration, or built-in editor. Cmd+W closes the selected shell (does nothing on the agent). Cmd+Shift+] / Cmd+Shift+[ cycle tabs and wrap. Existing Cmd+] / Cmd+[ still navigate tasks; Cmd+N still creates an agent. `g` and Cmd+Enter retain a quick agent/first-shell toggle, creating the first shell only when none exists. Dirty Close cancellation keeps an already-selected shell or opens/selects the first shell. New shell typing queues before binding, and startup completion does not reclaim focus.
+
+The 48px terminal title row contains a horizontally scrollable tab strip, `+`, and Close task. A compact metadata row beneath it carries the worktree path and focus hint. Existing theme, spacing, and type tokens are reused. See `docs/terminal-tabs.md` for rationale, architecture, lifecycle, debugging, and extension guardrails; `docs/keyboard-flow.md` for cross-surface keyboard behavior; and `MANUAL_CHECKS.md` for validation.
+
 ## Optional worktree preparation
 
 Later author decision: keep fresh task worktrees and add opt-in preparation, rather than pooling or compiler-cache work. Repository configuration lives at `.shika/worktrees.json`, with ordered `setup-worktree` commands, selected ignored `copy-files`, and an optional `timeout-seconds` (default 600). No inferred package manager, automatic build, shared mutable dependency directory, or automatic execution of another app's configuration.
@@ -78,7 +86,7 @@ You do not name the task in a separate field.
    - Escape always cancels.
 3. **Nothing to lose closes immediately.** If the agent is not working, the worktree is clean, and the branch is already on the remote or has no commits of its own, Close removes the card and the worktree without asking. A pushed branch stays. An empty draft branch is deleted.
 4. **Projects persist. Live sessions do not restore.** Relaunch shows the project list and an empty terminal. A journal of Shika worktrees is kept so a quit or crash can list leftovers. Nothing is deleted automatically. The user removes leftovers from that list.
-5. **One terminal view per live PTY, hidden when not selected.** Switching cards does not kill processes. Output keeps flowing into the hidden view so the CLI does not block on a full PTY buffer. The shell PTY is created the first time the user toggles to it, then kept.
+5. **One terminal view per live PTY, hidden when not selected.** Switching cards does not kill processes. Output keeps flowing into the hidden view so the CLI does not block on a full PTY buffer. Shell PTYs are created only on request, then kept until their individual tab or the task closes.
 6. **Status stays coarse.** Waiting means the CLI is up and the first prompt has not been sent. Working means the agent's own output is still arriving. About two seconds of quiet after work has started becomes Ready to check, and that posts the notification. The echo of a keystroke, and a redraw after focus, a click, a scroll, or a resize, is not the agent working: typing a draft without Enter does not start Working and does not make Close ask. Asking you is a bonus if a cheap check of the recent output is obvious. Do not block the MVP on parsing each CLI's question UI. A non-zero exit is still Ready to check.
 7. **Fonts.** The system UI font, San Francisco, for the chrome. JetBrains Mono, bundled with the app under its OFL license, for the terminal, as in `design/`. Menlo if it fails to load. SF Mono is out: GPUI loads only its regular weight. Light chrome, dark terminal. Warm mark for asking, green mark for ready. No drag handle, 540px column (280px until 2026-10-04), at most three visible cards per project.
 8. **Extra keyboard keys the PRD table does not list, because the app has to work without a mouse.** `a` adds a project. `n` opens the CLI picker. In the picker, `j` / `k`, Enter, and `1`–`4` choose, Escape cancels. In the close dialog, `d` discards, `p` pushes when that action is available, Escape cancels.
@@ -147,7 +155,8 @@ Operations `shika-core` gives the app:
 - `session_create`: worktree and agent PTY
 - `pty_write`, `pty_resize`
 - `session_rename_from_prompt`: slug, unique branch, `git branch -m`
-- `shell_open`: shell PTY in the worktree, once
+- `open_shell`: a new independent shell PTY in the task worktree on every call
+- `close_shell`: stop one owned shell without closing the agent or task
 - `session_git_state`: dirty, unpushed, agent still working
 - `session_discard`: kill PTYs, force-remove worktree, delete local branch
 - `session_push_and_close`: `git push -u origin HEAD`, then remove the worktree and keep the branch
@@ -206,14 +215,14 @@ Focus starts on the cards. `j` / `k` and arrows move through project headers and
 
 Ignore the plain-key map while the terminal is focused, except `Ctrl+Q`. Also ignore it while a text field is focused, and while the picker or close dialog is open.
 
-The native Command flow layer works from cards or a terminal: `Cmd+Enter` switches agent/shell and focuses the destination, `Cmd+]` / `Cmd+[` select the next/previous agent in current row order (skip project headers, wrap, and preserve terminal versus card focus), and `Cmd+N` opens New for the current project. These actions are blocked while busy or while any overlay is open. The Agent menu exposes all four bindings; New and the terminal toggle have tooltips. Existing plain keys are unchanged. Picker cancel, Settings dismissal, and Base branch completion/cancel restore the previous focus. Close cancel keeps its shell-routing rule. Selection changes reveal the selected row with minimal scrolling; ordinary redraws do not override manual scrolling. Shell focus moves immediately to the new view, which queues typeahead during startup; completion does not reclaim focus if the user left.
+The native Command flow layer works from cards or a terminal: `Cmd+Enter` switches agent/shell and focuses the destination, `Cmd+]` / `Cmd+[` select the next/previous agent in current row order (skip project headers, wrap, and preserve terminal versus card focus), and `Cmd+N` opens New for the current project. These actions are blocked while busy or while any overlay is open. The Agent menu exposes task and terminal-tab actions; New, new shell, and shell close have tooltips. Existing plain keys are unchanged. Picker cancel, Settings dismissal, and Base branch completion/cancel restore the previous focus. Close cancel keeps its shell-routing rule. Selection changes reveal the selected row with minimal scrolling; ordinary redraws do not override manual scrolling. Shell focus moves immediately to the new view, which queues typeahead during startup; completion does not reclaim focus if the user left.
 
 ### Layout
 
 - Left column, fixed 540px (was 280px; see the decisions at the top). Every project. Under each, up to three cards. Further cards show as a count and stay reachable from the keyboard.
 - A card shows the CLI name, the task name, and the status. The worktree path is only in the terminal header.
 - Right side: the selected agent's terminal, or empty if a project header is selected or there are no sessions. At most one terminal on screen.
-- Header controls: agent/shell toggle, Close.
+- Header controls: pinned CLI tab, optional shell tabs with individual close controls, new shell `+`, Close task. Worktree path and focus hint sit immediately below.
 - Top of the column: a headline (agents across projects) and one chip per status: ready, working, waiting.
 - No kanban, no flat session list, no project tabs, no divider drag, no second terminal, no editor.
 

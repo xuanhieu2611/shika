@@ -1543,8 +1543,16 @@ mod tests {
     fn command_is_left_to_the_app() {
         assert_eq!(key_for(&stroke("c", Modifiers::command()), true), None);
         assert_eq!(key_for(&stroke("left", Modifiers::command()), true), None);
-        for key in ["enter", "[", "]", "n"] {
+        for key in ["enter", "[", "]", "n", "t", "w"] {
             assert_eq!(key_for(&stroke(key, Modifiers::command()), true), None);
+        }
+        let command_shift = Modifiers {
+            platform: true,
+            shift: true,
+            ..Modifiers::none()
+        };
+        for key in ["[", "]"] {
+            assert_eq!(key_for(&stroke(key, command_shift), true), None);
         }
     }
 

@@ -1,6 +1,50 @@
 //! Navigation, first-prompt capture, and the CLI title watch, independent
 //! of GPUI.
 use std::time::{Duration, Instant};
+
+/// Agent is tab zero. Removing a shell preserves other selections and
+/// selects the preceding tab when the active shell closes.
+pub fn tab_after_close(active: usize, closed: usize, remaining_shells: usize) -> usize {
+    if active >= closed {
+        active.saturating_sub(1).min(remaining_shells)
+    } else {
+        active.min(remaining_shells)
+    }
+}
+
+pub fn adjacent_tab(active: usize, shells: usize, forward: bool) -> usize {
+    let count = shells + 1;
+    if forward {
+        (active + 1) % count
+    } else {
+        (active + count - 1) % count
+    }
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::*;
+
+    #[test]
+    fn closing_shells_preserves_selection_or_selects_neighbor() {
+        assert_eq!(tab_after_close(0, 1, 2), 0);
+        assert_eq!(tab_after_close(1, 3, 2), 1);
+        assert_eq!(tab_after_close(3, 1, 2), 2);
+        assert_eq!(tab_after_close(2, 2, 2), 1);
+        assert_eq!(tab_after_close(3, 3, 2), 2);
+        assert_eq!(tab_after_close(1, 1, 0), 0);
+    }
+
+    #[test]
+    fn tab_navigation_wraps_and_handles_agent_only() {
+        assert_eq!(adjacent_tab(0, 0, true), 0);
+        assert_eq!(adjacent_tab(0, 0, false), 0);
+        assert_eq!(adjacent_tab(0, 2, false), 2);
+        assert_eq!(adjacent_tab(2, 2, true), 0);
+        assert_eq!(adjacent_tab(1, 2, true), 2);
+        assert_eq!(adjacent_tab(1, 2, false), 0);
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Waiting,

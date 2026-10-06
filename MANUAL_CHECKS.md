@@ -2,6 +2,23 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Task-scoped terminal tabs
+
+Automated validation: 193 workspace tests, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Coverage includes independent shell PTYs, refusing to close the agent or another task's shell, closing all remaining PTYs with the task, tab wrap navigation, selection after removal, and Command keys staying out of PTY input.
+
+The debug bundle was opened with disposable repository/data under `/tmp/shika-tabs-gui.*`. Screen capture was unavailable, and the foreground PID guard blocked synthetic input when the isolated app was no longer frontmost. No native tab interaction or light/dark visual check is claimed as passed. The isolated process was stopped; the normal Shika process/data was not modified.
+
+- [ ] New shows only the CLI tab; `+` and Cmd+T add shells in the same worktree, not new worktrees.
+- [ ] Run Neovim in one shell and lazygit in another. Switch among all three tabs; contents, processes, unsaved agent drafts, and task status remain independent.
+- [ ] Switch cards and return: each task restores its selected tab. Hidden shells continue draining output.
+- [ ] Cmd+Shift+] / Cmd+Shift+[ wrap tabs; Cmd+] / Cmd+[ still switch tasks; Cmd+N still opens New. Tab actions do nothing in pickers/dialogs or while busy.
+- [ ] Cmd+W and `×` close only a shell, including an exited shell. Agent tab has no close control and ignores Cmd+W. Closing one shell leaves the agent, other shells, worktree, and git state intact.
+- [ ] Close an active shell, an inactive shell before the active one, and the last shell: selection and focus stay valid; numbered labels do not reuse closed numbers.
+- [ ] First shell creation queues immediate typing; Ctrl+Q during startup stays on cards after completion. Failed startup removes only its new tab without stealing focus.
+- [ ] Many tabs at 960x600: strip scrolls horizontally, keyboard-selected tab is revealed, `+` and Close task remain reachable, path truncates, metadata stays readable.
+- [ ] Light/dark and glass: selected tabs, close hover, tooltips, path row, and terminal backgrounds follow existing tokens. Empty title-row space still drags/double-clicks the window.
+- [ ] Dirty Close task cancellation reuses the selected shell or selects/creates the first shell. Confirmed Close task stops every terminal; quit retains worktrees and does not restore live tabs.
+
 ## Acceptance record, 2026-10-04
 
 The PLAN Done when flow was exercised with two disposable git repositories and the installed, authenticated Claude Code and Cursor CLI. App data was isolated.

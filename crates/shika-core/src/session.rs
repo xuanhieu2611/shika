@@ -25,7 +25,7 @@ pub struct Session {
     /// the main checkout's HEAD; the default branch is used then.
     pub base_ref: Option<String>,
     pub pty: PtyId,
-    pub shell_pty: Option<PtyId>,
+    pub shell_ptys: Vec<PtyId>,
     /// Whether the CLI's own session title has named the card and branch.
     pub cli_titled: bool,
 }
@@ -59,15 +59,6 @@ pub struct DiffStat {
     pub files: usize,
     pub insertions: usize,
     pub deletions: usize,
-}
-
-/// What [`crate::Core::open_shell`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShellOpen {
-    pub pty: PtyId,
-    /// False when the shell was already open. The sink passed in was dropped
-    /// and the shell's output still goes to the first sink.
-    pub created: bool,
 }
 
 pub(crate) struct SessionStore {
@@ -113,26 +104,27 @@ impl SessionStore {
             .cloned()
     }
 
-    pub(crate) fn shell_pty(&self, id: &str) -> Option<PtyId> {
-        self.get(id).and_then(|session| session.shell_pty)
-    }
-
-    /// Keeps the first shell. Returns the shell that is now on record and
-    /// whether it is the one passed in.
-    pub(crate) fn remember_shell(&self, id: &str, pty: PtyId) -> Result<ShellOpen> {
+    pub(crate) fn remember_shell(&self, id: &str, pty: PtyId) -> Result<()> {
         let mut sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
         let session = sessions
             .iter_mut()
             .find(|session| session.id == id)
             .ok_or(Error::UnknownSession)?;
-        if let Some(existing) = session.shell_pty {
-            return Ok(ShellOpen {
-                pty: existing,
-                created: false,
-            });
+        session.shell_ptys.push(pty);
+        Ok(())
+    }
+
+    pub(crate) fn forget_shell(&self, id: &str, pty: PtyId) -> Result<()> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
+        let session = sessions
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or(Error::UnknownSession)?;
+        if !session.shell_ptys.contains(&pty) {
+            return Err(Error::UnknownPty);
         }
-        session.shell_pty = Some(pty);
-        Ok(ShellOpen { pty, created: true })
+        session.shell_ptys.retain(|shell| *shell != pty);
+        Ok(())
     }
 
     pub(crate) fn rename(&self, id: &str, branch: String, title: String) -> Result<Session> {
@@ -235,7 +227,7 @@ mod tests {
             worktree: PathBuf::from("/repo/.worktrees/shika-draft-1"),
             base_ref: None,
             pty,
-            shell_pty: None,
+            shell_ptys: Vec::new(),
             cli_titled: false,
         }
     }
@@ -256,27 +248,19 @@ mod tests {
     }
 
     #[test]
-    fn the_first_shell_is_kept() {
+    fn shells_are_independent_and_only_owned_shells_can_be_removed() {
         let ids = pty_ids(4);
         let store = SessionStore::new();
         store.insert(sample("one", "project", ids[0]));
-        assert_eq!(store.shell_pty("one"), None);
-        assert_eq!(
-            store.remember_shell("one", ids[1]).unwrap(),
-            ShellOpen {
-                pty: ids[1],
-                created: true
-            }
-        );
-        assert_eq!(
-            store.remember_shell("one", ids[2]).unwrap(),
-            ShellOpen {
-                pty: ids[1],
-                created: false
-            }
-        );
-        assert_eq!(store.shell_pty("one"), Some(ids[1]));
-        assert_eq!(store.shell_pty("missing"), None);
+        store.remember_shell("one", ids[1]).unwrap();
+        store.remember_shell("one", ids[2]).unwrap();
+        assert_eq!(store.get("one").unwrap().shell_ptys, ids[1..3]);
+        store.insert(sample("two", "project", ids[3]));
+        assert_eq!(store.forget_shell("two", ids[1]), Err(Error::UnknownPty));
+        assert_eq!(store.forget_shell("one", ids[0]), Err(Error::UnknownPty));
+        assert!(store.forget_shell("missing", ids[1]).is_err());
+        store.forget_shell("one", ids[1]).unwrap();
+        assert_eq!(store.get("one").unwrap().shell_ptys, [ids[2]]);
         assert_eq!(
             store.remember_shell("missing", ids[3]),
             Err(Error::UnknownSession)

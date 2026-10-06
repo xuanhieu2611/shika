@@ -68,7 +68,7 @@ pub use path_env::{LoginShellError, PathEnv};
 pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
-pub use session::{DiffStat, Session, SessionGitState, ShellOpen};
+pub use session::{DiffStat, Session, SessionGitState};
 pub use settings::{Appearance, FontSize, Settings, Translucency};
 pub use worktree::JournalEntry;
 pub use worktree::normalize_prefix as normalize_branch_prefix;
@@ -556,7 +556,7 @@ impl Core {
                 worktree: draft.path.clone(),
                 base_ref: base.reference.clone(),
                 pty,
-                shell_pty: None,
+                shell_ptys: Vec::new(),
                 cli_titled: false,
             };
             self.sessions.insert(session.clone());
@@ -611,43 +611,35 @@ impl Core {
         }
     }
 
-    /// Starts the user's login shell in the session's worktree the first
-    /// time, with the user's own startup files and no command hook.
-    /// Later calls return the same shell and drop `sink`. Blocking: the first
-    /// call to [`Core::path_env`] and a few small file writes.
-    pub fn open_shell(
-        &self,
-        session_id: &str,
-        size: PtySize,
-        sink: impl PtySink,
-    ) -> Result<ShellOpen> {
+    /// Starts a new independent login shell in the task's worktree.
+    /// Blocking: shell discovery and PTY creation. Every shell is owned by
+    /// the session and is stopped when that session closes.
+    pub fn open_shell(&self, session_id: &str, size: PtySize, sink: impl PtySink) -> Result<PtyId> {
         let _guard = self
             .operations
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        if let Some(pty) = self.sessions.shell_pty(session_id) {
-            return Ok(ShellOpen {
-                pty,
-                created: false,
-            });
-        }
         let session = self.sessions.get(session_id).ok_or(Error::UnknownSession)?;
         let env = self.path_env();
         let shell = path_env::user_shell();
         let request = session::shell_request(&shell, &session.worktree, env.path(), size);
         let pty = self.ptys.open(request, sink)?;
-        let opened = match self.sessions.remember_shell(session_id, pty) {
-            Ok(opened) => opened,
-            Err(err) => {
-                self.ptys.close(pty);
-                return Err(err);
-            }
-        };
-        // Another call won the race. Keep its shell and hang this one up.
-        if !opened.created {
+        if let Err(err) = self.sessions.remember_shell(session_id, pty) {
             self.ptys.close(pty);
+            return Err(err);
         }
-        Ok(opened)
+        Ok(pty)
+    }
+
+    /// Stops only this task's specified shell, never its agent or worktree.
+    pub fn close_shell(&self, session_id: &str, pty: PtyId) -> Result<()> {
+        let _guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        self.sessions.forget_shell(session_id, pty)?;
+        self.ptys.close(pty);
+        Ok(())
     }
 
     /// Whether the worktree has uncommitted changes. Blocking: runs git.
@@ -994,8 +986,8 @@ impl Core {
 
     fn hang_up(&self, session: &Session) {
         self.ptys.close(session.pty);
-        if let Some(shell) = session.shell_pty {
-            self.ptys.close(shell);
+        for shell in &session.shell_ptys {
+            self.ptys.close(*shell);
         }
     }
 }
@@ -1187,18 +1179,17 @@ mod tests {
         let shell = core
             .open_shell(&session.id, PtySize::default(), shell_sink)
             .unwrap();
-        assert!(shell.created);
+        assert_eq!(core.sessions.get(&session.id).unwrap().shell_ptys, [shell]);
         let (again_sink, _again_rx) = channel_sink();
         let again = core
             .open_shell(&session.id, PtySize::default(), again_sink)
             .unwrap();
-        assert_eq!(
-            again,
-            ShellOpen {
-                pty: shell.pty,
-                created: false
-            }
-        );
+        assert_ne!(again, shell);
+        assert!(core.close_shell(&session.id, session.pty).is_err());
+        core.close_shell(&session.id, shell).unwrap();
+        assert_eq!(core.sessions.get(&session.id).unwrap().shell_ptys, [again]);
+        assert!(core.write(shell, b"exit\r").is_err());
+        core.write(again, b"echo independent\r").unwrap();
 
         assert!(!core.session_dirty(&session.id).unwrap());
         fs::write(session.worktree.join("wip.txt"), "wip\n").unwrap();
@@ -1223,7 +1214,8 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(core.write(session.pty, b"x"), Err(Error::UnknownPty));
-        assert_eq!(core.write(shell.pty, b"x"), Err(Error::UnknownPty));
+        assert_eq!(core.write(shell, b"x"), Err(Error::UnknownPty));
+        assert_eq!(core.write(again, b"x"), Err(Error::UnknownPty));
         let (_, exit) = collect_to_exit(&rx, Duration::from_secs(5));
         assert!(exit.is_some(), "the agent was not hung up");
         assert_eq!(
