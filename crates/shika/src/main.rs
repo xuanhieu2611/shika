@@ -305,6 +305,8 @@ struct Shika {
     leftovers: Vec<JournalEntry>,
     leftover_selected: usize,
     clock: Instant,
+    branch_check_at: Instant,
+    branch_check_pending: bool,
     notifications: Notifications,
     clicks: std::sync::mpsc::Receiver<String>,
     appearance: Appearance,
@@ -389,6 +391,8 @@ impl Shika {
             leftovers,
             leftover_selected: 0,
             clock: Instant::now(),
+            branch_check_at: Instant::now(),
+            branch_check_pending: false,
             notifications,
             clicks,
             appearance,
@@ -1166,6 +1170,44 @@ impl Shika {
         self.notifications.refresh_diagnostics();
         let now = Instant::now();
         let mut changed = false;
+        // Reconcile agent/shell branch renames independently of the one-shot
+        // CLI title watch. Git runs off-thread, with only one batch in flight.
+        if !self.branch_check_pending
+            && !self.cards.is_empty()
+            && now.duration_since(self.branch_check_at) >= Duration::from_secs(2)
+        {
+            self.branch_check_at = now;
+            self.branch_check_pending = true;
+            let core = self.core.clone();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .spawn(async move {
+                        for session in core.sessions() {
+                            // A switched branch is deliberately not adopted.
+                            // Close reports errors; polling does not spam toasts.
+                            let _ = core.session_refresh_branch(&session.id);
+                        }
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.branch_check_pending = false;
+                    let mut changed = false;
+                    for card in &mut this.cards {
+                        if let Some(session) = &mut card.session
+                            && let Some(current) = this.core.session(&session.id)
+                            && session.branch != current.branch
+                        {
+                            session.branch = current.branch;
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
         let mut rename = vec![];
         // Sessions whose card just turned Ready, for a fresh diff stat.
         let mut ready = vec![];
@@ -1335,7 +1377,10 @@ impl Shika {
                         return;
                     };
                     match result {
-                        Ok(Some(session)) => {
+                        Ok(Some(mut session)) => {
+                            if let Some(current) = this.core.session(&session.id) {
+                                session.branch = current.branch;
+                            }
                             card.title = model::card_title(&session.title);
                             card.named = true;
                             card.session = Some(session);
@@ -1364,7 +1409,10 @@ impl Shika {
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     match result {
-                        Ok(session) => {
+                        Ok(mut session) => {
+                            if let Some(current) = this.core.session(&session.id) {
+                                session.branch = current.branch;
+                            }
                             // A CLI title applied meanwhile is newer.
                             if let Some(card) = this.cards.iter_mut().find(|c| {
                                 c.session
