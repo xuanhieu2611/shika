@@ -12,7 +12,11 @@ I built Shika to solve the worktree and terminal juggling I run into when workin
 
 ## Try it
 
-Shika is early-stage, macOS-only software, distributed from source. There are no signed and notarized downloads yet. Bugs and incomplete workflows are tracked in [MANUAL_CHECKS.md](MANUAL_CHECKS.md); a passing test suite does not establish every GUI check.
+Shika is early-stage, macOS-only software. Bugs and incomplete workflows are tracked in [MANUAL_CHECKS.md](MANUAL_CHECKS.md); a passing test suite does not establish every GUI check.
+
+[Download Shika.dmg](https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg), open it, and drag Shika to Applications. The download is signed and notarized. It needs an Apple silicon Mac with macOS 13 or later and at least one installed, authenticated supported CLI. Shika does not update itself yet; download each new version from [Releases](https://github.com/xuanhieu2611/shika/releases).
+
+### Build from source
 
 You need macOS 13 or later, Rust, full Xcode (not only Command Line Tools), and at least one installed, authenticated supported CLI. GPUI is pinned in [Cargo.toml](Cargo.toml). Runtime Metal shaders avoid requiring Xcode's separate Metal Toolchain component.
 

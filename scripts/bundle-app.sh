@@ -18,7 +18,7 @@ cp assets/macos/Shika.icns "$bundle/Contents/Resources/Shika.icns"
 cp assets/fonts/*.ttf assets/fonts/OFL.txt "$bundle/Contents/Resources/fonts/"
 cp LICENSE "$bundle/Contents/Resources/"
 cp assets/licenses/APP_NOTICES.txt "$bundle/Contents/Resources/THIRD_PARTY_NOTICES.txt"
-cp assets/licenses/Heroicons-MIT.txt assets/licenses/Octicons-MIT.txt "$bundle/Contents/Resources/licenses/"
+cp assets/licenses/Heroicons-MIT.txt assets/licenses/Octicons-MIT.txt assets/licenses/RUST_CRATES.txt "$bundle/Contents/Resources/licenses/"
 cp assets/fonts/OFL.txt "$bundle/Contents/Resources/licenses/JetBrainsMono-OFL.txt"
 # Stable ad hoc identity lets macOS attribute native notification permission
 # to com.hieule.shika. No Developer ID or distribution signing is performed.

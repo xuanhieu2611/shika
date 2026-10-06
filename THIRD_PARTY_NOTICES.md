@@ -10,6 +10,8 @@ Shika's code is [MIT licensed](LICENSE). The following artwork and fonts retain 
 | Branch icon (`git-branch-16`), embedded in `crates/shika/src/main.rs` | [Octicons](https://github.com/primer/octicons) | [MIT, GitHub Inc.](assets/licenses/Octicons-MIT.txt) |
 | JetBrains Mono v2.304, bundled terminal font | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono/tree/v2.304) | [SIL Open Font License 1.1](assets/fonts/OFL.txt) |
 
+The Rust crates compiled into the app, including GPUI and `alacritty_terminal`, are listed with the full text of their licenses in [`assets/licenses/RUST_CRATES.txt`](assets/licenses/RUST_CRATES.txt). `scripts/update-notices.sh` regenerates it from `Cargo.lock` with [cargo-about](https://github.com/EmbarkStudios/cargo-about); run it after changing dependencies. `scripts/release-app.sh` refuses to build a release while the file is out of date.
+
 `scripts/bundle-app.sh` includes the native notices in `Shika.app/Contents/Resources/licenses/`, with a native attribution index (`THIRD_PARTY_NOTICES.txt`) and Shika's license in `Contents/Resources/`.
 
 ## Website
