@@ -19,7 +19,7 @@ Later author decision: replace the fixed Agent/Shell control with optional termi
 
 Each card retains its selected tab. Hidden terminals keep draining; only one terminal is visible. Tabs are memory only, with no global tabs, splits, session restoration, or built-in editor. Cmd+W closes the selected shell (does nothing on the agent). Cmd+Shift+] / Cmd+Shift+[ cycle tabs and wrap. Existing Cmd+] / Cmd+[ still navigate tasks; Cmd+N still creates an agent. `g` and Cmd+Enter retain a quick agent/first-shell toggle, creating the first shell only when none exists. Dirty Close cancellation keeps an already-selected shell or opens/selects the first shell. New shell typing queues before binding, and startup completion does not reclaim focus.
 
-The 48px terminal title row contains a horizontally scrollable tab strip, `+`, and Close task. A compact metadata row beneath it carries the worktree path and focus hint. Existing theme, spacing, and type tokens are reused. See `docs/terminal-tabs.md` for rationale, architecture, lifecycle, debugging, and extension guardrails; `docs/keyboard-flow.md` for cross-surface keyboard behavior; and `MANUAL_CHECKS.md` for validation.
+The 48px terminal title row contains connected tabs (the active tab opens into the terminal), `+` after the last tab, and Close task. A metadata row beneath it, on the terminal background, carries the worktree path and focus hint. Existing theme, spacing, and type tokens are reused. See `docs/terminal-tabs.md` for rationale, architecture, lifecycle, debugging, and extension guardrails; `docs/keyboard-flow.md` for cross-surface keyboard behavior; and `MANUAL_CHECKS.md` for validation.
 
 ## Optional worktree preparation
 

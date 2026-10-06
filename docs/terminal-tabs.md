@@ -20,9 +20,13 @@ This is not a safety boundary. Shells and the agent share files, and the agent c
 ## Behavior at a glance
 
 ```text
-New task:          [Pi]                              [+] [Close task]
-With tools open:   [Pi] [Shell ×] [Shell 2 ×]         [+] [Close task]
-                   worktree path                    focus hint
+               ╭──────╮
+New task:      │ Pi   │ +                                   [Close task c]
+              ─╯      ╰────────────────────────────────────────────────────
+                     ╭─────────╮
+With tools:     Pi   │ Shell × │ Shell 2   +                [Close task c]
+              ───────╯         ╰───────────────────────────────────────────
+               worktree path                                     focus hint
 ```
 
 - New creates only the pinned CLI tab, labeled with the agent preset name.
@@ -52,7 +56,9 @@ With tools open:   [Pi] [Shell ×] [Shell 2 ×]         [+] [Close task]
 
 The legacy quick toggle selects the **first remaining shell**, not the most recently used shell. Tab actions are blocked while an overlay is open or the app is busy; adding shells is also blocked while the card is being created/prepared. Ordinary typing and Escape still belong to the terminal program. Command shortcuts are app actions, not PTY input.
 
-The title row stays 48px high. Its tab strip scrolls horizontally; `+` and Close task remain outside that strip. The worktree path and focus hint moved to a compact row beneath it. Existing segment, tooltip, spacing, and color tokens are reused. Buttons occlude title dragging, but empty title-row space can still drag the window.
+The title row stays 48px high. Tabs are connected tabs, not the old segmented control: the active tab takes the terminal's fill and the header's bottom line breaks under it. `+` follows the last tab, outside the scrolling strip, so it stays visible when tabs overflow; Close task stays at the right. The worktree path and focus hint sit in a row beneath, on the terminal background, as part of the active tab's page. Tabs, `+`, and Close occlude title dragging; empty title-row space, including above the tabs, still drags the window.
+
+Two rendering traps. The header's bottom line is drawn by each piece of the row (a border under every tab wrapper, `+`, the filler, and Close), because a translucent active tab painted over a header-wide line would still show it. And the active tab is painted over the translucent header, so its fill is `Chrome::term_tab`, computed by `appearance::over_to_match` to give exactly the terminal's pixels; filling it with the terminal color directly would stack two translucent fills and look more opaque than the terminal below.
 
 ## Architecture and code map
 
@@ -62,7 +68,7 @@ All UI symbols below are in `crates/shika/src/main.rs` unless otherwise noted. S
 | --- | --- | --- |
 | Task UI state | `Card`, `Card::active_pane` | Own agent and shell panes; resolve the selected terminal |
 | Terminal pane | `Pane`, `Pane::new` | Own one GPUI `TerminalView`, terminal engine, and shared `HostState` per PTY |
-| Header rendering | `terminal_side`, `segment`, `KeyTip`, `title_drag` | Tab strip, shell close/add controls, metadata row, task close, and drag behavior |
+| Header rendering | `terminal_side`, `TAB_HEIGHT`, `KeyTip`, `title_drag`; `appearance.rs`: `Chrome::term_tab`, `over_to_match` | Tab strip, shell close/add controls, metadata row, task close, and drag behavior |
 | Tab actions | `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `toggle` | Shell startup, selection, quick toggle, removal, and focus |
 | Native dispatch | `gpui::actions!`, `Shika::render`, `main` | Root action handlers, Shika key context, key bindings, and Agent menu |
 | Focus and scroll | `focus_terminal`, `Card::tab_scroll`, `move_agent` | Focus the selected view and reveal tabs without resetting manual scrolling on every render |
@@ -145,9 +151,10 @@ Quit does not delete worktrees, and terminal tabs are not persisted. Project rem
 | Closing a tab selects the wrong pane | One-based tab position versus zero-based `shells` index; `tab_after_close`; do not use label number as an index |
 | A closed shell survives or another process stops | Captured session/PTY IDs, `forget_shell` ownership check, `close_shell`, and `PtyHub::close`; distinguish normal PTY children from deliberately detached processes |
 | Cmd+W closes a task/window, or a shortcut reaches the CLI | Root Shika action context/handlers, native bindings, conflicting terminal bindings, and `key_for` |
-| Many tabs hide the active tab or task-close control | `terminal_side` flex/overflow structure and `tab_scroll.scroll_to_item`; add/task-close controls must remain outside overflow |
+| Many tabs hide the active tab or task-close control | `terminal_side` flex/overflow structure and `tab_scroll.scroll_to_item`; `+` and Close must remain outside the scrolling strip |
 | Manual tab scrolling snaps back continuously | Reveal on explicit selection/focus changes, not every render or terminal-output event |
 | Hidden shells retain old font/colors/opacity | `set_font_size` and `push_terminal_theme` must traverse agent plus every shell |
+| The active tab looks lighter or darker than the terminal, or a line shows under it | `Chrome::term_tab`, `over_to_match`, and the per-piece baseline borders; nothing else may paint under the tab |
 | Clicking a tab drags the window | Button/tab `.occlude()` and `title_drag`; do not disable title-row dragging globally |
 
 ## Validation and contributor guardrails

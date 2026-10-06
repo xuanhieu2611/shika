@@ -6,6 +6,7 @@
 use crate::model::Status;
 use gpui::{Rgba, Window, WindowAppearance, WindowBackgroundAppearance, rgb};
 use shika_core::{Appearance, Translucency};
+use shika_terminal::Palette;
 
 /// Make the window transparent, or opaque again, and set the blur behind it.
 /// macOS Reduce transparency forces a solid window even when opacity is lower.
@@ -168,6 +169,12 @@ pub struct Chrome {
     pub waiting: StatusColors,
     pub term_header: Rgba,
     pub term_header_alpha: f32,
+    /// The terminal's default background with its alpha: the metadata row
+    /// under the header shares it.
+    pub term_surface: Rgba,
+    /// The active tab's fill. Painted over the header, it looks exactly like
+    /// `term_surface`, so the tab opens into the terminal below it.
+    pub term_tab: Rgba,
     pub term_line: Rgba,
     pub term_seg: Rgba,
     pub term_seg_active: Rgba,
@@ -256,6 +263,22 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
             rgb(0x20231F),
             rgb(0x131512),
         )
+    };
+    let term_header_alpha = if frost_term {
+        (term_alpha - 0.1).max(0.75)
+    } else {
+        1.0
+    };
+    let palette = if dark {
+        Palette::shika_dark()
+    } else {
+        Palette::shika()
+    };
+    let term_surface = Rgba {
+        r: f32::from(palette.background.r) / 255.0,
+        g: f32::from(palette.background.g) / 255.0,
+        b: f32::from(palette.background.b) / 255.0,
+        a: term_alpha,
     };
     Chrome {
         glass,
@@ -394,11 +417,9 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
             chip: hover,
         },
         term_header,
-        term_header_alpha: if frost_term {
-            (term_alpha - 0.1).max(0.75)
-        } else {
-            1.0
-        },
+        term_header_alpha,
+        term_surface,
+        term_tab: over_to_match(term_surface, with_alpha(term_header, term_header_alpha)),
         term_line,
         term_seg,
         term_seg_active,
@@ -415,6 +436,23 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
 
 pub fn with_alpha(color: Rgba, alpha: f32) -> Rgba {
     Rgba { a: alpha, ..color }
+}
+
+/// The fill that, painted over `under`, gives the same pixels as `target`
+/// painted over nothing, whatever shows through the window. `target` must be
+/// at least as opaque as `under`; otherwise `target` is returned as is.
+pub fn over_to_match(target: Rgba, under: Rgba) -> Rgba {
+    if under.a >= 1.0 || target.a <= under.a {
+        return target;
+    }
+    let a = (target.a - under.a) / (1.0 - under.a);
+    let channel = |t: f32, u: f32| ((t * target.a - u * under.a * (1.0 - a)) / a).clamp(0.0, 1.0);
+    Rgba {
+        r: channel(target.r, under.r),
+        g: channel(target.g, under.g),
+        b: channel(target.b, under.b),
+        a,
+    }
 }
 
 /// An `rgb` color with an alpha.
@@ -570,6 +608,50 @@ mod tests {
             assert!(chrome.glass);
             assert_eq!(chrome.overlay.a, 1.0);
             assert_eq!(chrome.toast_bg.a, 1.0);
+        }
+    }
+
+    /// Source-over with straight alpha, returning premultiplied color and alpha.
+    fn over(top: Rgba, bottom: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+        let keep = 1.0 - top.a;
+        (
+            top.r * top.a + bottom.0 * keep,
+            top.g * top.a + bottom.1 * keep,
+            top.b * top.a + bottom.2 * keep,
+            top.a + bottom.3 * keep,
+        )
+    }
+
+    #[test]
+    fn the_active_tab_matches_the_terminal_in_every_mode() {
+        for (opacity, translucency) in [
+            (100, Translucency::SidebarAndTerminal),
+            (40, Translucency::Sidebar),
+            (40, Translucency::SidebarAndTerminal),
+            (90, Translucency::SidebarAndTerminal),
+        ] {
+            let appearance = Appearance {
+                opacity,
+                blur: 30,
+                translucency,
+            };
+            for dark in [false, true] {
+                let chrome = chrome_for(&appearance, dark, false);
+                let header = over(
+                    with_alpha(chrome.term_header, chrome.term_header_alpha),
+                    (0.0, 0.0, 0.0, 0.0),
+                );
+                let tab = over(chrome.term_tab, header);
+                let terminal = over(chrome.term_surface, (0.0, 0.0, 0.0, 0.0));
+                for (got, want) in [
+                    (tab.0, terminal.0),
+                    (tab.1, terminal.1),
+                    (tab.2, terminal.2),
+                    (tab.3, terminal.3),
+                ] {
+                    assert!((got - want).abs() < 1e-4, "{opacity} {dark}: {got} {want}");
+                }
+            }
         }
     }
 
