@@ -383,8 +383,8 @@ pub fn branch_slug(text: &str, project: &str) -> Option<String> {
 
 /// The branch prefix setting, made safe for git: path parts of ASCII
 /// letters, digits, `.`, `_`, and `-`, joined by `/`. A prefix that does not
-/// already end in `-` or `_` gets a `/`, so `hieu` and `hieu/` both give
-/// `hieu/`. Empty means no prefix.
+/// already end in `-` or `_` gets a `/`, so `dev` and `dev/` both give
+/// `dev/`. Empty means no prefix.
 pub fn normalize_prefix(raw: &str) -> String {
     let parts: Vec<String> = raw
         .split('/')
@@ -1097,7 +1097,7 @@ mod tests {
             Some("background-opacity-and-blur")
         );
         assert_eq!(
-            branch_slug("Fix Job Hunting tracker", "job-hunting").as_deref(),
+            branch_slug("Fix Sample Project tracker", "sample-project").as_deref(),
             Some("fix-tracker")
         );
         // Only whole words, and never the whole name.
@@ -1116,15 +1116,15 @@ mod tests {
     fn prefixes_are_made_safe_for_git() {
         assert_eq!(normalize_prefix(""), "");
         assert_eq!(normalize_prefix("  "), "");
-        assert_eq!(normalize_prefix("hieu"), "hieu/");
-        assert_eq!(normalize_prefix("hieu/"), "hieu/");
-        assert_eq!(normalize_prefix("/hieu//feat/"), "hieu/feat/");
-        assert_eq!(normalize_prefix("hieu-"), "hieu-");
-        assert_eq!(normalize_prefix("hieu_"), "hieu_");
-        assert_eq!(normalize_prefix("Hi eu~^:?*[\\"), "Hieu/");
+        assert_eq!(normalize_prefix("dev"), "dev/");
+        assert_eq!(normalize_prefix("dev/"), "dev/");
+        assert_eq!(normalize_prefix("/dev//feat/"), "dev/feat/");
+        assert_eq!(normalize_prefix("dev-"), "dev-");
+        assert_eq!(normalize_prefix("dev_"), "dev_");
+        assert_eq!(normalize_prefix("De v~^:?*[\\"), "Dev/");
         assert_eq!(normalize_prefix("-.hidden/x..y/z.lock/"), "hidden/x.y/z/");
         assert_eq!(normalize_prefix("./../"), "");
-        for raw in ["hieu", "a.b", "-x", "x.lock", "Hieu Le/", "@{x"] {
+        for raw in ["dev", "a.b", "-x", "x.lock", "Sample User/", "@{x"] {
             let prefix = normalize_prefix(raw);
             if !prefix.is_empty() {
                 assert!(
@@ -1166,8 +1166,8 @@ mod tests {
         run(&["update-ref", "refs/remotes/origin/fix-login-3", "HEAD"]);
         assert!(is_published(&git(), "", &draft.path, &renamed).unwrap());
 
-        let prefixed = rename_branch(&git(), "", &draft.path, &renamed, "hieu/fix-login").unwrap();
-        assert_eq!(prefixed, "hieu/fix-login");
+        let prefixed = rename_branch(&git(), "", &draft.path, &renamed, "dev/fix-login").unwrap();
+        assert_eq!(prefixed, "dev/fix-login");
         assert!(!is_published(&git(), "", &draft.path, &prefixed).unwrap());
         remove_draft(&git(), "", &repo, &draft.path, &prefixed, true).unwrap();
     }

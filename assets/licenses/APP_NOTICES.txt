@@ -1,0 +1,18 @@
+Shika third-party notices
+
+Shika is MIT licensed. See ../../LICENSE when reading this file in the repository,
+or LICENSE beside THIRD_PARTY_NOTICES.txt inside the app bundle.
+
+Settings gear: Heroicons, cog-6-tooth (24px solid), Tailwind Labs, Inc.
+https://github.com/tailwindlabs/heroicons
+MIT license: licenses/Heroicons-MIT.txt inside the app bundle.
+
+Branch icon: Octicons, git-branch-16, GitHub Inc.
+https://github.com/primer/octicons
+MIT license: licenses/Octicons-MIT.txt inside the app bundle.
+
+Terminal font: JetBrains Mono v2.304, JetBrains s.r.o.
+https://github.com/JetBrains/JetBrainsMono/tree/v2.304
+SIL Open Font License 1.1: licenses/JetBrainsMono-OFL.txt inside the app bundle.
+
+Repository-wide attribution: THIRD_PARTY_NOTICES.md at the repository root.

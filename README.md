@@ -1,49 +1,59 @@
 # Shika
 
-Keyboard-first Mac app for running Claude Code, Codex, Cursor CLI, and Pi in separate git worktrees. Pure Rust on GPUI, with one real terminal visible at a time. Shika launches the CLI tools you already use, without wrapping a model API. Early-stage, macOS-only software. See `PRD.md` for scope and `PLAN.md` for implementation decisions.
+A keyboard-first Mac app for running Claude Code, Codex, Cursor CLI, and Pi in separate Git worktrees. Shika creates the worktree and opens the CLI you already use, with your existing login and plan. It does not wrap a model API.
 
-## Build and run
+I built Shika to solve the worktree and terminal juggling I run into when working with several coding agents. I use it every day, including to build Shika itself.
 
-Requires macOS, Rust, full Xcode, and an installed, authenticated supported CLI. GPUI is pinned in the root `Cargo.toml`. The current build uses runtime Metal shaders because the separate Metal Toolchain component is not installed.
+[Website and interactive prototype](https://useshika.com) · [Contributing](CONTRIBUTING.md) · [Implementation decisions](PLAN.md)
+
+![Shika running parallel tasks across two sample projects, with an agent terminal and task-owned shell tabs](docs/images/shika-native.png)
+
+*Native app screenshot with disposable sample projects and simulated CLI output. The website demo is an interactive prototype.*
+
+## Try it
+
+Shika is early-stage, macOS-only software, distributed from source. There are no signed and notarized downloads yet. Bugs and incomplete workflows are tracked in [MANUAL_CHECKS.md](MANUAL_CHECKS.md); a passing test suite does not establish every GUI check.
+
+You need macOS 13 or later, Rust, full Xcode (not only Command Line Tools), and at least one installed, authenticated supported CLI. GPUI is pinned in [Cargo.toml](Cargo.toml). Runtime Metal shaders avoid requiring Xcode's separate Metal Toolchain component.
 
 ```sh
+git clone https://github.com/xuanhieu2611/shika.git
+cd shika
 source "$HOME/.cargo/env"
-cargo test --workspace
-cargo run -p shika
+./scripts/bundle-app.sh
+open target/release/Shika.app
 ```
 
-Build a local app bundle:
+Local bundles are ad hoc signed. The app discovers `claude`, `codex`, `agent` (Cursor CLI), and `pi` through your login shell's PATH, including when launched from Finder. Your CLI subscription or provider charges still apply.
 
-```sh
-./scripts/bundle-app.sh --debug
-open target/debug/Shika.app
-```
+## Agent permissions
 
-Without `--debug`, the script builds the release bundle. Local bundles are ad hoc signed; distribution signing and notarization are outside this MVP.
+The current presets launch CLIs in automatic approval modes:
 
-JetBrains Mono and its OFL license are bundled. The chrome uses the macOS system font. The app captures the login-shell PATH at startup to find `claude`, `codex`, `agent`, and `pi` when launched from Finder.
+| CLI | Launch arguments |
+| --- | --- |
+| Claude Code | `--dangerously-skip-permissions` |
+| Codex | `--dangerously-bypass-approvals-and-sandbox` |
+| Cursor CLI | `--yolo --trust --sandbox disabled` |
+| Pi | `--approve` |
 
-## Isolated checks
+Claude Code, Codex, and Cursor CLI bypass permission prompts or sandboxing. Agents can execute commands with your user account's access. A worktree separates Git edits; it does not restrict access to files, credentials, or the network. Use Shika in projects you trust and review the agent's changes.
 
-Never run automated UI tests against your normal app data. Use a fresh directory and disposable repositories with local bare remotes:
+Shika has no telemetry or model API integration. Your CLIs connect to their providers, Git fetch and push connect to your remotes, and approved setup commands can use the network.
 
-```sh
-open -n target/debug/Shika.app --args --data-dir /absolute/path/to/test-data
-```
+## Workflow
 
-Confirm Shika's own window is in front before sending keystrokes. `cargo run` alone does not prove Finder PATH discovery. See `MANUAL_CHECKS.md` for the acceptance record and `crates/shika-terminal/MANUAL_CHECKS.md` for terminal-specific checks.
+1. Press `a` to add a Git repository, then `n` to pick an agent. Shika creates a fresh branch and worktree under that repository's `.worktrees/`.
+2. Write your prompt in the terminal. The first prompt names the task and branch; the CLI's session title can refine it later.
+3. Move between cards with `j` / `k`. Enter focuses the terminal; Ctrl+Q returns to cards. Ready means output went quiet or the process exited, so check the terminal for its result.
+4. Press Cmd+T to add an independent shell in that task's worktree. Review, test, commit, and push there. Ctrl+Tab cycles tabs; Cmd+1 selects the pinned agent tab. Cmd+W closes only a shell.
+5. Press `c` to close the task. Close asks before discarding uncommitted work or unpushed commits, and offers push when the tree is clean. A push keeps the card open. Shika never commits.
 
-## Use
-
-`a` adds a git repository. `n` opens the CLI picker. `j` / `k` or arrows select cards and skip project headers. Enter focuses the terminal; Ctrl+Q returns to cards. Escape is typed into the terminal. Ctrl+Tab cycles that task's tabs, and Cmd+1 through Cmd+9 jump to one (the agent is Cmd+1). Cmd+T adds a shell; Cmd+W closes the selected shell and does nothing on the agent. `c` closes the selected task.
-
-The first submitted prompt names the card and branch, and about a second later the CLI's own session title renames them to something short (see `docs/branch-naming.md`). A push keeps the card open. Close offers discard or push when work would be lost. The app never commits. Quit keeps worktrees; the next launch lists leftovers for explicit cleanup.
-
-Projects and the worktree journal live in `~/Library/Application Support/com.hieule.shika/`. Live sessions do not restore.
+One terminal is visible at a time; hidden task terminals keep running. Projects persist, live sessions do not restore, and quitting leaves worktrees for explicit cleanup on the next launch. App data lives in `~/Library/Application Support/com.hieule.shika/`.
 
 ## Optional worktree preparation
 
-Create `.shika/worktrees.json` in a project's main checkout to prepare each fresh worktree before its agent starts:
+Create `.shika/worktrees.json` in a project's main checkout to prepare fresh worktrees before agents start:
 
 ```json
 {
@@ -53,12 +63,27 @@ Create `.shika/worktrees.json` in a project's main checkout to prepare each fres
 }
 ```
 
-Use your project's commands. Copied files must already be ignored by Git on both the main checkout and the task's base. Shika asks for local approval, shows progress, and offers cancel or fresh-worktree retry. Configuration changes ask again. Without this file, the existing workflow stays unchanged. See [worktree preparation](docs/worktree-preparation.md) for trust, path, command, and cleanup rules.
+Use your project's commands. Copied files must already be ignored by Git on both the main checkout and the task's base. Shika asks for local approval and asks again when configuration changes. Setup commands are trusted code, executed with your account's access. See [worktree preparation](docs/worktree-preparation.md) for configuration, progress, cancel, retry, and cleanup rules.
 
-## Contributing
+## Development and contributing
 
-Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for onboarding, feature guides, and development checks. The [preparation contributor guide](docs/worktree-preparation.md#contributor-guide) covers the launch lifecycle, safety boundaries, debugging, and regression tests.
+Pure Rust on GPUI, with three crates: `shika-core` owns Git, persistence, and processes; `shika-terminal` owns terminal rendering; `shika` owns the app UI. Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for onboarding and feature guides. [PRD.md](PRD.md) records the original scope; [PLAN.md](PLAN.md) records later decisions.
+
+```sh
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+./scripts/bundle-app.sh --debug
+```
+
+Never run automated UI checks against your normal app data. Use disposable repositories and a fresh directory:
+
+```sh
+open -n target/debug/Shika.app --args --data-dir /absolute/path/to/test-data
+```
+
+Confirm Shika's own window is in front before sending keystrokes. A `cargo run` launch does not prove Finder PATH discovery. See [terminal checks](crates/shika-terminal/MANUAL_CHECKS.md) and the [acceptance record](MANUAL_CHECKS.md).
 
 ## License
 
-MIT. Bundled JetBrains Mono is licensed separately under the SIL Open Font License; see `assets/fonts/OFL.txt`.
+Shika is [MIT licensed](LICENSE). Fonts and copied icons retain their upstream licenses; see [third-party notices](THIRD_PARTY_NOTICES.md). Native notices are included in the app bundle.

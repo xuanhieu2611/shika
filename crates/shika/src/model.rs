@@ -541,16 +541,16 @@ mod tests {
         assert_eq!(short_time(Duration::from_secs(63 * 60 + 5)), "1h 3m");
         assert_eq!(diff_stat_label(2, 64, 3), "2 files +64 \u{2212}3");
         assert_eq!(diff_stat_label(1, 0, 0), "1 file +0 \u{2212}0");
-        let home = std::path::Path::new("/Users/kai");
-        let path = std::path::Path::new("/Users/kai/code/shika");
+        let home = std::path::Path::new("/Users/developer");
+        let path = std::path::Path::new("/Users/developer/code/shika");
         assert_eq!(tilde(path, Some(home)), "~/code/shika");
         assert_eq!(tilde(home, Some(home)), "~");
         assert_eq!(tilde(std::path::Path::new("/opt/x"), Some(home)), "/opt/x");
-        assert_eq!(tilde(path, None), "/Users/kai/code/shika");
+        assert_eq!(tilde(path, None), "/Users/developer/code/shika");
         // A sibling that only shares the prefix text is not under home.
         assert_eq!(
-            tilde(std::path::Path::new("/Users/kaiser"), Some(home)),
-            "/Users/kaiser"
+            tilde(std::path::Path::new("/Users/developer-other"), Some(home)),
+            "/Users/developer-other"
         );
     }
     #[test]

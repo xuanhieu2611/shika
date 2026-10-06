@@ -1,11 +1,11 @@
 # Shika design system
 
-Shika is a keyboard-first Mac app for running a few coding agents at once. It is named for Shikamaru: the one who keeps track of everyone on the field while you give directions. Shika creates a git worktree per task, starts the CLI the user already pays for (Claude Code, Codex, Cursor CLI, Pi, Kiro) in a real PTY, tells them when an agent is asking or done, and deletes the worktree when the task is pushed or closed.
+Shika is a keyboard-first Mac app for running a few coding agents at once. It is named for Shikamaru: the one who keeps track of everyone on the field while you give directions. Shika creates a git worktree per task, starts the CLI the user already uses (Claude Code, Codex, Cursor CLI, Pi) in a real PTY, and notifies them when output becomes quiet. Closing the task removes its worktree after the safe-close checks. A push keeps the task open. Kiro is planned.
 
 The user is a developer who does not watch agents work. They start a task, go to the browser, and come back on a notification. The UI is built around that: a wide column for tracking agents, a smaller terminal for the moments they need to read or answer.
 
 **Sources**
-- `design/Shika v3.dc.html`: the visual reference. Light and dark (`t` key or the theme tweak) and the logo.
+- `design/Shika v3.dc.html`: the archived visual reference. Its original runtime and styles are not included beside it, so it is not a standalone runnable page. The browser demo lives in `site/demo/` and uses sample data; the native app and this written spec define current behavior.
 - Logo artwork: `design/assets/shika-logo.png`.
 - The values that ship are in the app, listed below. This folder is not imported.
 
@@ -32,7 +32,7 @@ The user is a developer who does not watch agents work. They start a task, go to
 Shika talks like a terse colleague. It reports facts and names consequences. It does not cheer, apologize, or explain itself.
 
 - **Sentence case everywhere.** Buttons, titles, statuses: "New agent", "Ready to check", "Delete worktree". The only all-caps text is "SHIKA" in the notification header, matching macOS.
-- **Status words are fixed:** Asking you, Ready to check, Working, Waiting. Chips use the short forms: asking, ready, working, waiting. Never invent synonyms ("Needs input", "Done").
+- **Status words are fixed:** Ready to check, Working, Waiting. Chips use the short forms: ready, working, waiting. Asking tokens remain from the archived prototype; the native app does not parse questions. Never invent synonyms ("Needs input", "Done").
 - **Address the user as "you", rarely.** "Asking you". Shika never says "I" or "we".
 - **Buttons are verbs naming the outcome:** "Delete worktree", not "OK" or "Yes". Cancel is "Cancel".
 - **Confirm dialogs ask a question about the specific task**, then list the facts: "Close “Fix flaky resize test”?" / "The worktree has 2 uncommitted files: src/cli.rs, src/layout.rs." / "This stops the session and force-removes .worktrees/fix-flaky-resize-test."
@@ -74,7 +74,7 @@ Names such as `--ink-1` and `--surface-app` are how this document talks about co
 - Terminal header (48px, term-header fill, bottom term-line): connected, task-scoped terminal tabs, not a segmented control. Tabs sit on the bottom of the row, 34 high, radius 7 on the top corners only, padding 0 12, 12px, min 88 and max 180 wide with the label truncated, no gap between them, starting 8px from the left so the label lines up with the terminal text. The active tab is filled with term-tab, has a 1px term-line border on its top and sides, and term-white text; the bottom line breaks under it, so the tab opens into the terminal. term-tab is the terminal background adjusted so that, painted over the translucent header, it gives exactly the terminal's pixels. Inactive tabs are term-dim text with no fill; hover gives the term-hover wash in the tab shape and term-fg text. Only the pinned CLI tab exists initially. Shell tabs are added on request and numbered monotonically (Shell, Shell 2). Each shell has a 16px `×` (radius 4, hover term-hover and term-white, tooltip "Close shell tab (stops its processes) ⌘W"), always shown on the active tab and on hover otherwise, in a fixed slot so the label does not move. The CLI tab has no `×`. `+` (24px, radius 6, 15px glyph, tooltip "New shell tab ⌘T") follows the last tab; when tabs overflow, the strip scrolls and `+` stays at its right edge. Close task `c` (1px term-seg-active border, radius 6, hover term-hover) stays at the right, centered on the tab labels. The bottom line is drawn by each piece of the row, never by the header, since a translucent tab cannot hide a line under it. Selection reveals the tab without pinning manual scrolling. A metadata row below the header (padding 8 20 2, gap 12) shares the terminal background, as part of the active tab's page: the worktree path in mono 11.5 term-dim, `~` for home, ellipsis at the start; the focus hint is 11.5 term-faint-ui, "↵ type here" or "ctrl q back to cards".
 - Empty terminal: the app icon 64px, "No agent selected" 13 term-faint-ui, and `j` select, `n` new agent. The toast sits centered over the terminal side, 22 from the bottom.
 - Projects stay visible even with no agents, shown as a dashed empty box.
-- Cards inside a project are sorted by attention: asking, ready, working, waiting.
+- Cards inside a project are sorted by attention: ready, working, waiting.
 
 **Cards.** Radius 10, padding 12/14/11, gap 6. Line one: 8px status dot, gap 10, the task in 14 medium (line 20, ink-3 while it still reads "New <CLI>"), and the time in mono 11.5 in the working text color, shown only while Working (`42s`, `51m`, `1h 3m`). Line two (indent 18, 12px ink-3, gap 6, `·` in ink-5): CLI · status label (status text; 600 Ready, 500 Working, 400 Waiting) · branch (mono 11.5, truncates first) · the diff stat while Ready, like `2 files +64 −3` with a real minus. The selected card shows key hints on the right while the cards have focus: Ready `↵ read`, Working `↵ watch`, Waiting `↵ write prompt`. Key caps everywhere: mono 10.5, sunken fill, ink-2, radius 4, padding 1 5 (0 5 inside a card). No agent output on cards. At rest: 45% white (3% white in dark) with a 1px hairline (`--shadow-card`). Asking and ready get a faint status tint. Selected: raised white with a 1.5px ink outline. Selected while the terminal has focus: hairline only, hints hidden.
 
@@ -119,7 +119,7 @@ GPUI's Metal blending adds alpha (source one, destination one), so a translucent
 
 ## Iconography
 
-- **Set:** [Lucide](https://lucide.dev) (the same set Obsidian uses). The prototype draws those strokes. The app does not load Lucide. Its chrome glyph is the settings gear, `SETTINGS_ICON` in `crates/shika/src/main.rs`. New glyphs follow the same stroke and size.
+- **Sources:** The native app embeds Heroicons' solid `cog-6-tooth` as `SETTINGS_ICON` and Octicons' `git-branch-16` as `BRANCH_ICON` in `crates/shika/src/main.rs`. The landing page uses Tabler outline icons. Preserve the notices in `THIRD_PARTY_NOTICES.md` when copying artwork; new icons should fit the existing size, weight, and inherited colors.
 - **Style:** 1.5px stroke, 16px standalone, 14px inside buttons, color inherits (ink-3 at rest, ink-1 on hover).
 - **Used for:** Plus (new agent on a project, drawn as a 16px "+" like the prototype), FolderPlus (add project), X (close, when there's no room for the word), GitBranch, Terminal, CircleAlert (CLI not on PATH). That is roughly the whole list.
 - **Not used for:** status (status is a dot), decoration, card contents, section headers.

@@ -73,7 +73,7 @@ These are private files, not a public API. Shika only reads them. Anything missi
 
 Branch names are lowercase ASCII words joined by `-`, at most 48 characters, cut at a word boundary. Whole-word copies of the project name are left out ("Shika background opacity and blur" in `shika` becomes `background-opacity-and-blur`). The card shows the CLI's title as written. A name already taken by a local or remote-tracking branch gets `-2`, `-3`, and so on. Shika never renames a branch that is on a remote (it has an upstream, or a remote-tracking branch has its name), or a worktree switched to another branch; the card still takes the title. Renaming before a push is local only and changes no commits.
 
-The optional branch prefix in Settings (empty by default, like `hieu/`) goes in front of every name Shika picks. It is cleaned for git, gets a `/` unless it ends in `-` or `_`, and is dropped if git still refuses the name.
+The optional branch prefix in Settings (empty by default, like `dev/`) goes in front of every name Shika picks. It is cleaned for git, gets a `/` unless it ends in `-` or `_`, and is dropped if git still refuses the name.
 
 You do not name the task in a separate field.
 
@@ -235,7 +235,7 @@ The GPUI port must pass the same checks. The migration order above says when.
 
 ### 0. Toolchain and scaffold
 
-Rust is installed with rustup. Full Xcode is installed for GPUI's Metal shaders. Create the Cargo workspace and the GPUI app in `crates/shika`. Bundle identifier `com.hieule.shika`. Window opens on Mac.
+Install Rust with rustup and full Xcode for GPUI. Create the Cargo workspace and the GPUI app in `crates/shika`. Bundle identifier `com.hieule.shika`. Window opens on Mac.
 
 Check: `cargo run -p shika` shows an empty split window.
 

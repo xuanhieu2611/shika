@@ -24,7 +24,7 @@
     reveals.forEach(function (el) { io.observe(el); });
   }
 
-  // The demo is the designer's prototype at 1280x800, scaled to fit its frame.
+  // The sample-data prototype is 1280x800, scaled to fit its frame.
   // It loads after the page so its runtime does not delay first paint.
   var frame = document.getElementById('demo-frame');
   var iframe = document.getElementById('demo-iframe');

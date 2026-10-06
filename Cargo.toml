@@ -18,9 +18,8 @@ strip = true
 # here. async-task resolves from crates.io and builds as is.
 [workspace.dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "76659a55a8c10ed355a070f8764a0b1733e3c115" }
-# `runtime_shaders` compiles the Metal shaders when the app starts instead of
-# at build time. This machine has Xcode but not the separate Metal Toolchain
-# component (`xcodebuild -showComponent MetalToolchain` says uninstalled), so
-# the build-time `metal` compiler fails. Drop the feature once
-# `xcodebuild -downloadComponent MetalToolchain` has been run, and for release.
+# Compile Metal shaders when the app starts, so builds need full Xcode but
+# do not also require the separate Metal Toolchain component. Keep this
+# feature for local and release builds unless the toolchain is changed
+# deliberately and both build and startup are verified.
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "76659a55a8c10ed355a070f8764a0b1733e3c115", features = ["font-kit", "runtime_shaders"] }

@@ -4,15 +4,15 @@ Shika is a keyboard-first Mac app for running a few coding agents at once. It is
 
 Shika manages projects, agents, and git worktrees. The user writes the prompt, answers questions, tests, and pushes. Shika creates the worktree, starts the CLI they already pay for, and removes the live session and the worktree when the user closes the task. A push keeps the card open.
 
-This is a personal MVP first. It has to be good enough for the author to use on real repos, then good enough to publish as a signed Mac download.
+This is an early-stage app built for daily use on real repositories, with signed Mac downloads planned after the core workflow is validated.
 
 ## Decisions already made
 
 Do not relitigate these.
 
-- Desktop app, not a terminal app. One monitor, fullscreen. The user already lives in WezTerm and in apps like Codex. Herdr stays the terminal multiplexer. Shika does not try to replace it.
+- Desktop app, not a terminal app. One monitor, fullscreen. The user already uses a terminal and coding tools. Existing terminal multiplexers handle the usual shell workflow; Shika manages coding-agent tasks.
 - Pure Rust on GPUI, Zed's GPU UI framework. Rust owns worktrees, processes, and the window. The product is terminals and keyboard, so the same process that reads each PTY parses it and draws it on the GPU. No web view, no Chromium, no bridge into JavaScript. This is lighter than the Electron shell Codex and T3 Code use, and it is what terminal multiplexer users expect.
-- Mac first. The author has an Apple Developer account. Windows can come from the same project later. Do not build Windows in the MVP.
+- Mac first. Windows can come from the same project later. Do not build Windows in the MVP.
 - The user brings their own CLIs and subscriptions: Claude Code, Codex, Cursor CLI, and Pi in this build. Kiro waits. Shika does not wrap a model API.
 - Permissions are bypassed. Shika never asks the user to approve a shell command. Launch each CLI with its current flag for that, after checking `--help`. Do not invent a flag.
 - One agent, one fresh worktree. Do not reuse an old worktree. Reuse is how stale files leak into the next task.
@@ -136,7 +136,7 @@ When status becomes Asking you or Ready to check, post a macOS notification nami
 
 Not part of the first build. When the author wants to publish:
 
-- Signed, notarized `.dmg` on a GitHub release. They have an Apple Developer account.
+- Signed, notarized `.dmg` on a GitHub release, using an Apple Developer account.
 - Send the release link. People open the disk image and drag Shika to Applications.
 - Homebrew cask later.
 
@@ -163,4 +163,4 @@ Use the eight-step script in `PLAN.md`, which is the current acceptance script. 
 
 Quiet Mac app. Light chrome, dark terminal. Cards are the navigation, not a spreadsheet of rows. Status color is the only loud color: a warm mark for asking, a green mark for ready. Sentence case. No marketing page inside the app.
 
-The HTML mock in `../agent-desk/mockup.html` was an exploration. This PRD wins where they disagree. In particular: no resizable split, left column is 280px, at most three cards shown per project, and the terminal is a real PTY.
+Early layout explorations are superseded by the decisions in `PLAN.md` and the current visual specification in `design/DESIGN.md`. The archived prototype is `design/Shika v3.dc.html`; it is not a standalone runnable demo.

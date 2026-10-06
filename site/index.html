@@ -14,8 +14,10 @@
 <meta property="og:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side, each in its own git worktree.">
 <meta property="og:url" content="https://useshika.com/">
 <meta property="og:image" content="https://useshika.com/img/og.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
+<meta property="og:image:width" content="2800">
+<meta property="og:image:height" content="1760">
+<meta property="og:image:alt" content="Native Shika app with three tasks across two sample projects and a task-owned shell tab. CLI output is simulated.">
+<meta name="twitter:image:alt" content="Native Shika app with sample projects and simulated CLI output.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Shika - Start the agents. Go do something else.">
 <meta name="twitter:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side, each in its own git worktree.">
@@ -62,7 +64,7 @@
         <div>
           <a class="pill-link rise" style="--i:0" href="https://github.com/xuanhieu2611/shika"><span class="tag">Open source</span>Free for every Mac, MIT licensed<svg class="icon"><use href="#i-arrow"/></svg></a>
           <h1 class="rise" style="--i:1">Start the agents.<br><span class="soft">Go do something else.</span></h1>
-          <p class="lede rise" style="--i:2">Every Claude Code or Cursor task gets its own git worktree and terminal. Shika tells you when one is ready.</p>
+          <p class="lede rise" style="--i:2">Every Claude Code, Codex, Cursor CLI, or Pi task gets its own git worktree and terminal. Shika tells you when one is ready.</p>
           <div class="cta-row rise" style="--i:3">
             <a class="btn btn-primary" href="#install">Install Shika</a>
             <a class="btn btn-ghost" href="https://github.com/xuanhieu2611/shika"><svg class="icon"><use href="#i-github"/></svg>View on GitHub</a>
@@ -73,11 +75,11 @@
 
       <div class="demo rise" style="--i:4" id="demo">
         <div class="demo-frame" id="demo-frame">
-          <iframe id="demo-iframe" data-src="demo/" title="Interactive Shika prototype. Click inside, then use j and k to move, Enter to open the terminal, n for a new agent." tabindex="0"></iframe>
+          <iframe id="demo-iframe" data-src="demo/" title="Interactive Shika prototype with sample data. Click inside, then use j and k to move, Enter to focus the terminal, or n for a new agent." tabindex="0"></iframe>
         </div>
         <div class="demo-caption">
-          <p class="demo-keys"><strong>This is live.</strong> Click inside, then try <kbd>j</kbd><kbd>k</kbd> to move, <kbd>↵</kbd> to open the terminal, <kbd>g</kbd> for the shell, <kbd>n</kbd> for a new agent.</p>
-          <p class="demo-mobile-note"><strong>This is a live prototype.</strong> Open it on a laptop to drive it with the keyboard.</p>
+          <p class="demo-keys"><strong>Interactive prototype, sample data.</strong> Try <kbd>j</kbd><kbd>k</kbd> to move, <kbd>↵</kbd> to focus the terminal, or click <kbd>+</kbd> to add a shell tab.</p>
+          <p class="demo-mobile-note"><strong>Prototype with sample data.</strong> Open it on a laptop to try the keyboard flow.</p>
           <a href="demo/" target="_blank" rel="noopener">Open full screen<svg class="icon"><use href="#i-out"/></svg></a>
         </div>
       </div>
@@ -105,9 +107,9 @@
           <p>When the agent goes quiet, a notification tells you which task is ready to check.</p>
         </li>
         <li class="reveal" style="--i:3">
-          <span class="key" aria-label="g key">g</span>
+          <span class="key" aria-label="Command T">⌘T</span>
           <h3>Check it in the shell</h3>
-          <p>Flip to your login shell in the same worktree. Diff, test, commit and push yourself.</p>
+          <p>Add a shell tab in the same worktree. Diff, test, commit and push yourself.</p>
         </li>
         <li class="reveal" style="--i:4">
           <span class="key" aria-label="c key">c</span>
@@ -259,7 +261,7 @@
     <div class="wrap install-grid">
       <div class="reveal">
         <h2>Free and open source.</h2>
-        <p class="section-lede">Signed downloads are on the way. Until then, build Shika from source in one script.</p>
+        <p class="section-lede">Early-stage, macOS-only software. Build a local app from source; signed and notarized downloads are not available yet.</p>
         <ul class="reqs">
           <li><svg class="icon"><use href="#i-check"/></svg>macOS 13 or later</li>
           <li><svg class="icon"><use href="#i-check"/></svg><span>Rust, installed with <a href="https://rustup.rs">rustup</a></span></li>
@@ -275,7 +277,7 @@
 <span class="p">$ </span>./scripts/bundle-app.sh
 <span class="p">$ </span>open target/release/Shika.app</pre>
         </div>
-        <p class="install-foot">Move <code class="mono">Shika.app</code> to Applications to keep it in the Dock. <a href="https://github.com/xuanhieu2611/shika">Watch the repo</a> to hear when signed builds ship.</p>
+        <p class="install-foot">Local bundles are ad hoc signed. Read the <a href="https://github.com/xuanhieu2611/shika#agent-permissions">agent permission model</a> before running Shika. Move <code class="mono">Shika.app</code> to Applications to keep it in the Dock.</p>
       </div>
     </div>
   </section>
@@ -296,8 +298,12 @@
           <p>Claude Code, Codex, Cursor CLI, and Pi today. Kiro is next. Shika starts the binary you already have, so your login, settings and plan come with it.</p>
         </details>
         <details>
+          <summary>Will agents ask before running commands?</summary>
+          <p>Shika's presets use the CLIs' automatic approval modes. Claude Code, Codex, and Cursor CLI bypass permission prompts or sandboxing; Pi starts with <code>--approve</code>. Agents can execute commands with your user account's access. A worktree separates Git edits but does not restrict access to files, credentials, or the network. Run agents only in projects you trust. Shika separately asks for approval before running configured worktree setup commands.</p>
+        </details>
+        <details>
           <summary>Does Shika send my code or prompts anywhere?</summary>
-          <p>No. Shika runs on your Mac and makes no network requests of its own. The CLI you run talks to its provider exactly as it does in any other terminal.</p>
+          <p>Shika has no telemetry or model API integration. Your agent CLI talks to its provider, Git fetch and push connect to your remotes, and any worktree setup commands you approve can use the network. Your CLI controls what it sends to its provider.</p>
         </details>
         <details>
           <summary>Why a git worktree for every task?</summary>
@@ -305,7 +311,7 @@
         </details>
         <details>
           <summary>Will it push or commit for me?</summary>
-          <p>It never commits. You commit and push in the shell, with <code>g</code>. When you close a card with a clean tree and unpushed commits, Shika offers to push them.</p>
+          <p>It never commits. Add a shell tab with <code>⌘T</code>, then review, commit and push yourself. When you close a card with a clean tree and unpushed commits, Shika offers to push them. A push keeps the card open until you close it.</p>
         </details>
         <details>
           <summary>What happens when I quit?</summary>
@@ -344,6 +350,7 @@
       <a href="https://github.com/xuanhieu2611/shika/issues">Issues</a>
       <a href="https://github.com/xuanhieu2611/shika/blob/main/CONTRIBUTING.md">Contributing</a>
       <a href="https://github.com/xuanhieu2611/shika/blob/main/LICENSE">MIT license</a>
+      <a href="notices.html">Third-party notices</a>
     </nav>
     <span>Made by <a href="https://github.com/xuanhieu2611">Hieu Le</a></span>
   </div>

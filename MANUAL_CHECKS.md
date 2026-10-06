@@ -72,7 +72,7 @@ To check in the built app, with isolated data and a disposable repo:
 
 - [ ] With Claude, the branch shown on the card starts as the prompt slug and becomes the CLI title within a few seconds. The card title becomes the CLI title. `git branch --show-current` in the shell agrees, and the folder stays `shika-draft-<id>`.
 - [ ] The same with Cursor.
-- [ ] A prefix such as `hieu` set in Settings gives `hieu/<title>` on the next card. Enter or a click edits it, Escape cancels, and it survives a relaunch.
+- [ ] A prefix such as `dev` set in Settings gives `dev/<title>` on the next card. Enter or a click edits it, Escape cancels, and it survives a relaunch.
 - [ ] A branch pushed before the title arrives keeps its name; the card still takes the title.
 - [ ] Clearing a few words with Option+Backspace before the first Enter leaves them out of the first branch name.
 
@@ -148,3 +148,10 @@ IME candidate placement, sustained typing feel, and the broader terminal matrix 
 - [ ] Switch to an unrelated branch or detach HEAD. Close still refuses and preserves the worktree.
 
 Automated core tests exercise these Git lifecycles in disposable repositories. GUI checks above remain pending.
+
+## Open-source presentation check, 2026-10-05
+
+- PASS: `cargo fmt --all --check`, parallel `cargo test --workspace --locked --offline` (205 tests), and strict workspace/all-targets Clippy. The upstream `block` future-compatibility warning remains.
+- PASS: Debug app bundle builds, includes Shika's MIT license plus Heroicons, Octicons, and JetBrains Mono notices, and passes `codesign --verify --deep --strict`.
+- Native README/poster/share screenshot captured using isolated data and disposable `storefront`/`routekit` repositories. CLI output is simulated, explicitly captioned, and image metadata is stripped. This does not validate real provider flows or close outstanding GUI checks above.
+- Browser prototype checked with independent shell buffers (`git diff` and `pwd`), switching back to retained output, and the dirty-close dialog hiding Push. Component checks also cover tab ownership, pinned agent close, focus restoration, Codex/Pi picker choices, three-card cap, and simulated commit/push close behavior. Browser-reserved shortcuts can require visible controls.

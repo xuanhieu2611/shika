@@ -39,7 +39,7 @@ Ready cards show a diff stat such as `2 files +64 −3`, fetched in the backgrou
 
 `MANUAL_CHECKS.md` records integrated acceptance results and remaining checks. `crates/shika-terminal/MANUAL_CHECKS.md` records terminal-specific checks. Implementation and passing unit tests do not establish every GUI check.
 
-Public code is MIT licensed. JetBrains Mono retains its separate OFL license. `design/DESIGN.md` is the visual spec. `design/Shika v3.dc.html` is the reference prototype. Runtime icons live in `assets/macos/`.
+Public code is MIT licensed. Bundled fonts retain their OFL licenses; copied icon notices are in `THIRD_PARTY_NOTICES.md` and ship in the app bundle. `design/DESIGN.md` is the visual spec. `design/Shika v3.dc.html` is an archived reference, not a standalone runnable demo. Runtime icons live in `assets/macos/`.
 
 ## Design
 
@@ -78,7 +78,7 @@ crates/shika/           the GPUI app: window, cards, picker, close dialog, setti
                         keys, terminal tabs, translucency, .app bundle
 ```
 
-`assets/fonts/` holds JetBrains Mono and its OFL license. `assets/macos/` holds the bundle metadata and icon. `scripts/bundle-app.sh` builds a local ad hoc signed `.app`. `site/` is the static landing page; see `site/README.md`.
+`assets/fonts/` holds JetBrains Mono and its OFL license. `assets/macos/` holds the bundle metadata and icon. `scripts/bundle-app.sh` builds a local ad hoc signed `.app`. `site/` is the static landing page; see `site/README.md`. Its demo is a sample-data prototype with CDN runtime dependencies. `docs/images/shika-native.png` is a native capture with disposable projects and simulated CLI output, not evidence of real-provider acceptance.
 
 App data: `~/Library/Application Support/com.hieule.shika/`, the same directory used before the migration. `projects.json` and `worktrees.json` keep working there. `projects.json` holds each project's optional `baseBranch` and locally consented `approvedPreparation`; `worktrees.json` records each worktree's `baseRef`. `settings.json` holds the appearance, the terminal font size, `branchPrefix`, and `notificationSound`; a missing file or field takes the default (opaque, 14, no prefix, sound on). Sessions, titles, status, and PTY ids are memory only.
 
@@ -94,7 +94,7 @@ Cargo only. A fresh shell often has no `cargo`.
 source "$HOME/.cargo/env"
 ```
 
-`~/.zshenv` is a Nix symlink; rustup must not try to edit it. GPUI needs full Xcode, which is installed. The separate Metal Toolchain component is not installed, so the pinned platform dependency currently uses `runtime_shaders`. Do not remove that feature without installing the component and verifying the build.
+GPUI needs full Xcode. The pinned platform dependency enables `runtime_shaders`, so contributors do not need the separate Metal Toolchain component to compile shaders during the build. Keep that feature unless a toolchain change is explicitly intended and verified. If Nix manages shell startup files such as `~/.zshenv`, use rustup's `--no-modify-path` option and configure Cargo's environment through the existing shell setup.
 
 ```sh
 cargo test --workspace
@@ -103,13 +103,13 @@ cargo run -p shika
 open target/debug/Shika.app
 ```
 
-`cargo run` inherits a terminal `PATH` and hides the Dock-launch bug. GUI apps do not see Homebrew, nvm, or `~/.local/bin`. `path_env` runs the login shell once at startup from a short `PATH`, with the environment cleared, because Nix's `__NIX_DARWIN_SET_ENVIRONMENT_DONE` stops a login shell from rebuilding `PATH`. Claude and Cursor on this machine are under `~/.local/bin`. The real check is a built `.app` opened with `open`, not only `cargo run`.
+`cargo run` inherits a terminal `PATH` and hides the Dock-launch bug. GUI apps do not see Homebrew, nvm, or `~/.local/bin`. `path_env` runs the login shell once at startup from a short `PATH`, with the environment cleared, because Nix's `__NIX_DARWIN_SET_ENVIRONMENT_DONE` stops a login shell from rebuilding `PATH`. Test discovery of CLIs installed outside the system PATH with a built `.app` opened with `open`, not only `cargo run`.
 
 Claude Code saves no transcript, and so writes no session title, when it inherits `CLAUDE_CODE_CHILD_SESSION`. A Shika started with `cargo run` from inside a Claude Code session passes that variable to its PTYs, so branch titles fall back to the prompt there. Launch with `open` to test naming.
 
 Preparation integration tests currently have a known parallel PID/timestamp temp-directory collision. `docs/worktree-preparation.md` records diagnosis and a serial workaround, not a fix; retain parallel workspace validation.
 
-Never test against the author's normal `projects.json`. Use disposable git repositories and local bare remotes, with `open -n target/debug/Shika.app --args --data-dir /absolute/test/data`. Before sending synthetic keystrokes, confirm Shika's own window is in front. `--diagnostics-file /absolute/report` writes CLI discovery there and metadata-only native notification diagnostics to `/absolute/report.notifications`.
+Never test against normal app data. Use disposable git repositories and local bare remotes, with `open -n target/debug/Shika.app --args --data-dir /absolute/test/data`. Before sending synthetic keystrokes, confirm Shika's own window is in front. `--diagnostics-file /absolute/report` writes CLI discovery there and metadata-only native notification diagnostics to `/absolute/report.notifications`.
 
 Translucency uses GPUI's `Transparent` window background, not `Blurred`, because GPUI's blur has one fixed strength. The blur radius is set with the private `CGSSetWindowBackgroundBlurRadius` in `crates/shika/src/appearance.rs`, as Ghostty, WezTerm, and winit do. The terminal paints its default background with the configured alpha; its parent must not paint a second translucent fill under it.
 

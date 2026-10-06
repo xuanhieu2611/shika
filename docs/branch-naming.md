@@ -13,7 +13,7 @@ Added 2026-10-05. `PLAN.md` ("How a new task is named") holds the binding rules;
 
 The worktree **folder** keeps its `shika-draft-<id>` name. Only the branch is renamed. The folder is local and never reaches git history or the remote.
 
-An optional **branch prefix** in Settings (Cmd-,), for example `hieu/`, goes in front of every name Shika picks.
+An optional **branch prefix** in Settings (Cmd-,), for example `dev/`, goes in front of every name Shika picks.
 
 ## Why
 
@@ -88,9 +88,9 @@ Both renames go through `rename_task_branch`, which adds the prefix, picks a fre
 ## Naming rules
 
 - **Slug** (`branch_slug`): split on every character that is not an ASCII letter or digit, lowercase, join with `-`. At most 48 characters (`SLUG_MAX`), cut at a word boundary. A single word longer than 48 is cut at 48.
-- **Project name**: whole-word copies of the project's name are removed, as a word sequence ("Fix Job Hunting tracker" in `job-hunting` becomes `fix-tracker`). If that would leave nothing, the name stays. Partial words are kept (`Shikari` stays in `shika`). The card title keeps the CLI's wording; only the branch drops the project name.
+- **Project name**: whole-word copies of the project's name are removed, as a word sequence ("Fix Sample Project tracker" in `sample-project` becomes `fix-tracker`). If that would leave nothing, the name stays. Partial words are kept (`Shikari` stays in `shika`). The card title keeps the CLI's wording; only the branch drops the project name.
 - **Empty slug**: the prompt fallback uses `task-<id>`. A CLI title with no usable characters leaves the branch alone and only sets the card title.
-- **Prefix** (`normalize_prefix`): keeps ASCII letters, digits, `.`, `_`, `-`, and `/`; drops empty path parts, leading `.` or `-`, trailing `.` and `.lock`, and collapses `..`. A non-empty prefix that does not end in `-` or `_` gets a `/`, so `hieu` and `hieu/` both give `hieu/`. If git still refuses `prefix + slug` (`git check-ref-format --branch`), the prefix is dropped for that name. Unreadable settings also mean no prefix.
+- **Prefix** (`normalize_prefix`): keeps ASCII letters, digits, `.`, `_`, `-`, and `/`; drops empty path parts, leading `.` or `-`, trailing `.` and `.lock`, and collapses `..`. A non-empty prefix that does not end in `-` or `_` gets a `/`, so `dev` and `dev/` both give `dev/`. If git still refuses `prefix + slug` (`git check-ref-format --branch`), the prefix is dropped for that name. Unreadable settings also mean no prefix.
 - **Collisions** (`rename_branch`): if `refs/heads/<name>` or any `refs/remotes/*/<name>` exists, try `<name>-2`, `<name>-3`, and so on. Asking for the name the branch already has is a no-op.
 - **Never renamed**: a branch that is on a remote (`is_published`: it has an upstream, or a remote-tracking branch has its name, as after `git push origin HEAD` without `-u`); a worktree whose HEAD is not the task branch (the user switched branches). In both cases the card still takes the CLI title.
 - **Once**: after a CLI title is applied, later titles and prompts change nothing.

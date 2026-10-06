@@ -1138,12 +1138,12 @@ mod tests {
         fs::create_dir_all(&data).unwrap();
         fs::write(
             data.join("projects.json"),
-            "[\n  {\n    \"id\": \"18db38e2f78faa00\",\n    \"name\": \"job-hunting\",\n    \"path\": \"/Users/x/code/job-hunting\"\n  }\n]\n",
+            "[\n  {\n    \"id\": \"18db38e2f78faa00\",\n    \"name\": \"sample-project\",\n    \"path\": \"/Users/x/code/sample-project\"\n  }\n]\n",
         )
         .unwrap();
         fs::write(
             data.join("worktrees.json"),
-            "[\n  {\n    \"projectId\": \"18db38e2f78faa00\",\n    \"branch\": \"shika-draft-1\",\n    \"path\": \"/Users/x/code/job-hunting/.worktrees/shika-draft-1\"\n  }\n]\n",
+            "[\n  {\n    \"projectId\": \"18db38e2f78faa00\",\n    \"branch\": \"shika-draft-1\",\n    \"path\": \"/Users/x/code/sample-project/.worktrees/shika-draft-1\"\n  }\n]\n",
         )
         .unwrap();
         let core = Core::open(&data).unwrap();
@@ -1152,8 +1152,8 @@ mod tests {
             core.projects().unwrap(),
             [Project {
                 id: "18db38e2f78faa00".into(),
-                name: "job-hunting".into(),
-                path: PathBuf::from("/Users/x/code/job-hunting"),
+                name: "sample-project".into(),
+                path: PathBuf::from("/Users/x/code/sample-project"),
                 base_branch: None,
                 approved_preparation: None,
             }]
@@ -1163,7 +1163,7 @@ mod tests {
             [JournalEntry {
                 project_id: "18db38e2f78faa00".into(),
                 branch: "shika-draft-1".into(),
-                path: PathBuf::from("/Users/x/code/job-hunting/.worktrees/shika-draft-1"),
+                path: PathBuf::from("/Users/x/code/sample-project/.worktrees/shika-draft-1"),
                 base_ref: None,
             }]
         );
@@ -1787,7 +1787,7 @@ mod tests {
         let home = scratch.path.join("home");
         core.cli_home = Some(CliHome::at(home.clone()));
         core.save_settings(&Settings {
-            branch_prefix: "hieu".into(),
+            branch_prefix: "dev".into(),
             ..Settings::default()
         })
         .unwrap();
@@ -1796,14 +1796,14 @@ mod tests {
         let fresh = create_fake_session(&core, &project.id);
         write_claude_title(&home, &fresh.worktree, "Fix login flow");
         let titled = core.session_apply_cli_title(&fresh.id).unwrap().unwrap();
-        assert_eq!(titled.branch, "hieu/fix-login-flow");
+        assert_eq!(titled.branch, "dev/fix-login-flow");
 
         // Pushed before the title arrived, without -u: the name stays.
         let pushed = create_fake_session(&core, &project.id);
         let pushed = core
             .session_rename_from_prompt(&pushed.id, "add a readme")
             .unwrap();
-        assert_eq!(pushed.branch, "hieu/add-a-readme");
+        assert_eq!(pushed.branch, "dev/add-a-readme");
         git(
             &pushed.worktree,
             &["commit", "--allow-empty", "-m", "readme"],
@@ -1811,7 +1811,7 @@ mod tests {
         git(&pushed.worktree, &["push", "origin", "HEAD"]);
         write_claude_title(&home, &pushed.worktree, "Add project README");
         let kept = core.session_apply_cli_title(&pushed.id).unwrap().unwrap();
-        assert_eq!(kept.branch, "hieu/add-a-readme");
+        assert_eq!(kept.branch, "dev/add-a-readme");
         assert_eq!(kept.title, "Add project README");
 
         // A worktree switched to another branch keeps it too.

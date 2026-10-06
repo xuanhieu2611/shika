@@ -192,7 +192,7 @@ h1 .soft { color: var(--ink-soft); }
   position: relative; width: 100%; aspect-ratio: 1280 / 800;
   border-radius: 22px; overflow: hidden;
   box-shadow: var(--shadow-frame);
-  background: #8fab8a url("img/demo-poster.webp") center / cover no-repeat;
+  background: #8fab8a url("img/demo-poster.png") center / cover no-repeat;
 }
 .demo-frame iframe {
   position: absolute; top: 0; left: 0;
@@ -208,6 +208,11 @@ h1 .soft { color: var(--ink-soft); }
 .demo-caption a:hover { color: var(--ink-1); }
 .demo-caption a .icon { width: 15px; height: 15px; }
 .demo-caption .demo-mobile-note { display: none; }
+
+.notices { max-width: 760px; padding-top: 64px; padding-bottom: 64px; }
+.notices h1 { margin: 32px 0 24px; font-size: clamp(32px, 5vw, 48px); }
+.notices p, .notices li { color: var(--ink-2); line-height: 1.7; }
+.notices a { text-decoration: underline; text-underline-offset: 3px; }
 
 /* Sections */
 section { position: relative; }

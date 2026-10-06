@@ -10,8 +10,8 @@ step 2):
 
 ```sh
 source "$HOME/.cargo/env"
-cd ~/hieu/code/shika
-cargo run -p shika-terminal --example demo -- --cwd ~/hieu/code/shika -- claude
+cd /path/to/shika
+cargo run -p shika-terminal --example demo -- --cwd /path/to/disposable/repo -- claude
 ```
 
 Terminal 1 is `$SHELL -l`. Terminal 2 is the command after `--`.

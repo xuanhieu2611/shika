@@ -1,4 +1,7 @@
 <!DOCTYPE html>
+<!-- Archived design reference. Behavior predates the GPUI app and task tabs.
+     Its original support.js and styles.css are not included here.
+     The maintained browser prototype is ../site/demo/index.html. -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -216,7 +219,7 @@ const CLIS = [
   { id:'pi',     name:'Pi',          path:'~/.nvm/versions/node/v22.11.0/bin/pi', launch:'pi', prompt:'> ', bullet:'· ', bc:'dim', verb:'edit ' },
   { id:'kiro',   name:'Kiro',        path:null, launch:null, prompt:'> ', bullet:'· ', bc:'dim', verb:'edit ' },
 ];
-const HOME = '/Users/kai';
+const HOME = '/Users/developer';
 const MONO = "var(--font-mono)";
 const SANS = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif";
 const s = (t, c, b) => ({ t, c: c || 'fg', b: !!b });
@@ -274,30 +277,30 @@ class Component extends DCLogic {
       return a;
     };
     const shika = { id:'p1', name:'shika', path:'~/code/shika', files:['src/App.tsx','src-tauri/src/session.rs','src-tauri/src/agents.rs'], ls:'Cargo.toml  package.json  src  src-tauri  tests', agents:[] };
-    const herdr = { id:'p2', name:'herdr', path:'~/code/herdr', files:['src/layout.rs','src/main.rs','src/commands/list.rs'], ls:'Cargo.toml  README.md  completions  docs  src  tests', agents:[] };
+    const routekit = { id:'p2', name:'routekit', path:'~/code/routekit', files:['src/layout.rs','src/main.rs','src/commands/list.rs'], ls:'Cargo.toml  README.md  completions  docs  src  tests', agents:[] };
     const dots = { id:'p3', name:'dotfiles', path:'~/dotfiles', files:['zsh/.zshrc'], ls:'git  nvim  wezterm  zsh', agents:[] };
     shika.agents = [
       mk(shika, { id:'a1', cli:'claude', branch:'resolve-cli-binaries-login', status:'working', startedAt: now - 254000, statusSince: now - 254000, doneAt: now + 11000, finish:'path', created: now - 254000,
         prompt:'Resolve CLI binaries like a login shell would, so a Dock launch finds claude and codex',
-        lines:[ L(s('● ','green'),'Read ',s('src-tauri/src/agents.rs','blue')), L(s('● ','green'),'Bash ',s("zsh -lic 'echo $PATH'",'white')), L(s('  ⎿ ','faint'),s('/opt/homebrew/bin:/Users/kai/.nvm/versions/node/v22.11.0/bin:…','dim')), L(s('● ','green'),'Update ',s('src-tauri/src/agents.rs','blue')) ] }),
+        lines:[ L(s('● ','green'),'Read ',s('src-tauri/src/agents.rs','blue')), L(s('● ','green'),'Bash ',s("zsh -lic 'echo $PATH'",'white')), L(s('  ⎿ ','faint'),s('/opt/homebrew/bin:/Users/developer/.nvm/versions/node/v22.11.0/bin:…','dim')), L(s('● ','green'),'Update ',s('src-tauri/src/agents.rs','blue')) ] }),
       mk(shika, { id:'a2', cli:'codex', branch:'notification-click-select-card', status:'ready', dirty:['src-tauri/src/notify.rs','src/store.ts'], adds:64, dels:3, created: now - 900000, statusSince: now - 720000,
         prompt:'When a notification is clicked, focus the window and select that session’s card',
         lines:[ L(s('• ','dim'),'Explored ',s('src-tauri/src/notify.rs','blue'),', ',s('src/store.ts','blue')), L(s('• ','dim'),'Edited ',s('src-tauri/src/notify.rs','blue'),s(' (+46 −3)','dim')), L(s('• ','dim'),'Edited ',s('src/store.ts','blue'),s(' (+18 −0)','dim')), L(s('• ','dim'),'Ran ',s('cargo check','white'),s('  ok','green')), L(''), L('Clicking a notification now emits select-session with the session id. The store selects that card and the window comes to the front. I could not test the click itself without a signed build.'), L('') ] }),
     ];
-    herdr.agents = [
-      mk(herdr, { id:'a3', cli:'claude', branch:'rename-pane-commands-tmux', status:'asking', dirty:['src/commands/pane.rs','src/cli.rs'], adds:50, dels:25, genFiles:['docs/commands.md','completions/_herdr'], created: now - 600000, statusSince: now - 252000,
+    routekit.agents = [
+      mk(routekit, { id:'a3', cli:'claude', branch:'rename-pane-commands-tmux', status:'asking', dirty:['src/commands/pane.rs','src/cli.rs'], adds:50, dels:25, genFiles:['docs/commands.md','completions/_routekit'], created: now - 600000, statusSince: now - 252000,
         prompt:'Rename the pane commands to match tmux: split-window, select-pane, kill-pane. Keep the old names as aliases for one release',
         ask:{ options:['Update docs and completions','Only the docs','Leave them, I will do it'], choice:0 },
         lines:[ L(s('● ','green'),'Read ',s('src/commands/pane.rs','blue')), L(s('● ','green'),'Read ',s('src/cli.rs','blue')), L(s('● ','green'),'Update ',s('src/commands/pane.rs','blue'),s('  +38 −21','dim')), L(s('● ','green'),'Update ',s('src/cli.rs','blue'),s('  +12 −4','dim')), L(''), L('The old names also appear in docs/commands.md and in the zsh and fish completions. Should I update those too?'), L('') ] }),
-      mk(herdr, { id:'a4', cli:'cursor', branch:'fix-flaky-resize-test', status:'working', startedAt: now - 95000, statusSince: now - 95000, doneAt: now + 26000, finish:'flaky', genFiles:['src/layout.rs','tests/layout.rs'], created: now - 95000,
+      mk(routekit, { id:'a4', cli:'cursor', branch:'fix-flaky-resize-test', status:'working', startedAt: now - 95000, statusSince: now - 95000, doneAt: now + 26000, finish:'flaky', genFiles:['src/layout.rs','tests/layout.rs'], created: now - 95000,
         prompt:'Fix the flaky resize test in tests/layout.rs, it fails about one run in ten on CI',
         lines:[ L(s('  reading ','dim'),s('tests/layout.rs','blue')), L(s('  reading ','dim'),s('src/layout.rs','blue')), L(s('  running ','dim'),s('cargo test resize -- --test-threads=1','white'),s('  ×20','dim')) ] }),
-      mk(herdr, { id:'a5', cli:'codex', branch:'json-flag-herdr-list', status:'working', startedAt: now - 412000, statusSince: now - 412000, doneAt:null, dirty:['src/commands/list.rs'], created: now - 412000,
-        prompt:'Add a --json flag to herdr list so scripts can read sessions',
+      mk(routekit, { id:'a5', cli:'codex', branch:'json-flag-routekit-list', status:'working', startedAt: now - 412000, statusSince: now - 412000, doneAt:null, dirty:['src/commands/list.rs'], created: now - 412000,
+        prompt:'Add a --json flag to routekit list so scripts can read sessions',
         lines:[ L(s('• ','dim'),'Explored ',s('src/commands/list.rs','blue')), L(s('• ','dim'),'Edited ',s('src/commands/list.rs','blue'),s(' (+31 −2)','dim')), L(s('• ','dim'),'Running ',s('cargo test list','white')) ] }),
-      mk(herdr, { id:'a6', cli:'pi', branch:'pi', status:'waiting', draft:'the status bar flickers when a pane closes, find out why', created: now - 130000, statusSince: now - 130000 }),
+      mk(routekit, { id:'a6', cli:'pi', branch:'pi', status:'waiting', draft:'the status bar flickers when a pane closes, find out why', created: now - 130000, statusSince: now - 130000 }),
     ];
-    this.state = { projects:[shika, herdr, dots], sel:'a3', focus:'cards', picker:null, confirm:null, notes:[], toast:null, expanded:{}, now, v:0, added:0 };
+    this.state = { projects:[shika, routekit, dots], sel:'a3', focus:'cards', picker:null, confirm:null, notes:[], toast:null, expanded:{}, now, v:0, added:0 };
   }
 
   applyTheme() {
@@ -433,7 +436,7 @@ class Component extends DCLogic {
     }
     else if (/^git log/.test(cmd)) { a.commits.slice().reverse().forEach(c => out.push(L(s(c.slice(0, 7), 'warm'), ' ' + c.slice(8)))); out.push(L(s('9e41b07', 'warm'), ' Merge branch \'main\'')); }
     else if (/^git push/.test(cmd)) {
-      out.push(L('Enumerating objects: 11, done.'), L('Writing objects: 100% (6/6), 1.42 KiB | 1.42 MiB/s, done.'), L('To github.com:kai/' + p.name + '.git'), L(' * [new branch]      ' + a.branch + ' -> ' + a.branch));
+      out.push(L('Enumerating objects: 11, done.'), L('Writing objects: 100% (6/6), 1.42 KiB | 1.42 MiB/s, done.'), L('To github.com:example/' + p.name + '.git'), L(' * [new branch]      ' + a.branch + ' -> ' + a.branch));
       pushing = true;
     }
     else if (/test|rspec/.test(cmd)) out.push(L(s('running 48 tests', 'dim')), L('test result: ', s('ok', 'green'), '. 48 passed; 0 failed; finished in 2.31s'));

@@ -1,6 +1,4 @@
-/* ANSI 16 for the embedded terminal (xterm.js). Same in both themes;
-   only --term-bg changes. Hex on purpose: xterm.js themes need hex/rgb.
-   See tokens/xterm-theme.json for a ready-made theme object. */
+/* ANSI 16 palette for the browser prototype, matching the native terminal. */
 :root {
   --ansi-black: #1E1E1C;
   --ansi-red: #E0786B;

@@ -1,9 +1,5 @@
-/* Glass (frosted) mode. Applies when <html data-glass="on">.
-   In the Tauri app: transparent window + native vibrancy (window-vibrancy crate,
-   NSVisualEffectMaterial::Sidebar behind the column, HudWindow or UnderWindowBackground
-   behind the terminal). The CSS here sets the tints that sit on top of that material;
-   the blur values are for browser mocks, where backdrop-filter stands in for vibrancy.
-   Turn glass off when macOS "Reduce transparency" is on. */
+/* Browser-only approximation of native translucency. The GPUI app uses
+   a transparent window and native background blur; these are demo styles. */
 
 :root {
   --glass-term-alpha: 0.92;        /* terminal opacity, 0.85–1. Never below 0.85 */

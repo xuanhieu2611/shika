@@ -164,7 +164,7 @@ fn notification_sound_on() -> bool {
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub appearance: Appearance,
-    /// Put in front of every branch name Shika picks, like `hieu/`. Stored
+    /// Put in front of every branch name Shika picks, like `dev/`. Stored
     /// as typed; [`crate::normalize_branch_prefix`] makes it safe for git.
     pub branch_prefix: String,
     /// Terminal text size. Missing means 14.
@@ -271,14 +271,14 @@ mod tests {
                 blur: 30,
                 translucency: Translucency::SidebarAndTerminal,
             },
-            branch_prefix: "hieu/".into(),
+            branch_prefix: "dev/".into(),
             font_size: FontSize::from_text("14.5").unwrap(),
             notification_sound: false,
         };
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"translucency\": \"sidebarAndTerminal\""));
-        assert!(text.contains("\"branchPrefix\": \"hieu/\""));
+        assert!(text.contains("\"branchPrefix\": \"dev/\""));
         assert!(text.contains("\"fontSize\": 14.5"));
         assert!(text.contains("\"notificationSound\": false"));
         assert_eq!(file.load().unwrap(), settings);
@@ -340,10 +340,10 @@ mod tests {
     fn a_file_without_font_size_uses_the_default() {
         let path = temp_file("no-font");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, r#"{ "branchPrefix": "hieu/" }"#).unwrap();
+        fs::write(&path, r#"{ "branchPrefix": "dev/" }"#).unwrap();
         let settings = SettingsFile::open(path.clone()).load().unwrap();
         assert_eq!(settings.font_size, FontSize::default());
-        assert_eq!(settings.branch_prefix, "hieu/");
+        assert_eq!(settings.branch_prefix, "dev/");
         assert!(settings.notification_sound);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
