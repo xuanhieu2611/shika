@@ -12,14 +12,14 @@ Previously, working in a terminal meant returning to the cards for most app acti
 - Switch agents: `Ctrl+Q`, `j`/`k`, `Enter`. `j`/`k` moves from card to card and skips project headers.
 - Create another agent: `Ctrl+Q`, `n`, choose a CLI.
 
-The card-navigation model is still available. A small native Command shortcut layer now makes these transitions directly:
+The card-navigation model is still available. A small native shortcut layer now makes these transitions directly:
 
 | Shortcut | Action | Focus afterward |
 | --- | --- | --- |
-| `Cmd+Enter` | Toggle the task's agent/first-shell (create shell if none exists) | Destination terminal, even when invoked from the cards |
 | `Cmd+T` | New independent shell tab in this task's worktree | New shell; startup input is queued |
-| `Cmd+W` | Close selected shell tab; no-op on the pinned agent | Preceding tab if the closed view had focus; otherwise preserve focus |
-| `Cmd+Shift+]` / `Cmd+Shift+[` | Next/previous tab in this task, wrapping | Destination terminal |
+| `Cmd+W` | Close selected shell tab. On the pinned agent it does nothing and does not close the task | Preceding tab if the closed view had focus; otherwise preserve focus |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next/previous tab in this task, wrapping | Destination terminal |
+| `Cmd+1` through `Cmd+9` | Jump to that tab. `Cmd+1` is the pinned agent. A missing number does nothing | That terminal |
 | `Cmd+]` | Next agent in current row order | Terminal if invoked from a terminal; cards if invoked from cards |
 | `Cmd+[` | Previous agent in current row order | Same preservation rule |
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
@@ -40,8 +40,7 @@ Other improvements:
 - `j`/`k` and arrows navigate cards while the cards are focused, skipping project headers. An empty project is not a stop.
 - `Enter` enters the selected task's currently shown terminal.
 - `Ctrl+Q` returns from the terminal to the cards.
-- `g` previews/toggles agent and shell without moving card focus. This is intentionally different from `Cmd+Enter`.
-- `n`, `a`, `b`, and `c` retain their card actions.
+- `n`, `a`, `b`, and `c` retain their card actions. `g` is not a shortcut.
 - Escape reaches the CLI when a terminal is focused. It is not an app-wide escape-to-navigation key.
 - Close cancellation still routes dirty or unpushed work to the task shell. It is a workflow transition, not generic focus restoration.
 - Cards remain sorted by attention within each project. This improvement does not stabilize their order during status changes.
@@ -52,7 +51,7 @@ Other improvements:
 
 Shika is a terminal workspace inside a native Mac app. Users should be able to keep typing in the CLI while invoking explicit app actions.
 
-Command provides a useful ownership boundary: Shika owns its Command shortcuts; ordinary typing and Control combinations generally belong to the CLI. `Ctrl+Q` is the existing explicit exception. This avoids taking Escape or common shell/TUI keys away from the program.
+Command provides a useful ownership boundary: Shika owns its Command shortcuts; ordinary typing and Control combinations generally belong to the CLI. `Ctrl+Q` leaves the terminal for the cards. `Ctrl+Tab` and `Ctrl+Shift+Tab` cycle this task's tabs, the same cycle other Mac apps use, and are kept out of the PTY. This avoids taking Escape or common shell/TUI keys away from the program.
 
 A multiplexer prefix would add a keyboard mode and an extra step to frequent transitions. It also needs cancellation, conflict handling, and a way to send the prefix itself into the terminal. Being a developer does not imply wanting that trade-off.
 
@@ -64,7 +63,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 
 | Piece | Symbols / location | Responsibility |
 | --- | --- | --- |
-| Action definitions | `gpui::actions!` | `NewAgent`, `SwitchTerminal`, `NextAgent`, `PreviousAgent` |
+| Action definitions | `gpui::actions!`, `SelectTerminal` | `NewAgent`, `NextAgent`, `PreviousAgent`, and the numbered tab jump |
 | Shortcut registration | `main`, `cx.bind_keys` | Command bindings scoped to the `Shika` key context |
 | Action dispatch | `Shika::render`, root `.key_context("Shika")` and `.on_action` | Routes actions from cards or descendant terminal views; handlers guard busy/overlay state |
 | Existing keys | `Shika::key` | Plain-key navigation, overlay editing, and terminal `Ctrl+Q` escape hatch |
@@ -77,7 +76,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 | Tab navigation | `model::adjacent_tab`, `model::tab_after_close`, `Card::tab_scroll` | Wrap navigation, preserve selection on removal, reveal selected tab horizontally |
 | Sidebar reveal | `sidebar_scroll`, `last_revealed_selection`, `render`, `selection_reveal` | Tracks viewport and selection, measures the selected row, adjusts offset on the next frame |
 | Scroll arithmetic | `crates/shika/src/model.rs`: `reveal_delta` | Minimal offset adjustment; oversized rows align their top |
-| Terminal ownership | `crates/shika-terminal/src/view.rs`: `init`, `key_for` | Keeps Command shortcuts out of PTY key encoding; retains terminal copy/paste and history bindings |
+| Terminal ownership | `crates/shika-terminal/src/view.rs`: `init`, `key_for` | Keeps Command shortcuts, Ctrl+Tab, and Ctrl+Shift+Tab out of PTY key encoding; retains terminal copy/paste and history bindings |
 | Discovery | `main` menu registration, `top_row`, `terminal_side`, `KeyTip` | Native Agent menu and existing themed tooltip component |
 
 ### Agent navigation
@@ -148,7 +147,7 @@ Automated coverage added or extended:
 - `agent_navigation_skips_headers_and_wraps_in_both_directions`: row-order traversal across projects and project-header entry points.
 - `agent_navigation_handles_empty_single_and_missing_selection`: empty, one-agent, and invalid/missing-selection cases.
 - `selection_reveal_moves_only_the_clipped_edge`: visible, top-clipped, bottom-clipped, and oversized rows.
-- `command_is_left_to_the_app`: new Command combinations remain excluded from terminal key encoding.
+- `command_is_left_to_the_app` and `control_tab_is_left_to_the_app`: Command combinations, Ctrl+Tab, and Ctrl+Shift+Tab remain excluded from terminal key encoding.
 - Existing `startup_query_replies_and_typeahead_survive_until_pty_binding`: startup input and terminal replies queue in order before binding.
 
 These are unit tests, not proof of native shortcut dispatch, actual focus restoration, or rendered scrolling. Implementation validation passed 166 workspace tests, formatting, strict Clippy, a debug bundle build, and strict signature verification. The hands-on keyboard-flow checks remain unverified in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow); do not report them as passed without exercising them.

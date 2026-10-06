@@ -36,7 +36,6 @@ gpui::actions!(
         ShowAll,
         OpenSettings,
         NewAgent,
-        SwitchTerminal,
         NewTerminal,
         CloseTerminal,
         NextTerminal,
@@ -45,6 +44,11 @@ gpui::actions!(
         PreviousAgent
     ]
 );
+
+/// Jump to a task-local tab. Zero is the pinned agent, so Cmd+1 selects it.
+#[derive(Clone, PartialEq, Eq, Debug, gpui::Action)]
+#[action(namespace = shika, no_json)]
+struct SelectTerminal(usize);
 
 /// Card traversal follows row order and skips project headers.
 /// `j` / `k` and Cmd+] / Cmd+[ both use it.
@@ -982,6 +986,7 @@ impl Shika {
         })
         .detach();
     }
+    /// Close cancellation uses this to land on a shell. It is not a key.
     fn toggle(&mut self, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.selected_card() else {
             return;
@@ -2221,7 +2226,6 @@ impl Shika {
             "n" => self.picker(window, cx),
             "r" => self.retry_preparation(window, cx),
             "enter" => self.focus_terminal(window, cx),
-            "g" => self.toggle(false, window, cx),
             "c" => self.close(window, cx),
             "b" => {
                 if self.busy || self.selection.is_none() {
@@ -2815,7 +2819,7 @@ impl Shika {
             &[("r", "retry"), ("c", "close")]
         } else {
             match card.status {
-                Status::Ready => &[("↵", "read"), ("g", "shell")],
+                Status::Ready => &[("↵", "read")],
                 Status::Working => &[("↵", "watch")],
                 Status::Waiting => &[("↵", "write prompt")],
             }
@@ -3039,8 +3043,8 @@ impl Shika {
                 .hover(move |style| style.bg(hover))
         };
         // One row. `justify_between` already pins the hints to the right.
-        // `ml_auto` did that a second time and pushed `g` shell and `c` close
-        // past the column edge.
+        // `ml_auto` did that a second time and pushed the hints past the
+        // column edge.
         div()
             .w_full()
             .flex_shrink_0()
@@ -3093,7 +3097,6 @@ impl Shika {
                     .gap_x(px(12.))
                     .child(hint("j k", "move", chrome))
                     .child(hint("↵", "terminal", chrome))
-                    .child(hint("g", "shell", chrome))
                     .child(hint("c", "close", chrome)),
             )
     }
@@ -4268,11 +4271,6 @@ impl Render for Shika {
             .track_focus(&self.focus)
             .key_context("Shika")
             .on_action(cx.listener(|this, _: &NewAgent, window, cx| this.picker(window, cx)))
-            .on_action(cx.listener(|this, _: &SwitchTerminal, window, cx| {
-                if !this.busy && this.overlay.is_none() {
-                    this.toggle(true, window, cx);
-                }
-            }))
             .on_action(
                 cx.listener(|this, _: &NewTerminal, window, cx| this.new_shell(true, window, cx)),
             )
@@ -4286,6 +4284,9 @@ impl Render for Shika {
             )
             .on_action(cx.listener(|this, _: &PreviousTerminal, window, cx| {
                 this.cycle_tab(false, window, cx)
+            }))
+            .on_action(cx.listener(|this, select: &SelectTerminal, window, cx| {
+                this.select_tab(select.0, window, cx);
             }))
             .on_action(
                 cx.listener(|this, _: &NextAgent, window, cx| this.move_agent(1, window, cx)),
@@ -4348,20 +4349,29 @@ fn main() -> anyhow::Result<()> {
             eprintln!("JetBrains Mono: {error}");
         }
         shika_terminal::init(cx);
-        cx.bind_keys([
+        let mut bindings = vec![
             gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
-            gpui::KeyBinding::new("cmd-enter", SwitchTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
-            gpui::KeyBinding::new("cmd-shift-]", NextTerminal, Some("Shika")),
-            gpui::KeyBinding::new("cmd-shift-[", PreviousTerminal, Some("Shika")),
+            gpui::KeyBinding::new("ctrl-tab", NextTerminal, Some("Shika")),
+            gpui::KeyBinding::new("ctrl-shift-tab", PreviousTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-[", PreviousAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-q", Quit, None),
             gpui::KeyBinding::new("cmd-,", OpenSettings, None),
             gpui::KeyBinding::new("cmd-h", Hide, None),
             gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
-        ]);
+        ];
+        // Cmd+1 is the pinned agent. Later numbers follow the shell tabs in order.
+        for index in 0..9 {
+            let key = format!("cmd-{}", index + 1);
+            bindings.push(gpui::KeyBinding::new(
+                &key,
+                SelectTerminal(index),
+                Some("Shika"),
+            ));
+        }
+        cx.bind_keys(bindings);
         let quitting_core = core.clone();
         cx.on_app_quit(move |_| {
             quitting_core.cancel_preparations();
@@ -4386,7 +4396,6 @@ fn main() -> anyhow::Result<()> {
             ]),
             gpui::Menu::new("Agent").items([
                 gpui::MenuItem::action("New agent", NewAgent),
-                gpui::MenuItem::action("Switch agent/shell", SwitchTerminal),
                 gpui::MenuItem::action("New terminal tab", NewTerminal),
                 gpui::MenuItem::action("Close terminal tab", CloseTerminal),
                 gpui::MenuItem::action("Next terminal tab", NextTerminal),

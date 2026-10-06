@@ -71,7 +71,6 @@ The app has to be usable without the mouse. Focus starts on the cards.
 | `n` | New agent on the selected card's project. If nothing is selected, the first project |
 | `Enter` | Focus the terminal |
 | `Ctrl+Q` | Focus the cards again |
-| `g` | Toggle agent terminal and shell |
 | `c` | Close the selected conversation, with the confirm rule above |
 
 Typing in the terminal or in a text field must not trigger these keys. `Ctrl+Q` still leaves the terminal, so `Escape` reaches the program.
