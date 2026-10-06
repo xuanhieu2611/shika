@@ -59,14 +59,6 @@ impl Status {
             Self::Ready => "Ready to check",
         }
     }
-    /// The short form used by the summary chips.
-    pub fn chip(self) -> &'static str {
-        match self {
-            Self::Waiting => "waiting",
-            Self::Working => "working",
-            Self::Ready => "ready",
-        }
-    }
     pub fn rank(self) -> u8 {
         match self {
             Self::Ready => 0,
@@ -352,18 +344,6 @@ pub fn plural(n: usize, word: &str) -> String {
         format!("{n} {word}s")
     }
 }
-/// The summary headline: every card, and the projects that have one.
-pub fn headline(agents: usize, projects: usize) -> String {
-    if agents == 0 {
-        "No agents running".into()
-    } else {
-        format!(
-            "{} across {}",
-            plural(agents, "agent"),
-            plural(projects, "project")
-        )
-    }
-}
 /// Time on a card: `42s`, `51m`, `1h 3m`.
 pub fn short_time(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
@@ -392,6 +372,26 @@ pub fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
         None => path.display().to_string(),
     }
 }
+/// How long a Ready card must stay selected in the active window before its
+/// dot clears, so pressing `j` past a card does not count as reading it.
+pub const SEEN_AFTER: Duration = Duration::from_secs(1);
+/// Times how long one card has stayed on screen: selected, by session id,
+/// while the window is active.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Dwell(Option<(String, Instant)>);
+impl Dwell {
+    /// Records the card on screen now, `None` when no card is selected or the
+    /// window is inactive, and whether it has stayed for [`SEEN_AFTER`].
+    pub fn observe(&mut self, card: Option<&str>, now: Instant) -> bool {
+        if let (Some(id), Some((current, since))) = (card, &self.0)
+            && id == current
+        {
+            return now.duration_since(*since) >= SEEN_AFTER;
+        }
+        self.0 = card.map(|id| (id.to_string(), now));
+        false
+    }
+}
 /// Keep the selected card inside the three-card window.
 pub fn visible_indices(len: usize, selected: Option<usize>) -> std::ops::Range<usize> {
     let start = selected
@@ -403,6 +403,22 @@ pub fn visible_indices(len: usize, selected: Option<usize>) -> std::ops::Range<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dwell_counts_only_one_card_on_screen_without_a_break() {
+        let t = Instant::now();
+        let mut dwell = Dwell::default();
+        assert!(!dwell.observe(Some("a"), t));
+        assert!(!dwell.observe(Some("a"), t + Duration::from_millis(900)));
+        assert!(dwell.observe(Some("a"), t + SEEN_AFTER));
+        // Passing over a card with `j` restarts the clock.
+        assert!(!dwell.observe(Some("b"), t + Duration::from_millis(1100)));
+        assert!(!dwell.observe(Some("a"), t + Duration::from_millis(1200)));
+        // Leaving the window restarts it too.
+        assert!(!dwell.observe(None, t + Duration::from_millis(2300)));
+        assert!(!dwell.observe(Some("a"), t + Duration::from_millis(2400)));
+        assert!(dwell.observe(Some("a"), t + Duration::from_millis(3400)));
+    }
 
     #[test]
     fn selection_reveal_moves_only_the_clipped_edge() {
@@ -532,10 +548,7 @@ mod tests {
         assert_eq!(clock.status, Status::Working);
     }
     #[test]
-    fn summary_and_card_text() {
-        assert_eq!(headline(0, 0), "No agents running");
-        assert_eq!(headline(1, 1), "1 agent across 1 project");
-        assert_eq!(headline(6, 2), "6 agents across 2 projects");
+    fn card_text() {
         assert_eq!(short_time(Duration::from_secs(42)), "42s");
         assert_eq!(short_time(Duration::from_secs(51 * 60 + 59)), "51m");
         assert_eq!(short_time(Duration::from_secs(63 * 60 + 5)), "1h 3m");

@@ -235,12 +235,18 @@ struct Card {
     named: bool,
     /// What the task changed, fetched each time the card turns Ready.
     diff: Option<DiffStat>,
+    /// The `since` of the Ready turn the user has seen. Every turn that ends
+    /// gets a new `since`, so its dot and tint return until it is seen.
+    seen: Option<Instant>,
     launch_preset: String,
     launch_control: Option<PreparationControl>,
     launch_error: Option<String>,
     stage: String,
 }
 impl Card {
+    fn unseen(&self) -> bool {
+        self.status == Status::Ready && self.seen != Some(self.since)
+    }
     fn active_pane(&self) -> &Pane {
         self.active_tab
             .checked_sub(1)
@@ -310,6 +316,8 @@ struct Shika {
     leftovers: Vec<JournalEntry>,
     leftover_selected: usize,
     clock: Instant,
+    /// How long the selected card has been on screen, for clearing its dot.
+    dwell: model::Dwell,
     branch_check_at: Instant,
     branch_check_pending: bool,
     notifications: Notifications,
@@ -396,6 +404,7 @@ impl Shika {
             leftovers,
             leftover_selected: 0,
             clock: Instant::now(),
+            dwell: model::Dwell::default(),
             branch_check_at: Instant::now(),
             branch_check_pending: false,
             notifications,
@@ -834,6 +843,7 @@ impl Shika {
             title_watch: TitleWatch::default(),
             named: false,
             diff: None,
+            seen: None,
             launch_preset: preset.id.clone(),
             launch_control: Some(control.clone()),
             launch_error: None,
@@ -1443,6 +1453,24 @@ impl Shika {
                 changed = true;
             }
         }
+        // A Ready card's result counts as seen once its terminal has focus,
+        // or once it stays selected in the active window for SEEN_AFTER.
+        let on_screen = self
+            .selected_card()
+            .filter(|_| window.is_window_active())
+            .and_then(|i| self.cards[i].session.as_ref().map(|s| (i, s.id.clone())));
+        let stayed = self
+            .dwell
+            .observe(on_screen.as_ref().map(|(_, id)| id.as_str()), now);
+        if let Some((i, _)) = on_screen {
+            let card = &mut self.cards[i];
+            if card.unseen()
+                && (stayed || card.active_pane().view.focus_handle(cx).is_focused(window))
+            {
+                card.seen = Some(card.since);
+                changed = true;
+            }
+        }
         if self
             .toast
             .as_ref()
@@ -1485,21 +1513,6 @@ impl Shika {
             });
         })
         .detach();
-    }
-    /// A summary chip: select the first card with that status, in row order.
-    fn select_status(&mut self, status: Status, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.overlay.is_some() {
-            return;
-        }
-        let first = self
-            .rows()
-            .into_iter()
-            .find(|row| matches!(row, Selection::Card(i) if self.cards[*i].status == status));
-        if let Some(row) = first {
-            self.selection = Some(row);
-            window.focus(&self.focus, cx);
-            cx.notify();
-        }
     }
     /// The picker for one project, from its `+` or its empty box.
     fn picker_for(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -2534,67 +2547,6 @@ impl Shika {
         self.title_drag(row, cx)
     }
 
-    /// The headline and the status chips.
-    fn summary(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self
-            .projects
-            .iter()
-            .filter(|p| self.cards.iter().any(|c| c.project == p.id))
-            .count();
-        let chips = [Status::Ready, Status::Working, Status::Waiting].map(|status| {
-            let count = self.cards.iter().filter(|c| c.status == status).count();
-            let colors = chrome.status(status);
-            let loud = count > 0 && status != Status::Waiting;
-            div()
-                .id(SharedString::from(format!("chip-{}", status.chip())))
-                .flex()
-                .items_center()
-                .gap(px(7.))
-                .rounded_full()
-                .pl(px(9.))
-                .pr(px(10.))
-                .py(px(4.))
-                .text_size(px(12.))
-                .line_height(px(14.))
-                .cursor_pointer()
-                .bg(if loud { colors.chip } else { chrome.hover })
-                .text_color(if loud {
-                    colors.text
-                } else if count > 0 {
-                    chrome.ink_2
-                } else {
-                    chrome.ink_4
-                })
-                .font_weight(if loud {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::NORMAL
-                })
-                .child(dot(status, 7., chrome))
-                .child(format!("{count} {}", status.chip()))
-                .on_click(
-                    cx.listener(move |this, _, window, cx| this.select_status(status, window, cx)),
-                )
-        });
-        div()
-            .flex_shrink_0()
-            .pt(px(6.))
-            .px(px(20.))
-            .pb(px(18.))
-            .flex()
-            .flex_col()
-            .gap(px(10.))
-            .child(
-                div()
-                    .text_size(px(15.))
-                    .line_height(px(20.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(chrome.ink_1)
-                    .child(model::headline(self.cards.len(), active)),
-            )
-            .child(div().flex().flex_wrap().gap(px(6.)).children(chips))
-    }
-
     /// One project: its header, its empty box or its cards, and the count of
     /// cards past the three shown.
     fn project_group(
@@ -2799,8 +2751,9 @@ impl Shika {
         column
     }
 
-    /// A card: dot, task, and the timer while working; then CLI, status,
-    /// branch, the diff stat when ready, and key hints on the selected card.
+    /// A card: task, the timer while working, and the status signal; then
+    /// CLI, status, branch, the diff stat when ready, and key hints on the
+    /// selected card.
     fn card_view(
         &self,
         i: usize,
@@ -2833,7 +2786,6 @@ impl Shika {
             .items_center()
             .gap(px(10.))
             .min_w_0()
-            .child(status_dot(i, card.status, chrome))
             .child(
                 div()
                     .flex_1()
@@ -2858,12 +2810,12 @@ impl Shika {
                         .text_color(colors.text)
                         .child(model::short_time(card.since.elapsed())),
                 )
-            });
+            })
+            .child(card_signal(i, card.status, card.unseen(), chrome));
         let meta = div()
             .flex()
             .items_center()
             .gap(px(6.))
-            .pl(px(18.))
             .min_w_0()
             .whitespace_nowrap()
             .text_size(px(12.))
@@ -2957,7 +2909,7 @@ impl Shika {
             // A drop shadow would also paint under a translucent card, so the
             // resting ring is a border and the padding gives back its 1px.
             base.overflow_hidden()
-                .bg(if card.status == Status::Ready {
+                .bg(if card.unseen() {
                     chrome.card_ready
                 } else {
                     chrome.card_rest
@@ -3989,33 +3941,52 @@ fn hint(key: &str, label: &str, chrome: &Chrome) -> gpui::Div {
         .child(label.to_string())
 }
 
-/// A status dot. Working pulses, waiting is a hollow ring.
-fn dot(status: Status, size: f32, chrome: &Chrome) -> gpui::Div {
+/// The right end of a card's first line, one 13px slot so the signals line
+/// up down the column: working pixels, a ready dot until the result is seen,
+/// a grey waiting dot, and nothing once a Ready result has been seen.
+fn card_signal(card: usize, status: Status, unseen: bool, chrome: &Chrome) -> gpui::AnyElement {
+    let slot = div().flex_none().flex().justify_center().w(px(13.));
     let color = chrome.status(status).dot;
-    let dot = div().flex_none().size(px(size)).rounded_full();
-    if status == Status::Waiting {
-        dot.border(px(1.5)).border_color(color)
-    } else {
-        dot.bg(color)
+    match status {
+        Status::Working => slot.child(working_pixels(card, color)),
+        Status::Ready if !unseen => slot,
+        _ => slot.child(div().size(px(8.)).rounded_full().bg(color)),
     }
+    .into_any_element()
 }
 
-/// A card's dot. The working dot fades to 30% and back every 1.6s. GPUI
-/// skips the loop when macOS asks for reduced motion.
-fn status_dot(card: usize, status: Status, chrome: &Chrome) -> gpui::AnyElement {
-    let dot = dot(status, 8., chrome);
-    if status != Status::Working {
-        return dot.into_any_element();
-    }
-    dot.with_animation(
-        SharedString::from(format!("pulse-{card}")),
-        gpui::Animation::new(Duration::from_millis(1600))
-            .repeat_synced()
-            .with_easing(gpui::bounce(gpui::ease_in_out))
-            .with_max_fps(30.),
-        |dot, t| dot.opacity(1. - 0.7 * t),
-    )
-    .into_any_element()
+/// A working card's indicator: three 3px squares rising and falling in a
+/// staggered wave every 1.2s. Offsets snap to whole points so the squares
+/// stay crisp and step like pixels. GPUI skips the loop when macOS asks for
+/// reduced motion, leaving the first frame, a still staircase.
+fn working_pixels(card: usize, color: gpui::Rgba) -> gpui::AnyElement {
+    const SIZE: f32 = 3.;
+    const GAP: f32 = 2.;
+    const RISE: f32 = 5.;
+    div()
+        .flex_none()
+        .relative()
+        .w(px(3. * SIZE + 2. * GAP))
+        .h(px(SIZE + RISE))
+        .with_animation(
+            SharedString::from(format!("working-{card}")),
+            gpui::Animation::new(Duration::from_millis(1200))
+                .repeat_synced()
+                .with_max_fps(30.),
+            move |d, t| {
+                d.children((0..3).map(|i| {
+                    let phase = t - i as f32 / 6.;
+                    let lift = (1. - (std::f32::consts::TAU * phase).cos()) / 2.;
+                    div()
+                        .absolute()
+                        .left(px(i as f32 * (SIZE + GAP)))
+                        .top(px(RISE - (lift * RISE).round()))
+                        .size(px(SIZE))
+                        .bg(color)
+                }))
+            },
+        )
+        .into_any_element()
 }
 
 /// A secondary button without its label: raised fill, control border, and
@@ -4241,6 +4212,7 @@ impl Render for Shika {
             .min_h_0()
             .overflow_y_scroll()
             .px(px(12.))
+            .pt(px(8.))
             .pb(px(18.))
             .flex()
             .flex_col()
@@ -4266,7 +4238,6 @@ impl Render for Shika {
             .border_r_1()
             .border_color(chrome.hairline)
             .child(self.top_row(&chrome, window, cx))
-            .child(self.summary(&chrome, cx))
             .child(projects)
             .child(self.footer(&chrome, cx));
         let mut root = div()
