@@ -13,8 +13,8 @@ use model::{PromptCapture, Status, TitleWatch, visible_indices};
 use notifications::Notifications;
 use shika_core::{
     Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize, JournalEntry,
-    PreparationConfig, PreparationControl, PreparationEvent, Project, ProjectBase, PtyEvent, PtyId,
-    PtySize, Session, SessionGitState, Settings, Translucency,
+    KnownBranches, PreparationConfig, PreparationControl, PreparationEvent, Project, ProjectBase,
+    PtyEvent, PtyId, PtySize, Session, SessionGitState, Settings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize,
@@ -303,10 +303,15 @@ enum Overlay {
     },
     /// The branch New starts from in `project`. `text` is the field, always
     /// being typed into; `error` is why the last Enter was refused.
+    /// `choices` is None until the branches already on disk have been read.
+    /// `highlight` is a row in the filtered list. None with an empty field
+    /// uses the default branch; None with an unknown name fetches it.
     Base {
         project: String,
         text: String,
         error: Option<String>,
+        choices: Option<KnownBranches>,
+        highlight: Option<usize>,
     },
 }
 struct Shika {
@@ -320,6 +325,8 @@ struct Shika {
     /// Non-workflow overlays return to the surface that opened them.
     overlay_return_focus: Option<FocusHandle>,
     sidebar_scroll: gpui::ScrollHandle,
+    /// The Base branch list, so Up and Down can bring the highlight into view.
+    base_scroll: gpui::ScrollHandle,
     last_revealed_selection: Option<Selection>,
     busy: bool,
     toast: Option<(String, Instant)>,
@@ -410,6 +417,7 @@ impl Shika {
             },
             overlay_return_focus: None,
             sidebar_scroll: gpui::ScrollHandle::new(),
+            base_scroll: gpui::ScrollHandle::new(),
             last_revealed_selection: None,
             busy: false,
             toast: if load_errors.is_empty() {
@@ -1609,25 +1617,127 @@ impl Shika {
             .and_then(|p| p.base_branch.clone())
             .unwrap_or_default();
         self.refresh_bases(vec![project.clone()], cx);
+        self.base_scroll = gpui::ScrollHandle::new();
         self.overlay_return_focus = window.focused(cx);
         self.overlay = Some(Overlay::Base {
-            project,
+            project: project.clone(),
             text,
             error: None,
+            choices: None,
+            highlight: None,
         });
+        self.load_base_branches(project, cx);
         window.focus(&self.focus, cx);
         cx.notify();
     }
-    /// Saves the typed base branch once core finds it, or shows why not.
+    /// Reads branches already on disk. The dialog stays usable while this runs.
+    fn load_base_branches(&mut self, project: String, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        cx.spawn(async move |this, cx| {
+            let id = project.clone();
+            let listed = cx
+                .background_executor()
+                .spawn(async move { core.project_branches(&id) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let at = {
+                    let Some(Overlay::Base {
+                        project: open,
+                        text,
+                        choices,
+                        highlight,
+                        ..
+                    }) = &mut this.overlay
+                    else {
+                        return;
+                    };
+                    if *open != project {
+                        return;
+                    }
+                    let Ok(found) = listed else {
+                        return;
+                    };
+                    let matched = model::branch_matches(&found.names, text).len();
+                    *highlight = model::branch_highlight_after_type(matched, text);
+                    let at = *highlight;
+                    *choices = Some(found);
+                    at
+                };
+                if let Some(at) = at {
+                    this.base_scroll.scroll_to_item(at);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    /// The branch Enter would save: the highlighted row, or the field.
+    fn chosen_base_name(&self) -> String {
+        let Some(Overlay::Base {
+            text,
+            choices,
+            highlight,
+            ..
+        }) = &self.overlay
+        else {
+            return String::new();
+        };
+        let names = choices.as_ref().map(|c| c.names.as_slice()).unwrap_or(&[]);
+        let matched = model::branch_matches(names, text);
+        let shown: Vec<&str> = matched.iter().map(|index| names[*index].as_str()).collect();
+        model::branch_to_apply(text, &shown, *highlight).to_string()
+    }
+    /// After the field changes, the highlight returns to the first match.
+    fn sync_base_highlight(&mut self) {
+        let at = {
+            let Some(Overlay::Base {
+                text,
+                choices,
+                highlight,
+                ..
+            }) = &mut self.overlay
+            else {
+                return;
+            };
+            let names = choices.as_ref().map(|c| c.names.as_slice()).unwrap_or(&[]);
+            let matched = model::branch_matches(names, text).len();
+            *highlight = model::branch_highlight_after_type(matched, text);
+            *highlight
+        };
+        if let Some(at) = at {
+            self.base_scroll.scroll_to_item(at);
+        }
+    }
+    fn move_base_highlight(&mut self, delta: isize) {
+        let at = {
+            let Some(Overlay::Base {
+                text,
+                choices,
+                highlight,
+                ..
+            }) = &mut self.overlay
+            else {
+                return;
+            };
+            let names = choices.as_ref().map(|c| c.names.as_slice()).unwrap_or(&[]);
+            let matched = model::branch_matches(names, text).len();
+            *highlight = model::move_branch_highlight(*highlight, matched, delta);
+            *highlight
+        };
+        if let Some(at) = at {
+            self.base_scroll.scroll_to_item(at);
+        }
+    }
+    /// Saves `branch` once core finds it, or shows why not.
     /// Empty goes back to the default branch.
-    fn apply_base(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_base(&mut self, branch: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
-        let Some(Overlay::Base { project, text, .. }) = &self.overlay else {
+        let Some(Overlay::Base { project, .. }) = &self.overlay else {
             return;
         };
-        let (project, text) = (project.clone(), text.clone());
+        let project = project.clone();
         let core = self.core.clone();
         self.busy = true;
         cx.notify();
@@ -1635,7 +1745,7 @@ impl Shika {
             let id = project.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { core.set_project_base(&id, &text) })
+                .spawn(async move { core.set_project_base(&id, &branch) })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
@@ -2116,14 +2226,34 @@ impl Shika {
             cx.notify();
             return;
         }
-        if let Some(Overlay::Base { text, error, .. }) = &mut self.overlay {
+        if matches!(&self.overlay, Some(Overlay::Base { .. })) {
             if !self.busy {
+                let plain = !stroke.modifiers.platform
+                    && !stroke.modifiers.control
+                    && !stroke.modifiers.alt
+                    && !stroke.modifiers.shift;
                 match stroke.key.as_str() {
-                    "enter" => self.apply_base(window, cx),
+                    "enter" => {
+                        let branch = self.chosen_base_name();
+                        self.apply_base(branch, window, cx);
+                    }
                     "escape" => self.cancel_overlay(window, cx),
+                    "up" if plain => self.move_base_highlight(-1),
+                    "down" if plain => self.move_base_highlight(1),
                     "backspace" => {
-                        text.pop();
-                        *error = None;
+                        let changed =
+                            if let Some(Overlay::Base { text, error, .. }) = &mut self.overlay {
+                                let changed = text.pop().is_some();
+                                if changed {
+                                    *error = None;
+                                }
+                                changed
+                            } else {
+                                false
+                            };
+                        if changed {
+                            self.sync_base_highlight();
+                        }
                     }
                     _ => {
                         let typed = stroke.key_char.as_deref().filter(|_| {
@@ -2131,12 +2261,23 @@ impl Shika {
                                 && !stroke.modifiers.control
                                 && !stroke.modifiers.alt
                         });
-                        if let Some(ch) = typed.and_then(|t| t.chars().next())
+                        let changed = if let Some(ch) = typed.and_then(|t| t.chars().next())
                             && model::branch_char(ch)
-                            && text.len() < model::BRANCH_MAX
                         {
-                            text.push(ch);
-                            *error = None;
+                            if let Some(Overlay::Base { text, error, .. }) = &mut self.overlay
+                                && text.len() < model::BRANCH_MAX
+                            {
+                                text.push(ch);
+                                *error = None;
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if changed {
+                            self.sync_base_highlight();
                         }
                     }
                 }
@@ -3918,6 +4059,8 @@ impl Shika {
                 project,
                 text,
                 error,
+                choices,
+                highlight,
             } => {
                 let name = self
                     .projects
@@ -3932,18 +4075,87 @@ impl Shika {
                     .when_some(default.filter(|_| text.is_empty()), |d, default| {
                         d.child(div().text_color(chrome.ink_4).child(default))
                     });
-                let action = if text.is_empty() {
+                let names = choices
+                    .as_ref()
+                    .map(|choices| choices.names.as_slice())
+                    .unwrap_or(&[]);
+                let checked_out = choices
+                    .as_ref()
+                    .and_then(|choices| choices.checked_out.clone());
+                let matched = model::branch_matches(names, text);
+                let highlight = highlight
+                    .as_ref()
+                    .copied()
+                    .filter(|index| *index < matched.len());
+                let action = if self.chosen_base_name().trim().is_empty() {
                     "Use default branch"
                 } else {
                     "Set base branch"
                 };
-                dialog(chrome, max_h)
+                let fetch_hint = choices.as_ref().is_some_and(|choices| choices.has_origin)
+                    && !text.is_empty()
+                    && matched.is_empty()
+                    && error.is_none();
+                let mut panel = dialog(chrome, max_h)
                     .child(dialog_title(div()).child(format!("Base branch for {name}")))
                     .child(
                         dialog_text(chrome)
                             .child("New agents branch from it. Running agents keep their base."),
                     )
-                    .child(field.mt(px(4.)))
+                    .child(field.mt(px(4.)));
+                if !matched.is_empty() {
+                    let mut rows = div()
+                        .id("base-branch-list")
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .max_h(px(BASE_LIST_MAX))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.base_scroll);
+                    for (row, index) in matched.iter().copied().enumerate() {
+                        let branch = names[index].clone();
+                        let label = branch.clone();
+                        let checked = checked_out.as_deref() == Some(label.as_str());
+                        rows = rows.child(
+                            list_row(highlight == Some(row), chrome)
+                                .id(("base-branch-row", row))
+                                .w_full()
+                                .justify_between()
+                                .gap(px(8.))
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.apply_base(branch.clone(), window, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .truncate()
+                                        .font_family(MONO)
+                                        .text_size(px(12.))
+                                        .child(label),
+                                )
+                                .when(checked, |row| {
+                                    row.child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(12.))
+                                            .text_color(chrome.ink_3)
+                                            .child("checked out"),
+                                    )
+                                }),
+                        );
+                    }
+                    panel = panel.child(rows);
+                }
+                if fetch_hint {
+                    panel = panel.child(
+                        dialog_text(chrome)
+                            .text_color(chrome.ink_3)
+                            .child("Not on this machine. Enter fetches it from origin."),
+                    );
+                }
+                panel
                     .when_some(error.clone(), |d, error| {
                         d.child(dialog_text(chrome).text_color(chrome.ink_1).child(error))
                     })
@@ -3951,7 +4163,10 @@ impl Shika {
                         dialog_buttons()
                             .child(self.cancel_button("Cancel", chrome, cx))
                             .child(primary_button("set-base", action, "↵", chrome).on_click(
-                                cx.listener(|this, _, window, cx| this.apply_base(window, cx)),
+                                cx.listener(|this, _, window, cx| {
+                                    let branch = this.chosen_base_name();
+                                    this.apply_base(branch, window, cx);
+                                }),
                             )),
                     )
             }
@@ -4069,6 +4284,8 @@ const FOOTER_HINTS_FIT_WITH_LEFTOVERS: f32 = 560.;
 const COLUMN_HANDLE_WIDTH: f32 = 8.;
 /// The top row of both halves of the window, which is the title bar.
 const BAR_HEIGHT: f32 = 48.;
+/// Six base-branch rows. The list scrolls after that.
+const BASE_LIST_MAX: f32 = 220.;
 /// A terminal tab, sitting on the bottom of the 48px header.
 const TAB_HEIGHT: f32 = 34.;
 /// The traffic lights sit 18px from the left, centered in the 48px bar.

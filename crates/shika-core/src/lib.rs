@@ -14,7 +14,8 @@
 //!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
 //!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
-//!   [`Core::remove_project`], [`Core::project_base`], [`Core::set_project_base`],
+//!   [`Core::remove_project`], [`Core::project_base`], [`Core::project_branches`],
+//!   [`Core::set_project_base`],
 //!   [`Core::prefetch_base`],
 //!   and the first call to [`Core::path_env`] or [`Core::cli_catalog`]. These
 //!   run git or the user's login shell and can take seconds (the login shell
@@ -70,8 +71,8 @@ pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use session::{DiffStat, Session, SessionGitState};
 pub use settings::{Appearance, Column, FontSize, Settings, Translucency};
-pub use worktree::JournalEntry;
 pub use worktree::normalize_prefix as normalize_branch_prefix;
+pub use worktree::{JournalEntry, KnownBranches};
 
 use cli_title::CliHome;
 use projects::ProjectDb;
@@ -282,6 +283,15 @@ impl Core {
             name,
             default_name,
         })
+    }
+
+    /// Branches already in this clone: local heads and `origin/*`, as short
+    /// names with duplicates collapsed. Does not fetch. Blocking: runs git.
+    pub fn project_branches(&self, id: &str) -> Result<KnownBranches> {
+        let project = self.projects.get(id)?;
+        let git = self.git()?;
+        let env = self.path_env().path();
+        worktree::known_branches(&git, env, &project.path)
     }
 
     /// Sets the branch new agents in this project start from, once it exists

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{ErrorKind, Read};
@@ -169,6 +170,56 @@ pub fn resolve_base(
     Ok(BaseStart {
         name: (head.status.success() && !name.is_empty()).then_some(name),
         reference: None,
+    })
+}
+
+/// Branches already stored in this clone, for the Base branch dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownBranches {
+    /// Short names, sorted. A local branch and `origin/` with the same name
+    /// are one row.
+    pub names: Vec<String>,
+    /// The branch checked out in the main checkout, when that name is listed.
+    pub checked_out: Option<String>,
+    /// Whether a remote named `origin` exists, so a missing name can be fetched.
+    pub has_origin: bool,
+}
+
+/// Local heads and `origin/*` already on disk. `origin/dev` is `dev`, `HEAD`
+/// is dropped, and duplicates collapse. Does not fetch.
+pub fn known_branches(git: &Path, path_env: &str, repo: &Path) -> Result<KnownBranches> {
+    let output = git_cmd(git, path_env, repo)
+        .args([
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ])
+        .output()
+        .map_err(|_| Error::Git(None))?;
+    if !output.status.success() {
+        return Err(Error::Git(first_line(&output.stderr)));
+    }
+    let mut names = BTreeSet::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim();
+        let short = if let Some(name) = line.strip_prefix("refs/heads/") {
+            name
+        } else if let Some(name) = line.strip_prefix("refs/remotes/origin/") {
+            name
+        } else {
+            continue;
+        };
+        if short.is_empty() || short == "HEAD" {
+            continue;
+        }
+        names.insert(short.to_string());
+    }
+    let checked_out = head_branch(git, path_env, repo)?.filter(|name| names.contains(name));
+    Ok(KnownBranches {
+        names: names.into_iter().collect(),
+        checked_out,
+        has_origin: has_origin(git, path_env, repo),
     })
 }
 
@@ -1046,6 +1097,66 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn git_ok(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Shika")
+            .env("GIT_AUTHOR_EMAIL", "shika@example.com")
+            .env("GIT_COMMITTER_NAME", "Shika")
+            .env("GIT_COMMITTER_EMAIL", "shika@example.com")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn known_branches_lists_local_and_origin_once_and_skips_head() {
+        let scratch = Scratch::new();
+        let repo = scratch.path.join("demo");
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, &["init", "-b", "main"]);
+        git_ok(&repo, &["commit", "--allow-empty", "-m", "init"]);
+        git_ok(&repo, &["branch", "staging"]);
+        let remote = scratch.path.join("remote.git");
+        fs::create_dir_all(&remote).unwrap();
+        git_ok(&remote, &["init", "--bare"]);
+        git_ok(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git_ok(&repo, &["push", "origin", "main"]);
+        git_ok(&repo, &["remote", "set-head", "origin", "main"]);
+        git_ok(&repo, &["switch", "-c", "dev"]);
+        git_ok(&repo, &["commit", "--allow-empty", "-m", "dev"]);
+        git_ok(&repo, &["push", "origin", "dev"]);
+        git_ok(&repo, &["switch", "main"]);
+        git_ok(&repo, &["branch", "-D", "dev"]);
+
+        let raw = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"])
+            .output()
+            .unwrap();
+        let raw = String::from_utf8_lossy(&raw.stdout);
+        assert!(
+            raw.contains("refs/remotes/origin/HEAD"),
+            "origin/HEAD was not there to omit: {raw}"
+        );
+
+        let found = known_branches(&git(), "", &repo).unwrap();
+        assert_eq!(found.names, vec!["dev", "main", "staging"]);
+        assert_eq!(found.checked_out.as_deref(), Some("main"));
+        assert!(found.has_origin);
+        assert!(!found.names.iter().any(|name| name == "HEAD"));
     }
 
     #[test]
