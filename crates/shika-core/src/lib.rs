@@ -45,6 +45,7 @@
 //! unbounded channel whose receiving task runs on the GPUI executor and feeds
 //! `shika-terminal`.
 
+mod activity;
 mod agents;
 mod cli_title;
 mod error;
@@ -63,6 +64,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+pub use activity::{AgentActivity, AgentActivityState};
 pub use agents::{CliCatalog, CliPreset};
 pub use error::{Error, Result};
 pub use path_env::{LoginShellError, PathEnv};
@@ -406,6 +408,15 @@ impl Core {
         self.sessions.get(id)
     }
 
+    /// Best-effort Pi lifecycle metadata. Poll on a worker: this reads at most
+    /// 129 bytes and never takes the core operations lock. None means use the
+    /// terminal fallback (other agents, unsupported Pi, bad/missing metadata,
+    /// or an ended session). This is a latest snapshot, not an event queue;
+    /// consumers should deduplicate by seq. No blocked state is inferred.
+    pub fn session_activity(&self, session_id: &str) -> Option<AgentActivity> {
+        self.sessions.activity(session_id)?.read()
+    }
+
     /// Creates `<repo>/.worktrees/shika-draft-<id>` on a new branch from the
     /// project's base branch, journals it, and starts the CLI there on a PTY
     /// of `size` that feeds `sink`. The base is fetched from origin first,
@@ -540,19 +551,39 @@ impl Core {
                 ));
             }
             report(PreparationEvent::StartingAgent);
-            let pty = self.ptys.open(
-                SpawnRequest {
-                    program,
-                    args: preset.args.clone(),
-                    cwd: draft.path.clone(),
-                    path: env.path().to_string(),
-                    size,
-                    env: Vec::new(),
-                },
-                sink,
-            )?;
+            // Optional, session-owned shim. Installation failure keeps the
+            // original native CLI launch, with no config changes.
+            let activity = (preset.id == "pi")
+                .then(activity::ActivityBridge::install)
+                .flatten();
+            let mut request = SpawnRequest {
+                program,
+                args: preset.args.clone(),
+                cwd: draft.path.clone(),
+                path: env.path().to_string(),
+                size,
+                env: Vec::new(),
+            };
+            if let Some(activity) = &activity {
+                activity.wire(&mut request);
+            }
+            let pty = match self
+                .ptys
+                .open(request, activity::activity_sink(activity.clone(), sink))
+            {
+                Ok(pty) => pty,
+                Err(err) => {
+                    if let Some(activity) = &activity {
+                        activity.cleanup();
+                    }
+                    return Err(err);
+                }
+            };
             if control.is_cancelled() {
                 self.ptys.close(pty);
+                if let Some(activity) = &activity {
+                    activity.cleanup();
+                }
                 return Err(Error::PreparationCancelled);
             }
             let session = Session {
@@ -569,6 +600,9 @@ impl Core {
                 shell_ptys: Vec::new(),
                 cli_titled: false,
             };
+            if let Some(activity) = activity {
+                self.sessions.remember_activity(&session.id, activity);
+            }
             self.sessions.insert(session.clone());
             Ok(session)
         })();

@@ -1,4 +1,6 @@
+mod activity;
 mod appearance;
+mod lifecycle;
 mod model;
 mod notifications;
 
@@ -91,17 +93,20 @@ struct HostState {
     pty: Option<PtyId>,
     measured: Option<TerminalSize>,
     prompt: PromptCapture,
+    submission_capture: PromptCapture,
+    submission_recalled: bool,
     title: Option<String>,
     last_output: Option<Instant>,
-    /// Newest output that is the agent's own work, not an echo or a redraw.
-    last_agent_output: Option<Instant>,
+    /// Focus/mouse reports and resize, separate from draft typing so real
+    /// transcript changes are not suppressed while the user edits a prompt.
+    last_interaction: Option<Instant>,
     /// The user's last key or paste.
     last_typed: Option<Instant>,
-    /// The user's last key, paste, focus change, click, scroll, or resize,
-    /// any of which can make the CLI redraw.
-    last_input: Option<Instant>,
     exited: bool,
     submission: u64,
+    last_submission: Option<Instant>,
+    lifecycle: Option<shika_core::AgentActivity>,
+    lifecycle_checking: bool,
     pending_input: Vec<Vec<u8>>,
     preparing: bool,
     agent_starting: bool,
@@ -124,15 +129,29 @@ impl PtyHost for Host {
         if source == InputSource::Typed {
             s.last_typed = Some(now);
         }
-        if source != InputSource::Reply {
-            s.last_input = Some(now);
+        if source == InputSource::Report {
+            s.last_interaction = Some(now);
         }
-        if self.capture {
+        if self.capture && source == InputSource::Typed {
             if let Some(title) = s.prompt.feed(bytes) {
                 s.title = Some(title);
             }
-            if bytes.contains(&b'\r') || bytes.contains(&b'\n') {
+            // Only a nonempty submitted line is a candidate turn. Embedded
+            // paste newlines, mouse/focus reports, and query replies are not.
+            if matches!(bytes, b"\x1b[A" | b"\x1bOA" | b"\x1b[B" | b"\x1bOB") {
+                // History lives inside the CLI editor, not in captured keys.
+                // Treat a subsequent Enter as a candidate accepted prompt.
+                s.submission_recalled = true;
+            }
+            if matches!(bytes, b"\x15" | b"\x03") {
+                s.submission_recalled = false;
+            }
+            let recalled_enter = s.submission_recalled && matches!(bytes, b"\r" | b"\n" | b"\r\n");
+            if s.submission_capture.feed(bytes).is_some() || recalled_enter {
                 s.submission += 1;
+                s.last_submission = Some(now);
+                s.submission_capture = PromptCapture::default();
+                s.submission_recalled = false;
             }
         }
         if let Some(pty) = s.pty {
@@ -146,20 +165,26 @@ impl PtyHost for Host {
     fn resize(&self, size: TerminalSize) {
         let mut s = lock(&self.state);
         s.measured = Some(size);
-        s.last_input = Some(Instant::now());
+        let now = Instant::now();
+        s.last_interaction = Some(now);
         if let Some(pty) = s.pty {
             let _ = self.core.resize(pty, PtySize::new(size.rows, size.cols));
         }
     }
 }
 impl HostState {
-    /// Record PTY bytes. Echoes and redraws stay in `last_output` only, so a
-    /// draft typed into the prompt does not look like the agent working.
+    /// Bytes are arrival metadata, not proof of work. The activity sampler
+    /// separately compares live transcript content, excluding the editor.
     fn note_output(&mut self, now: Instant) {
         self.last_output = Some(now);
-        if model::is_agent_output(self.last_input, now) {
-            self.last_agent_output = Some(now);
+    }
+    fn note_lifecycle(&mut self, generation: u64, report: Option<shika_core::AgentActivity>) {
+        // A read scheduled for the old turn cannot inject its Idle into a
+        // newly submitted prompt, even if the filesystem read was delayed.
+        if self.submission == generation {
+            self.lifecycle = report;
         }
+        self.lifecycle_checking = false;
     }
 }
 fn bind_host(core: &Core, state: &Mutex<HostState>, pty: PtyId) {
@@ -255,6 +280,10 @@ struct Card {
     preset: String,
     status: Status,
     since: Instant,
+    activity: activity::Activity,
+    evidence: activity::OutputEvidence,
+    lifecycle: lifecycle::Lifecycle,
+    lifecycle_checked: Option<Instant>,
     agent: Pane,
     shells: Vec<Pane>,
     /// Zero is the pinned agent tab; shells use their index plus one.
@@ -264,8 +293,6 @@ struct Card {
     /// The tab under the pointer, which paints its hover in the tab shape.
     hovered_tab: Option<usize>,
     submitted: u64,
-    /// The `last_typed` whose turn already notified.
-    notified: Option<Instant>,
     creating: bool,
     title_watch: TitleWatch,
     /// The prompt or the CLI's title has named the card. Until then it reads
@@ -283,7 +310,15 @@ struct Card {
 }
 impl Card {
     fn unseen(&self) -> bool {
-        self.status == Status::Ready && self.seen != Some(self.since)
+        matches!(self.status, Status::Ready | Status::Asking) && self.seen != Some(self.since)
+    }
+    fn running(&self) -> bool {
+        let host = lock(&self.agent.state);
+        model::activity_requires_confirmation(
+            self.status,
+            host.exited,
+            host.submission != self.submitted,
+        )
     }
     fn active_pane(&self) -> &Pane {
         self.active_tab
@@ -897,6 +932,10 @@ impl Shika {
             preset: preset.name.clone(),
             status: Status::Waiting,
             since: Instant::now(),
+            activity: activity::Activity::new(Instant::now()),
+            evidence: activity::OutputEvidence::default(),
+            lifecycle: lifecycle::Lifecycle::default(),
+            lifecycle_checked: None,
             agent: pane,
             shells: Vec::new(),
             active_tab: 0,
@@ -904,7 +943,6 @@ impl Shika {
             tab_scroll: gpui::ScrollHandle::new(),
             hovered_tab: None,
             submitted: 0,
-            notified: None,
             creating: true,
             title_watch: TitleWatch::default(),
             named: false,
@@ -1335,6 +1373,19 @@ impl Shika {
             }
         }
         for card in &mut self.cards {
+            // Sample live terminal chrome, never the user's scrollback. Read
+            // the engine before taking HostState so query replies cannot
+            // create an inverted lock order.
+            let lines = if !card.creating && card.session.is_some() {
+                card.agent.terminal.live_text_lines()
+            } else {
+                Vec::new()
+            };
+            let screen = activity::detect(
+                &card.launch_preset,
+                &lines,
+                card.agent.terminal.title().as_deref(),
+            );
             let mut state = lock(&card.agent.state);
             if card.creating {
                 if card
@@ -1358,8 +1409,6 @@ impl Shika {
                     card.title = model::card_title(&title);
                 }
                 card.named = true;
-                card.status = Status::Working;
-                card.since = now;
                 if let Some(s) = &card.session {
                     rename.push((s.id.clone(), title));
                 }
@@ -1368,61 +1417,69 @@ impl Shika {
             if state.submission > 0 {
                 card.title_watch.start(now);
             }
-            if state.submission != card.submitted && card.status != Status::Waiting {
+            let submission = if state.submission != card.submitted {
                 card.submitted = state.submission;
-                card.status = Status::Working;
-                card.since = now;
-                changed = true;
+                if matches!(card.status, Status::Waiting | Status::Ready) {
+                    // An idle report from the previous turn is not evidence
+                    // about a newly submitted prompt.
+                    card.lifecycle.submitted(state.lifecycle);
+                }
+                state.last_submission
+            } else {
+                None
+            };
+            if card.launch_preset == "pi"
+                && !state.exited
+                && !state.lifecycle_checking
+                && card
+                    .lifecycle_checked
+                    .is_none_or(|at| now.duration_since(at) >= Duration::from_millis(500))
+                && let Some(session) = &card.session
+            {
+                card.lifecycle_checked = Some(now);
+                state.lifecycle_checking = true;
+                let core = self.core.clone();
+                let id = session.id.clone();
+                let host = card.agent.state.clone();
+                let generation = state.submission;
+                // Tiny metadata files still belong off the UI thread. A
+                // single in-flight read per pane, with stable pane identity.
+                cx.background_executor()
+                    .spawn(async move {
+                        let report = core.session_activity(&id);
+                        let mut host = lock(&host);
+                        host.note_lifecycle(generation, report);
+                    })
+                    .detach();
             }
-            if card.status != Status::Waiting {
-                let (clock, settled) = model::advance_status(
-                    model::TurnClock {
-                        status: card.status,
-                        since: card.since,
-                    },
-                    state.last_input,
-                    state.last_agent_output,
-                    now,
-                    state.exited,
-                );
-                if clock.status != card.status || clock.since != card.since {
-                    card.status = clock.status;
-                    card.since = clock.since;
-                    changed = true;
-                }
-                if settled {
-                    let latest = state.last_output.unwrap_or(card.since);
-                    if let Some(session) = &card.session {
-                        ready.push(session.id.clone());
-                    }
-                    if model::notify_ready(
-                        state.last_typed,
-                        card.notified,
-                        state.last_input,
-                        latest,
-                    ) && let Some(session) = &card.session
-                    {
-                        let project = self
-                            .projects
-                            .iter()
-                            .find(|p| p.id == card.project)
-                            .map(|p| p.name.as_str())
-                            .unwrap_or("Shika");
-                        self.notifications.post(
-                            &session.id,
-                            project,
-                            &card.title,
-                            self.notification_sound,
-                        );
-                        card.notified = state.last_typed;
-                    }
-                }
-            } else if state.exited {
-                card.status = Status::Ready;
-                card.since = now;
-                changed = true;
-                if let Some(session) = &card.session {
+            let lifecycle = card.lifecycle.observe(state.lifecycle);
+            let signal = if screen == activity::Signal::Blocked {
+                screen
+            } else {
+                lifecycle.unwrap_or(screen)
+            };
+            let output = card.evidence.observe(
+                &card.launch_preset,
+                &lines,
+                state.last_output,
+                state.last_interaction,
+                now,
+            );
+            let transition = if lifecycle.is_some() && screen != activity::Signal::Blocked {
+                card.activity
+                    .advance_authoritative(signal, submission, output, now, state.exited)
+            } else {
+                card.activity
+                    .advance(signal, submission, output, now, state.exited)
+            };
+            card.status = card.activity.status;
+            card.since = card.activity.since;
+            changed |= transition.changed;
+            if let Some(session) = &card.session {
+                if transition.ready {
                     ready.push(session.id.clone());
+                }
+                if transition.notify {
                     let project = self
                         .projects
                         .iter()
@@ -1581,7 +1638,7 @@ impl Shika {
                     .cards
                     .iter_mut()
                     .find(|c| c.session.as_ref().is_some_and(|s| s.id == session_id))
-                    && card.status == Status::Ready
+                    && matches!(card.status, Status::Ready | Status::Asking)
                 {
                     card.diff = result.ok();
                     cx.notify();
@@ -1836,7 +1893,7 @@ impl Shika {
             return;
         };
         let id = session.id.clone();
-        let working = self.cards[index].status == Status::Working;
+        let working = self.cards[index].running();
         let core = self.core.clone();
         self.busy = true;
         cx.spawn_in(window, async move |this, cx| {
@@ -1873,15 +1930,9 @@ impl Shika {
             return;
         };
         let id = session.id.clone();
-        let working = self.cards[index].status == Status::Working || {
-            let host = lock(&self.cards[index].agent.state);
-            !host.exited
-                && self.cards[index].status != Status::Waiting
-                && (host.submission != self.cards[index].submitted
-                    || host
-                        .last_agent_output
-                        .is_some_and(|t| t.elapsed() < model::QUIET))
-        };
+        // Use the same check before showing choices and before removing the
+        // task. Redraw bytes and draft typing are never active-turn evidence.
+        let working = self.cards[index].running();
         let core = self.core.clone();
         self.busy = true;
         cx.spawn_in(window, async move |this, cx| {
@@ -3110,6 +3161,7 @@ impl Shika {
             match card.status {
                 Status::Ready => &[("↵", "read")],
                 Status::Working => &[("↵", "watch")],
+                Status::Asking => &[("↵", "answer")],
                 Status::Waiting => &[("↵", "write prompt")],
             }
         };
@@ -3154,7 +3206,9 @@ impl Shika {
                         .font_family(MONO)
                         .text_size(px(11.5))
                         .text_color(colors.text)
-                        .child(model::short_time(card.since.elapsed())),
+                        .child(model::short_time(
+                            card.activity.turn_started.unwrap_or(card.since).elapsed(),
+                        )),
                 )
             })
             .child(card_signal(i, card.status, card.unseen(), chrome));
@@ -3177,7 +3231,7 @@ impl Shika {
                         .when(!card.creating, |stage| stage.flex_none())
                         .text_color(colors.text)
                         .font_weight(match card.status {
-                            Status::Ready => FontWeight::SEMIBOLD,
+                            Status::Ready | Status::Asking => FontWeight::SEMIBOLD,
                             Status::Working => FontWeight::MEDIUM,
                             Status::Waiting => FontWeight::NORMAL,
                         })
@@ -3253,7 +3307,9 @@ impl Shika {
             // A drop shadow would also paint under a translucent card, so the
             // resting ring is a border and the padding gives back its 1px.
             base.overflow_hidden()
-                .bg(if card.unseen() {
+                .bg(if card.status == Status::Asking {
+                    chrome.card_asking
+                } else if card.unseen() {
                     chrome.card_ready
                 } else {
                     chrome.card_rest
@@ -5107,6 +5163,144 @@ mod host_tests {
             adjacent_agent(&rows, Some(&Selection::Card(9)), -1),
             Some(0)
         );
+    }
+
+    #[test]
+    fn only_nonempty_typed_submissions_start_candidate_turns() {
+        let path = std::env::temp_dir().join(format!(
+            "shika-submission-host-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let core = Arc::new(Core::open(&path).unwrap());
+        let state = Arc::new(Mutex::new(HostState::default()));
+        let host = Host {
+            core: core.clone(),
+            state: state.clone(),
+            capture: true,
+        };
+        host.write(b"\r", InputSource::Typed);
+        host.write(b"\x1b[I", InputSource::Report);
+        // Even a report/reply containing CR must never name/start a turn.
+        host.write(b"mouse\r", InputSource::Report);
+        host.write(b"reply\r", InputSource::Reply);
+        host.resize(TerminalSize::new(20, 80));
+        assert_eq!(lock(&state).submission, 0);
+        assert!(lock(&state).title.is_none());
+        host.write(b"fix it\r", InputSource::Typed);
+        assert_eq!(lock(&state).submission, 1);
+        assert_eq!(lock(&state).title.as_deref(), Some("fix it"));
+        let submitted = lock(&state).last_submission;
+        host.write(b"draft", InputSource::Typed);
+        host.write(b"\x15", InputSource::Typed);
+        host.write(b"\x1b[200~line one\nline two\x1b[201~", InputSource::Typed);
+        assert_eq!(lock(&state).submission, 1);
+        assert_eq!(lock(&state).last_submission, submitted);
+        host.write(b"\r", InputSource::Typed);
+        assert_eq!(lock(&state).submission, 2);
+        assert_eq!(lock(&state).title.as_deref(), Some("fix it"));
+        host.write(b"cleared draft\x01\x0b\r", InputSource::Typed);
+        assert_eq!(lock(&state).submission, 2);
+        host.write(b"\x1b[A", InputSource::Typed);
+        host.write(b"\r", InputSource::Typed);
+        assert_eq!(lock(&state).submission, 3);
+        assert_eq!(lock(&state).title.as_deref(), Some("fix it"));
+        drop(host);
+        drop(core);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn delayed_lifecycle_read_cannot_cross_a_submission() {
+        let mut host = HostState {
+            submission: 2,
+            lifecycle_checking: true,
+            ..HostState::default()
+        };
+        host.note_lifecycle(
+            1,
+            Some(shika_core::AgentActivity {
+                seq: 3,
+                state: shika_core::AgentActivityState::Idle,
+            }),
+        );
+        assert!(host.lifecycle.is_none());
+        assert!(!host.lifecycle_checking);
+        host.note_lifecycle(
+            2,
+            Some(shika_core::AgentActivity {
+                seq: 4,
+                state: shika_core::AgentActivityState::Working,
+            }),
+        );
+        assert_eq!(
+            host.lifecycle.unwrap().state,
+            shika_core::AgentActivityState::Working
+        );
+    }
+
+    #[test]
+    fn live_terminal_interactions_and_active_enter_preserve_the_turn_timer() {
+        let path = std::env::temp_dir().join(format!(
+            "shika-activity-host-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let core = Arc::new(Core::open(&path).unwrap());
+        let state = Arc::new(Mutex::new(HostState::default()));
+        let terminal = Terminal::new(
+            TerminalOptions {
+                size: TerminalSize::new(12, 80),
+                ..Default::default()
+            },
+            Host {
+                core: core.clone(),
+                state: state.clone(),
+                capture: true,
+            },
+        );
+        terminal.write(b"fix it\r");
+        let start = lock(&state).last_submission.unwrap();
+        let mut clock = activity::Activity::new(start);
+        terminal.feed("\x1b[2J\x1b[H✻ Thinking… (12s · esc to interrupt)\r\n────\r\n❯ \r\n────\r\n? for shortcuts".as_bytes());
+        let signal = activity::detect("claude", &terminal.live_text_lines(), None);
+        assert_eq!(signal, activity::Signal::Working);
+        clock.advance(signal, Some(start), None, start, false);
+        terminal.feed(b"\x1b[?1004h");
+        terminal.report(b"\x1b[I");
+        terminal.report(b"\x1b[O");
+        terminal.report(b"\x1b[<0;2;3M");
+        terminal.scroll(2);
+        terminal.resize(TerminalSize::new(14, 90));
+        terminal.write(b"mistyped");
+        assert_eq!(lock(&state).submission, 1);
+        terminal.write(b"\r");
+        assert_eq!(lock(&state).submission, 2);
+        let signal = activity::detect("claude", &terminal.live_text_lines(), None);
+        clock.advance(
+            signal,
+            lock(&state).last_submission,
+            None,
+            start + Duration::from_secs(30),
+            false,
+        );
+        assert_eq!(clock.status, Status::Working);
+        assert_eq!(clock.turn_started, Some(start));
+        assert_eq!(
+            model::short_time(
+                (start + Duration::from_secs(30)).duration_since(clock.turn_started.unwrap())
+            ),
+            "30s"
+        );
+        drop(terminal);
+        drop(core);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

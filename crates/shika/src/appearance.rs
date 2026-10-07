@@ -137,6 +137,7 @@ pub struct Chrome {
     pub card_rest: Rgba,
     pub card_selected: Rgba,
     pub card_ready: Rgba,
+    pub card_asking: Rgba,
     pub card_highlight: Rgba,
     /// The soft drop under the selected card, below its focus ring.
     pub card_shadow: Rgba,
@@ -162,6 +163,7 @@ pub struct Chrome {
     /// Key cap text on a primary button.
     pub kbd_inverse: Rgba,
     pub ready: StatusColors,
+    pub asking: StatusColors,
     pub working: StatusColors,
     pub waiting: StatusColors,
     pub term_header: Rgba,
@@ -193,6 +195,7 @@ impl Chrome {
     pub fn status(&self, status: Status) -> StatusColors {
         match status {
             Status::Ready => self.ready,
+            Status::Asking => self.asking,
             Status::Working => self.working,
             Status::Waiting => self.waiting,
         }
@@ -329,6 +332,14 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
             tint(0xE7FEEB, 0.78),
             tint(0x1C3422, 0.62),
         ),
+        // The existing asking tokens from the archived design/demo, converted
+        // from oklch to sRGB, like the ready and working tokens below.
+        card_asking: pick(
+            rgb(0xFFF5E7),
+            rgb(0x2B1F11),
+            tint(0xFFF4DA, 0.78),
+            tint(0x3E290F, 0.62),
+        ),
         card_highlight: if glass {
             tint(0xFFFFFF, if dark { 0.05 } else { 0.75 })
         } else {
@@ -385,6 +396,17 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
             StatusColors {
                 dot: rgb(0x45B164),
                 text: rgb(0x21763C),
+            }
+        },
+        asking: if dark {
+            StatusColors {
+                dot: rgb(0xF8A13F),
+                text: rgb(0xF6B669),
+            }
+        } else {
+            StatusColors {
+                dot: rgb(0xED8725),
+                text: rgb(0xAB5200),
             }
         },
         working: if dark {

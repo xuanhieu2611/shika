@@ -2,6 +2,23 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Agent activity and stable turn timer, 2026-10-07
+
+Automated validation: 269 workspace tests after rebasing onto current main, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Tests cover immutable turn epochs during typing/interactions/active Enter and Ready/Working flicker, once-per-turn notification budgets, blocked safe close, candidate/history submissions and native editor clearing, literal text questions, stale/quoted status chrome, content-based redraw/draft filtering, scrollback-independent live sampling without paint side effects, old lifecycle reads crossing submissions, same-sequence recovery, bridge bounds/order/cleanup, and optional launch failure.
+
+The actual installed Pi loader loaded the temporary extension with no errors. A real Pi TUI in a disposable cwd and disposable Pi configuration emitted startup `{seq:1,state:"idle"}` while running, without submitting a prompt or making a model request. This verifies startup loading/reporting, not a full provider turn or GUI interaction. No normal app data or user/global CLI configuration was changed. See [agent activity](docs/agent-activity.md).
+
+Remaining integrated checks (not established by fixture/unit tests):
+
+- [ ] With each real CLI Working, type a draft, accidentally press a key, click other cards, focus/unfocus the window, scroll history, switch shell tabs, and resize. Timer retains the turn epoch; status does not falsely finish from interactions.
+- [ ] Submit a new prompt, including Up/Enter history recall after completion. It gets a new timer and notification budget. Enter while Working or answering a blocker does not reset the current epoch.
+- [ ] Long quiet tool/model work retains Working when live working chrome or a lifecycle report remains. A final ordinary text question can become Ready to check.
+- [ ] Actual permission/structured-question dialogs become Asking you and resume without resetting time. Cancellation, interruption, rejected requests, and process failure settle correctly.
+- [ ] First blocker or completion notifies once; later completion still produces an unseen result and fresh diff stat. Notification click selects the task.
+- [ ] Close protects active and blocked clean tasks; idle drafts do not create a false Working warning. Existing dirty/unpushed/branch-switch safety remains intact.
+- [ ] Pi completes fast and continued/retried turns correctly with the temporary extension. Missing/unsupported reports fall back; multiple concurrent sessions do not cross-report.
+- [ ] Asking amber dot/tint, hints, ordering, and timer chrome render correctly in light/dark, opaque/glass, narrow/wide, and hidden column modes.
+
 ## Resizable and hideable agent column, 2026-10-06
 
 Automated validation: workspace tests (including `column` settings defaults, clamping, and round trip), formatting, and Clippy passed. A debug build with disposable data was driven with synthetic mouse and key events while its own window was frontmost: dragging the edge saved the new width once the drag ended, the footer dropped its hints at 364px, double-click restored 540px, the icon buttons and Cmd+B (from a focused shell) hid and showed it, and the hidden header placed the button after the traffic lights. Card truncation at 320px was checked once. Light mode, full screen, and translucency were not checked.

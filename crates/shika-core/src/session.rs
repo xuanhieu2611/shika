@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::activity::ActivityBridge;
 use crate::error::{Error, Result};
 use crate::pty::{PtyId, PtySize, SpawnRequest};
 
@@ -63,12 +65,43 @@ pub struct DiffStat {
 
 pub(crate) struct SessionStore {
     sessions: Mutex<Vec<Session>>,
+    // Separate ownership from public Session snapshots: retained UI snapshots
+    // must not retain files after a session ends.
+    activity: Mutex<HashMap<String, ActivityBridge>>,
 }
 
 impl SessionStore {
     pub(crate) fn new() -> Self {
         Self {
             sessions: Mutex::new(Vec::new()),
+            activity: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn remember_activity(&self, id: &str, bridge: ActivityBridge) {
+        self.activity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.into(), bridge);
+    }
+
+    /// Clone under a short metadata lock; filesystem reads happen after it.
+    pub(crate) fn activity(&self, id: &str) -> Option<ActivityBridge> {
+        self.activity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    fn forget_activity(&self, id: &str) {
+        let bridge = self
+            .activity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        if let Some(bridge) = bridge {
+            bridge.cleanup();
         }
     }
 
@@ -156,6 +189,7 @@ impl SessionStore {
     }
 
     pub(crate) fn remove(&self, id: &str) {
+        self.forget_activity(id);
         self.sessions
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -168,7 +202,24 @@ impl SessionStore {
             .drain(..)
             .partition(|session| session.project_id == project_id);
         *sessions = kept;
+        for session in &gone {
+            self.forget_activity(&session.id);
+        }
         gone
+    }
+}
+
+impl Drop for SessionStore {
+    fn drop(&mut self) {
+        // PTY reader closures can outlive Core while reaping the process.
+        for bridge in self
+            .activity
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            bridge.cleanup();
+        }
     }
 }
 
@@ -293,6 +344,37 @@ mod tests {
             ["one", "three"]
         );
         assert_eq!(store.ids(), ["two"]);
+    }
+
+    #[test]
+    fn activity_ownership_cleans_on_close_project_removal_and_quit() {
+        let store = SessionStore::new();
+        let first = ActivityBridge::install().unwrap();
+        let second = ActivityBridge::install().unwrap();
+        let third = ActivityBridge::install().unwrap();
+        let directories: Vec<_> = [&first, &second, &third]
+            .into_iter()
+            .map(|bridge| bridge.metadata_path().parent().unwrap().to_path_buf())
+            .collect();
+        store.insert(sample("one", "alpha", PtyId(1)));
+        store.insert(sample("two", "beta", PtyId(2)));
+        store.insert(sample("three", "beta", PtyId(3)));
+        store.remember_activity("one", first.clone());
+        store.remember_activity("two", second.clone());
+        store.remember_activity("three", third.clone());
+        assert!(store.activity("missing").is_none());
+        store.remove("one");
+        assert!(!directories[0].exists());
+        assert!(directories[1].exists());
+        store.remove_project("beta");
+        assert!(!directories[1].exists());
+        assert!(!directories[2].exists());
+        let quit = ActivityBridge::install().unwrap();
+        let directory = quit.metadata_path().parent().unwrap().to_path_buf();
+        store.remember_activity("quit", quit.clone());
+        drop(store);
+        assert!(!directory.exists());
+        assert_eq!(quit.read(), None);
     }
 
     #[test]

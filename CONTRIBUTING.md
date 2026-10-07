@@ -10,6 +10,7 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 
 | Working on | Read first |
 | --- | --- |
+| Agent state, elapsed timers, notifications, or activity-based Close checks | [Agent activity and elapsed turns](docs/agent-activity.md), including its [debugging playbook](docs/agent-activity.md#debugging-playbook) |
 | Worktree setup, local files, approval, cancellation, or retry | [Worktree preparation](docs/worktree-preparation.md), especially its [contributor guide](docs/worktree-preparation.md#contributor-guide) |
 | Command shortcuts, focus restoration, or selected-row scrolling | [Keyboard flow](docs/keyboard-flow.md) |
 | Task titles and branch names from CLI metadata | [Branch naming](docs/branch-naming.md) |

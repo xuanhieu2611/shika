@@ -49,6 +49,7 @@ mod tab_tests {
 pub enum Status {
     Waiting,
     Working,
+    Asking,
     Ready,
 }
 impl Status {
@@ -56,17 +57,29 @@ impl Status {
         match self {
             Self::Waiting => "Waiting",
             Self::Working => "Working",
+            Self::Asking => "Asking you",
             Self::Ready => "Ready to check",
         }
     }
     pub fn rank(self) -> u8 {
         match self {
-            Self::Ready => 0,
-            Self::Working => 1,
-            Self::Waiting => 2,
+            Self::Asking => 0,
+            Self::Ready => 1,
+            Self::Working => 2,
+            Self::Waiting => 3,
         }
     }
 }
+/// Both active work and a blocked turn must be explicitly stopped. A pending
+/// submitted prompt is protected even before the next UI sampling tick.
+pub fn activity_requires_confirmation(
+    status: Status,
+    exited: bool,
+    pending_submission: bool,
+) -> bool {
+    !exited && (matches!(status, Status::Working | Status::Asking) || pending_submission)
+}
+
 /// Minimal scroll-offset adjustment that brings a selected row into view.
 /// Oversized rows align their top, rather than oscillating between edges.
 pub fn reveal_delta(top: f32, bottom: f32, viewport_top: f32, viewport_bottom: f32) -> f32 {
@@ -139,81 +152,15 @@ pub fn move_branch_highlight(current: Option<usize>, len: usize, delta: isize) -
     };
     Some(next.rem_euclid(len) as usize)
 }
-/// Output this long after the user's last key, click, scroll, or resize is
-/// the agent's own work. Sooner, it is an echo or a redraw.
+/// Exclusion window for changed screen content after focus/mouse reports or
+/// resize. Draft typing is excluded structurally, not by this timer.
 pub const ECHO: Duration = Duration::from_secs(1);
-/// Quiet this long after the agent's own output, the card is Ready to check.
+/// Unknown live chrome may settle a started turn after this much quiet.
 pub const QUIET: Duration = Duration::from_secs(2);
-/// Whether `acted` is the agent's own work. Output sooner than [`ECHO`] after
-/// `input` is the terminal echoing a key or redrawing after focus, a click,
-/// a scroll, or a resize.
+/// Whether changed screen content is outside a geometry/report redraw window.
+/// This is supporting evidence only, never proof of work or a new turn.
 pub fn is_agent_output(input: Option<Instant>, acted: Instant) -> bool {
     input.is_none_or(|input| acted >= input + ECHO)
-}
-/// Whether a card turning Ready should notify. One notification per turn: a
-/// turn starts when the user types (`typed`), and `notified` is the `typed`
-/// that already notified. The agent must also have kept going on its own,
-/// past [`ECHO`], so typing a draft, focusing the terminal, or scrolling it
-/// never notifies.
-pub fn notify_ready(
-    typed: Option<Instant>,
-    notified: Option<Instant>,
-    input: Option<Instant>,
-    acted: Instant,
-) -> bool {
-    typed.is_some() && typed != notified && is_agent_output(input, acted)
-}
-/// Status and the instant it last changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TurnClock {
-    pub status: Status,
-    pub since: Instant,
-}
-/// Move Working and Ready from the agent's own output.
-///
-/// `agent_output` is the newest PTY bytes that [`is_agent_output`] accepted.
-/// A draft's echo is not in there. While the echo window is still open the
-/// clock holds: a Ready card stays Ready, and a Working card does not finish
-/// its quiet timer, so a keystroke cannot hide output that is still arriving.
-/// Once the window closes, only `agent_output` can start Working or postpone
-/// Ready. `settled` is true when this call ends a turn at Ready, including a
-/// turn that started and finished before the clock was painted.
-pub fn advance_status(
-    mut clock: TurnClock,
-    input: Option<Instant>,
-    agent_output: Option<Instant>,
-    now: Instant,
-    exited: bool,
-) -> (TurnClock, bool) {
-    if clock.status == Status::Waiting {
-        return if exited {
-            (
-                TurnClock {
-                    status: Status::Ready,
-                    since: now,
-                },
-                false,
-            )
-        } else {
-            (clock, false)
-        };
-    }
-    let agent = agent_output.unwrap_or(clock.since);
-    let echo_open = input.is_some_and(|input| now < input + ECHO);
-    let mut worked = clock.status == Status::Working;
-    if clock.status == Status::Ready && !echo_open && agent > clock.since {
-        clock.status = Status::Working;
-        clock.since = agent;
-        worked = true;
-    }
-    if clock.status == Status::Working
-        && (exited || (!echo_open && now.duration_since(agent.max(clock.since)) >= QUIET))
-    {
-        clock.status = Status::Ready;
-        clock.since = now;
-    }
-    let settled = worked && clock.status == Status::Ready;
-    (clock, settled)
 }
 /// Looking for the title the agent CLI gives its own session, which then
 /// names the card and branch. From the first submitted line, it checks
@@ -277,6 +224,7 @@ impl TitleWatch {
 #[derive(Default)]
 pub struct PromptCapture {
     line: String,
+    cursor: usize,
     escape: u8,
     csi: String,
     paste: bool,
@@ -329,6 +277,20 @@ impl PromptCapture {
                     if ch == '~' && self.csi == "201" {
                         self.paste = false;
                     }
+                    match ch {
+                        'D' => self.left(),
+                        'C' => self.right(),
+                        'H' => self.cursor = 0,
+                        'F' => self.cursor = self.line.len(),
+                        '~' if matches!(self.csi.as_str(), "1" | "7") => self.cursor = 0,
+                        '~' if matches!(self.csi.as_str(), "4" | "8") => {
+                            self.cursor = self.line.len()
+                        }
+                        '~' if self.csi == "3" => {
+                            self.delete_forward();
+                        }
+                        _ => {}
+                    }
                     self.escape = 0;
                 } else {
                     self.csi.push(ch);
@@ -336,6 +298,13 @@ impl PromptCapture {
                 continue;
             }
             if self.escape == 3 {
+                match ch {
+                    'D' => self.left(),
+                    'C' => self.right(),
+                    'H' => self.cursor = 0,
+                    'F' => self.cursor = self.line.len(),
+                    _ => {}
+                }
                 self.escape = 0;
                 continue;
             }
@@ -353,32 +322,69 @@ impl PromptCapture {
             }
             match ch {
                 '\u{1b}' => self.escape = 1,
-                '\r' | '\n' if self.paste => self.line.push(' '),
+                '\r' | '\n' if self.paste => self.insert(' '),
                 '\r' | '\n' => {
                     let title = self.line.split_whitespace().collect::<Vec<_>>().join(" ");
                     self.line.clear();
+                    self.cursor = 0;
                     if !title.is_empty() {
                         self.done = true;
                         return Some(title);
                     }
                 }
-                '\u{7f}' | '\u{8}' => {
-                    self.line.pop();
+                '\u{7f}' | '\u{8}' => self.backspace(),
+                '\u{1}' => self.cursor = 0,
+                '\u{5}' => self.cursor = self.line.len(),
+                '\u{2}' => self.left(),
+                '\u{6}' => self.right(),
+                '\u{4}' => self.delete_forward(),
+                '\u{b}' => self.line.truncate(self.cursor),
+                '\u{15}' => {
+                    self.line.drain(..self.cursor);
+                    self.cursor = 0;
                 }
-                '\u{15}' | '\u{3}' => self.line.clear(),
+                '\u{3}' => {
+                    self.line.clear();
+                    self.cursor = 0;
+                }
                 '\u{17}' => self.delete_word(),
-                ch if !ch.is_control() => self.line.push(ch),
+                ch if !ch.is_control() => self.insert(ch),
                 _ => {}
             }
         }
         None
     }
-    fn delete_word(&mut self) {
-        while self.line.ends_with(char::is_whitespace) {
-            self.line.pop();
+    fn insert(&mut self, ch: char) {
+        self.line.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+    }
+    fn left(&mut self) {
+        self.cursor = self.line[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(i, _)| i);
+    }
+    fn right(&mut self) {
+        if let Some(ch) = self.line[self.cursor..].chars().next() {
+            self.cursor += ch.len_utf8();
         }
-        while !self.line.is_empty() && !self.line.ends_with(char::is_whitespace) {
-            self.line.pop();
+    }
+    fn backspace(&mut self) {
+        let end = self.cursor;
+        self.left();
+        self.line.drain(self.cursor..end);
+    }
+    fn delete_forward(&mut self) {
+        if self.cursor < self.line.len() {
+            self.line.remove(self.cursor);
+        }
+    }
+    fn delete_word(&mut self) {
+        while self.line[..self.cursor].ends_with(char::is_whitespace) {
+            self.backspace();
+        }
+        while self.cursor > 0 && !self.line[..self.cursor].ends_with(char::is_whitespace) {
+            self.backspace();
         }
     }
 }
@@ -551,89 +557,31 @@ mod tests {
         assert_eq!(w, TitleWatch::Done);
     }
     #[test]
-    fn one_notification_per_turn() {
-        let t0 = Instant::now();
-        let at = |s: u64| t0 + Duration::from_secs(s);
-        // Nothing typed yet: the CLI's banner settling is not a turn.
-        assert!(!notify_ready(None, None, Some(at(0)), at(5)));
-        // Typed at 1, the agent wrote until 10.
-        assert!(notify_ready(Some(at(1)), None, Some(at(1)), at(10)));
-        // That turn notified. Focus or scroll at 20 redraws at once, and
-        // even output long after stays quiet until the user types again.
-        assert!(!notify_ready(
-            Some(at(1)),
-            Some(at(1)),
-            Some(at(20)),
-            at(20)
-        ));
-        assert!(!notify_ready(Some(at(1)), Some(at(1)), Some(at(1)), at(40)));
-        // A draft typed at 50 only echoes.
-        assert!(!notify_ready(
-            Some(at(50)),
-            Some(at(1)),
-            Some(at(50)),
-            at(50)
-        ));
-        // Submitted at 60, the agent answered until 63.
-        assert!(notify_ready(
-            Some(at(60)),
-            Some(at(1)),
-            Some(at(60)),
-            at(63)
-        ));
+    fn safe_close_protects_active_blocked_and_unprocessed_turns_not_drafts() {
+        for status in [
+            Status::Waiting,
+            Status::Ready,
+            Status::Working,
+            Status::Asking,
+        ] {
+            assert!(!activity_requires_confirmation(status, true, true));
+            assert!(activity_requires_confirmation(status, false, true));
+            assert_eq!(
+                activity_requires_confirmation(status, false, false),
+                matches!(status, Status::Working | Status::Asking)
+            );
+        }
     }
+
     #[test]
-    fn a_draft_does_not_start_or_hold_working() {
-        let t0 = Instant::now();
-        let at = |ms: u64| t0 + Duration::from_millis(ms);
-        // Ready since 7s, after the agent output at 5s. At 10s the user types
-        // and the terminal echoes. The card stays Ready through that window.
-        let ready = TurnClock {
-            status: Status::Ready,
-            since: at(7_000),
-        };
-        let (clock, settled) =
-            advance_status(ready, Some(at(10_000)), Some(at(5_000)), at(10_050), false);
-        assert_eq!(clock, ready);
-        assert!(!settled);
-        let (clock, settled) =
-            advance_status(ready, Some(at(10_000)), Some(at(5_000)), at(11_000), false);
-        assert_eq!(clock.status, Status::Ready);
-        assert!(!settled);
-        // Real output after the window starts Working, then two quiet seconds
-        // ends it.
-        let ready = TurnClock {
-            status: Status::Ready,
-            since: at(0),
-        };
-        let (clock, settled) =
-            advance_status(ready, Some(at(1_000)), Some(at(3_000)), at(3_200), false);
-        assert_eq!(clock.status, Status::Working);
-        assert_eq!(clock.since, at(3_000));
-        assert!(!settled);
-        let (clock, settled) =
-            advance_status(clock, Some(at(1_000)), Some(at(3_000)), at(5_000), false);
-        assert_eq!(clock.status, Status::Ready);
-        assert!(settled);
-        // Enter already set Working. Typing a draft holds that turn only
-        // while the echo window is open, then the old agent output can settle.
-        let working = TurnClock {
-            status: Status::Working,
-            since: at(0),
-        };
-        let (clock, settled) =
-            advance_status(working, Some(at(3_000)), Some(at(1_000)), at(3_400), false);
-        assert_eq!(clock.status, Status::Working);
-        assert!(!settled);
-        let (clock, settled) =
-            advance_status(working, Some(at(3_000)), Some(at(1_000)), at(4_000), false);
-        assert_eq!(clock.status, Status::Ready);
-        assert!(settled);
-        // Output that is still arriving after the draft keeps the card Working.
-        let (clock, _) =
-            advance_status(working, Some(at(3_000)), Some(at(4_200)), at(4_200), false);
-        assert_eq!(clock.status, Status::Working);
+    fn native_cursor_editing_and_clearing_do_not_submit_empty_drafts() {
+        let mut capture = PromptCapture::default();
+        assert!(capture.feed(b"draft\x01\x0b\r").is_none());
+        assert!(capture.feed("界a".as_bytes()).is_none());
+        assert!(capture.feed(b"\x1b[D\x7f").is_none());
+        assert_eq!(capture.feed(b"b\r").as_deref(), Some("ba"));
     }
+
     #[test]
     fn card_text() {
         assert_eq!(short_time(Duration::from_secs(42)), "42s");
