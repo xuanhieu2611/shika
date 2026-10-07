@@ -235,6 +235,8 @@ struct Card {
     active_tab: usize,
     shell_serial: usize,
     tab_scroll: gpui::ScrollHandle,
+    /// The tab under the pointer, which paints its hover in the tab shape.
+    hovered_tab: Option<usize>,
     submitted: u64,
     /// The `last_typed` whose turn already notified.
     notified: Option<Instant>,
@@ -262,6 +264,17 @@ impl Card {
             .checked_sub(1)
             .and_then(|index| self.shells.get(index))
             .unwrap_or(&self.agent)
+    }
+    /// Scrolls the active tab into view. The strip's children are the lead
+    /// space, the tabs, and the trailing space, so the first and last tabs
+    /// reveal the space that holds their outer flare.
+    fn reveal_active_tab(&self) {
+        let item = match self.active_tab {
+            0 => 0,
+            tab if tab == self.shells.len() => tab + 2,
+            tab => tab + 1,
+        };
+        self.tab_scroll.scroll_to_item(item);
     }
 }
 impl Drop for Card {
@@ -568,7 +581,7 @@ impl Shika {
         }
         if let Some(i) = self.selected_card() {
             let c = &self.cards[i];
-            c.tab_scroll.scroll_to_item(c.active_tab);
+            c.reveal_active_tab();
             let pane = c.active_pane();
             window.focus(&pane.view.focus_handle(cx), cx);
             cx.notify();
@@ -863,6 +876,7 @@ impl Shika {
             active_tab: 0,
             shell_serial: 0,
             tab_scroll: gpui::ScrollHandle::new(),
+            hovered_tab: None,
             submitted: 0,
             notified: None,
             creating: true,
@@ -1032,7 +1046,7 @@ impl Shika {
         }
         if self.cards[index].active_tab != 0 {
             self.cards[index].active_tab = 0;
-            self.cards[index].tab_scroll.scroll_to_item(0);
+            self.cards[index].reveal_active_tab();
             if focus {
                 self.focus_terminal(window, cx);
             }
@@ -1041,7 +1055,7 @@ impl Shika {
         }
         if !self.cards[index].shells.is_empty() {
             self.cards[index].active_tab = 1;
-            self.cards[index].tab_scroll.scroll_to_item(1);
+            self.cards[index].reveal_active_tab();
             if focus {
                 self.focus_terminal(window, cx);
             }
@@ -1081,7 +1095,7 @@ impl Shika {
         self.cards[index].shells.push(pane);
         let tab = self.cards[index].shells.len();
         self.cards[index].active_tab = tab;
-        self.cards[index].tab_scroll.scroll_to_item(tab);
+        self.cards[index].reveal_active_tab();
         if focus {
             // Focus the new view now. Its host queues typeahead until the
             // PTY is bound, and startup must not steal focus back later.
@@ -3414,13 +3428,17 @@ impl Shika {
             let term_hover = chrome.term_hover;
             let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
             // Connected tabs: the active tab is filled like the terminal and
-            // the header's bottom line breaks under it. The line is drawn by
-            // each piece of the row, not the header, because the active tab
-            // cannot cover a line it is painted over while translucent.
+            // its sides flare into the header's bottom line, which breaks
+            // under it. The line is drawn by each piece of the row, not the
+            // header, because the active tab cannot cover a line it is
+            // painted over while translucent.
             let line = chrome.term_line;
             let (tab_fill, term_fg, term_white) =
                 (chrome.term_tab, chrome.term_fg, chrome.term_white);
             let baseline = |d: gpui::Div| d.flex_none().h_full().border_b_1().border_color(line);
+            // The strip holds a lead space before the first tab and a
+            // trailing space after the last, wide enough for their outer
+            // flares, so the scroll strip never clips a flare at its ends.
             let mut tabs = div()
                 .id("terminal-tabs")
                 .min_w_0()
@@ -3428,23 +3446,45 @@ impl Shika {
                 .flex()
                 .overflow_x_scroll()
                 .track_scroll(&card.tab_scroll);
-            let labels = std::iter::once((card.preset.to_string(), false)).chain(
-                card.shells.iter().map(|pane| {
+            // A 1px line under a piece of the row, shortened by a flare's
+            // width on a side where the active tab's flare meets it.
+            let segment = |flare_left: bool, flare_right: bool| {
+                let inset = |flare: bool| px(if flare { TAB_FLARE } else { 0. });
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .h(px(1.))
+                    .left(inset(flare_left))
+                    .right(inset(flare_right))
+                    .bg(line)
+            };
+            tabs = tabs.child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .h_full()
+                    .w(px(TAB_LEAD))
+                    .child(segment(false, active_tab == 0)),
+            );
+            let labels: Vec<_> = std::iter::once((card.preset.to_string(), false))
+                .chain(card.shells.iter().map(|pane| {
                     let label = if pane.shell_number == 1 {
                         "Shell".to_string()
                     } else {
                         format!("Shell {}", pane.shell_number)
                     };
                     (label, true)
-                }),
-            );
-            for (tab, (label, closable)) in labels.enumerate() {
+                }))
+                .collect();
+            let last = labels.len() - 1;
+            for (tab, (label, closable)) in labels.into_iter().enumerate() {
                 let active = active_tab == tab;
                 let group = SharedString::from(format!("terminal-tab-{tab}"));
                 let body = div()
                     .id(("terminal-tab", tab))
                     .occlude()
                     .group(group.clone())
+                    .relative()
                     .h(px(TAB_HEIGHT))
                     .min_w(px(88.))
                     .max_w(px(180.))
@@ -3453,22 +3493,25 @@ impl Shika {
                     .gap(px(6.))
                     .pl(px(12.))
                     .pr(px(if closable { 6. } else { 12. }))
-                    .rounded_t(px(7.))
                     .text_size(px(12.))
                     .line_height(px(16.))
                     .cursor_pointer()
-                    .when(active, |d| {
-                        d.bg(tab_fill)
-                            .border_t_1()
-                            .border_l_1()
-                            .border_r_1()
-                            .border_color(line)
-                            .text_color(term_white)
-                    })
+                    .when(active, |d| d.text_color(term_white))
                     .when(!active, |d| {
                         d.text_color(chrome.term_dim)
-                            .hover(move |style| style.bg(term_hover).text_color(term_fg))
+                            .hover(move |style| style.text_color(term_fg))
                     })
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if let Some(i) = this.selected_card() {
+                            let card = &mut this.cards[i];
+                            if *hovered {
+                                card.hovered_tab = Some(tab);
+                            } else if card.hovered_tab == Some(tab) {
+                                card.hovered_tab = None;
+                            }
+                            cx.notify();
+                        }
+                    }))
                     .child(
                         div()
                             .flex_1()
@@ -3511,17 +3554,49 @@ impl Shika {
                     .on_click(
                         cx.listener(move |this, _, window, cx| this.select_tab(tab, window, cx)),
                     );
-                // Under the active tab the line takes the tab's own fill, so
-                // the tab runs into the terminal without a seam.
-                tabs = tabs.child(
-                    baseline(div())
-                        .flex()
-                        .flex_col()
-                        .justify_end()
-                        .when(active, |d| d.border_color(tab_fill))
-                        .child(body),
-                );
+                // The active tab's flares are painted outside its bounds, over
+                // the bottom corners of its neighbors, so they never change
+                // the layout. A neighbor's line stops where a flare meets it,
+                // because a translucent flare cannot hide a line under it.
+                // Hover paints the same shape in the hover wash, standing on
+                // the line instead of breaking it, and rounds the corner that
+                // meets an active neighbor's flare so the two fit together.
+                let wrapper = div()
+                    .relative()
+                    .flex_none()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .justify_end();
+                let (after_active, before_active) =
+                    (tab > 0 && active_tab == tab - 1, active_tab == tab + 1);
+                let wrapper = if active {
+                    wrapper.child(tab_canvas(move |bounds, window| {
+                        paint_active_tab(bounds, tab_fill, line, window)
+                    }))
+                } else {
+                    wrapper
+                        .when(card.hovered_tab == Some(tab), |d| {
+                            d.child(tab_canvas(move |bounds, window| {
+                                if let Some(path) =
+                                    tab_shape(bounds, !after_active, !before_active, false)
+                                {
+                                    window.paint_path(path, term_hover);
+                                }
+                            }))
+                        })
+                        .child(segment(after_active, before_active))
+                };
+                tabs = tabs.child(wrapper.pb(px(1.)).child(body));
             }
+            tabs = tabs.child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .h_full()
+                    .w(px(TAB_FLARE))
+                    .child(segment(active_tab == last, false)),
+            );
             let header = div()
                 .id("terminal-header")
                 .h(px(BAR_HEIGHT))
@@ -3529,14 +3604,13 @@ impl Shika {
                 .flex()
                 .bg(with_alpha(chrome.term_header, chrome.term_header_alpha))
                 .children(show_column.map(baseline))
-                .child(baseline(div()).w(px(8.)))
                 .child(tabs)
                 .child(
                     baseline(div())
                         .flex()
                         .flex_col()
                         .justify_end()
-                        .px(px(4.))
+                        .pr(px(4.))
                         .child(
                             div().h(px(TAB_HEIGHT)).flex().items_center().child(
                                 div()
@@ -4288,6 +4362,11 @@ const BAR_HEIGHT: f32 = 48.;
 const BASE_LIST_MAX: f32 = 220.;
 /// A terminal tab, sitting on the bottom of the 48px header.
 const TAB_HEIGHT: f32 = 34.;
+/// The radius of a tab's top corners and of the concave flares that turn its
+/// sides into the bottom line. The flares reach this far past the tab.
+const TAB_FLARE: f32 = 7.;
+/// The first tab's label lines up with the terminal text.
+const TAB_LEAD: f32 = 8.;
 /// The traffic lights sit 18px from the left, centered in the 48px bar.
 /// AppKit's buttons are 14px tall on macOS 26, so 17px above and below.
 const TRAFFIC_LIGHTS: (f32, f32) = (18., 17.);
@@ -4326,6 +4405,105 @@ impl Render for KeyTip {
             .font_family(UI_FONT)
             .child(self.text.clone())
     }
+}
+
+/// Paints the active terminal tab across `bounds`: the tab plus `TAB_FLARE`
+/// on each side for its flares, and the 1px line row under it. The rounded
+/// top and the concave flares are one shape, so the tab runs into the
+/// terminal. The fill stops at the outline's outer edge, so nothing
+/// translucent is stacked; neighbors stop their line where the outline
+/// meets it.
+fn paint_active_tab(bounds: Bounds<Pixels>, fill: Rgba, line: Rgba, window: &mut Window) {
+    let (f, h) = (TAB_FLARE, TAB_HEIGHT);
+    let w = f32::from(bounds.size.width);
+    let (x0, y0) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+    let at = |x: f32, y: f32| gpui::point(px(x0 + x), px(y0 + y));
+    let radius = |r: f32| gpui::point(px(r), px(r));
+    let (left, right) = (f, w - f);
+    if let Some(path) = tab_shape(bounds, true, true, true) {
+        window.paint_path(path, fill);
+    }
+
+    // The outline runs on pixel centers, from the bottom line on the left,
+    // up and over the tab, and back down into the bottom line on the right.
+    let mut outline = gpui::PathBuilder::stroke(px(1.));
+    outline.move_to(at(0., h + 0.5));
+    outline.line_to(at(0.5, h + 0.5));
+    outline.arc_to(radius(f), px(0.), false, false, at(left + 0.5, h - f + 0.5));
+    outline.line_to(at(left + 0.5, f));
+    outline.arc_to(radius(f - 0.5), px(0.), false, true, at(left + f, 0.5));
+    outline.line_to(at(right - f, 0.5));
+    outline.arc_to(radius(f - 0.5), px(0.), false, true, at(right - 0.5, f));
+    outline.line_to(at(right - 0.5, h - f + 0.5));
+    outline.arc_to(radius(f), px(0.), false, false, at(w - 0.5, h + 0.5));
+    outline.line_to(at(w, h + 0.5));
+    if let Ok(path) = outline.build() {
+        window.paint_path(path, line);
+    }
+}
+
+/// A canvas over a terminal tab, extending `TAB_FLARE` past both sides and
+/// covering the line row under it, so the tab's flares stay out of layout.
+fn tab_canvas(paint: impl FnOnce(Bounds<Pixels>, &mut Window) + 'static) -> gpui::Canvas<()> {
+    gpui::canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| paint(bounds, window),
+    )
+    .absolute()
+    .left(px(-TAB_FLARE))
+    .right(px(-TAB_FLARE))
+    .bottom_0()
+    .h(px(TAB_HEIGHT + 1.))
+}
+
+/// The filled shape of a terminal tab across `bounds`, which extend
+/// `TAB_FLARE` past both sides of the tab. The top corners are rounded. A
+/// side with a flare curves outward into the bottom line; a side without one
+/// rounds its bottom corner inward, exactly filling the inside of an active
+/// neighbor's flare. The shape reaches the outer edge of the active tab's
+/// 1px outline, and with `line_row` it also covers the line row under the
+/// tab, so the active tab opens into the terminal.
+fn tab_shape(
+    bounds: Bounds<Pixels>,
+    flare_left: bool,
+    flare_right: bool,
+    line_row: bool,
+) -> Option<gpui::Path<Pixels>> {
+    let (f, h) = (TAB_FLARE, TAB_HEIGHT);
+    let w = f32::from(bounds.size.width);
+    let (x0, y0) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+    let at = |x: f32, y: f32| gpui::point(px(x0 + x), px(y0 + y));
+    let radius = gpui::point(px(f - 0.5), px(f - 0.5));
+    let corner = gpui::point(px(f), px(f));
+    let bottom = if line_row { h + 1. } else { h };
+    // The tab's sides: x = f on the left and w - f on the right. A bottom
+    // corner's arc meets the side at h - f + 0.5 and the line at f - 0.5
+    // from the side.
+    let (left, right) = (f, w - f);
+    let (side_end, reach) = (h - f + 0.5, f - 0.5);
+    let mut shape = gpui::PathBuilder::fill();
+    let foot = if flare_left {
+        left - reach
+    } else {
+        left + reach
+    };
+    shape.move_to(at(foot, bottom));
+    shape.line_to(at(foot, h));
+    shape.arc_to(radius, px(0.), false, !flare_left, at(left, side_end));
+    shape.line_to(at(left, f));
+    shape.arc_to(corner, px(0.), false, true, at(left + f, 0.));
+    shape.line_to(at(right - f, 0.));
+    shape.arc_to(corner, px(0.), false, true, at(right, f));
+    shape.line_to(at(right, side_end));
+    let foot = if flare_right {
+        right + reach
+    } else {
+        right - reach
+    };
+    shape.arc_to(radius, px(0.), false, !flare_right, at(foot, h));
+    shape.line_to(at(foot, bottom));
+    shape.close();
+    shape.build().ok()
 }
 
 /// A key cap: mono 10.5px on a small rounded fill.
