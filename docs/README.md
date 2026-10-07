@@ -6,6 +6,7 @@ These guides explain why features exist, how they are implemented, and where to 
 
 | Guide | Read when working on |
 | --- | --- |
+| [Agent activity and elapsed turns](agent-activity.md) | Timer-reset root cause, hybrid state detection, lifecycle reports, notifications, safe Close, and debugging |
 | [Terminal tabs](terminal-tabs.md) | Task-local agent/shell tabs, PTY ownership, startup, selection, close, and hidden terminals |
 | [Keyboard flow](keyboard-flow.md) | Native shortcuts, terminal/card focus, overlay restoration, and selection scrolling |
 | [Worktree preparation](worktree-preparation.md) | Setup approval, copy/setup commands, cancellation, retry, and failure cleanup |

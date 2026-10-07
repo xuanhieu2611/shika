@@ -223,6 +223,14 @@ impl Terminal {
         self.shared.engine.lock().snapshot()
     }
 
+    /// Copy the active live screen as text, even when the view is hidden or
+    /// scrolled into history. Returns one string per screen row, with wide
+    /// spacers omitted and trailing blanks trimmed, like Snapshot::text_lines.
+    /// Does not change the viewport, selection, cursor, dirty state, or wakeups.
+    pub fn live_text_lines(&self) -> Vec<String> {
+        self.shared.engine.lock().live_text_lines()
+    }
+
     /// The title the program set with OSC 0 or 2, if any.
     pub fn title(&self) -> Option<String> {
         lock(&self.shared.title).clone()
@@ -383,6 +391,61 @@ mod tests {
         assert!(!term.take_dirty());
         term.feed(b"y");
         assert_eq!(wakes.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn live_sampling_preserves_dirty_state_and_wakeup_coalescing() {
+        let (term, recorder) = terminal();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counter = wakes.clone();
+        term.set_waker(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        assert!(term.take_dirty());
+        term.feed(b"old0\r\nold1\r\nold2\r\nold3\r\nold4\r\nlive");
+        term.scroll(1);
+        let before = term.snapshot();
+        let count = wakes.load(Ordering::SeqCst);
+        assert_eq!(before.text_lines()[4], "old4");
+        assert_eq!(term.live_text_lines()[4], "live");
+        assert!(
+            term.take_dirty(),
+            "sampling must not consume pending damage"
+        );
+        assert_eq!(term.live_text_lines()[4], "live");
+        assert!(!term.take_dirty(), "sampling must not create damage");
+        assert_eq!(term.snapshot(), before);
+        assert_eq!(term.display_offset(), 1);
+        assert_eq!(wakes.load(Ordering::SeqCst), count);
+        assert!(lock(&recorder.written).is_empty());
+        assert!(lock(&recorder.sizes).is_empty());
+        term.feed(b"!");
+        assert_eq!(wakes.load(Ordering::SeqCst), count + 1);
+        term.live_text_lines();
+        term.feed(b"?");
+        assert_eq!(wakes.load(Ordering::SeqCst), count + 1);
+        assert!(term.take_dirty());
+    }
+
+    #[test]
+    fn live_sampling_without_a_view_tracks_output_and_alternate_screen() {
+        let (term, _) = terminal();
+        // No view or waker is installed, and no dirty state is consumed.
+        for i in 0..20 {
+            term.feed(format!("line{i}\r\n").as_bytes());
+        }
+        term.scroll(10);
+        assert_eq!(term.snapshot().text_lines()[0], "line6");
+        assert_eq!(
+            term.live_text_lines(),
+            vec!["line16", "line17", "line18", "line19", ""]
+        );
+        term.feed(b"\x1b[?1049h\x1b[Hhidden tui\x1b[?25l");
+        assert_eq!(term.live_text_lines(), vec!["hidden tui", "", "", "", ""]);
+        term.feed(b"\x1b[?1049l");
+        assert_eq!(term.live_text_lines()[3], "line19");
+        assert_eq!(term.display_offset(), 10);
+        assert!(term.take_dirty());
     }
 
     #[test]

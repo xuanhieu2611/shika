@@ -263,6 +263,38 @@ impl Engine {
             .filter(|text| !text.is_empty())
     }
 
+    /// Copy only the active live screen's text, independent of scrollback.
+    /// Grid lines 0..screen_lines are live rows; display_offset affects only
+    /// the viewport. Reading them directly leaves all terminal state alone.
+    pub fn live_text_lines(&self) -> Vec<String> {
+        let grid = self.term.grid();
+        let rows = grid.screen_lines();
+        let cols = grid.columns();
+        let mut lines = Vec::with_capacity(rows);
+        for row in 0..rows {
+            let source = &grid[GridLine(row as i32)];
+            let mut text = String::with_capacity(cols);
+            for col in 0..cols {
+                let cell = &source[Column(col)];
+                // Match Line::text: omit both kinds of wide spacer, keep
+                // hidden text, normalize NUL, and retain combining marks.
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                text.push(if cell.c == '\0' { ' ' } else { cell.c });
+                if let Some(marks) = cell.zerowidth() {
+                    text.extend(marks.iter().copied());
+                }
+            }
+            text.truncate(text.trim_end_matches(' ').len());
+            lines.push(text);
+        }
+        lines
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let grid = self.term.grid();
         let rows = grid.screen_lines();
@@ -719,6 +751,69 @@ mod tests {
         assert!(snap.cursor.is_none());
         e.scroll_to_bottom();
         assert_eq!(e.snapshot().display_offset, 0);
+    }
+
+    #[test]
+    fn live_text_ignores_scrollback_without_changing_view_or_selection() {
+        let mut e = engine(3, 10);
+        feed(&mut e, "old0\r\nold1\r\nold2\r\nlive0\r\nlive1");
+        let live = e.snapshot().text_lines();
+        assert_eq!(live, vec!["old2", "live0", "live1"]);
+        e.scroll(2);
+        e.start_selection(
+            SelectionKind::Simple,
+            ViewportPoint { row: 0, col: 0 },
+            CellSide::Left,
+        );
+        e.update_selection(ViewportPoint { row: 0, col: 3 }, CellSide::Right);
+        let before = e.snapshot();
+        let selected = e.selection_text();
+        assert_eq!(before.text_lines(), vec!["old0", "old1", "old2"]);
+        assert_eq!(selected.as_deref(), Some("old0"));
+        e.take_output();
+        for _ in 0..3 {
+            assert_eq!(e.live_text_lines(), live);
+        }
+        assert_eq!(e.display_offset(), 2);
+        assert_eq!(e.snapshot(), before);
+        assert_eq!(e.selection_text(), selected);
+        assert!(e.events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn live_text_matches_snapshot_for_wide_combining_hidden_and_blank_cells() {
+        let mut e = engine(4, 5);
+        // A wide glyph at the right edge leaves a leading spacer before
+        // wrapping. Hidden text is retained, just as in Snapshot::text_lines.
+        feed(
+            &mut e,
+            "abce\u{0302}\u{0301}\u{4f60}\u{0301}\x1b[8mx\x1b[0m\r\nz",
+        );
+        let expected = vec!["abce\u{0302}\u{0301}", "\u{4f60}\u{0301}x", "z", ""];
+        assert_eq!(e.snapshot().text_lines(), expected);
+        assert_eq!(e.live_text_lines(), expected);
+        // NUL-valued cells are normalized rather than returned verbatim.
+        e.term.grid_mut()[Point::new(GridLine(2), Column(0))].c = '\0';
+        assert_eq!(e.live_text_lines(), e.snapshot().text_lines());
+        assert_eq!(e.live_text_lines()[2], "");
+    }
+
+    #[test]
+    fn live_text_reads_the_active_alternate_screen_and_restored_primary() {
+        let mut e = engine(3, 10);
+        feed(&mut e, "old0\r\nold1\r\nold2\r\nshell$");
+        let primary = e.live_text_lines();
+        e.scroll(1);
+        let before = e.snapshot();
+        feed(&mut e, "\x1b[?1049h\x1b[Htui\x1b[?25l");
+        assert_eq!(e.live_text_lines(), vec!["tui", "", ""]);
+        assert!(e.snapshot().cursor.is_none());
+        e.scroll(100);
+        assert_eq!(e.live_text_lines(), e.snapshot().text_lines());
+        feed(&mut e, "\x1b[?1049l");
+        assert_eq!(e.live_text_lines(), primary);
+        assert_eq!(e.display_offset(), before.display_offset);
+        assert_eq!(e.snapshot().text_lines(), before.text_lines());
     }
 
     #[test]
