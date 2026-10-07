@@ -2906,8 +2906,9 @@ impl Shika {
     }
 
     /// A card: task, the timer while working, and the status signal; then
-    /// CLI, status, branch, the diff stat when ready, and key hints on the
-    /// selected card.
+    /// CLI, branch, the diff stat when ready, and key hints on the selected
+    /// card. A setup stage, or "Setup failed", sits between the CLI and the
+    /// branch. The status words are not painted here.
     fn card_view(
         &self,
         i: usize,
@@ -2935,6 +2936,16 @@ impl Shika {
             .diff
             .filter(|d| card.status == Status::Ready && d.files > 0)
             .map(|d| model::diff_stat_label(d.files, d.insertions, d.deletions));
+        // Setup progress and failure are facts the signal cannot say. Waiting,
+        // Working, and Ready stay on the signal, the tint, the timer, and the
+        // diff stat.
+        let notice = if card.creating {
+            Some(card.stage.clone())
+        } else if card.launch_error.is_some() {
+            Some("Setup failed".to_string())
+        } else {
+            None
+        };
         let task = div()
             .flex()
             .items_center()
@@ -2976,28 +2987,24 @@ impl Shika {
             .line_height(px(16.))
             .text_color(chrome.ink_3)
             .child(div().flex_none().child(card.preset.clone()))
-            .child(separator())
-            // The branch truncates first. Only a long setup stage gives way.
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .when(!card.creating, |d| d.flex_none())
-                    .text_color(colors.text)
-                    .font_weight(match card.status {
-                        Status::Ready => FontWeight::SEMIBOLD,
-                        Status::Working => FontWeight::MEDIUM,
-                        Status::Waiting => FontWeight::NORMAL,
-                    })
-                    .child(if card.creating {
-                        card.stage.clone()
-                    } else if card.launch_error.is_some() {
-                        "Setup failed".to_string()
-                    } else {
-                        card.status.label().to_string()
-                    }),
-            )
+            .when_some(notice, |d, notice| {
+                d.child(separator()).child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        // A long setup stage gives way. "Setup failed" stays whole.
+                        .when(!card.creating, |stage| stage.flex_none())
+                        .text_color(colors.text)
+                        .font_weight(match card.status {
+                            Status::Ready => FontWeight::SEMIBOLD,
+                            Status::Working => FontWeight::MEDIUM,
+                            Status::Waiting => FontWeight::NORMAL,
+                        })
+                        .child(notice),
+                )
+            })
             .when_some(card.session.as_ref(), |d, session| {
+                // The branch truncates before the diff stat.
                 d.child(separator()).child(
                     div()
                         .min_w_0()

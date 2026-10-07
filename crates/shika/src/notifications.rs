@@ -155,7 +155,7 @@ mod native {
                 .write(&format!("posting={session} sound={sound}"));
             let content = UNMutableNotificationContent::new();
             content.setTitle(&NSString::from_str(&super::title(project, task)));
-            content.setBody(&NSString::from_str("Ready to check"));
+            content.setBody(&NSString::from_str(crate::model::Status::Ready.label()));
             // The system alert, the sound chosen in System Settings. A missing
             // sound is why the banner used to arrive silently.
             if sound {
