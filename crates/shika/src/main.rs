@@ -17,8 +17,8 @@ use shika_core::{
     PtyEvent, PtyId, PtySize, Session, SessionGitState, Settings, Translucency,
 };
 use shika_terminal::{
-    InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalOptions, TerminalSize,
-    TerminalView,
+    InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalEvent, TerminalOptions,
+    TerminalSize, TerminalView, openable_uri,
 };
 use std::{
     collections::HashMap,
@@ -214,6 +214,15 @@ impl Pane {
             view.set_background_opacity(opacity, cx);
             view
         });
+        cx.subscribe(&view, |this, _, event, cx| {
+            if let TerminalEvent::OpenLink(uri) = event
+                && let Err(text) = open_terminal_link(uri)
+            {
+                this.message(text);
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             shell_number: 0,
             view,
@@ -222,6 +231,23 @@ impl Pane {
         }
     }
 }
+fn open_terminal_link(uri: &str) -> Result<(), String> {
+    if !openable_uri(uri) {
+        return Err("Couldn't open link".to_string());
+    }
+    let mut child = std::process::Command::new("/usr/bin/open")
+        .arg(uri)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| "Couldn't open link".to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 struct Card {
     session: Option<Session>,
     project: String,

@@ -57,7 +57,7 @@ New starts the task branch from the project's base branch: `origin/<base>`, else
 
 The shell is the user's login shell, with its cwd on the worktree. `git status` and `git diff` there are that task, not the main checkout. The author commits and pushes there.
 
-Dropping a file (a screenshot thumbnail, an image from Finder) on the terminal pastes its escaped path and focuses that terminal. Claude Code and Cursor turn a pasted image path into an attachment.
+Dropping a file (a screenshot thumbnail, an image from Finder) on the terminal pastes its escaped path and focuses that terminal. Claude Code and Cursor turn a pasted image path into an attachment. Ctrl-click or Cmd-click on a link in the terminal opens it.
 
 Typing in the terminal, a text field, the picker, or the close dialog does not run the card keys. `docs/keyboard-flow.md` explains the Command flow layer, focus restoration, shell startup typeahead, selected-row scrolling, code map, and debugging checks for contributors.
 

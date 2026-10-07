@@ -124,3 +124,5 @@ transcripts saved: the child inherits `CLAUDE_CODE_CHILD_SESSION`.
 - [ ] Emoji and CJK take two cells and the rest of the row stays aligned.
 - [ ] Focus: click another app. The block cursor turns hollow, and a
       program that asked for focus events (`vim`, Claude) receives them.
+- [ ] Ctrl-click or Cmd-click a printed `https://` URL, and an OSC 8 link
+      from the agent, opens it. A plain click still reaches the program.
