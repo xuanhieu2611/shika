@@ -184,6 +184,16 @@ impl Cell {
     }
 }
 
+/// A clickable range on one row. `end_col` is exclusive. The URI is the
+/// full target, including when the visible text is only a label or the URL
+/// continues on the next wrapped row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkSpan {
+    pub start_col: u16,
+    pub end_col: u16,
+    pub uri: String,
+}
+
 /// One visible row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Line {
@@ -191,6 +201,8 @@ pub struct Line {
     /// Combining marks and other zero-width characters, by column. Almost
     /// always empty.
     pub combining: Vec<(u16, String)>,
+    /// OSC 8 hyperlinks and plain `http`/`https` runs on this row.
+    pub links: Vec<LinkSpan>,
 }
 
 impl Line {
@@ -217,6 +229,169 @@ impl Line {
         out.truncate(trimmed);
         out
     }
+
+    /// The URI covering `col`, if this cell is part of a link.
+    pub fn link_at(&self, col: usize) -> Option<&str> {
+        let col = u16::try_from(col).ok()?;
+        self.links
+            .iter()
+            .find(|link| col >= link.start_col && col < link.end_col)
+            .map(|link| link.uri.as_str())
+    }
+}
+
+/// True when Shika will hand the URI to the system opener. `http`, `https`,
+/// `file`, and `mailto` only, with a real target after the scheme.
+pub fn openable_uri(uri: &str) -> bool {
+    if uri.is_empty() || uri.chars().any(|ch| ch.is_control() || ch.is_whitespace()) {
+        return false;
+    }
+    let Some((scheme, rest)) = uri.split_once(':') else {
+        return false;
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    match scheme.to_ascii_lowercase().as_str() {
+        "http" | "https" | "file" => rest.starts_with("//") && rest.len() > 2,
+        "mailto" => !rest.starts_with("//"),
+        _ => false,
+    }
+}
+
+/// Add plain `http://` and `https://` runs that do not overlap an OSC 8 span.
+/// Rows joined by a soft wrap share one URI.
+pub(crate) fn fill_plain_links(lines: &mut [Line]) {
+    let mut row = 0;
+    while row < lines.len() {
+        let mut end = row;
+        while end + 1 < lines.len() && line_wrapped(&lines[end]) {
+            end += 1;
+        }
+        add_plain_urls(&mut lines[row..=end]);
+        row = end + 1;
+    }
+}
+
+fn line_wrapped(line: &Line) -> bool {
+    line.cells
+        .last()
+        .is_some_and(|cell| cell.flags.contains(CellFlags::WRAPPED))
+}
+
+struct PlainPiece {
+    row: usize,
+    col: u16,
+    byte: usize,
+}
+
+fn add_plain_urls(lines: &mut [Line]) {
+    let mut text = String::new();
+    let mut pieces = Vec::new();
+    for (row, line) in lines.iter().enumerate() {
+        for (col, cell) in line.cells.iter().enumerate() {
+            if cell.flags.contains(CellFlags::WIDE_SPACER) {
+                continue;
+            }
+            let Some(col) = u16::try_from(col).ok() else {
+                continue;
+            };
+            let ch = if cell.ch == '\0' { ' ' } else { cell.ch };
+            pieces.push(PlainPiece {
+                row,
+                col,
+                byte: text.len(),
+            });
+            text.push(ch);
+        }
+    }
+    for (start, end, uri) in http_urls(&text) {
+        let relevant: Vec<&PlainPiece> = pieces
+            .iter()
+            .filter(|piece| piece.byte >= start && piece.byte < end)
+            .collect();
+        let mut spans = Vec::new();
+        let mut index = 0;
+        let mut clear = true;
+        while index < relevant.len() {
+            let row = relevant[index].row;
+            let start_col = relevant[index].col;
+            let mut last = start_col;
+            index += 1;
+            while index < relevant.len() && relevant[index].row == row {
+                last = relevant[index].col;
+                index += 1;
+            }
+            let end_col = last.saturating_add(1);
+            if lines[row]
+                .links
+                .iter()
+                .any(|link| start_col < link.end_col && end_col > link.start_col)
+            {
+                clear = false;
+                break;
+            }
+            spans.push((row, start_col, end_col));
+        }
+        if !clear {
+            continue;
+        }
+        for (row, start_col, end_col) in spans {
+            lines[row].links.push(LinkSpan {
+                start_col,
+                end_col,
+                uri: uri.clone(),
+            });
+        }
+    }
+}
+
+fn http_urls(text: &str) -> Vec<(usize, usize, String)> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let mut found = Vec::new();
+    while index < bytes.len() {
+        let rest = &text[index..];
+        let scheme_len = if rest.starts_with("https://") {
+            8
+        } else if rest.starts_with("http://") {
+            7
+        } else {
+            index += rest.chars().next().map(char::len_utf8).unwrap_or(1);
+            continue;
+        };
+        if index > 0 {
+            let prev = text[..index].chars().next_back().unwrap();
+            if prev.is_ascii_alphanumeric() || prev == '_' {
+                index += scheme_len;
+                continue;
+            }
+        }
+        let mut end_byte = index + scheme_len;
+        while end_byte < bytes.len() && is_url_byte(bytes[end_byte]) {
+            end_byte += 1;
+        }
+        let mut trimmed = end_byte;
+        while trimmed > index + scheme_len && is_trailing_punct(bytes[trimmed - 1]) {
+            trimmed -= 1;
+        }
+        if trimmed > index + scheme_len && openable_uri(&text[index..trimmed]) {
+            found.push((index, trimmed, text[index..trimmed].to_string()));
+        }
+        index = end_byte.max(index + 1);
+    }
+    found
+}
+
+fn is_url_byte(byte: u8) -> bool {
+    !byte.is_ascii_whitespace() && !matches!(byte, b'"' | b'\'' | b'<' | b'>' | b'`')
+}
+
+fn is_trailing_punct(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'.' | b',' | b';' | b':' | b'!' | b'?' | b')' | b']' | b'}' | b'\'' | b'"'
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -286,4 +461,23 @@ pub enum SelectionKind {
     Word,
     /// Whole lines, from a triple click.
     Line,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::openable_uri;
+
+    #[test]
+    fn openable_schemes_need_a_target() {
+        assert!(openable_uri("https://example.com/pr/1"));
+        assert!(openable_uri("http://example.com"));
+        assert!(openable_uri("file:///tmp/src.rs"));
+        assert!(openable_uri("mailto:a@b.com"));
+        assert!(openable_uri("HTTPS://example.com"));
+        assert!(!openable_uri("javascript:alert(1)"));
+        assert!(!openable_uri("example.com"));
+        assert!(!openable_uri("https://"));
+        assert!(!openable_uri("file://"));
+        assert!(!openable_uri("https://example.com/a b"));
+    }
 }

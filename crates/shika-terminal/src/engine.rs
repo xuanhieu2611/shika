@@ -18,8 +18,9 @@ use alacritty_terminal::vte::ansi::{
 
 use crate::theme::Palette;
 use crate::types::{
-    Cell, CellFlags, CellSide, Cursor, CursorShape, Line, Modes, MouseEncoding, MouseTracking, Rgb,
-    SelectionKind, Snapshot, TerminalSize, ViewportPoint,
+    Cell, CellFlags, CellSide, Cursor, CursorShape, Line, LinkSpan, Modes, MouseEncoding,
+    MouseTracking, Rgb, SelectionKind, Snapshot, TerminalSize, ViewportPoint, fill_plain_links,
+    openable_uri,
 };
 
 /// What a burst of PTY output asked the outside world to do.
@@ -285,6 +286,7 @@ impl Engine {
             let mut out = Line {
                 cells: Vec::with_capacity(cols),
                 combining: Vec::new(),
+                links: hyperlink_spans(source, cols),
             };
             for col in 0..cols {
                 let cell = &source[Column(col)];
@@ -306,6 +308,7 @@ impl Engine {
             }
             lines.push(out);
         }
+        fill_plain_links(&mut lines);
 
         let cursor = self.cursor(rows, offset);
         Snapshot {
@@ -462,6 +465,54 @@ fn engine_rgb(rgb: Rgb) -> EngineRgb {
         g: rgb.g,
         b: rgb.b,
     }
+}
+
+/// Group consecutive OSC 8 cells that share one openable URI. A wide-character
+/// spacer stays inside the span of the cell before it.
+fn hyperlink_spans(
+    row: &alacritty_terminal::grid::Row<alacritty_terminal::term::cell::Cell>,
+    cols: usize,
+) -> Vec<LinkSpan> {
+    let mut links = Vec::new();
+    let mut open: Option<(u16, String)> = None;
+    for col in 0..cols {
+        let cell = &row[Column(col)];
+        let spacer = cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
+        let uri = cell.hyperlink().and_then(|link| {
+            let uri = link.uri().to_owned();
+            openable_uri(&uri).then_some(uri)
+        });
+        let same = open
+            .as_ref()
+            .is_some_and(|(_, current)| uri.as_ref() == Some(current));
+        if same || (uri.is_none() && spacer && open.is_some()) {
+            continue;
+        }
+        if let Some((start, uri)) = open.take()
+            && (col as u16) > start
+        {
+            links.push(LinkSpan {
+                start_col: start,
+                end_col: col as u16,
+                uri,
+            });
+        }
+        if let Some(uri) = uri {
+            open = Some((col as u16, uri));
+        }
+    }
+    if let Some((start, uri)) = open
+        && (cols as u16) > start
+    {
+        links.push(LinkSpan {
+            start_col: start,
+            end_col: cols as u16,
+            uri,
+        });
+    }
+    links
 }
 
 fn modes_from(mode: TermMode) -> Modes {
@@ -796,6 +847,73 @@ mod tests {
         );
         assert!(!e.has_selection());
         assert!(e.selection_text().is_none());
+    }
+
+    #[test]
+    fn osc8_label_maps_to_its_uri() {
+        let mut e = engine(2, 40);
+        feed(
+            &mut e,
+            "\x1b]8;;https://example.com/pr/1\x1b\\PR #1\x1b]8;;\x1b\\",
+        );
+        let snap = e.snapshot();
+        assert_eq!(snap.lines[0].text(), "PR #1");
+        assert_eq!(snap.lines[0].link_at(0), Some("https://example.com/pr/1"));
+        assert_eq!(snap.lines[0].link_at(4), Some("https://example.com/pr/1"));
+        assert_eq!(snap.lines[0].link_at(5), None);
+    }
+
+    #[test]
+    fn plain_url_drops_trailing_punctuation() {
+        let mut e = engine(2, 40);
+        feed(&mut e, "see https://example.com/a. next");
+        let line = &e.snapshot().lines[0];
+        let start = line.text().find("https://").unwrap();
+        assert_eq!(line.link_at(start), Some("https://example.com/a"));
+        assert_eq!(line.link_at(start + "https://example.com/a".len()), None);
+    }
+
+    #[test]
+    fn a_wrapped_url_joins_into_one_link() {
+        let mut e = engine(4, 12);
+        feed(&mut e, "https://example.com/pull/1");
+        let snap = e.snapshot();
+        assert!(
+            snap.lines[0]
+                .cells
+                .last()
+                .unwrap()
+                .flags
+                .contains(CellFlags::WRAPPED)
+        );
+        assert_eq!(snap.lines[0].link_at(0), Some("https://example.com/pull/1"));
+        assert_eq!(snap.lines[1].link_at(0), Some("https://example.com/pull/1"));
+    }
+
+    #[test]
+    fn osc8_wins_over_the_text_underneath() {
+        let mut e = engine(2, 40);
+        feed(
+            &mut e,
+            "\x1b]8;;file:///tmp/src.rs\x1b\\https://example.com\x1b]8;;\x1b\\",
+        );
+        let line = &e.snapshot().lines[0];
+        assert_eq!(line.link_at(0), Some("file:///tmp/src.rs"));
+        assert!(
+            line.links
+                .iter()
+                .all(|link| link.uri == "file:///tmp/src.rs")
+        );
+    }
+
+    #[test]
+    fn a_javascript_hyperlink_is_not_a_link() {
+        let mut e = engine(2, 20);
+        feed(
+            &mut e,
+            "\x1b]8;;javascript:alert(1)\x1b\\click\x1b]8;;\x1b\\",
+        );
+        assert_eq!(e.snapshot().lines[0].link_at(0), None);
     }
 
     #[test]

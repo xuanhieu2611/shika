@@ -351,6 +351,7 @@ fn main() -> anyhow::Result<()> {
                                 });
                             }
                             TerminalEvent::Bell => {}
+                            TerminalEvent::OpenLink(_) => {}
                         })
                         .detach();
                     }

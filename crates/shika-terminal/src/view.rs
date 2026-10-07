@@ -103,6 +103,8 @@ pub struct FrameStats {
 pub enum TerminalEvent {
     TitleChanged(Option<String>),
     Bell,
+    /// Ctrl-click or Cmd-click on a link. The view does not spawn a process.
+    OpenLink(String),
 }
 
 /// Font and cell size, measured once per font setting.
@@ -173,6 +175,8 @@ pub struct TerminalView {
     /// IME composition in progress, drawn at the cursor and not yet sent.
     marked_text: Option<String>,
     selecting: bool,
+    /// Ctrl or Cmd is held over a link, so the pointer is a hand.
+    link_hover: bool,
     /// Button held while the program receives mouse reports.
     reported_button: Option<MouseButton>,
     last_motion_cell: Option<ViewportPoint>,
@@ -241,6 +245,7 @@ impl TerminalView {
             background_opacity: 1.0,
             marked_text: None,
             selecting: false,
+            link_hover: false,
             reported_button: None,
             last_motion_cell: None,
             scroll_remainder: 0.0,
@@ -416,6 +421,12 @@ impl TerminalView {
         window.focus(&self.focus_handle, cx);
         let Some(layout) = self.layout else { return };
         let (at, side, _) = layout.cell_at(event.position);
+        if click_opens_link(event.button, &event.modifiers)
+            && let Some(uri) = self.link_under(at)
+        {
+            cx.emit(TerminalEvent::OpenLink(uri.to_string()));
+            return;
+        }
         let modes = self.terminal.modes();
         if modes.mouse_reporting() && !event.modifiers.shift {
             let Some(button) = report_button(event.button) else {
@@ -448,6 +459,7 @@ impl TerminalView {
     }
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, hovered: bool, cx: &mut Context<Self>) {
+        self.note_link_hover(event, hovered, cx);
         let Some(layout) = self.layout else { return };
         if self.selecting {
             if event.pressed_button != Some(GpuiButton::Left) {
@@ -488,6 +500,24 @@ impl TerminalView {
             &modes,
         ) {
             self.terminal.report(&bytes);
+        }
+    }
+
+    fn link_under(&self, at: ViewportPoint) -> Option<&str> {
+        self.snapshot.as_ref()?.lines.get(at.row)?.link_at(at.col)
+    }
+
+    fn note_link_hover(&mut self, event: &MouseMoveEvent, hovered: bool, cx: &mut Context<Self>) {
+        let Some(layout) = self.layout else { return };
+        let over_link = if hovered && (event.modifiers.control || event.modifiers.platform) {
+            let (at, _, _) = layout.cell_at(event.position);
+            self.link_under(at).is_some()
+        } else {
+            false
+        };
+        if over_link != self.link_hover {
+            self.link_hover = over_link;
+            cx.notify();
         }
     }
 
@@ -743,6 +773,17 @@ fn mouse_mods(m: &gpui::Modifiers) -> KeyMods {
     }
 }
 
+/// Ctrl-click and Cmd-click open a link. On macOS, GPUI rewrites a
+/// control-left click into a right click and clears the control modifier,
+/// so a right click on a link is that same gesture.
+fn click_opens_link(button: GpuiButton, modifiers: &gpui::Modifiers) -> bool {
+    match button {
+        GpuiButton::Left => modifiers.platform || modifiers.control,
+        GpuiButton::Right => true,
+        GpuiButton::Middle | GpuiButton::Navigate(_) => false,
+    }
+}
+
 /// Installed font family names, read once per process.
 ///
 /// The SF Mono that ships inside macOS is hidden from this list (its family
@@ -909,7 +950,10 @@ impl Element for TerminalElement {
             },
             cx,
         );
-        let mouse_cursor = if frame.snapshot.modes.mouse_reporting() {
+        let link_hover = self.view.read(cx).link_hover;
+        let mouse_cursor = if link_hover {
+            CursorStyle::PointingHand
+        } else if frame.snapshot.modes.mouse_reporting() {
             CursorStyle::Arrow
         } else {
             CursorStyle::IBeam
@@ -1555,6 +1599,23 @@ mod tests {
         for key in ["[", "]"] {
             assert_eq!(key_for(&stroke(key, command_shift), true), None);
         }
+    }
+
+    #[test]
+    fn ctrl_and_cmd_clicks_open_links() {
+        let ctrl = Modifiers {
+            control: true,
+            ..Modifiers::none()
+        };
+        let cmd = Modifiers {
+            platform: true,
+            ..Modifiers::none()
+        };
+        assert!(click_opens_link(GpuiButton::Left, &cmd));
+        assert!(click_opens_link(GpuiButton::Left, &ctrl));
+        assert!(click_opens_link(GpuiButton::Right, &Modifiers::none()));
+        assert!(!click_opens_link(GpuiButton::Left, &Modifiers::none()));
+        assert!(!click_opens_link(GpuiButton::Middle, &ctrl));
     }
 
     #[test]
