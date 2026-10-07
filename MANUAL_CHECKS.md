@@ -96,6 +96,7 @@ Checked with isolated app data, a disposable repo, and a local bare remote with 
 - PASS: With the saved base renamed to a missing branch, New showed the toast "Base branch gone not found." and created no worktree.
 - PASS: Dark, light, and dark glass render the label, dialog, error, and picker footer with existing tokens.
 - [ ] `b` with a project header or a card selected opens the dialog; typing in the field runs no card keys; Enter applies; Escape cancels.
+- [ ] The dialog lists local and origin branches. Typing filters by prefix. Up and Down move the highlight, Enter sets the highlighted branch, a click sets that branch, and a name that is not listed is fetched from origin. Empty with no highlight uses the default. The main checkout's branch is marked "checked out" and is not selected on its own.
 - [ ] A click on the header label opens the dialog; hovering it shows "Base branch b".
 - [ ] A fresh card on a dev base shows no diff stat once Ready, and a commit in the shell shows its own stat and makes Close ask.
 

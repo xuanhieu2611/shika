@@ -1,5 +1,5 @@
-//! Navigation, first-prompt capture, and the CLI title watch, independent
-//! of GPUI.
+//! Navigation, first-prompt capture, the base branch list, and the CLI title
+//! watch, independent of GPUI.
 use std::time::{Duration, Instant};
 
 /// Agent is tab zero. Removing a shell preserves other selections and
@@ -85,6 +85,59 @@ pub const BRANCH_MAX: usize = 100;
 /// lets through; core checks the rest.
 pub fn branch_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.')
+}
+
+/// Indices of `names` that start with the field text. `origin/dev` filters as
+/// `dev`, the name the dialog saves. An empty field matches every name.
+pub fn branch_matches(names: &[impl AsRef<str>], text: &str) -> Vec<usize> {
+    let query = match text.strip_prefix("origin/") {
+        Some(rest) if !rest.is_empty() => rest,
+        _ => text,
+    };
+    names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_ref().starts_with(query))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Highlight after the field changes: the first prefix match. An empty field
+/// has none, so Enter keeps the default branch. No match has none, so Enter
+/// fetches the typed name.
+pub fn branch_highlight_after_type(match_count: usize, text: &str) -> Option<usize> {
+    if text.is_empty() || match_count == 0 {
+        None
+    } else {
+        Some(0)
+    }
+}
+
+/// The branch Enter saves. A highlight wins. Otherwise the field, which is
+/// empty for the default branch, or a name to fetch when nothing matches.
+pub fn branch_to_apply<'a>(
+    text: &'a str,
+    matches: &[&'a str],
+    highlight: Option<usize>,
+) -> &'a str {
+    highlight
+        .and_then(|index| matches.get(index).copied())
+        .unwrap_or(text)
+}
+
+/// Move through filtered rows. From no highlight, Down starts at the first
+/// and Up at the last.
+pub fn move_branch_highlight(current: Option<usize>, len: usize, delta: isize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let len = len as isize;
+    let next = match current {
+        Some(index) => index as isize + delta,
+        None if delta < 0 => -1,
+        None => 0,
+    };
+    Some(next.rem_euclid(len) as usize)
 }
 /// Output this long after the user's last key, click, scroll, or resize is
 /// the agent's own work. Sooner, it is an echo or a redraw.
@@ -428,6 +481,40 @@ mod tests {
         assert_eq!(reveal_delta(100., 400., 100., 400.), 0.);
         assert_eq!(reveal_delta(120., 520., 100., 400.), -20.);
         assert_eq!(reveal_delta(100., 500., 100., 400.), 0.);
+    }
+
+    #[test]
+    fn the_base_list_filters_by_prefix_and_resets_the_highlight() {
+        let names = ["dev", "develop", "main", "staging"];
+        assert_eq!(branch_matches(&names, ""), vec![0, 1, 2, 3]);
+        assert_eq!(branch_matches(&names, "de"), vec![0, 1]);
+        assert_eq!(branch_matches(&names, "main"), vec![2]);
+        assert!(branch_matches(&names, "nope").is_empty());
+        assert_eq!(branch_matches(&names, "origin/de"), vec![0, 1]);
+        assert_eq!(branch_highlight_after_type(2, "de"), Some(0));
+        assert_eq!(
+            branch_highlight_after_type(branch_matches(&names, "").len(), ""),
+            None
+        );
+        assert_eq!(branch_highlight_after_type(0, "nope"), None);
+        let matches = branch_matches(&names, "de");
+        let shown: Vec<&str> = matches.iter().map(|index| names[*index]).collect();
+        assert_eq!(branch_to_apply("de", &shown, Some(0)), "dev");
+        assert_eq!(branch_to_apply("de", &shown, Some(1)), "develop");
+        assert_eq!(
+            branch_to_apply(
+                "dev",
+                &shown,
+                branch_highlight_after_type(shown.len(), "dev")
+            ),
+            "dev"
+        );
+        assert_eq!(branch_to_apply("nope", &[], None), "nope");
+        assert_eq!(branch_to_apply("", &["dev", "main"], None), "");
+        assert_eq!(move_branch_highlight(None, 3, 1), Some(0));
+        assert_eq!(move_branch_highlight(None, 3, -1), Some(2));
+        assert_eq!(move_branch_highlight(Some(0), 3, -1), Some(2));
+        assert_eq!(move_branch_highlight(Some(1), 0, 1), None);
     }
 
     #[test]
