@@ -8,6 +8,7 @@ Shika's code is [MIT licensed](LICENSE). The following artwork, fonts, and color
 | --- | --- | --- |
 | Settings gear (`cog-6-tooth`, 24px solid), embedded in `crates/shika/src/main.rs` | [Heroicons](https://github.com/tailwindlabs/heroicons) | [MIT, Tailwind Labs, Inc.](assets/licenses/Heroicons-MIT.txt) |
 | Branch icon (`git-branch-16`), embedded in `crates/shika/src/main.rs` | [Octicons](https://github.com/primer/octicons) | [MIT, GitHub Inc.](assets/licenses/Octicons-MIT.txt) |
+| Sparkle 2.10.0, embedded in release builds for software updates | [Sparkle](https://github.com/sparkle-project/Sparkle/tree/2.10.0) | [MIT, Andy Matuschak and contributors, with bsdiff, sais-lite, and ed25519 notices](assets/licenses/Sparkle-MIT.txt) |
 | JetBrains Mono v2.304, bundled terminal font | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono/tree/v2.304) | [SIL Open Font License 1.1](assets/fonts/OFL.txt) |
 
 ### Terminal color themes
@@ -24,7 +25,7 @@ The theme catalog in `crates/shika-terminal/src/catalog.rs` reproduces the color
 
 The Rust crates compiled into the app, including GPUI and `alacritty_terminal`, are listed with the full text of their licenses in [`assets/licenses/RUST_CRATES.txt`](assets/licenses/RUST_CRATES.txt). `scripts/update-notices.sh` regenerates it from `Cargo.lock` with [cargo-about](https://github.com/EmbarkStudios/cargo-about); run it after changing dependencies. `scripts/release-app.sh` refuses to build a release while the file is out of date.
 
-`scripts/bundle-app.sh` includes the native notices in `Shika.app/Contents/Resources/licenses/`, with a native attribution index (`THIRD_PARTY_NOTICES.txt`) and Shika's license in `Contents/Resources/`.
+`scripts/bundle-app.sh` includes the native notices in `Shika.app/Contents/Resources/licenses/`, with a native attribution index (`THIRD_PARTY_NOTICES.txt`) and Shika's license in `Contents/Resources/`. `scripts/embed-sparkle.sh` adds Sparkle's notice to release builds.
 
 ## Website
 

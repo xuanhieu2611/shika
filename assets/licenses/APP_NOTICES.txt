@@ -11,6 +11,11 @@ Branch icon: Octicons, git-branch-16, GitHub Inc.
 https://github.com/primer/octicons
 MIT license: licenses/Octicons-MIT.txt inside the app bundle.
 
+Software updates, release builds only: Sparkle 2.10.0, Andy Matuschak and contributors.
+https://github.com/sparkle-project/Sparkle
+MIT license, with the bsdiff, sais-lite, and ed25519 notices:
+licenses/Sparkle-MIT.txt inside the app bundle.
+
 Terminal font: JetBrains Mono v2.304, JetBrains s.r.o.
 https://github.com/JetBrains/JetBrainsMono/tree/v2.304
 SIL Open Font License 1.1: licenses/JetBrainsMono-OFL.txt inside the app bundle.

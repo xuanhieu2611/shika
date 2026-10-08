@@ -2,6 +2,19 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Software updates, 2026-10-08
+
+Exercised with the local recipe in `docs/updates.md`: bundle id `com.hieule.shika.updatetest`, a disposable `--data-dir`, and a feed served from 127.0.0.1. The test state was removed afterwards.
+
+- PASS: `scripts/release-app.sh` built build 101 with Sparkle embedded; notarization accepted it, and it was stapled and passed Gatekeeper.
+- PASS: `scripts/appcast.sh` wrote and signed the feed, and `sign_update --verify` accepted it. A second run against the published build 101 refused build 100.
+- PASS: A Developer ID signed build 100 with automatic updates loaded Sparkle under the hardened runtime, fetched the signed feed, and downloaded and verified the DMG. On quit it was replaced in place by build 101, which `spctl` accepted as Notarized Developer ID.
+- PASS: The release bundle's Shika menu lists "Check for updates..." first. The second launch showed Sparkle's "Check for updates automatically?" prompt. The menu item fetched the feed and reported "You're up to date!"
+- [ ] Install and Relaunch from the update window, on a real release: Shika quits, updates, and reopens with projects intact.
+- [ ] The update window renders the Markdown release notes legibly in light and dark.
+- [ ] `cargo run` and a `bundle-app.sh` bundle show no "Check for updates..." item.
+- [ ] The first real release after 0.3.0 reaches an installed 0.3.0 through `https://useshika.com/appcast.xml`.
+
 ## Themes, 2026-10-07
 
 Automated validation: workspace tests, formatting, and strict Clippy passed, and a debug bundle was built. Tests cover `theme` defaults, unknown and wrong-side ids, mode stepping, a byte-identical Shika chrome and palette snapshot across solid, glass, and Reduce transparency, and, for every catalog theme plus synthetic dark, light, and low-contrast themes, 4.5:1 secondary and status text on the column, the active tab matching the terminal, the shared column background, and solid popups. The bundle was opened with a disposable `--data-dir` and a forced mode opposite macOS's; it started and was quit. No screenshots or input were taken, so nothing below is established.

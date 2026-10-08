@@ -17,6 +17,7 @@ Serve over HTTP: the runtime fetches its own page. No real agents or Git command
 - `demo/`: interactive prototype derived from the archived `design/Shika v3.dc.html`. It offers Claude Code, Codex, Cursor CLI, and Pi, with a pinned agent tab and independent task-owned shell tabs. `support.js` is the retained generated runtime; app behavior lives in the inline component in `demo/index.html`, and overrides live in `demo/styles.css`. There is no runtime generator source in this repository.
 - `img/`: generated paintings: `forest-center.webp` (hero landscape) and `forest-frame-2.webp` (closing section, paper cut out so it works on light and dark); logo, app icon, favicons, the native sample screenshot used as the loading poster, and `og.png` (2800x1760 native sample screenshot for link previews).
 - `fonts/`: Geist and JetBrains Mono, both under the SIL Open Font License.
+- `_redirects`: sends `/appcast.xml`, the app's Sparkle feed, to the latest GitHub release's `appcast.xml`. Workers parses it and does not serve it. Every shipped build has the feed URL baked in, so keep the path; see `docs/updates.md`.
 - `licenses/`, `notices.html`: website attribution. See the root `THIRD_PARTY_NOTICES.md` for the full inventory.
 
 ## Checking the prototype
