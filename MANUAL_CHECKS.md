@@ -2,6 +2,15 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Themes, 2026-10-07
+
+Automated validation: workspace tests, formatting, and strict Clippy passed, and a debug bundle was built. Tests cover `theme` defaults, unknown and wrong-side ids, mode stepping, a byte-identical Shika chrome and palette snapshot across solid, glass, and Reduce transparency, and, for every catalog theme plus synthetic dark, light, and low-contrast themes, 4.5:1 secondary and status text on the column, the active tab matching the terminal, the shared column background, and solid popups. The bundle was opened with a disposable `--data-dir` and a forced mode opposite macOS's; it started and was quit. No screenshots or input were taken, so nothing below is established.
+
+- [ ] Theme Light and Dark force the window, traffic lights, menus, and tooltips whatever macOS says; System follows a live macOS appearance change again, in both directions.
+- [ ] `h` / `l` on Light theme and Dark theme step and wrap through the catalog, repaint the chrome, and recolor every live agent and shell terminal at once. The choice survives a relaunch.
+- [ ] Several derived themes (Catppuccin, Rosé Pine, Tokyo Night, Dracula, Gruvbox) look like themselves: cards, selected card, dialogs, key caps, segmented tracks, toast, status dots, timers, and tints, opaque and in glass, with frost on the sidebar alone and on the terminal.
+- [ ] The Settings panel scrolls in a 600px-high window and `j` / `k` keep the selected row in view.
+
 ## Agent activity and stable turn timer, 2026-10-07
 
 Automated validation: 269 workspace tests after rebasing onto current main, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Tests cover immutable turn epochs during typing/interactions/active Enter and Ready/Working flicker, once-per-turn notification budgets, blocked safe close, candidate/history submissions and native editor clearing, literal text questions, stale/quoted status chrome, content-based redraw/draft filtering, scrollback-independent live sampling without paint side effects, old lifecycle reads crossing submissions, same-sequence recovery, bridge bounds/order/cleanup, and optional launch failure.

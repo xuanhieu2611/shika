@@ -1,7 +1,8 @@
-//! Terminal colors. `Palette::shika` is the terminal under light chrome.
-//! `Palette::shika_dark` is the same palette with the darker background.
-//! The values are specified in `design/DESIGN.md`: `--term-bg`, `--term-fg`,
-//! `--term-cursor`, `--term-selection`, and the soft ANSI 16.
+//! Terminal colors. `Palette::shika_dark` and `Palette::shika_light` are
+//! the terminal halves of the Shika Dark and Shika Light themes: the
+//! terminal shares the agent column's background, so the window reads as
+//! one surface. The values are specified in `design/DESIGN.md`: `--term-bg`,
+//! `--term-fg`, `--term-cursor`, `--term-selection`, and the soft ANSI 16.
 
 use crate::types::Rgb;
 
@@ -24,26 +25,42 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// The terminal under the light app chrome.
-    pub fn shika() -> Self {
+    /// Shika Dark: the column's warm charcoal.
+    pub const fn shika_dark() -> Self {
         Self {
-            ansi: ANSI,
+            ansi: ANSI_DARK,
             foreground: Rgb::hex(0xD5D9CF),
-            background: Rgb::hex(0x131512),
+            background: Rgb::hex(0x1A1C19),
             cursor: Rgb::hex(0xD5D9CF),
-            cursor_text: Rgb::hex(0x131512),
+            cursor_text: Rgb::hex(0x1A1C19),
             selection: Rgb::hex(0xD5D9CF),
             selection_alpha: 0.18,
             bold_is_bright: true,
         }
     }
 
-    /// The terminal under the dark app chrome. Only the background changes.
-    pub fn shika_dark() -> Self {
+    /// Shika Light: the column's sage-tinted paper. Bold keeps its color,
+    /// because the bright colors are the lighter, lower-contrast set here.
+    pub const fn shika_light() -> Self {
         Self {
-            background: Rgb::hex(0x10120F),
-            cursor_text: Rgb::hex(0x10120F),
-            ..Self::shika()
+            ansi: ANSI_LIGHT,
+            foreground: Rgb::hex(0x262824),
+            background: Rgb::hex(0xF1F2EC),
+            cursor: Rgb::hex(0x262824),
+            cursor_text: Rgb::hex(0xF1F2EC),
+            selection: Rgb::hex(0x262824),
+            selection_alpha: 0.14,
+            bold_is_bright: false,
+        }
+    }
+
+    /// The same colors on another background, such as the frosted column
+    /// tint. The block cursor's text follows it.
+    pub fn with_background(self, background: Rgb) -> Self {
+        Self {
+            background,
+            cursor_text: background,
+            ..self
         }
     }
 
@@ -66,12 +83,12 @@ impl Palette {
 
 impl Default for Palette {
     fn default() -> Self {
-        Self::shika()
+        Self::shika_dark()
     }
 }
 
-const ANSI: [Rgb; 16] = [
-    Rgb::hex(0x1E1E1C),
+const ANSI_DARK: [Rgb; 16] = [
+    Rgb::hex(0x2E312B),
     Rgb::hex(0xE0786B),
     Rgb::hex(0x8CC98A),
     Rgb::hex(0xE2BE6A),
@@ -79,7 +96,7 @@ const ANSI: [Rgb; 16] = [
     Rgb::hex(0xC793C2),
     Rgb::hex(0x7CC0C4),
     Rgb::hex(0xD9D7D1),
-    Rgb::hex(0x5F5D58),
+    Rgb::hex(0x6E6C66),
     Rgb::hex(0xF08F82),
     Rgb::hex(0xA5DBA2),
     Rgb::hex(0xF0D08A),
@@ -89,13 +106,34 @@ const ANSI: [Rgb; 16] = [
     Rgb::hex(0xF4F2ED),
 ];
 
+/// Every normal color meets 4.5:1 on `#F1F2EC`; the bright set meets 3.5:1
+/// except bright white, which stays a light grey as on other light themes.
+const ANSI_LIGHT: [Rgb; 16] = [
+    Rgb::hex(0x262824),
+    Rgb::hex(0xB2463A),
+    Rgb::hex(0x3D7A3C),
+    Rgb::hex(0x86630F),
+    Rgb::hex(0x35659F),
+    Rgb::hex(0x8A4A86),
+    Rgb::hex(0x2B7579),
+    Rgb::hex(0x6C7166),
+    Rgb::hex(0x7A7F73),
+    Rgb::hex(0xC4594B),
+    Rgb::hex(0x4C8A49),
+    Rgb::hex(0x9A741A),
+    Rgb::hex(0x4A78B3),
+    Rgb::hex(0x9D5C98),
+    Rgb::hex(0x3A878B),
+    Rgb::hex(0x868B7E),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn indexed_colors_follow_the_xterm_cube_and_ramp() {
-        let palette = Palette::shika();
+        let palette = Palette::shika_dark();
         assert_eq!(palette.indexed(1), Rgb::hex(0xE0786B));
         assert_eq!(palette.indexed(16), Rgb::new(0, 0, 0));
         assert_eq!(palette.indexed(196), Rgb::new(255, 0, 0));

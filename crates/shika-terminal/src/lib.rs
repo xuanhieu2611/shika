@@ -6,6 +6,7 @@
 //! receives input bytes and size changes through [`PtyHost`].
 
 mod boxdraw;
+pub mod catalog;
 mod engine;
 pub mod input;
 mod io;
@@ -14,6 +15,7 @@ mod theme;
 mod types;
 mod view;
 
+pub use catalog::{Theme, ThemeUi};
 pub use io::PtyWriter;
 pub use terminal::{Notices, PtyHost, Terminal, TerminalOptions};
 pub use theme::Palette;

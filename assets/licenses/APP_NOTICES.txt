@@ -15,6 +15,23 @@ Terminal font: JetBrains Mono v2.304, JetBrains s.r.o.
 https://github.com/JetBrains/JetBrainsMono/tree/v2.304
 SIL Open Font License 1.1: licenses/JetBrainsMono-OFL.txt inside the app bundle.
 
+Terminal color themes, color values in the theme catalog:
+- Catppuccin Latte, Frappé, Macchiato, Mocha, Catppuccin
+  https://github.com/catppuccin/palette
+  MIT license: licenses/Catppuccin-MIT.txt inside the app bundle.
+- Rosé Pine, Rosé Pine Moon, Rosé Pine Dawn, mvllow and Rosé Pine
+  https://github.com/rose-pine/rose-pine-palette
+  MIT license: licenses/RosePine-MIT.txt inside the app bundle.
+- Tokyo Night, Storm, Moon, Day, Folke Lemaitre
+  https://github.com/folke/tokyonight.nvim
+  Apache License 2.0: licenses/TokyoNight-Apache-2.0.txt inside the app bundle.
+- Dracula and Alucard, Dracula Theme
+  https://draculatheme.com/spec
+  MIT license: licenses/Dracula-MIT.txt inside the app bundle.
+- Gruvbox Dark and Light, Pavel Pertsev
+  https://github.com/morhetz/gruvbox
+  MIT license: licenses/Gruvbox-MIT.txt inside the app bundle.
+
 Rust crates compiled into the app, including GPUI and alacritty_terminal:
 licenses/RUST_CRATES.txt inside the app bundle lists each crate and the full
 text of its license.

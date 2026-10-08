@@ -5,8 +5,8 @@
 
 use crate::model::Status;
 use gpui::{Rgba, Window, WindowAppearance, WindowBackgroundAppearance, rgb};
-use shika_core::{Appearance, Translucency};
-use shika_terminal::Palette;
+use shika_core::{Appearance, ThemeMode, ThemeSettings, Translucency};
+use shika_terminal::{Palette, Rgb, Theme, catalog};
 
 /// Make the window transparent, or opaque again, and set the blur behind it.
 /// macOS Reduce transparency forces a solid window even when opacity is lower.
@@ -56,17 +56,21 @@ pub fn sidebar_alpha(appearance: &Appearance) -> f32 {
     f32::from(appearance.opacity.min(100)) / 100.0
 }
 
+/// The lowest alpha the terminal side takes when frost covers it. It only
+/// keeps the terminal from vanishing; readability is the user's choice.
+pub const TERMINAL_MIN_ALPHA: f32 = 0.2;
+
 /// Alpha for the terminal side: its header, its empty state, and the
 /// terminal's default background. Sidebar-only frost keeps the terminal
-/// solid. When frost covers the terminal, the alpha stays at or above 0.85
-/// so text never sits on a visible photo.
+/// solid. When frost covers the terminal, it follows the Settings opacity
+/// down to `TERMINAL_MIN_ALPHA`.
 pub fn terminal_alpha_for(appearance: &Appearance, reduce_transparency: bool) -> f32 {
     if !glass_active(appearance, reduce_transparency) {
         return 1.0;
     }
     match appearance.translucency {
         Translucency::Sidebar => 1.0,
-        Translucency::SidebarAndTerminal => sidebar_alpha(appearance).max(0.85),
+        Translucency::SidebarAndTerminal => sidebar_alpha(appearance).max(TERMINAL_MIN_ALPHA),
     }
 }
 
@@ -202,15 +206,93 @@ impl Chrome {
     }
 }
 
-pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool) -> Chrome {
-    let glass = glass_active(appearance, reduce_transparency);
-    let alpha = if glass {
-        sidebar_alpha(appearance)
+/// The chrome for one paint of the window in `theme`. Shika Light and
+/// Shika Dark use their hand-tuned tables; every other theme derives its
+/// chrome from its palette and `ui`, keeping Shika's layout and hierarchy.
+pub fn chrome_for(appearance: &Appearance, theme: &Theme, reduce_transparency: bool) -> Chrome {
+    let frame = Frame::new(appearance, theme, reduce_transparency);
+    if is_shika(theme) {
+        shika_chrome(&frame, theme.dark)
     } else {
-        1.0
-    };
-    let term_alpha = terminal_alpha_for(appearance, reduce_transparency);
-    let frost_term = glass && matches!(appearance.translucency, Translucency::SidebarAndTerminal);
+        derived_chrome(&frame, theme)
+    }
+}
+
+/// True for the two themes whose chrome is hand-tuned.
+pub fn is_shika(theme: &Theme) -> bool {
+    theme.id == catalog::SHIKA_LIGHT || theme.id == catalog::SHIKA_DARK
+}
+
+/// What one paint knows about the window, shared by both kinds of chrome.
+struct Frame {
+    glass: bool,
+    /// The column's alpha: the Settings opacity in glass, otherwise 1.
+    alpha: f32,
+    term_alpha: f32,
+    /// Frost covers the terminal side too.
+    frost_term: bool,
+    column_base: Rgb,
+    palette: Palette,
+}
+
+impl Frame {
+    fn new(appearance: &Appearance, theme: &Theme, reduce_transparency: bool) -> Self {
+        let glass = glass_active(appearance, reduce_transparency);
+        Self {
+            glass,
+            alpha: if glass {
+                sidebar_alpha(appearance)
+            } else {
+                1.0
+            },
+            term_alpha: terminal_alpha_for(appearance, reduce_transparency),
+            frost_term: glass
+                && matches!(appearance.translucency, Translucency::SidebarAndTerminal),
+            column_base: column_base(theme, glass),
+            palette: terminal_palette(appearance, theme, reduce_transparency),
+        }
+    }
+
+    /// The terminal side shares the column's background. Solid, the header
+    /// is `solid_header`, a step away so the active tab opens into the
+    /// terminal below it. In frost the header keeps the terminal's color and
+    /// the step is its alpha, so the active tab can always match the
+    /// terminal.
+    fn term_surfaces(&self, solid_header: Rgba) -> TermSurfaces {
+        let background = rgba_of(self.palette.background);
+        let header = if self.frost_term {
+            background
+        } else {
+            solid_header
+        };
+        let header_alpha = if self.frost_term {
+            (self.term_alpha - 0.1).max(self.term_alpha * 0.5)
+        } else {
+            1.0
+        };
+        let surface = with_alpha(background, self.term_alpha);
+        TermSurfaces {
+            header,
+            header_alpha,
+            surface,
+            tab: over_to_match(surface, with_alpha(header, header_alpha)),
+            empty: background,
+        }
+    }
+}
+
+struct TermSurfaces {
+    header: Rgba,
+    header_alpha: f32,
+    surface: Rgba,
+    tab: Rgba,
+    /// The empty state's color before its alpha.
+    empty: Rgba,
+}
+
+/// Shika Light and Shika Dark, hand-tuned for solid and glass.
+fn shika_chrome(frame: &Frame, dark: bool) -> Chrome {
+    let glass = frame.glass;
     // Pick by mode: solid light, solid dark, glass light, glass dark.
     let pick =
         |light: Rgba, dark_solid: Rgba, glass_light: Rgba, glass_dark: Rgba| match (glass, dark) {
@@ -219,15 +301,7 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
             (true, false) => glass_light,
             (true, true) => glass_dark,
         };
-    let column = tint(
-        match (glass, dark) {
-            (false, false) => 0xF1F2EC,
-            (false, true) => 0x1A1C19,
-            (true, false) => 0xF6F8F2,
-            (true, true) => 0x181A17,
-        },
-        alpha,
-    );
+    let column = with_alpha(rgba_of(frame.column_base), frame.alpha);
     let hover = pick(
         tint(0x141E0A, 0.045),
         tint(0xFFFFFF, 0.05),
@@ -235,50 +309,23 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
         tint(0xFFFFFF, 0.06),
     );
     let ink_3 = pick(rgb(0x6C7166), rgb(0x8D9286), rgb(0x5F6459), rgb(0xA6AB9E));
-    let (term_header, term_line, term_seg, term_seg_active, term_hover, term_empty) = if frost_term
-    {
+    let term = frame.term_surfaces(rgb(if dark { 0x151714 } else { 0xE7E9E1 }));
+    // Terminal-side lines and washes are translucent so they read the same
+    // over solid and glass.
+    let (term_line, term_seg, term_seg_active, term_hover) = if dark {
         (
-            rgb(if dark { 0x141613 } else { 0x1A1C19 }),
             tint(0xFFFFFF, 0.07),
             tint(0xFFFFFF, 0.06),
             tint(0xFFFFFF, 0.14),
             tint(0xFFFFFF, 0.06),
-            rgb(if dark { 0x0E100D } else { 0x131512 }),
-        )
-    } else if dark {
-        (
-            rgb(0x151714),
-            rgb(0x232621),
-            rgb(0x1D201B),
-            rgb(0x353932),
-            rgb(0x1D201B),
-            rgb(0x10120F),
         )
     } else {
         (
-            rgb(0x181A17),
-            rgb(0x262924),
-            rgb(0x20231F),
-            rgb(0x353932),
-            rgb(0x20231F),
-            rgb(0x131512),
+            tint(0x000000, 0.10),
+            tint(0x28341E, 0.07),
+            tint(0x000000, 0.18),
+            tint(0x141E0A, 0.06),
         )
-    };
-    let term_header_alpha = if frost_term {
-        (term_alpha - 0.1).max(0.75)
-    } else {
-        1.0
-    };
-    let palette = if dark {
-        Palette::shika_dark()
-    } else {
-        Palette::shika()
-    };
-    let term_surface = Rgba {
-        r: f32::from(palette.background.r) / 255.0,
-        g: f32::from(palette.background.g) / 255.0,
-        b: f32::from(palette.background.b) / 255.0,
-        a: term_alpha,
     };
     Chrome {
         glass,
@@ -424,21 +471,268 @@ pub fn chrome_for(appearance: &Appearance, dark: bool, reduce_transparency: bool
             dot: if dark { rgb(0x6B7065) } else { rgb(0xA3A79B) },
             text: ink_3,
         },
-        term_header,
-        term_header_alpha,
-        term_surface,
-        term_tab: over_to_match(term_surface, with_alpha(term_header, term_header_alpha)),
+        term_header: term.header,
+        term_header_alpha: term.header_alpha,
+        term_surface: term.surface,
+        term_tab: term.tab,
         term_line,
         term_seg,
         term_seg_active,
         term_hover,
-        term_fg: rgb(0xC5CABE),
-        term_white: rgb(0xF2F5EC),
-        term_dim: rgb(0x878C80),
-        term_faint: rgb(0x757A6E),
-        term_fainter: rgb(0x5A5F55),
-        term_empty,
-        term_empty_alpha: term_alpha,
+        term_fg: if dark { rgb(0xC5CABE) } else { rgb(0x4E524A) },
+        term_white: if dark { rgb(0xF2F5EC) } else { rgb(0x262824) },
+        term_dim: if dark { rgb(0x878C80) } else { rgb(0x6C7166) },
+        term_faint: if dark { rgb(0x757A6E) } else { rgb(0x868B7E) },
+        term_fainter: if dark { rgb(0x5A5F55) } else { rgb(0xA3A79B) },
+        term_empty: term.empty,
+        term_empty_alpha: frame.term_alpha,
+    }
+}
+
+/// Text on the column meets this contrast ratio (WCAG AA for body text).
+pub const TEXT_CONTRAST: f32 = 4.5;
+
+/// Chrome for any theme but Shika's, from its palette and `ui`:
+///
+/// - The theme's background is the column and the terminal, solid and in
+///   glass. `ui.surface` is the selected card, raised controls, and popups;
+///   `ui.mantle` is the solid terminal header, key caps, and sunken tracks.
+///   Without `ui`, the surface is a step toward white (light) or the
+///   foreground (dark), and the mantle a step toward the frame.
+/// - `ink_1` is the foreground. `ink_3` is `ui.muted`, or the foreground
+///   42% of the way to the background, pushed until it meets 4.5:1 on the
+///   column. `ink_2` sits halfway between them; `ink_4` and `ink_5` fade
+///   `ink_3` toward the background.
+/// - Lines, washes, and rings are the foreground at a low alpha, so they
+///   read the same over solid and glass.
+/// - Status hues are ANSI green (ready), yellow (asking), and blue
+///   (working). Text darkens the hue toward black on a light theme, or
+///   lightens it toward white on a dark one, until it meets 4.5:1; that
+///   keeps the hue where mixing toward a tinted foreground would grey it.
+///   Waiting is the ink scale's grey. Card tints mix the hue lightly into
+///   the background.
+/// - The primary button is the foreground with background text; the toast
+///   is inverted the same way. Popups stay solid.
+fn derived_chrome(frame: &Frame, theme: &Theme) -> Chrome {
+    let glass = frame.glass;
+    let dark = theme.dark;
+    let palette = &theme.palette;
+    let side = |light: f32, dark_value: f32| if dark { dark_value } else { light };
+    let bg = rgba_of(palette.background);
+    let fg = rgba_of(palette.foreground);
+    let black = rgb(0x000000);
+    let white = rgb(0xFFFFFF);
+    let ink = |alpha: f32| with_alpha(fg, alpha);
+    let ui = theme.ui;
+    let mantle = match ui {
+        Some(ui) => rgba_of(ui.mantle),
+        None if dark => mix(bg, black, 0.2),
+        None => mix(bg, fg, 0.06),
+    };
+    let surface = match ui {
+        Some(ui) => rgba_of(ui.surface),
+        None if dark => mix(bg, fg, 0.07),
+        None => mix(bg, white, 0.7),
+    };
+    let muted = ui.map_or_else(|| mix(fg, bg, 0.42), |ui| rgba_of(ui.muted));
+    let ink_3 = legible(muted, bg, fg, TEXT_CONTRAST);
+    let ink_2 = mix(fg, ink_3, 0.5);
+    let ink_4 = mix(ink_3, bg, 0.33);
+    let ink_5 = mix(ink_3, bg, 0.65);
+    let status = |index: usize| {
+        let hue = rgba_of(palette.ansi[index]);
+        StatusColors {
+            dot: hue,
+            text: legible(hue, bg, extreme(bg), TEXT_CONTRAST),
+        }
+    };
+    let card_tint = |index: usize| {
+        let tinted = mix(bg, rgba_of(palette.ansi[index]), side(0.12, 0.10));
+        if glass {
+            with_alpha(tinted, side(0.78, 0.62))
+        } else {
+            tinted
+        }
+    };
+    let term = frame.term_surfaces(mantle);
+    Chrome {
+        glass,
+        column: with_alpha(rgba_of(frame.column_base), frame.alpha),
+        hairline: ink(side(0.12, 0.08)),
+        line_2: ink(side(0.10, 0.07)),
+        line_subtle: ink(side(0.06, 0.055)),
+        line_selected_dim: mix(bg, fg, side(0.13, 0.16)),
+        line_control: ink(side(0.14, 0.12)),
+        dashed: ink(side(0.24, 0.16)),
+        ink_1: fg,
+        ink_2,
+        ink_3,
+        ink_4,
+        ink_5,
+        focus: fg,
+        card_rest: with_alpha(surface, 0.4),
+        card_selected: surface,
+        card_ready: card_tint(2),
+        card_asking: card_tint(3),
+        card_highlight: if glass {
+            with_alpha(white, side(0.75, 0.05))
+        } else {
+            with_alpha(white, 0.0)
+        },
+        card_shadow: with_alpha(black, side(0.07, 0.30)),
+        card_shadow_blur: side(6., 8.),
+        row_selected: mix(surface, fg, 0.09),
+        // Solid in glass too, like Shika's: GPUI has no backdrop blur.
+        overlay: surface,
+        toast_bg: fg,
+        toast_fg: bg,
+        toast_shadow: with_alpha(black, 0.35),
+        sunken: mantle,
+        raised: surface,
+        raised_hover: mix(surface, fg, 0.05),
+        hover: ink(side(0.05, 0.06)),
+        control_shadow: with_alpha(black, side(0.04, 0.0)),
+        dialog_ring: ink(side(0.20, 0.10)),
+        dialog_shadow: with_alpha(black, side(0.30, 0.55)),
+        primary_bg: fg,
+        primary_hover: mix(fg, bg, 0.12),
+        primary_fg: bg,
+        kbd_inverse: with_alpha(bg, 0.70),
+        ready: status(2),
+        asking: status(3),
+        working: status(4),
+        waiting: StatusColors {
+            dot: ink_4,
+            text: ink_3,
+        },
+        term_header: term.header,
+        term_header_alpha: term.header_alpha,
+        term_surface: term.surface,
+        term_tab: term.tab,
+        term_line: ink(side(0.10, 0.07)),
+        term_seg: ink(side(0.07, 0.06)),
+        term_seg_active: ink(side(0.18, 0.14)),
+        term_hover: ink(0.06),
+        term_fg: mix(fg, ink_3, 0.3),
+        term_white: fg,
+        term_dim: ink_3,
+        term_faint: mix(ink_3, bg, 0.2),
+        term_fainter: mix(ink_3, bg, 0.45),
+        term_empty: term.empty,
+        term_empty_alpha: frame.term_alpha,
+    }
+}
+
+/// The column's base color before its alpha. Shika Dark's charcoal and
+/// Shika Light's paper are a touch lighter in glass; any other theme keeps
+/// its own background in both.
+fn column_base(theme: &Theme, glass: bool) -> Rgb {
+    if !is_shika(theme) {
+        return theme.palette.background;
+    }
+    Rgb::hex(match (glass, theme.dark) {
+        (false, false) => 0xF1F2EC,
+        (false, true) => 0x1A1C19,
+        (true, false) => 0xF6F8F2,
+        (true, true) => 0x181A17,
+    })
+}
+
+/// The terminal palette for this paint. Its background is the column's, so
+/// the agent column and the terminal are one surface split by a hairline.
+pub fn terminal_palette(
+    appearance: &Appearance,
+    theme: &Theme,
+    reduce_transparency: bool,
+) -> Palette {
+    let glass = glass_active(appearance, reduce_transparency);
+    theme.palette.with_background(column_base(theme, glass))
+}
+
+/// The light or dark pick in `choice`. An id the catalog does not know, or
+/// one from the other side, paints that side's Shika theme.
+pub fn resolve_theme(choice: &ThemeSettings, dark: bool) -> &'static Theme {
+    let id = if dark { &choice.dark } else { &choice.light };
+    catalog::find(id)
+        .filter(|theme| theme.dark == dark)
+        .unwrap_or_else(|| shika_theme(dark))
+}
+
+/// Shika Light or Shika Dark from the catalog.
+pub fn shika_theme(dark: bool) -> &'static Theme {
+    let id = if dark {
+        catalog::SHIKA_DARK
+    } else {
+        catalog::SHIKA_LIGHT
+    };
+    catalog::find(id).expect("the catalog has the Shika themes")
+}
+
+/// The theme `delta` steps from `from` among that side's themes, in catalog
+/// order, wrapping at the ends.
+pub fn step_theme(from: &Theme, delta: i64) -> &'static Theme {
+    let side: Vec<&'static Theme> = catalog::themes(from.dark).collect();
+    let at = side
+        .iter()
+        .position(|theme| theme.id == from.id)
+        .unwrap_or(0) as i64;
+    let len = side.len() as i64;
+    side[(at + delta).rem_euclid(len) as usize]
+}
+
+/// Whether this paint is dark: forced by the theme mode, or macOS's
+/// appearance in System mode.
+pub fn is_dark_for(mode: ThemeMode, appearance: WindowAppearance) -> bool {
+    match mode {
+        ThemeMode::System => is_dark(appearance),
+        ThemeMode::Light => false,
+        ThemeMode::Dark => true,
+    }
+}
+
+/// Force the app's appearance to match the theme mode, so the traffic
+/// lights, menus, and `window.appearance()` agree with the paint. System
+/// clears it, so the app follows macOS again.
+pub fn apply_mode(mode: ThemeMode) {
+    #[cfg(target_os = "macos")]
+    macos_set_app_appearance(mode);
+    #[cfg(not(target_os = "macos"))]
+    let _ = mode;
+}
+
+#[cfg(target_os = "macos")]
+fn macos_set_app_appearance(mode: ThemeMode) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    #[link(name = "AppKit", kind = "framework")]
+    unsafe extern "C" {
+        static NSAppearanceNameAqua: *const AnyObject;
+        static NSAppearanceNameDarkAqua: *const AnyObject;
+    }
+
+    let (Some(app_class), Some(appearance_class)) = (
+        AnyClass::get(c"NSApplication"),
+        AnyClass::get(c"NSAppearance"),
+    ) else {
+        return;
+    };
+    // SAFETY: AppKit is loaded by GPUI, this runs on the main thread, and
+    // the appearance names are AppKit's own constants. A nil appearance
+    // makes the app inherit the system's again.
+    unsafe {
+        let app: *mut AnyObject = msg_send![app_class, sharedApplication];
+        if app.is_null() {
+            return;
+        }
+        let appearance: *mut AnyObject = match mode {
+            ThemeMode::System => std::ptr::null_mut(),
+            ThemeMode::Light => msg_send![appearance_class, appearanceNamed: NSAppearanceNameAqua],
+            ThemeMode::Dark => {
+                msg_send![appearance_class, appearanceNamed: NSAppearanceNameDarkAqua]
+            }
+        };
+        let _: () = msg_send![app, setAppearance: appearance];
     }
 }
 
@@ -469,6 +763,74 @@ pub fn tint(hex: u32, alpha: f32) -> Rgba {
         a: alpha,
         ..rgb(hex)
     }
+}
+
+/// An opaque GPUI color from a terminal color.
+pub fn rgba_of(color: Rgb) -> Rgba {
+    Rgba {
+        r: f32::from(color.r) / 255.0,
+        g: f32::from(color.g) / 255.0,
+        b: f32::from(color.b) / 255.0,
+        a: 1.0,
+    }
+}
+
+/// `from` moved `amount` (0 to 1) of the way to `to`, in sRGB. Opaque.
+pub fn mix(from: Rgba, to: Rgba, amount: f32) -> Rgba {
+    let t = amount.clamp(0.0, 1.0);
+    let channel = |a: f32, b: f32| a + (b - a) * t;
+    Rgba {
+        r: channel(from.r, to.r),
+        g: channel(from.g, to.g),
+        b: channel(from.b, to.b),
+        a: 1.0,
+    }
+}
+
+/// WCAG relative luminance of an opaque color.
+pub fn luminance(color: Rgba) -> f32 {
+    let linear = |c: f32| {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+}
+
+/// Black or white, whichever contrasts more with `background`.
+pub fn extreme(background: Rgba) -> Rgba {
+    let (black, white) = (rgb(0x000000), rgb(0xFFFFFF));
+    if contrast(black, background) > contrast(white, background) {
+        black
+    } else {
+        white
+    }
+}
+
+/// WCAG contrast ratio between two opaque colors, from 1 to 21.
+pub fn contrast(a: Rgba, b: Rgba) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// `color`, or the first step from it toward `toward` that meets `min`
+/// contrast on `background`. If even `toward` falls short, as on a
+/// low-contrast theme, it keeps going to black or white, whichever is
+/// further from the background; one of them always meets 4.5:1.
+pub fn legible(color: Rgba, background: Rgba, toward: Rgba, min: f32) -> Rgba {
+    const STEPS: u16 = 20;
+    let extreme = extreme(background);
+    let path = (0..=STEPS)
+        .map(|i| mix(color, toward, f32::from(i) / f32::from(STEPS)))
+        .chain((1..=STEPS).map(|i| mix(toward, extreme, f32::from(i) / f32::from(STEPS))));
+    for candidate in path {
+        if contrast(candidate, background) >= min {
+            return candidate;
+        }
+    }
+    extreme
 }
 
 #[cfg(target_os = "macos")]
@@ -516,6 +878,7 @@ fn set_blur_radius(_: &Window, _: u8) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shika_terminal::ThemeUi;
 
     #[test]
     fn sidebar_only_keeps_the_terminal_opaque() {
@@ -533,13 +896,15 @@ mod tests {
     }
 
     #[test]
-    fn terminal_frost_stays_at_or_above_the_floor() {
+    fn terminal_frost_follows_opacity_down_to_the_floor() {
         let mut appearance = Appearance {
-            opacity: 80,
+            opacity: 10,
             blur: 0,
             translucency: Translucency::SidebarAndTerminal,
         };
-        assert_eq!(terminal_alpha_for(&appearance, false), 0.85);
+        assert_eq!(terminal_alpha_for(&appearance, false), TERMINAL_MIN_ALPHA);
+        appearance.opacity = 40;
+        assert!((terminal_alpha_for(&appearance, false) - 0.4).abs() < 0.001);
         appearance.opacity = 92;
         assert!((terminal_alpha_for(&appearance, false) - 0.92).abs() < 0.001);
         appearance.opacity = 100;
@@ -562,7 +927,7 @@ mod tests {
             background_for(&appearance, true),
             WindowBackgroundAppearance::Opaque
         );
-        let chrome = chrome_for(&appearance, false, true);
+        let chrome = chrome_for(&appearance, shika_theme(false), true);
         assert!(!chrome.glass);
         assert_eq!(
             Rgba {
@@ -580,7 +945,7 @@ mod tests {
             blur: 44,
             translucency: Translucency::Sidebar,
         };
-        let chrome = chrome_for(&appearance, false, false);
+        let chrome = chrome_for(&appearance, shika_theme(false), false);
         assert!(chrome.glass);
         assert!((chrome.column.a - 0.58).abs() < 0.001);
         assert_eq!(
@@ -592,7 +957,7 @@ mod tests {
         );
         assert!((chrome.card_rest.a - 0.48).abs() < 0.001);
         assert_eq!(chrome.card_selected.a, 1.0);
-        let dark = chrome_for(&appearance, true, false);
+        let dark = chrome_for(&appearance, shika_theme(true), false);
         assert_eq!(
             Rgba {
                 a: 1.0,
@@ -611,11 +976,11 @@ mod tests {
             blur: 30,
             translucency: Translucency::SidebarAndTerminal,
         };
-        for dark in [false, true] {
-            let chrome = chrome_for(&appearance, dark, false);
+        for theme in every_theme() {
+            let chrome = chrome_for(&appearance, theme, false);
             assert!(chrome.glass);
-            assert_eq!(chrome.overlay.a, 1.0);
-            assert_eq!(chrome.toast_bg.a, 1.0);
+            assert_eq!(chrome.overlay.a, 1.0, "{}", theme.id);
+            assert_eq!(chrome.toast_bg.a, 1.0, "{}", theme.id);
         }
     }
 
@@ -635,6 +1000,8 @@ mod tests {
         for (opacity, translucency) in [
             (100, Translucency::SidebarAndTerminal),
             (40, Translucency::Sidebar),
+            (0, Translucency::SidebarAndTerminal),
+            (20, Translucency::SidebarAndTerminal),
             (40, Translucency::SidebarAndTerminal),
             (90, Translucency::SidebarAndTerminal),
         ] {
@@ -643,8 +1010,8 @@ mod tests {
                 blur: 30,
                 translucency,
             };
-            for dark in [false, true] {
-                let chrome = chrome_for(&appearance, dark, false);
+            for theme in every_theme() {
+                let chrome = chrome_for(&appearance, theme, false);
                 let header = over(
                     with_alpha(chrome.term_header, chrome.term_header_alpha),
                     (0.0, 0.0, 0.0, 0.0),
@@ -657,10 +1024,336 @@ mod tests {
                     (tab.2, terminal.2),
                     (tab.3, terminal.3),
                 ] {
-                    assert!((got - want).abs() < 1e-4, "{opacity} {dark}: {got} {want}");
+                    assert!(
+                        (got - want).abs() < 1e-4,
+                        "{} {opacity}: {got} {want}",
+                        theme.id
+                    );
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_terminal_shares_the_column_background() {
+        for (opacity, translucency) in [
+            (100, Translucency::SidebarAndTerminal),
+            (60, Translucency::Sidebar),
+            (60, Translucency::SidebarAndTerminal),
+        ] {
+            let appearance = Appearance {
+                opacity,
+                blur: 30,
+                translucency,
+            };
+            for theme in every_theme() {
+                let chrome = chrome_for(&appearance, theme, false);
+                let surface = Rgba {
+                    a: 1.0,
+                    ..chrome.term_surface
+                };
+                let column = Rgba {
+                    a: 1.0,
+                    ..chrome.column
+                };
+                assert_eq!(surface, column, "{} {opacity}", theme.id);
+            }
+        }
+    }
+
+    fn palette(background: u32, foreground: u32, ansi: [u32; 16]) -> Palette {
+        Palette {
+            ansi: ansi.map(Rgb::hex),
+            foreground: Rgb::hex(foreground),
+            background: Rgb::hex(background),
+            cursor: Rgb::hex(foreground),
+            cursor_text: Rgb::hex(background),
+            selection: Rgb::hex(foreground),
+            selection_alpha: 0.2,
+            bold_is_bright: true,
+        }
+    }
+
+    /// A Catppuccin Mocha lookalike: dark, with its own UI surfaces.
+    const MOCHA: Theme = Theme {
+        id: "test-mocha",
+        name: "Test Mocha",
+        dark: true,
+        palette: Palette {
+            ansi: [
+                Rgb::hex(0x45475A),
+                Rgb::hex(0xF38BA8),
+                Rgb::hex(0xA6E3A1),
+                Rgb::hex(0xF9E2AF),
+                Rgb::hex(0x89B4FA),
+                Rgb::hex(0xF5C2E7),
+                Rgb::hex(0x94E2D5),
+                Rgb::hex(0xBAC2DE),
+                Rgb::hex(0x585B70),
+                Rgb::hex(0xF38BA8),
+                Rgb::hex(0xA6E3A1),
+                Rgb::hex(0xF9E2AF),
+                Rgb::hex(0x89B4FA),
+                Rgb::hex(0xF5C2E7),
+                Rgb::hex(0x94E2D5),
+                Rgb::hex(0xA6ADC8),
+            ],
+            foreground: Rgb::hex(0xCDD6F4),
+            background: Rgb::hex(0x1E1E2E),
+            cursor: Rgb::hex(0xF5E0DC),
+            cursor_text: Rgb::hex(0x1E1E2E),
+            selection: Rgb::hex(0x585B70),
+            selection_alpha: 0.5,
+            bold_is_bright: true,
+        },
+        ui: Some(ThemeUi {
+            mantle: Rgb::hex(0x181825),
+            surface: Rgb::hex(0x313244),
+            muted: Rgb::hex(0xA6ADC8),
+        }),
+    };
+
+    /// Synthetic themes for derivation: Mocha, a Latte lookalike, a light
+    /// theme without `ui` whose yellow is faint, and a dark theme whose own
+    /// foreground does not reach 4.5:1.
+    fn synthetic_themes() -> Vec<Theme> {
+        let latte = Theme {
+            id: "test-latte",
+            name: "Test Latte",
+            dark: false,
+            palette: palette(
+                0xEFF1F5,
+                0x4C4F69,
+                [
+                    0x5C5F77, 0xD20F39, 0x40A02B, 0xDF8E1D, 0x1E66F5, 0xEA76CB, 0x179299, 0xACB0BE,
+                    0x6C6F85, 0xD20F39, 0x40A02B, 0xDF8E1D, 0x1E66F5, 0xEA76CB, 0x179299, 0xBCC0CC,
+                ],
+            ),
+            ui: Some(ThemeUi {
+                mantle: Rgb::hex(0xE6E9EF),
+                surface: Rgb::hex(0xCCD0DA),
+                muted: Rgb::hex(0x6C6F85),
+            }),
+        };
+        let paper = Theme {
+            id: "test-paper",
+            name: "Test Paper",
+            dark: false,
+            palette: palette(
+                0xFDF6E3,
+                0x657B83,
+                [
+                    0x073642, 0xDC322F, 0x859900, 0xB58900, 0x268BD2, 0xD33682, 0x2AA198, 0xEEE8D5,
+                    0x002B36, 0xCB4B16, 0x586E75, 0x657B83, 0x839496, 0x6C71C4, 0x93A1A1, 0xFDF6E3,
+                ],
+            ),
+            ui: None,
+        };
+        let murk = Theme {
+            id: "test-murk",
+            name: "Test Murk",
+            dark: true,
+            palette: palette(
+                0x3A3A3A,
+                0x6A6A6A,
+                [
+                    0x2A2A2A, 0x6A4A4A, 0x4A5A4A, 0x5A5A40, 0x4A4A6A, 0x5A4A5A, 0x4A5A5A, 0x5A5A5A,
+                    0x444444, 0x7A5A5A, 0x5A6A5A, 0x6A6A50, 0x5A5A7A, 0x6A5A6A, 0x5A6A6A, 0x6A6A6A,
+                ],
+            ),
+            ui: None,
+        };
+        vec![MOCHA, latte, paper, murk]
+    }
+
+    /// The catalog, whatever it holds, plus the synthetic themes.
+    fn every_theme() -> Vec<&'static Theme> {
+        static SYNTHETIC: std::sync::OnceLock<Vec<Theme>> = std::sync::OnceLock::new();
+        let synthetic = SYNTHETIC.get_or_init(synthetic_themes);
+        catalog::THEMES.iter().chain(synthetic).collect()
+    }
+
+    fn modes() -> Vec<(Appearance, bool)> {
+        let mut modes = vec![];
+        for (opacity, translucency) in [
+            (100, Translucency::Sidebar),
+            (60, Translucency::Sidebar),
+            (40, Translucency::SidebarAndTerminal),
+        ] {
+            for reduce in [false, true] {
+                let appearance = Appearance {
+                    opacity,
+                    blur: 30,
+                    translucency,
+                };
+                modes.push((appearance, reduce));
+            }
+        }
+        modes
+    }
+
+    #[test]
+    fn shika_chrome_keeps_its_hand_tuned_values() {
+        let solid = Appearance::default();
+        let glass = Appearance {
+            opacity: 60,
+            blur: 30,
+            translucency: Translucency::SidebarAndTerminal,
+        };
+        let light = chrome_for(&solid, shika_theme(false), false);
+        assert_eq!(light.column, rgb(0xF1F2EC));
+        assert_eq!(light.ink_1, rgb(0x262824));
+        assert_eq!(light.ink_3, rgb(0x6C7166));
+        assert_eq!(light.ready.text, rgb(0x21763C));
+        assert_eq!(light.card_asking, rgb(0xFFF5E7));
+        assert_eq!(light.term_header, rgb(0xE7E9E1));
+        assert_eq!(light.toast_bg, rgb(0x252823));
+        let dark = chrome_for(&solid, shika_theme(true), false);
+        assert_eq!(dark.column, rgb(0x1A1C19));
+        assert_eq!(dark.ink_1, rgb(0xE8EBE3));
+        assert_eq!(dark.working.text, rgb(0x8CC4F4));
+        assert_eq!(dark.overlay, rgb(0x242722));
+        assert_eq!(dark.term_header, rgb(0x151714));
+        assert_eq!(dark.hairline, rgb(0x2A2D27));
+        let glass_dark = chrome_for(&glass, shika_theme(true), false);
+        assert_eq!(glass_dark.column, tint(0x181A17, 0.6));
+        assert_eq!(glass_dark.ink_3, rgb(0xA6AB9E));
+        assert_eq!(glass_dark.card_ready, tint(0x1C3422, 0.62));
+        assert_eq!(glass_dark.term_header, rgb(0x181A17));
+        assert!((glass_dark.term_header_alpha - 0.5).abs() < 1e-6);
+        let glass_light = chrome_for(&glass, shika_theme(false), false);
+        assert_eq!(glass_light.hairline, tint(0x000000, 0.10));
+        assert_eq!(glass_light.card_rest, tint(0xFFFFFF, 0.48));
+        assert_eq!(
+            terminal_palette(&glass, shika_theme(false), false).background,
+            Rgb::hex(0xF6F8F2)
+        );
+    }
+
+    #[test]
+    fn derived_chrome_is_readable_on_the_column() {
+        for theme in every_theme().into_iter().filter(|theme| !is_shika(theme)) {
+            for (appearance, reduce) in modes() {
+                let chrome = chrome_for(&appearance, theme, reduce);
+                let column = with_alpha(chrome.column, 1.0);
+                assert_eq!(column, rgba_of(theme.palette.background), "{}", theme.id);
+                assert_eq!(
+                    chrome.ink_1,
+                    rgba_of(theme.palette.foreground),
+                    "{}",
+                    theme.id
+                );
+                let readable = [
+                    ("ink_3", chrome.ink_3),
+                    ("ready", chrome.ready.text),
+                    ("asking", chrome.asking.text),
+                    ("working", chrome.working.text),
+                    ("waiting", chrome.waiting.text),
+                    ("term_dim", chrome.term_dim),
+                ];
+                for (name, color) in readable {
+                    let ratio = contrast(color, column);
+                    assert!(ratio >= TEXT_CONTRAST, "{} {name}: {ratio}", theme.id);
+                }
+                assert_eq!(chrome.overlay.a, 1.0);
+                assert_eq!(chrome.primary_bg, chrome.ink_1);
+                assert_eq!(chrome.primary_fg, column);
+            }
+        }
+    }
+
+    #[test]
+    fn derived_chrome_uses_the_theme_surfaces_and_hues() {
+        let chrome = chrome_for(&Appearance::default(), &MOCHA, false);
+        let ui = MOCHA.ui.unwrap();
+        assert_eq!(chrome.card_selected, rgba_of(ui.surface));
+        assert_eq!(chrome.overlay, rgba_of(ui.surface));
+        assert_eq!(chrome.sunken, rgba_of(ui.mantle));
+        assert_eq!(chrome.term_header, rgba_of(ui.mantle));
+        // Mocha's own muted text and hues already meet 4.5:1, so they pass
+        // through unchanged.
+        assert_eq!(chrome.ink_3, rgba_of(ui.muted));
+        assert_eq!(chrome.ready.text, rgba_of(MOCHA.palette.ansi[2]));
+        assert_eq!(chrome.working.dot, rgba_of(MOCHA.palette.ansi[4]));
+        // Hierarchy: each ink step is further from the foreground.
+        let fg = chrome.ink_1;
+        let steps = [chrome.ink_2, chrome.ink_3, chrome.ink_4, chrome.ink_5];
+        for pair in steps.windows(2) {
+            assert!(contrast(pair[0], fg) < contrast(pair[1], fg));
+        }
+        // In frost the header keeps the terminal's color.
+        let frost = Appearance {
+            opacity: 50,
+            blur: 30,
+            translucency: Translucency::SidebarAndTerminal,
+        };
+        let chrome = chrome_for(&frost, &MOCHA, false);
+        assert_eq!(chrome.term_header, rgba_of(MOCHA.palette.background));
+        assert_eq!(
+            terminal_palette(&frost, &MOCHA, false).background,
+            MOCHA.palette.background
+        );
+    }
+
+    #[test]
+    fn legible_reaches_the_ratio_even_past_the_foreground() {
+        assert!((contrast(rgb(0x000000), rgb(0xFFFFFF)) - 21.0).abs() < 0.01);
+        let background = rgb(0x777777);
+        let color = legible(rgb(0x808080), background, rgb(0x8A8A8A), TEXT_CONTRAST);
+        assert!(contrast(color, background) >= TEXT_CONTRAST);
+        // Already readable stays as it is.
+        let ink = rgb(0x111111);
+        assert_eq!(legible(ink, rgb(0xFFFFFF), ink, TEXT_CONTRAST), ink);
+    }
+
+    #[test]
+    fn unknown_and_wrong_side_ids_paint_the_shika_theme() {
+        assert_eq!(shika_core::DEFAULT_LIGHT_THEME, catalog::SHIKA_LIGHT);
+        assert_eq!(shika_core::DEFAULT_DARK_THEME, catalog::SHIKA_DARK);
+        let mut choice = ThemeSettings::default();
+        assert_eq!(resolve_theme(&choice, false).id, catalog::SHIKA_LIGHT);
+        assert_eq!(resolve_theme(&choice, true).id, catalog::SHIKA_DARK);
+        choice.light = catalog::SHIKA_DARK.into();
+        choice.dark = "no-such-theme".into();
+        assert_eq!(resolve_theme(&choice, false).id, catalog::SHIKA_LIGHT);
+        assert_eq!(resolve_theme(&choice, true).id, catalog::SHIKA_DARK);
+        for theme in catalog::THEMES {
+            let choice = ThemeSettings {
+                light: theme.id.into(),
+                dark: theme.id.into(),
+                ..ThemeSettings::default()
+            };
+            assert_eq!(resolve_theme(&choice, theme.dark).id, theme.id);
+            assert!(is_shika(resolve_theme(&choice, !theme.dark)));
+        }
+    }
+
+    #[test]
+    fn stepping_a_theme_wraps_within_its_side() {
+        for dark in [false, true] {
+            let side: Vec<&Theme> = catalog::themes(dark).collect();
+            let first = side[0];
+            let last = side[side.len() - 1];
+            assert_eq!(step_theme(last, 1).id, first.id);
+            assert_eq!(step_theme(first, -1).id, last.id);
+            let mut at = first;
+            for _ in 0..side.len() {
+                at = step_theme(at, 1);
+                assert_eq!(at.dark, dark);
+            }
+            assert_eq!(at.id, first.id);
+        }
+    }
+
+    #[test]
+    fn a_forced_mode_wins_over_macos() {
+        assert!(is_dark_for(ThemeMode::Dark, WindowAppearance::Light));
+        assert!(!is_dark_for(
+            ThemeMode::Light,
+            WindowAppearance::VibrantDark
+        ));
+        assert!(is_dark_for(ThemeMode::System, WindowAppearance::Dark));
+        assert!(!is_dark_for(ThemeMode::System, WindowAppearance::Light));
     }
 
     #[test]
