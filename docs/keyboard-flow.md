@@ -27,7 +27,7 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+B` | Hide or show the agent column | Unchanged; with the column hidden, `j`/`k` from cards still change the agent on screen |
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
 
-Next/previous agent skips project headers, includes collapsed cards, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
+Next/previous agent skips project headers, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
 
 These actions do nothing while the app is busy or any overlay is open. `Cmd+N` uses the first project when nothing is selected and opens Add project when there are no projects.
 
@@ -86,9 +86,9 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 
 ### Agent navigation
 
-`rows()` includes project headers and every card, not just the three currently visible cards per project. `adjacent_agent()` walks that order in the requested direction until it finds a card. `move_selection()` uses it for `j`/`k` and the arrows, so those keys never land on a header. `move_agent()` uses the same walk for Cmd+] / Cmd+[, guards overlay/busy state, records whether cards had focus, selects the result, and focuses its terminal only if the user was already in a terminal.
+`rows()` includes project headers and every card. `adjacent_agent()` walks that order in the requested direction until it finds a card. `move_selection()` uses it for `j`/`k` and the arrows, so those keys never land on a header. `move_agent()` uses the same walk for Cmd+] / Cmd+[, guards overlay/busy state, records whether cards had focus, selects the result, and focuses its terminal only if the user was already in a terminal.
 
-The selected task's `active_tab` determines which terminal receives focus (zero is the pinned agent; shell indices start at one). Do not force every destination to the agent view: returning to a task should preserve where the user was working. `visible_indices()` reveals collapsed cards around the selection without changing the three-card cap.
+The selected task's `active_tab` determines which terminal receives focus (zero is the pinned agent; shell indices start at one). Do not force every destination to the agent view: returning to a task should preserve where the user was working. Every card is painted. When the list is taller than the column, the sidebar scroll brings the selected card into view.
 
 ### Overlay focus
 
@@ -159,7 +159,7 @@ These are unit tests, not proof of native shortcut dispatch, actual focus restor
 
 For terminal-tab validation, see the separate Task-scoped terminal tabs checklist in `MANUAL_CHECKS.md`. Unit coverage includes wrap/empty tab navigation, selection preservation on removal, independent core shells, ownership checks, and teardown of all shells on task close.
 
-For a keyboard contribution, exercise the agent and multiple shell tabs, both focus modes, first shell creation, dialog cancel/apply, busy state, collapsed cards, sidebar overflow, and light/dark appearance. Verify unsent drafts survive and ordinary CLI input, Escape, copy, and paste still work.
+For a keyboard contribution, exercise the agent and multiple shell tabs, both focus modes, first shell creation, dialog cancel/apply, busy state, a list tall enough to scroll the column, and light/dark appearance. Verify unsent drafts survive and ordinary CLI input, Escape, copy, and paste still work.
 
 ## Contributor guardrails
 
