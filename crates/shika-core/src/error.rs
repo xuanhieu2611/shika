@@ -50,6 +50,8 @@ pub enum Error {
         "The worktree is on {current}, not task branch {expected}. Switch back to {expected} in the shell, then try again."
     )]
     TaskBranchChanged { expected: String, current: String },
+    #[error("Cannot safely close after a branch switch. {0}")]
+    SwitchedCloseUnsafe(String),
     #[error("Could not remove the worktree.{}", detail(.0))]
     RemoveWorktree(Option<String>),
     /// `git worktree remove` refused because the tree has changes. Only a

@@ -40,6 +40,7 @@ Shika talks like a terse colleague. It reports facts and names consequences. It 
 - **Address the user as "you", rarely.** "Asking you". Shika never says "I" or "we".
 - **Buttons are verbs naming the outcome:** "Delete worktree", not "OK" or "Yes". Cancel is "Cancel".
 - **Confirm dialogs ask a question about the specific task**, then list the facts: "Close “Fix flaky resize test”?" / "The worktree has 2 uncommitted files: src/cli.rs, src/layout.rs." / "This stops the session and force-removes .worktrees/fix-flaky-resize-test."
+- **Branch-switch close** uses the existing close dialog shell and tokens: "Close “{task}” after branch switch?", recorded/current branch facts in mono, publication and branch-preservation facts, and an active-agent warning when applicable. Cancel `esc` and the primary Close task `↵` are the only choices. Unsafe recovery shows an error instead of offering destructive actions. Both local branches stay; no ownership transfer. See `docs/branch-switch-close.md`.
 - **Toasts are past tense, one sentence:** "Pushed fix-flaky-resize-test. Card and worktree removed."
 - **Errors state the cause plainly:** "kiro not found on PATH". No "Oops".
 - **Use real developer nouns:** branch, worktree, PATH, push. Branch names and paths are always in mono.

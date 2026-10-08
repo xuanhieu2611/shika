@@ -47,6 +47,7 @@ Create PR is also in the Agent menu and terminal metadata row. Its dialog uses T
 - `Ctrl+Q` returns from the terminal to the cards.
 - `a`, `b`, and `r` retain their card actions. Plain `n` and `c` do nothing. `g` is not a shortcut.
 - Escape reaches the CLI when a terminal is focused. It is not an app-wide escape-to-navigation key.
+- Verified branch-switch Close has a separate confirmation: Enter closes while keeping both local branches, Escape restores the opening focus. Unsafe recovery is blocked rather than offering Push/Discard; see [branch-switch-close.md](branch-switch-close.md).
 - Close cancellation still routes dirty or unpushed work to the task shell. It is a workflow transition, not generic focus restoration.
 - Cards remain sorted by attention within each project. This improvement does not stabilize their order during status changes.
 - One terminal is visible at a time. Hidden views and PTYs stay alive.
