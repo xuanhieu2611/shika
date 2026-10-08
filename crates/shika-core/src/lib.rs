@@ -74,7 +74,10 @@ pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::PublishPreview;
 pub use session::{DiffStat, Session, SessionGitState};
-pub use settings::{Appearance, Column, FontSize, Settings, Translucency};
+pub use settings::{
+    Appearance, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, Settings, ThemeMode,
+    ThemeSettings, Translucency,
+};
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 pub use worktree::{JournalEntry, KnownBranches};
 

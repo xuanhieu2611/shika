@@ -583,7 +583,7 @@ mod tests {
     use std::time::Duration;
 
     fn engine(rows: u16, cols: u16) -> Engine {
-        Engine::new(TerminalSize::new(rows, cols), 100, Palette::shika())
+        Engine::new(TerminalSize::new(rows, cols), 100, Palette::shika_dark())
     }
 
     fn feed(engine: &mut Engine, text: &str) {
@@ -599,8 +599,8 @@ mod tests {
         let cursor = snap.cursor.unwrap();
         assert_eq!((cursor.row, cursor.col), (1, 5));
         assert_eq!(cursor.shape, CursorShape::Block);
-        assert_eq!(snap.lines[0].cells[0].fg, Palette::shika().foreground);
-        assert_eq!(snap.lines[0].cells[0].bg, Palette::shika().background);
+        assert_eq!(snap.lines[0].cells[0].fg, Palette::shika_dark().foreground);
+        assert_eq!(snap.lines[0].cells[0].bg, Palette::shika_dark().background);
     }
 
     #[test]
@@ -612,7 +612,7 @@ mod tests {
             "\x1b[31mA\x1b[92mB\x1b[38;5;196mC\x1b[38;2;1;2;3mD\x1b[0;44mE\x1b[0m",
         );
         let cells = &e.snapshot().lines[0].cells;
-        let palette = Palette::shika();
+        let palette = Palette::shika_dark();
         assert_eq!(cells[0].fg, palette.ansi[1]);
         assert_eq!(cells[1].fg, palette.ansi[10]);
         assert_eq!(cells[2].fg, Rgb::new(255, 0, 0));
@@ -630,7 +630,7 @@ mod tests {
             "\x1b[1mB\x1b[0;3mI\x1b[0;4mU\x1b[0;4:3mC\x1b[0;9mS\x1b[0;7mR\x1b[0;1;31mX\x1b[0m",
         );
         let cells = &e.snapshot().lines[0].cells;
-        let palette = Palette::shika();
+        let palette = Palette::shika_dark();
         assert!(cells[0].flags.contains(CellFlags::BOLD));
         assert!(cells[1].flags.contains(CellFlags::ITALIC));
         assert!(cells[2].flags.contains(CellFlags::UNDERLINE));
@@ -710,7 +710,7 @@ mod tests {
         let snap = e.snapshot();
         assert_eq!(snap.text_lines(), vec!["1", "2", "3", ":"]);
         // The search hit is drawn inverted.
-        assert_eq!(snap.lines[1].cells[0].bg, Palette::shika().foreground);
+        assert_eq!(snap.lines[1].cells[0].bg, Palette::shika_dark().foreground);
         // The alternate screen keeps no history of its own.
         assert_eq!(snap.history, 0);
         feed(&mut e, "\r\x1b[K\x1b[?1l\x1b>\x1b[?1049l\x1b[23;0;0t");
@@ -859,7 +859,7 @@ mod tests {
         feed(&mut e, "\x1b]11;?\x07");
         let out = e.take_output();
         let reply = String::from_utf8(out.replies[0].clone()).unwrap();
-        assert!(reply.starts_with("\x1b]11;rgb:1313/1515/1212"), "{reply:?}");
+        assert!(reply.starts_with("\x1b]11;rgb:1a1a/1c1c/1919"), "{reply:?}");
     }
 
     #[test]
