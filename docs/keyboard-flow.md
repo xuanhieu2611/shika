@@ -42,8 +42,9 @@ Create PR is also in the Agent menu and terminal metadata row. Its dialog uses T
 
 ## What did not change
 
-- `j`/`k` and arrows navigate cards while the cards are focused, skipping project headers. An empty project is not a stop.
-- `Enter` enters the selected task's currently shown terminal.
+- `j`/`k` and arrows navigate cards while the cards are focused, skipping project headers. An empty project is not a stop. They do not focus the terminal, so a second `j` still moves.
+- Clicking a card selects it and focuses its shown terminal. A notification click activates the window and does the same. The next keystroke is typed there.
+- `Enter` enters the selected task's currently shown terminal while the cards have focus.
 - `Ctrl+Q` returns from the terminal to the cards.
 - `a`, `b`, and `r` retain their card actions. Plain `n` and `c` do nothing. `g` is not a shortcut.
 - Escape reaches the CLI when a terminal is focused. It is not an app-wide escape-to-navigation key.

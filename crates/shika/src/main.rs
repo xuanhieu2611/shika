@@ -1609,8 +1609,13 @@ impl Shika {
                 self.selection = Some(Selection::Card(i));
                 cx.activate(true);
                 window.activate_window();
-                let focus = self.focus.clone();
-                window.focus(&focus, cx);
+                // A notification means this agent needs typing. Card focus
+                // would make the next letter move the list.
+                if self.busy {
+                    window.focus(&self.focus, cx);
+                } else {
+                    self.focus_terminal(window, cx);
+                }
                 changed = true;
             }
         }
@@ -3630,8 +3635,7 @@ impl Shika {
                     return;
                 }
                 this.selection = Some(Selection::Card(i));
-                window.focus(&this.focus, cx);
-                cx.notify();
+                this.focus_terminal(window, cx);
             }));
         let base = if selected {
             // The ring sits outside the card, like the design's box-shadow,
@@ -3806,8 +3810,7 @@ impl Shika {
                         .flex_nowrap()
                         .items_center()
                         .gap_x(px(12.))
-                        .child(hint("j k", "move", chrome))
-                        .child(hint("↵", "terminal", chrome))
+                        .child(hint("\u{2318}] \u{2318}[", "move", chrome))
                         .child(hint("\u{2318}\u{21e7}W", "close", chrome)),
                 )
             })
@@ -5125,7 +5128,7 @@ fn kbd(text: impl Into<SharedString>, bg: Rgba, fg: Rgba) -> gpui::Div {
         .child(text.into())
 }
 
-/// A key cap and the verb it does, as in the footer: `j k move`. An empty
+/// A key cap and the verb it does, as in the footer: `⌘] ⌘[ move`. An empty
 /// key leaves only the words. The pair stays on one line and does not shrink,
 /// so a wrapped row hides nothing.
 fn hint(key: &str, label: &str, chrome: &Chrome) -> gpui::Div {

@@ -106,7 +106,7 @@ Detecting "asking you" versus "working" is imperfect because every CLI draws its
 - Ready to check: about two seconds of quiet after work starts, or the process exits with any code.
 - Asking you: best-effort. If it cannot be detected reliably, a macOS notification is still required when the process goes idle, and the user opens the terminal to see whether it asked a question or finished. Do not block the MVP on parsing every CLI's question widget.
 
-When status becomes Asking you or Ready to check, post a macOS notification naming the project and the task. Clicking it focuses Shika and selects that card. The user is fullscreen in a browser while agents run, so the notification is how they know to come back.
+When status becomes Asking you or Ready to check, post a macOS notification naming the project and the task. Clicking it focuses Shika, selects that card, and focuses its terminal. The user is fullscreen in a browser while agents run, so the notification is how they know to come back.
 
 ## Close and push
 
@@ -152,7 +152,7 @@ Do these in order. Stop when the "Done when" script passes.
 6. Keyboard map above works, including Dock launch finding the CLIs.
 7. Shell toggle, cwd is the worktree, `git status` and `git diff` work.
 8. Branch rename from the first prompt, quiet Ready status, and Close with discard or push choices. A shell push keeps the card open.
-9. Notification titled `{project} - {task}` when a session becomes ready or is asking; clicking it focuses Shika and selects the card.
+9. Notification titled `{project} - {task}` when a session becomes ready or is asking; clicking it focuses Shika, selects the card, and focuses its terminal.
 10. Leftovers after quit or crash, removed only on request. Empty right pane when nothing is selected. Working state stays quiet.
 
 ## Done when

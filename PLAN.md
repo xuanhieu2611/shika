@@ -227,13 +227,13 @@ A shell tab is the user's login shell with its cwd set to the worktree. No comma
 - Process exit: Ready to check, same notification if one was not just posted.
 - One notification per turn (author, 2026-10-04). A turn starts when the user types or pastes into the agent. Reading the result, focusing, scrolling, or typing a draft must not notify again.
 - Asking you, if implemented: only flip it when the tail of recent output clearly looks like a question, and post the same kind of notification. Otherwise leave the status at Ready to check. The user reads the real terminal either way.
-- Clicking the notification focuses the window and selects that card.
+- Clicking the notification focuses the window, selects that card, and focuses its terminal.
 
 ### Keyboard and focus
 
 Focus starts on the cards. `j` / `k` and arrows move through every card and skip project headers. Every card is shown, and a selection change scrolls that card into view when the list is taller than the column. A project with no agents is still a row, but it is not a keyboard stop. Cmd+N opens the picker for the selected card's project, or the first project when nothing is selected, and Tab in the picker changes the project. `b` follows the selected card. An empty project's base branch is the click on its header label.
 
-`Enter` focuses the terminal. `Ctrl+Q` returns to the cards. `Escape` is typed into the terminal. Cmd+Shift+W closes the selected task from the cards or a terminal. Plain `c` does nothing.
+Clicking a card focuses its terminal. `Enter` does the same while the cards have focus. `Ctrl+Q` returns to the cards. `Escape` is typed into the terminal. Cmd+Shift+W closes the selected task from the cards or a terminal. Plain `c` does nothing.
 
 Ignore the plain-key map while the terminal is focused, except `Ctrl+Q`. Also ignore it while a text field is focused, and while the picker or close dialog is open.
 
