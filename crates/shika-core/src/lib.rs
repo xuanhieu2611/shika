@@ -72,6 +72,17 @@ pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use session::{DiffStat, Session, SessionGitState};
+
+/// Verified branch-switch close preview. Confirmation is bound to these refs
+/// and commit tips, not to whichever branch happens to be active later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwitchedBranchClose {
+    session_id: String,
+    pub recorded: String,
+    pub current: String,
+    recorded_tip: String,
+    current_tip: String,
+}
 pub use settings::{Appearance, Column, FontSize, Settings, Translucency};
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 pub use worktree::{JournalEntry, KnownBranches};
@@ -815,6 +826,68 @@ impl Core {
             session.base_ref.as_deref(),
             agent_working,
         )
+    }
+
+    /// Separate recovery path; normal close/discard/push retain branch identity
+    /// protection. This preview is read-only and never adopts the current ref.
+    pub fn session_switched_close_check(&self, id: &str) -> Result<SwitchedBranchClose> {
+        let _guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        self.switched_close_check_locked(id)
+    }
+
+    fn switched_close_check_locked(&self, id: &str) -> Result<SwitchedBranchClose> {
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        let git = self.git()?;
+        let path = self.path_env().path();
+        let current = worktree::head_branch(&git, path, &session.worktree)?
+            .ok_or_else(|| Error::SwitchedCloseUnsafe("Detached HEAD cannot use branch-switch close. Return to the task branch before closing.".into()))?;
+        if current == session.branch {
+            return Err(Error::SwitchedCloseUnsafe(
+                "The branch changed. Close again to check its current state.".into(),
+            ));
+        }
+        let (recorded_tip, current_tip) =
+            worktree::switched_close_tips(&git, path, &session, &current)?;
+        Ok(SwitchedBranchClose {
+            session_id: session.id,
+            recorded: session.branch,
+            current,
+            recorded_tip,
+            current_tip,
+        })
+    }
+
+    /// Explicit confirmation stops all owned PTYs and removes only the clean
+    /// worktree. Both branches survive. Unsafe work has no force/discard path.
+    pub fn session_close_switched(&self, id: &str, preview: &SwitchedBranchClose) -> Result<()> {
+        let _guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let changed = || {
+            Error::SwitchedCloseUnsafe(
+                "The branches changed since confirmation. Close again to recheck.".into(),
+            )
+        };
+        if self.switched_close_check_locked(id)? != *preview {
+            return Err(changed());
+        }
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        self.hang_up(&session);
+        if self.switched_close_check_locked(id)? != *preview {
+            return Err(changed());
+        }
+        worktree::remove_worktree(
+            &self.git()?,
+            self.path_env().path(),
+            &session.repo,
+            &session.worktree,
+            false,
+        )?;
+        self.forget_session(&session)
     }
 
     /// Blocking. What the task changed: committed and uncommitted work
@@ -2379,6 +2452,202 @@ mod tests {
         core.session_close(&session.id, false).unwrap();
         assert!(!session.worktree.exists());
         assert!(branch_exists(&repo, "existing-pr"));
+    }
+
+    #[test]
+    fn switched_close_preserves_both_branches_after_push_or_merge() {
+        for (merge, upstream) in [(false, true), (true, true), (false, false)] {
+            let scratch = Scratch::new();
+            let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+            let core = core_with_fake_cli(&scratch);
+            let project = core.add_project(&repo).unwrap().project;
+            let session = create_fake_session(&core, &project.id);
+            git(&session.worktree, &["switch", "-c", "better-name"]);
+            git(
+                &session.worktree,
+                &["commit", "--allow-empty", "-m", "task"],
+            );
+            if upstream {
+                git(&session.worktree, &["push", "-u", "origin", "HEAD"]);
+            } else {
+                git(&session.worktree, &["push", "origin", "HEAD"]);
+            }
+            if merge {
+                git(&repo, &["merge", "--ff-only", "better-name"]);
+                git(&repo, &["push", "origin", "main"]);
+            }
+            let (sink, _rx) = channel_sink();
+            let shell = core
+                .open_shell(&session.id, PtySize::default(), sink)
+                .unwrap();
+            let preview = core.session_switched_close_check(&session.id).unwrap();
+            assert_eq!(preview.recorded, session.branch);
+            assert_eq!(preview.current, "better-name");
+            assert_eq!(core.session(&session.id).unwrap().branch, session.branch);
+            core.session_close_switched(&session.id, &preview).unwrap();
+            assert!(!session.worktree.exists());
+            assert!(branch_exists(&repo, &session.branch));
+            assert!(branch_exists(&repo, "better-name"));
+            assert!(core.sessions().is_empty());
+            assert!(core.journal.list().unwrap().is_empty());
+            assert!(core.write(shell, b"echo still-running\n").is_err());
+        }
+    }
+
+    #[test]
+    fn switched_close_accepts_independently_published_or_integrated_branches() {
+        for integrated in [true, false] {
+            let scratch = Scratch::new();
+            let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+            let core = core_with_fake_cli(&scratch);
+            let project = core.add_project(&repo).unwrap().project;
+            let session = create_fake_session(&core, &project.id);
+            git(
+                &session.worktree,
+                &["commit", "--allow-empty", "-m", "original work"],
+            );
+            if integrated {
+                git(&repo, &["merge", "--ff-only", &session.branch]);
+                git(&repo, &["push", "origin", "main"]);
+            } else {
+                git(&session.worktree, &["push", "origin", "HEAD"]);
+            }
+            git(&session.worktree, &["switch", "-c", "review/other", "main"]);
+            git(
+                &session.worktree,
+                &["commit", "--allow-empty", "-m", "other work"],
+            );
+            git(&session.worktree, &["push", "origin", "HEAD"]);
+            let preview = core.session_switched_close_check(&session.id).unwrap();
+            core.session_close_switched(&session.id, &preview).unwrap();
+            assert!(branch_exists(&repo, &session.branch));
+            assert!(branch_exists(&repo, "review/other"));
+        }
+    }
+
+    #[test]
+    fn switched_close_accepts_empty_local_tasks_without_a_remote() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let session = create_fake_session(&core, &project.id);
+        git(&session.worktree, &["switch", "-c", "other"]);
+        let preview = core.session_switched_close_check(&session.id).unwrap();
+        core.session_close_switched(&session.id, &preview).unwrap();
+        assert!(branch_exists(&repo, &session.branch));
+        assert!(branch_exists(&repo, "other"));
+    }
+
+    #[test]
+    fn switched_close_refuses_unpublished_work_on_either_branch() {
+        for original in [true, false] {
+            let scratch = Scratch::new();
+            let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+            let core = core_with_fake_cli(&scratch);
+            let project = core.add_project(&repo).unwrap().project;
+            let session = create_fake_session(&core, &project.id);
+            if original {
+                git(
+                    &session.worktree,
+                    &["commit", "--allow-empty", "-m", "hidden task"],
+                );
+            }
+            git(&session.worktree, &["switch", "-c", "other", "main"]);
+            if !original {
+                git(
+                    &session.worktree,
+                    &["commit", "--allow-empty", "-m", "other task"],
+                );
+            }
+            assert!(matches!(
+                core.session_switched_close_check(&session.id),
+                Err(Error::SwitchedCloseUnsafe(_))
+            ));
+            assert!(session.worktree.exists());
+            assert!(branch_exists(&repo, &session.branch));
+            assert!(!core.sessions().is_empty());
+            assert!(
+                core.write(session.pty, b"").is_ok(),
+                "refusal kept the agent"
+            );
+        }
+    }
+
+    #[test]
+    fn switched_close_rechecks_confirmation_and_refuses_dirty_detached_or_missing_refs() {
+        for change in [
+            "dirty",
+            "current-commit",
+            "original-commit",
+            "switch",
+            "detach",
+            "delete",
+        ] {
+            let scratch = Scratch::new();
+            let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+            let core = core_with_fake_cli(&scratch);
+            let project = core.add_project(&repo).unwrap().project;
+            let session = create_fake_session(&core, &project.id);
+            git(&session.worktree, &["switch", "-c", "other"]);
+            let preview = core.session_switched_close_check(&session.id).unwrap();
+            match change {
+                "dirty" => fs::write(session.worktree.join("untracked"), "keep me").unwrap(),
+                "current-commit" => {
+                    git(
+                        &session.worktree,
+                        &["commit", "--allow-empty", "-m", "later"],
+                    );
+                    git(&session.worktree, &["push", "origin", "HEAD"]);
+                }
+                "original-commit" => {
+                    git(&session.worktree, &["switch", &session.branch]);
+                    git(
+                        &session.worktree,
+                        &["commit", "--allow-empty", "-m", "later"],
+                    );
+                    git(&session.worktree, &["push", "origin", "HEAD"]);
+                    git(&session.worktree, &["switch", "other"]);
+                }
+                "switch" => {
+                    git(&session.worktree, &["switch", "-c", "third"]);
+                }
+                "detach" => {
+                    git(&session.worktree, &["switch", "--detach"]);
+                }
+                "delete" => {
+                    git(&repo, &["branch", "-D", &session.branch]);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                core.session_close_switched(&session.id, &preview).is_err(),
+                "{change}"
+            );
+            assert!(session.worktree.exists(), "{change}");
+            assert!(!core.sessions().is_empty());
+            assert!(!core.journal.list().unwrap().is_empty());
+            if change == "dirty" {
+                assert!(core.session_switched_close_check(&session.id).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn switched_close_does_not_treat_local_main_as_proof_of_publication() {
+        let scratch = Scratch::new();
+        let (repo, _remote) = repo_with_dev_on_origin(&scratch);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let session = create_fake_session(&core, &project.id);
+        git(&repo, &["switch", "dev"]);
+        git(&session.worktree, &["switch", "main"]);
+        git(
+            &session.worktree,
+            &["commit", "--allow-empty", "-m", "unpublished main"],
+        );
+        assert!(core.session_switched_close_check(&session.id).is_err());
+        assert!(session.worktree.exists());
     }
 
     #[test]

@@ -130,7 +130,7 @@ PTY teardown runs on the background executor, not the UI thread. `Core::close_sh
 
 ### Close a task, cancel Close, or quit
 
-The existing task-close checks, discard/push choices, and worktree/branch cleanup rules are unchanged. `hang_up` now closes the agent and **all** PTYs recorded in that session's `shell_ptys`.
+Normal task-close checks and discard/push choices retain branch identity protection. The separate [branch-switch close recovery](branch-switch-close.md) checks both branches and offers explicit confirmation when safe; it preserves both branches and removes only the worktree/card. `hang_up` closes the agent and **all** PTYs recorded in that session's `shell_ptys` on either close path.
 
 Canceling Close for dirty or unpushed work preserves an already-selected shell. From the agent it selects the first remaining shell, or creates one if none exists, so the user can inspect/commit work. This is deliberate workflow routing, not generic overlay focus restoration.
 

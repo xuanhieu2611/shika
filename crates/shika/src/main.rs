@@ -351,6 +351,11 @@ enum Selection {
     Project(String),
     Card(usize),
 }
+enum CloseCheck {
+    Normal(SessionGitState),
+    Switched(shika_core::SwitchedBranchClose),
+}
+
 enum Overlay {
     Picker {
         project: String,
@@ -359,6 +364,11 @@ enum Overlay {
     Close {
         index: usize,
         state: SessionGitState,
+    },
+    SwitchedClose {
+        index: usize,
+        preview: shika_core::SwitchedBranchClose,
+        working: bool,
     },
     Preparation {
         project: String,
@@ -1896,21 +1906,41 @@ impl Shika {
         let id = session.id.clone();
         let working = self.cards[index].running();
         let core = self.core.clone();
+        self.overlay_return_focus = window.focused(cx);
         self.busy = true;
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { core.session_git_state(&id, working) })
+                .spawn(async move {
+                    match core.session_git_state(&id, working) {
+                        Ok(state) => Ok(CloseCheck::Normal(state)),
+                        Err(shika_core::Error::TaskBranchChanged { .. }) => core
+                            .session_switched_close_check(&id)
+                            .map(CloseCheck::Switched),
+                        Err(e) => Err(e),
+                    }
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok(state) if state.requires_confirmation() => {
+                    Ok(CloseCheck::Switched(preview)) => {
+                        this.overlay = Some(Overlay::SwitchedClose {
+                            index,
+                            preview,
+                            working,
+                        });
+                        window.focus(&this.focus, cx);
+                    }
+                    Ok(CloseCheck::Normal(state)) if state.requires_confirmation() => {
                         this.overlay = Some(Overlay::Close { index, state });
                         window.focus(&this.focus, cx);
                     }
                     Ok(_) => this.finish_close(index, 0, window, cx),
-                    Err(e) => this.message(e.to_string()),
+                    Err(e) => {
+                        this.overlay_return_focus = None;
+                        this.message(e.to_string());
+                    }
                 };
                 cx.notify();
             });
@@ -1934,6 +1964,10 @@ impl Shika {
         // Use the same check before showing choices and before removing the
         // task. Redraw bytes and draft typing are never active-turn evidence.
         let working = self.cards[index].running();
+        let preview = match &self.overlay {
+            Some(Overlay::SwitchedClose { preview, .. }) if action == 3 => Some(preview.clone()),
+            _ => None,
+        };
         let core = self.core.clone();
         self.busy = true;
         cx.spawn_in(window, async move |this, cx| {
@@ -1943,6 +1977,10 @@ impl Shika {
                     match action {
                         1 => core.session_discard(&id),
                         2 => core.session_push_and_close(&id),
+                        3 => match preview {
+                            Some(preview) => core.session_close_switched(&id, &preview),
+                            None => Err(shika_core::Error::CloseNeedsConfirmation),
+                        },
                         _ => core.session_close(&id, working),
                     }
                 })
@@ -1953,6 +1991,7 @@ impl Shika {
                     Ok(()) => {
                         this.cards.remove(index);
                         this.overlay = None;
+                        this.overlay_return_focus = None;
                         this.selection = if this.cards.is_empty() {
                             this.projects
                                 .first()
@@ -2430,6 +2469,14 @@ impl Shika {
                     match key {
                         "d" => self.finish_close(i, 1, window, cx),
                         "p" if can_push => self.finish_close(i, 2, window, cx),
+                        "escape" => self.cancel_overlay(window, cx),
+                        _ => {}
+                    }
+                }
+                Some(Overlay::SwitchedClose { index, .. }) => {
+                    let i = *index;
+                    match key {
+                        "enter" => self.finish_close(i, 3, window, cx),
                         "escape" => self.cancel_overlay(window, cx),
                         _ => {}
                     }
@@ -4112,6 +4159,37 @@ impl Shika {
                     )
                 };
                 panel.child(buttons)
+            }
+            Overlay::SwitchedClose {
+                index,
+                preview,
+                working,
+            } => {
+                let i = *index;
+                let mut panel = dialog(chrome, max_h)
+                    .child(dialog_title(div()).child(format!("Close “{}” after branch switch?", self.cards[i].title)))
+                    .child(dialog_text(chrome).child("This task started on:"))
+                    .child(dialog_text(chrome).font_family(MONO).child(preview.recorded.clone()))
+                    .child(dialog_text(chrome).child("The worktree is now on:"))
+                    .child(dialog_text(chrome).font_family(MONO).child(preview.current.clone()))
+                    .child(dialog_text(chrome).child("No unpublished work was found. Closing removes the worktree and stops all task terminals. Both local branches will be kept."));
+                if *working {
+                    panel = panel.child(
+                        dialog_text(chrome)
+                            .child("The agent is still active. Closing stops its current turn."),
+                    );
+                }
+                panel.child(
+                    dialog_buttons()
+                        .child(self.cancel_button("Cancel", chrome, cx))
+                        .child(
+                            primary_button("close-switched", "Close task", "↵", chrome).on_click(
+                                cx.listener(move |this, _, window, cx| {
+                                    this.finish_close(i, 3, window, cx)
+                                }),
+                            ),
+                        ),
+                )
             }
             Overlay::Leftovers => {
                 let mut panel = dialog(chrome, max_h)
