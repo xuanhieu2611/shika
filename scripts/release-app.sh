@@ -5,6 +5,8 @@
 #   1. A "Developer ID Application" certificate in the login keychain.
 #   2. xcrun notarytool store-credentials shika-notary \
 #        --apple-id <apple id> --team-id <team id>
+#   3. The Sparkle EdDSA private key in the login keychain, imported with
+#      generate_keys -f from the backup (see docs/updates.md).
 #
 # SHIKA_SIGN_IDENTITY overrides the signing identity and
 # SHIKA_NOTARY_PROFILE the notarytool keychain profile.
@@ -24,6 +26,13 @@ if ! security find-identity -v -p codesigning | grep -q "\"$identity"; then
     echo "No code signing identity matching \"$identity\" in the keychain." >&2
     exit 1
 fi
+# An app with a public key that matches no private key could never be updated.
+sparkle=$(./scripts/sparkle.sh)
+public_key=$(/usr/libexec/PlistBuddy -c "Print SUPublicEDKey" assets/macos/Info.plist)
+if [ "$("$sparkle/bin/generate_keys" -p 2>/dev/null)" != "$public_key" ]; then
+    echo "The Sparkle key in the keychain does not match SUPublicEDKey in Info.plist." >&2
+    exit 1
+fi
 
 # bundle-app.sh assembles the bundle and ad hoc signs it; the Developer ID
 # signature below replaces that one.
@@ -35,15 +44,17 @@ staging="$release_dir/dmg-staging"
 notary_result="$release_dir/notary-result.json"
 
 echo "Signing Shika $version"
+./scripts/embed-sparkle.sh "$app" "$identity"
 codesign --force --options runtime --timestamp --sign "$identity" "$app"
 codesign --verify --strict --verbose=2 "$app"
 
 echo "Creating $dmg"
 rm -rf "$staging" "$dmg"
 mkdir -p "$staging"
-cp -R "$app" "$staging/"
+ditto "$app" "$staging/Shika.app"
 ln -s /Applications "$staging/Applications"
-hdiutil create -volname Shika -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null
+# Sparkle installs from this DMG too; it recommends APFS with lzfse.
+hdiutil create -volname Shika -srcfolder "$staging" -ov -fs APFS -format ULFO "$dmg" >/dev/null
 rm -rf "$staging"
 codesign --force --timestamp --sign "$identity" "$dmg"
 

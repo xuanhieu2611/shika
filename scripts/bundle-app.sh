@@ -11,6 +11,9 @@ else
 fi
 target_dir=${CARGO_TARGET_DIR:-target}
 bundle="$target_dir/$profile/Shika.app"
+# Start clean, so nothing from an earlier build stays behind, such as the
+# Sparkle.framework that release-app.sh embeds.
+rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/fonts" "$bundle/Contents/Resources/licenses"
 cp "$target_dir/$profile/shika" "$bundle/Contents/MacOS/Shika"
 cp assets/macos/Info.plist "$bundle/Contents/Info.plist"

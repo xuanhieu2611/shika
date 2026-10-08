@@ -47,7 +47,7 @@ You need:
 - An Apple silicon Mac with macOS 13 or later.
 - At least one supported CLI, installed and signed in.
 
-Shika does not update itself yet. Download each new version from [Releases](https://github.com/xuanhieu2611/shika/releases).
+From 0.3.0, Shika checks for updates and installs them for you (Shika > Check for updates...). Older versions need one more download from [Releases](https://github.com/xuanhieu2611/shika/releases).
 
 ## Supported agents
 

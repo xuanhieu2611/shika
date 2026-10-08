@@ -3,6 +3,7 @@ mod appearance;
 mod lifecycle;
 mod model;
 mod notifications;
+mod updates;
 
 use appearance::{Chrome, with_alpha};
 use gpui::{
@@ -38,6 +39,7 @@ gpui::actions!(
         HideOthers,
         ShowAll,
         OpenSettings,
+        CheckForUpdates,
         NewAgent,
         NewTerminal,
         CreatePr,
@@ -5581,18 +5583,29 @@ fn main() -> anyhow::Result<()> {
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+        // Only a release bundle has Sparkle, so only it offers the check.
+        let mut app_menu = Vec::new();
+        if let Some(updater) = updates::Updater::start() {
+            cx.set_global(updater);
+            cx.on_action(|_: &CheckForUpdates, cx| cx.global::<updates::Updater>().check());
+            app_menu.push(gpui::MenuItem::action(
+                "Check for updates...",
+                CheckForUpdates,
+            ));
+        }
+        app_menu.extend([
+            gpui::MenuItem::action("Settings...", OpenSettings),
+            gpui::MenuItem::separator(),
+            gpui::MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
+            gpui::MenuItem::separator(),
+            gpui::MenuItem::action("Hide Shika", Hide),
+            gpui::MenuItem::action("Hide others", HideOthers),
+            gpui::MenuItem::action("Show all", ShowAll),
+            gpui::MenuItem::separator(),
+            gpui::MenuItem::action("Quit Shika", Quit),
+        ]);
         cx.set_menus([
-            gpui::Menu::new("Shika").items([
-                gpui::MenuItem::action("Settings...", OpenSettings),
-                gpui::MenuItem::separator(),
-                gpui::MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
-                gpui::MenuItem::separator(),
-                gpui::MenuItem::action("Hide Shika", Hide),
-                gpui::MenuItem::action("Hide others", HideOthers),
-                gpui::MenuItem::action("Show all", ShowAll),
-                gpui::MenuItem::separator(),
-                gpui::MenuItem::action("Quit Shika", Quit),
-            ]),
+            gpui::Menu::new("Shika").items(app_menu),
             gpui::Menu::new("Agent").items([
                 gpui::MenuItem::action("New agent", NewAgent),
                 gpui::MenuItem::action("New terminal tab", NewTerminal),

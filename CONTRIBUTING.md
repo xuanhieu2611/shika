@@ -16,6 +16,7 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 | Command shortcuts, focus restoration, or selected-row scrolling | [Keyboard flow](docs/keyboard-flow.md) |
 | Task titles and branch names from CLI metadata | [Branch naming](docs/branch-naming.md) |
 | Close after the user switched branches | [Branch-switch close](docs/branch-switch-close.md) |
+| Sparkle updates, the release feed, or signing keys | [Software updates](docs/updates.md) |
 | Agent and shell tabs, PTY ownership, or hidden terminals | [Terminal tabs](docs/terminal-tabs.md) |
 | Create PR, recorded-base targeting, commit/push, or publishing retries | [Confirmed PR publishing](docs/publishing.md), especially its [debugging playbook](docs/publishing.md#debugging-playbook) and [contributor guardrails](docs/publishing.md#contributor-guardrails-and-extension-points) |
 

@@ -13,5 +13,9 @@
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <key>SUFeedURL</key><string>https://useshika.com/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>bWNHSlvd+9GlQpRlMVV0wpuMvcqQoppcOVbzpt8pj84=</string>
+    <key>SUVerifyUpdateBeforeExtraction</key><true/>
+    <key>SURequireSignedFeed</key><true/>
 </dict>
 </plist>

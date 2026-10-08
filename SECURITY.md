@@ -2,8 +2,10 @@
 
 Shika is an early-stage, macOS-only project. Security fixes ship in the next
 [release](https://github.com/xuanhieu2611/shika/releases); older releases are not
-patched. Shika does not update itself yet, so download the latest release to get
-a fix.
+patched. Shika 0.3.0 and later offer updates through Sparkle; earlier versions
+need the latest release downloaded by hand. Updates are verified with an EdDSA
+signature and Shika's Developer ID before they install; see
+[software updates](docs/updates.md).
 
 ## Reporting a concern
 
