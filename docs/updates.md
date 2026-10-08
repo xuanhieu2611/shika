@@ -39,7 +39,7 @@ Sparkle's windows are its standard AppKit UI. They are not styled by [design/DES
        --title "Shika 0.3.0" --notes-file notes.md --latest
    ```
 
-The update is live as soon as the release is: `latest/download` serves it at once. Drafts and prereleases are not served there. A release without `appcast.xml` breaks the feed for everyone until one is uploaded.
+The update goes live with the release. GitHub's `latest/download` can keep serving the previous release's files for about a minute (40 seconds on 0.3.0), so check `curl -sSL https://useshika.com/appcast.xml` after that. Drafts and prereleases are never served there. A release without `appcast.xml` breaks the feed for everyone until one is uploaded.
 
 To pull back a bad release, mark the previous release latest so new checks stop offering it, then ship a fix with a higher build. Sparkle does not downgrade copies that already updated.
 
