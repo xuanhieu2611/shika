@@ -11,7 +11,7 @@ use gpui::{
     PathPromptOptions, Pixels, Render, Rgba, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, WindowBounds, WindowOptions, div, prelude::FluentBuilder, px, size,
 };
-use model::{PromptCapture, Status, TitleWatch, visible_indices};
+use model::{PromptCapture, Status, TitleWatch};
 use notifications::Notifications;
 use shika_core::{
     Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize, JournalEntry,
@@ -3306,8 +3306,7 @@ impl Shika {
         self.title_drag(row, cx)
     }
 
-    /// One project: its header, its empty box or its cards, and the count of
-    /// cards past the three shown.
+    /// One project: its header, then its empty box or every card.
     fn project_group(
         &self,
         project: &Project,
@@ -3483,29 +3482,8 @@ impl Shika {
                     })),
             );
         }
-        let selected_index = self
-            .selected_card()
-            .and_then(|i| indices.iter().position(|j| *j == i));
-        let shown = visible_indices(indices.len(), selected_index);
-        let visible = shown.len();
-        for at in shown {
-            column = column.child(self.card_view(
-                indices[at],
-                chrome,
-                cards_focused,
-                reveal_selection,
-                cx,
-            ));
-        }
-        if indices.len() > visible {
-            column = column.child(
-                div()
-                    .px(px(8.))
-                    .py(px(2.))
-                    .text_size(px(12.))
-                    .text_color(chrome.ink_3)
-                    .child(format!("+ {} more · j to reach", indices.len() - visible)),
-            );
+        for at in indices {
+            column = column.child(self.card_view(at, chrome, cards_focused, reveal_selection, cx));
         }
         column
     }

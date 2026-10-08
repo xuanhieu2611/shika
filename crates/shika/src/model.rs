@@ -451,14 +451,6 @@ impl Dwell {
         false
     }
 }
-/// Keep the selected card inside the three-card window.
-pub fn visible_indices(len: usize, selected: Option<usize>) -> std::ops::Range<usize> {
-    let start = selected
-        .unwrap_or(0)
-        .saturating_sub(2)
-        .min(len.saturating_sub(3));
-    start..(start + 3).min(len)
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,11 +592,6 @@ mod tests {
             tilde(std::path::Path::new("/Users/developer-other"), Some(home)),
             "/Users/developer-other"
         );
-    }
-    #[test]
-    fn navigation_never_exceeds_three() {
-        assert_eq!(visible_indices(6, Some(5)), 3..6);
-        assert_eq!(visible_indices(6, Some(0)), 0..3);
     }
     #[test]
     fn captures_only_first_nonempty_submission() {

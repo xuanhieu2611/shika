@@ -14,7 +14,8 @@ The PRD is the spec, except where this file records a later decision from the au
 - Each project has an optional base branch, the branch New starts from, for repos where work happens on a branch such as `dev` and merges to `main` later. Unset, New starts from the remote default branch. The project header shows it, and `b` or a click on it opens the Base branch dialog. A card measures its diff stat and its close checks against the base it started from, so changing the base later does not touch running cards. Decided by the author 2026-10-05. See "Worktree".
 - A Settings dialog (Cmd-,) sets background opacity, blur radius, whether translucency covers the sidebar alone or the sidebar and terminal, the terminal font size (8 to 32, default 14), and whether a notification plays the system alert sound (on by default). The title bar uses that same opacity, so the window blur shows through it. Saved in `settings.json`. The default is opaque. Decided 2026-10-04.
 - Settings gets themes. A Theme row (System, Light, Dark) and a Light theme and a Dark theme pick from the catalog in `shika-terminal`. System follows macOS and uses the matching pick; Light and Dark force that side, and set `NSApp.appearance` so the traffic lights, menus, and `window.appearance()` match. Saved in `settings.json` as `theme` (`mode`, `light`, `dark`, ids as strings); missing or unknown values are System, `shika-light`, and `shika-dark`, and an unknown or wrong-side id paints that side's Shika theme without being rewritten. Shika Light and Shika Dark keep their hand-tuned chrome. Every other theme's chrome is derived from its palette and UI surfaces, with Shika's layout and hierarchy, secondary and status text meeting 4.5:1 on the column, and solid popups. `h` / `l` step a pick through that side of the catalog, wrapping, and apply and save at once. Decided by the author 2026-10-07.
-- `j` / `k` and the arrows move through cards only, including cards hidden by the three-card cap, and skip project headers. An empty project is not a keyboard stop. Cmd+N opens the picker for the selected card's project, or the first project when nothing is selected, and Tab in the picker changes the project. `b` follows the selected card. An empty project's base branch is the click on its header label. Decided by the author 2026-10-05. Plain `n` no longer opens the picker; see the 2026-10-07 decision.
+- `j` / `k` and the arrows move through cards only and skip project headers. An empty project is not a keyboard stop. Cmd+N opens the picker for the selected card's project, or the first project when nothing is selected, and Tab in the picker changes the project. `b` follows the selected card. An empty project's base branch is the click on its header label. Decided by the author 2026-10-05. Plain `n` no longer opens the picker; see the 2026-10-07 decision.
+- Every card under a project is shown. When the list is taller than the column, the existing project-list scroll shows the rest. `j` / `k` still move through every card, and a selection change scrolls that card into view. Decided by the author 2026-10-07. This supersedes the three-card cap and the "+ N more" line below and in the PRD.
 - New and Close are Command shortcuts from either the cards or a terminal. Cmd+N opens the picker. Cmd+Shift+W closes the selected task through the existing safe-close flow, including cancelling setup and removing a failed card. Plain `n` and `c` do nothing, so a letter typed on the cards cannot open New or destroy a task. `j` / `k`, Enter, `a`, `b`, and `r` stay card-only. A clean idle task still closes immediately. Decided by the author 2026-10-07.
 
 ## Confirmed PR publishing
@@ -108,7 +109,7 @@ You do not name the task in a separate field.
 4. **Projects persist. Live sessions do not restore.** Relaunch shows the project list and an empty terminal. A journal of Shika worktrees is kept so a quit or crash can list leftovers. Nothing is deleted automatically. The user removes leftovers from that list.
 5. **One terminal view per live PTY, hidden when not selected.** Switching cards does not kill processes. Output keeps flowing into the hidden view so the CLI does not block on a full PTY buffer. Shell PTYs are created only on request, then kept until their individual tab or the task closes.
 6. **Status stays coarse.** The later Agent activity and turn timer decision above supersedes output-only quiet detection. Prefer lifecycle reports and live agent UI chrome; quiet output is only a fallback within a started turn. Drafts and terminal interactions are not turns. Ordinary text questions can remain Ready to check, recognizable blocking dialogs are Asking you, and a non-zero exit is still Ready to check.
-7. **Fonts.** The system UI font, San Francisco, for the chrome. JetBrains Mono, bundled with the app under its OFL license, for the terminal, as in `design/`. Menlo if it fails to load. SF Mono is out: GPUI loads only its regular weight. Shika Light and Shika Dark follow the system appearance, and the terminal shares the column's background in both (light chrome with a dark terminal until 2026-10-07). Warm mark for asking, green mark for ready. A resizable, hideable column, 540px by default (280px until 2026-10-04; fixed until 2026-10-06), at most three visible cards per project.
+7. **Fonts.** The system UI font, San Francisco, for the chrome. JetBrains Mono, bundled with the app under its OFL license, for the terminal, as in `design/`. Menlo if it fails to load. SF Mono is out: GPUI loads only its regular weight. Shika Light and Shika Dark follow the system appearance, and the terminal shares the column's background in both (light chrome with a dark terminal until 2026-10-07). Warm mark for asking, green mark for ready. A resizable, hideable column, 540px by default (280px until 2026-10-04; fixed until 2026-10-06). Every card is shown; the 2026-10-07 decision supersedes the three-card cap.
 8. **Extra keyboard keys the PRD table does not list, because the app has to work without a mouse.** `a` adds a project. Cmd+N opens the CLI picker from the cards or a terminal. Cmd+Shift+W closes the selected task from either surface. Plain `n` and `c` do nothing. In the picker, `j` / `k`, Enter, and `1`–`4` choose, Escape cancels. In the close dialog, `d` discards, `p` pushes when that action is available, Escape cancels. The 2026-10-07 decision supersedes the PRD rows for `n` and `c`.
 9. **No summary at the top of the column, 2026-10-05.** The headline ("2 agents across 1 project") and the per-status count chips added nothing the cards do not already show. Status lives at the right end of each card: moving pixels while Working, a grey dot while Waiting, and a green dot until a Ready result has been seen.
 
@@ -230,7 +231,7 @@ A shell tab is the user's login shell with its cwd set to the worktree. No comma
 
 ### Keyboard and focus
 
-Focus starts on the cards. `j` / `k` and arrows move through every card, including cards hidden by the three-card cap, and skip project headers. The three visible cards follow the selection. A project with no agents is still a row, but it is not a keyboard stop. Cmd+N opens the picker for the selected card's project, or the first project when nothing is selected, and Tab in the picker changes the project. `b` follows the selected card. An empty project's base branch is the click on its header label.
+Focus starts on the cards. `j` / `k` and arrows move through every card and skip project headers. Every card is shown, and a selection change scrolls that card into view when the list is taller than the column. A project with no agents is still a row, but it is not a keyboard stop. Cmd+N opens the picker for the selected card's project, or the first project when nothing is selected, and Tab in the picker changes the project. `b` follows the selected card. An empty project's base branch is the click on its header label.
 
 `Enter` focuses the terminal. `Ctrl+Q` returns to the cards. `Escape` is typed into the terminal. Cmd+Shift+W closes the selected task from the cards or a terminal. Plain `c` does nothing.
 
@@ -240,7 +241,7 @@ The native shortcut layer works from cards or a terminal: `Ctrl+Tab` / `Ctrl+Shi
 
 ### Layout
 
-- Left column, 540px by default, resizable and hideable (see the decisions at the top). Every project. Under each, up to three cards. Further cards show as a count and stay reachable from the keyboard.
+- Left column, 540px by default, resizable and hideable (see the decisions at the top). Every project. Every card under a project is shown. The list scrolls when it does not fit.
 - A card shows the CLI name, the task name, and the status. The worktree path is only in the terminal header.
 - Right side: the selected agent's terminal, or empty if a project header is selected or there are no sessions. At most one terminal on screen.
 - Header controls: pinned CLI tab, optional shell tabs with individual close controls, new shell `+`, Close task. Worktree path and focus hint sit immediately below.
@@ -289,11 +290,11 @@ Check, in the built app opened from Finder:
 
 If the embedded terminal cannot drive Claude's or Cursor's UI, fix that before continuing. The rest of the MVP depends on it.
 
-### 4. Card title, status, collapse
+### 4. Card title and status
 
-First Enter renames the branch and the card. Counts line. Status colors. More than three cards collapse, keyboard still reaches them. Working view does not grow a custom transcript.
+First Enter renames the branch and the card. Counts line. Status colors. Every card is shown, and the column scrolls when the list does not fit. Working view does not grow a custom transcript.
 
-Check: two agents under one project show the right titles and statuses. A third and fourth collapse. An empty project remains visible.
+Check: two agents under one project show the right titles and statuses. A third and fourth stay on screen, scrolling if the column is full. An empty project remains visible.
 
 ### 5. Keyboard
 
