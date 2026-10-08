@@ -318,7 +318,9 @@ class Component extends DCLogic {
     const de = document.documentElement;
     if (de.dataset.theme !== t) de.dataset.theme = t;
     const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-transparency: reduce)').matches;
-    const glass = (this.props.glass ?? true) && !reduce ? 'on' : 'off';
+    // The landing page embeds the window without its desktop wallpaper: ?glass=off.
+    const glassOff = new URLSearchParams(location.search).get('glass') === 'off';
+    const glass = (this.props.glass ?? true) && !reduce && !glassOff ? 'on' : 'off';
     if (de.dataset.glass !== glass) de.dataset.glass = glass;
     const alpha = String(Math.max(0.85, Math.min(1, this.props.terminalOpacity ?? 0.92)));
     if (de.style.getPropertyValue('--glass-term-alpha') !== alpha) de.style.setProperty('--glass-term-alpha', alpha);
@@ -340,7 +342,15 @@ class Component extends DCLogic {
     const tabKey = a.id + ':' + a.selectedTab;
     if (tabKey !== this.lastTabKey) {
       this.lastTabKey = tabKey;
-      document.querySelector('.terminal-tab[data-selected="true"]')?.scrollIntoView({ block:'nearest', inline:'nearest' });
+      // Reveal the tab by scrolling only its strip: scrollIntoView would also
+      // scroll the landing page that embeds this prototype.
+      const tab = document.querySelector('.terminal-tab[data-selected="true"]');
+      const strip = tab && tab.closest('.terminal-tabs');
+      if (strip) {
+        const t = tab.getBoundingClientRect(), s = strip.getBoundingClientRect();
+        if (t.left < s.left) strip.scrollLeft -= s.left - t.left;
+        else if (t.right > s.right) strip.scrollLeft += t.right - s.right;
+      }
     }
     const shell = this.activeShell(a);
     const key = a.id + ':' + a.selectedTab + ':' + a.lines.length + ':' + (shell ? shell.lines.length + ':' + shell.input.length : a.draft.length) + ':' + a.status;

@@ -12,9 +12,10 @@ Serve over HTTP: the runtime fetches its own page. No real agents or Git command
 
 ## Files
 
-- `index.html`, `styles.css`, `main.js`: landing page.
+- `index.html`, `styles.css`, `main.js`: landing page. Light and dark share one set of tokens in `styles.css`; the system appearance decides until the nav toggle saves a choice (`localStorage` key `shika-theme`). The embedded prototype follows the page theme and loads with `?glass=off`, so it has no desktop wallpaper.
+- `field.js`: the paintings, dithered in one ink. Each `canvas.field` redraws `data-src` with Atkinson dithering in `--field-ink` at `--field-alpha`, so the art stays behind the copy. `data-mode="scene"` is the hero landscape: its ground line stands on the demo's top edge (`data-anchor`, `data-ground`), so the deer peeks over the app window, and it thins out around the copy (`data-clear`). `data-mode="frame"` covers its canvas (the closing section). With a mouse, moving the pointer turns the dither back into the painting in color along its path, which fades over a few seconds. Each develops once from the bottom up; under reduced motion there is no animation and no trail. Attributes are documented at the top of the file.
 - `demo/`: interactive prototype derived from the archived `design/Shika v3.dc.html`. It offers Claude Code, Codex, Cursor CLI, and Pi, with a pinned agent tab and independent task-owned shell tabs. `support.js` is the retained generated runtime; app behavior lives in the inline component in `demo/index.html`, and overrides live in `demo/styles.css`. There is no runtime generator source in this repository.
-- `img/`: logo, app icon, favicons, the native sample screenshot used as the loading poster, and `og.png` (2800x1760 native sample screenshot for link previews).
+- `img/`: generated paintings: `forest-center.webp` (hero landscape) and `forest-frame-2.webp` (closing section, paper cut out so it works on light and dark); logo, app icon, favicons, the native sample screenshot used as the loading poster, and `og.png` (2800x1760 native sample screenshot for link previews).
 - `fonts/`: Geist and JetBrains Mono, both under the SIL Open Font License.
 - `licenses/`, `notices.html`: website attribution. See the root `THIRD_PARTY_NOTICES.md` for the full inventory.
 

@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Shika - Run coding agents in parallel on your Mac</title>
-<meta name="description" content="Shika is a free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side. Every task gets its own git worktree, and Shika tells you when one is ready.">
-<meta name="theme-color" content="#f3f4ee" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111310" media="(prefers-color-scheme: dark)">
+<meta name="description" content="Shika is a free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side. Every task gets its own git worktree and terminal, automatically.">
+<meta name="theme-color" content="#eef0e7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121511" media="(prefers-color-scheme: dark)">
 <link rel="canonical" href="https://useshika.com/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Shika">
-<meta property="og:title" content="Shika - Start the agents. Go do something else.">
+<meta property="og:title" content="Shika - Run your coding agents side by side.">
 <meta property="og:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side, each in its own git worktree.">
 <meta property="og:url" content="https://useshika.com/">
 <meta property="og:image" content="https://useshika.com/img/og.png">
@@ -19,15 +19,27 @@
 <meta property="og:image:alt" content="Native Shika app with three tasks across two sample projects and a task-owned shell tab. CLI output is simulated.">
 <meta name="twitter:image:alt" content="Native Shika app with sample projects and simulated CLI output.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Shika - Start the agents. Go do something else.">
+<meta name="twitter:title" content="Shika - Run your coding agents side by side.">
 <meta name="twitter:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side, each in its own git worktree.">
 <meta name="twitter:image" content="https://useshika.com/img/og.png">
 <link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png">
 <link rel="icon" type="image/png" sizes="64x64" href="img/favicon-64.png">
 <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
 <link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/JetBrainsMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<script>
+  // Theme: a saved choice wins, otherwise the system appearance. Set before paint.
+  // data-theme holds the saved choice; data-resolved-theme is what is showing.
+  (function () {
+    var d = document.documentElement, t = null;
+    d.classList.add('js');
+    try { t = localStorage.getItem('shika-theme'); } catch (e) {}
+    if (t === 'light' || t === 'dark') d.dataset.theme = t;
+    else t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    d.dataset.resolvedTheme = t;
+  })();
+</script>
 <link rel="stylesheet" href="styles.css">
-<script>document.documentElement.classList.add('js')</script>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <!-- Icons: Tabler Icons (MIT), outline set -->
   <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4 -4.3 -2.5 -6 -3m12 5v-3.5c0 -1 .1 -1.4 -.5 -2c2.8 -.3 5.5 -1.4 5.5 -6a4.6 4.6 0 0 0 -1.3 -3.2a4.2 4.2 0 0 0 -.1 -3.2s-1.1 -.3 -3.5 1.3a12.3 12.3 0 0 0 -6.2 0c-2.4 -1.6 -3.5 -1.3 -3.5 -1.3a4.2 4.2 0 0 0 -.1 3.2a4.6 4.6 0 0 0 -1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6 .6 -.6 1.2 -.5 2v3.5"/></symbol>
@@ -37,46 +49,45 @@
   <symbol id="i-download" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><path d="M7 7m0 2.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667z"/><path d="M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24"><path d="M7 18m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M7 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M17 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M7 8l0 8"/><path d="M9 18h6a2 2 0 0 0 2 -2v-5"/><path d="M14 14l3 -3l3 3"/></symbol>
 </svg>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <div id="top" aria-hidden="true"></div>
-
 <header class="nav" id="nav">
   <div class="wrap nav-inner">
-    <a class="brand" href="#top" aria-label="Shika home"><img src="img/app-icon-128.png" alt="" width="30" height="30">Shika</a>
+    <a class="brand" href="#top" aria-label="Shika home"><img src="img/logo-256.png" alt="" width="36" height="36">Shika</a>
     <nav class="nav-links" aria-label="Sections">
       <a href="#how">How it works</a>
       <a href="#features">Features</a>
       <a href="#faq">FAQ</a>
     </nav>
     <div class="nav-end">
-      <a class="nav-gh" href="https://github.com/xuanhieu2611/shika"><svg class="icon"><use href="#i-github"/></svg><span>GitHub</span></a>
-      <a class="btn btn-primary btn-sm" href="#install">Install Shika</a>
+      <button class="icon-btn" type="button" id="theme-toggle" aria-label="Switch to light theme"><svg class="icon i-sun"><use href="#i-sun"/></svg><svg class="icon i-moon"><use href="#i-moon"/></svg></button>
+      <a class="icon-btn nav-gh" href="https://github.com/xuanhieu2611/shika" aria-label="Shika on GitHub"><svg class="icon"><use href="#i-github"/></svg></a>
+      <a class="btn btn-primary btn-sm" href="#install">Download</a>
     </div>
   </div>
 </header>
-
 <main id="main">
   <section class="hero">
-    <div class="wrap">
-      <div class="hero-grid">
-        <div>
-          <a class="pill-link rise" style="--i:0" href="https://github.com/xuanhieu2611/shika"><span class="tag">Open source</span>Free for every Mac, MIT licensed<svg class="icon"><use href="#i-arrow"/></svg></a>
-          <h1 class="rise" style="--i:1">Start the agents.<br><span class="soft">Go do something else.</span></h1>
-          <p class="lede rise" style="--i:2">Every Claude Code, Codex, Cursor CLI, or Pi task gets its own git worktree and terminal. Shika tells you when one is ready.</p>
-          <div class="cta-row rise" style="--i:3">
-            <a class="btn btn-primary" href="#install">Install Shika</a>
-            <a class="btn btn-ghost" href="https://github.com/xuanhieu2611/shika"><svg class="icon"><use href="#i-github"/></svg>View on GitHub</a>
-          </div>
-        </div>
-        <div class="hero-mark rise" style="--i:2"><img src="img/logo-512.webp" alt="The Shika logo: a deer above a small terminal node graph" width="260" height="260"></div>
+    <canvas class="field field-hero" data-mode="scene" data-anchor=".demo" data-ground="0.745,52" data-clear=".hero-clear" data-src="img/forest-center.webp" aria-hidden="true"></canvas>
+    <div class="wrap hero-inner">
+      <a class="pill-link hero-clear rise" style="--i:0" href="https://github.com/xuanhieu2611/shika"><span class="tag">Open source</span>Free for every Mac, MIT licensed</a>
+      <h1 class="hero-clear rise" style="--i:1">Run your coding agents side by side.</h1>
+      <p class="lede hero-clear rise" style="--i:2">Shika handles the worktrees, branches, and terminals. Every task isolated. Every project organized.</p>
+      <div class="cta-row rise" style="--i:3">
+        <a class="btn btn-primary" href="https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg"><svg class="icon"><use href="#i-download"/></svg>Download for Mac</a>
+        <a class="btn btn-ghost" href="https://github.com/xuanhieu2611/shika"><svg class="icon"><use href="#i-github"/></svg>View on GitHub</a>
       </div>
-
-      <div class="demo rise" style="--i:4" id="demo">
+    </div>
+    <div class="wrap hero-demo">
+      <div class="demo rise" style="--i:5" id="demo">
         <div class="demo-frame" id="demo-frame">
-          <iframe id="demo-iframe" data-src="demo/" title="Interactive Shika prototype with sample data. Click inside, then use j and k to move, Enter to focus the terminal, or n for a new agent." tabindex="0"></iframe>
+          <iframe id="demo-iframe" data-src="demo/" title="Interactive Shika prototype with sample data. Click inside, then use j and k to move, Enter to focus the terminal, or Cmd+N for a new agent." tabindex="0"></iframe>
         </div>
         <div class="demo-caption">
           <p class="demo-keys"><strong>Interactive prototype, sample data.</strong> Try <kbd>j</kbd><kbd>k</kbd> to move, <kbd>↵</kbd> to focus the terminal, or click <kbd>+</kbd> to add a shell tab.</p>
@@ -89,8 +100,10 @@
 
   <section class="section" id="how">
     <div class="wrap">
-      <h2 class="reveal">The whole workflow is five keys.</h2>
-      <p class="section-lede reveal">Shika is built for the keyboard. Your hands stay put from the first prompt to the push.</p>
+      <div class="section-head">
+        <h2 class="reveal">From prompt to pull request in five keys.</h2>
+        <p class="section-lede reveal">Start an agent, write the prompt, and move to the next one while it works. Your hands stay on the keyboard the whole way.</p>
+      </div>
       <ol class="rail">
         <li class="reveal" style="--i:0">
           <span class="key" aria-label="Command N">⌘N</span>
@@ -103,19 +116,19 @@
           <p>Type straight into the real terminal. The first line names the branch, then the CLI's own title renames it.</p>
         </li>
         <li class="reveal" style="--i:2">
-          <span class="key is-passive" aria-label="Notification"><svg class="icon"><use href="#i-bell"/></svg></span>
-          <h3>Go do something else</h3>
-          <p>When the agent goes quiet, a notification tells you which task is ready to check.</p>
+          <span class="key" aria-label="Command right bracket">⌘]</span>
+          <h3>Move to the next one</h3>
+          <p>Jump to another agent while this one works. A notification names the task that is ready or needs an answer.</p>
         </li>
         <li class="reveal" style="--i:3">
           <span class="key" aria-label="Command T">⌘T</span>
-          <h3>Check it in the shell</h3>
-          <p>Add a shell tab in the same worktree. Diff, test, commit and push yourself.</p>
+          <h3>Review in a shell</h3>
+          <p>Open a shell in the same worktree. Read the diff, run the tests, try the app.</p>
         </li>
         <li class="reveal" style="--i:4">
-          <span class="key" aria-label="Command Shift W" style="font-size:18px">⌘⇧W</span>
-          <h3>Close the card</h3>
-          <p>Shika removes the worktree, and asks first if any work would be lost.</p>
+          <span class="key key-wide" aria-label="Command Shift P">⌘⇧P</span>
+          <h3>Open the PR</h3>
+          <p>Preview every change and the title, then Shika commits, pushes, and opens the pull request with <code>gh</code>.</p>
         </li>
       </ol>
     </div>
@@ -123,59 +136,58 @@
 
   <section class="section" id="features">
     <div class="wrap">
-      <h2 class="reveal">Made for people who don't watch agents work.</h2>
-      <div class="bento">
-        <article class="tile t-cards scene-meadow reveal">
-          <div class="tile-copy">
-            <h3>See what's done without reading any output.</h3>
-            <p>Each card shows the task, the CLI, the branch and how long it has been in its state. Ready cards add a diff stat of what changed.</p>
+      <div class="section-head">
+        <h2 class="reveal">Know where every agent stands.</h2>
+        <p class="section-lede reveal">One window for every task in every repo. You only look at an agent when it has something for you.</p>
+      </div>
+      <div class="grid reveal">
+        <article class="cell cell-cards">
+          <div class="cell-copy">
+            <h3>Status on every card, without reading output.</h3>
+            <p>Each card shows the task, the CLI, and the branch. Working, asking, and ready each have their own signal, and a ready card adds a diff stat.</p>
           </div>
-          <div class="tile-visual">
-            <div class="ui ui-column" aria-hidden="true">
-              <div class="ui-chips">
-                <span class="ui-chip ready"><span class="dot ready"></span>1 ready</span>
-                <span class="ui-chip working"><span class="dot working"></span>2 working</span>
-                <span class="ui-chip"><span class="dot waiting"></span>1 waiting</span>
+          <div class="cell-visual">
+            <div class="m m-column" aria-hidden="true">
+              <div class="m-project"><b>storefront</b><span class="m-path">~/code/storefront</span><span class="m-base"><svg class="icon"><use href="#i-branch"/></svg>main</span></div>
+              <div class="m-card asking">
+                <div class="m-row1"><span class="m-task">Migrate the orders table to UUID keys</span><span class="m-sig"><span class="dot asking"></span></span></div>
+                <div class="m-row2"><span>Codex</span><span class="sep">·</span><span class="br">orders-uuid-keys</span></div>
               </div>
-              <div class="ui-card ready is-selected">
-                <div class="ui-row1"><span class="dot ready"></span><span class="ui-task">Retry failed Stripe webhooks with backoff</span><span class="ui-time t-ready">12m</span></div>
-                <div class="ui-row2"><span>Claude Code</span><span class="sep">·</span><span class="t-ready">Ready to check</span><span class="sep">·</span><span class="br">retry-failed-webhooks</span><span class="sep">·</span><span>2 files +64 −3</span></div>
+              <div class="m-card ready is-selected">
+                <div class="m-row1"><span class="m-task">Retry failed Stripe webhooks with backoff</span><span class="m-sig"><span class="dot ready"></span></span></div>
+                <div class="m-row2"><span>Claude Code</span><span class="sep">·</span><span class="br">retry-failed-webhooks</span><span class="sep">·</span><span class="m-stat">2 files +64 −3</span><span class="m-hint"><span class="m-kbd">↵</span>read</span></div>
               </div>
-              <div class="ui-card">
-                <div class="ui-row1"><span class="dot working"></span><span class="ui-task">Fix the flaky timeout test in tests/timeout.rs</span><span class="ui-time t-working">1m</span></div>
-                <div class="ui-row2"><span>Cursor CLI</span><span class="sep">·</span><span class="t-working">Working</span><span class="sep">·</span><span class="br">fix-flaky-timeout-test</span></div>
+              <div class="m-card">
+                <div class="m-row1"><span class="m-task">Calculate sales tax at checkout</span><span class="m-time">6m</span><span class="m-sig"><span class="pixels"><i></i><i></i><i></i></span></span></div>
+                <div class="m-row2"><span>Cursor CLI</span><span class="sep">·</span><span class="br">sales-tax-at-checkout</span></div>
               </div>
-              <div class="ui-card">
-                <div class="ui-row1"><span class="dot working"></span><span class="ui-task">Calculate sales tax at checkout</span><span class="ui-time t-working">6m</span></div>
-                <div class="ui-row2"><span>Claude Code</span><span class="sep">·</span><span class="t-working">Working</span><span class="sep">·</span><span class="br">sales-tax-at-checkout</span></div>
-              </div>
-              <div class="ui-card">
-                <div class="ui-row1"><span class="dot waiting"></span><span class="ui-task" style="color:#6c7166">New Claude Code</span><span class="ui-time" style="color:#9ea296">8s</span></div>
-                <div class="ui-row2"><span>Claude Code</span><span class="sep">·</span><span class="t-waiting">Waiting</span><span class="sep">·</span><span class="br">shika-draft-3f2a</span></div>
+              <div class="m-card">
+                <div class="m-row1"><span class="m-task is-new">New Pi</span><span class="m-sig"><span class="dot waiting"></span></span></div>
+                <div class="m-row2"><span>Pi</span><span class="sep">·</span><span class="br">shika-draft-3f2a</span></div>
               </div>
             </div>
           </div>
         </article>
 
-        <article class="tile t-notify scene-tide reveal" style="--i:1">
-          <div class="tile-copy">
-            <h3>A notification when an agent is ready.</h3>
+        <article class="cell cell-notify">
+          <div class="cell-copy">
+            <h3>A notification when an agent needs you.</h3>
             <p>Native macOS banners, titled with the project and the task. Click one to land on that card. One per turn, not one per redraw.</p>
           </div>
-          <div class="tile-visual">
-            <div class="ui notif-stack" aria-hidden="true">
-              <div class="ui-notif">
+          <div class="cell-visual">
+            <div class="notif-stack" aria-hidden="true">
+              <div class="m-notif">
                 <img src="img/app-icon-128.png" alt="">
-                <div style="min-width:0;flex:1">
-                  <div class="meta"><b>SHIKA</b><span>now</span></div>
+                <div class="m-notif-body">
+                  <div class="meta"><b>Shika</b><span>now</span></div>
                   <div class="title">routekit - Fix the flaky timeout test</div>
                   <div class="body">Ready to check</div>
                 </div>
               </div>
-              <div class="ui-notif">
+              <div class="m-notif">
                 <img src="img/app-icon-128.png" alt="">
-                <div style="min-width:0;flex:1">
-                  <div class="meta"><b>SHIKA</b><span>4m ago</span></div>
+                <div class="m-notif-body">
+                  <div class="meta"><b>Shika</b><span>4m ago</span></div>
                   <div class="title">storefront - Retry failed Stripe webhooks</div>
                   <div class="body">Ready to check</div>
                 </div>
@@ -184,12 +196,12 @@
           </div>
         </article>
 
-        <article class="tile t-worktrees scene-term reveal">
-          <div class="tile-copy">
+        <article class="cell cell-tree">
+          <div class="cell-copy">
             <h3>One git worktree per agent.</h3>
             <p>Agents never touch your main checkout or each other. Worktrees live in <code>.worktrees/</code>, kept out of git by the repo's local exclude, not your <code>.gitignore</code>.</p>
           </div>
-          <div class="tile-visual">
+          <div class="cell-visual">
 <pre class="tree" aria-label="A repository with three agent worktrees"><span class="d">~/code/</span>routekit
 <span class="d">├─</span> .worktrees/
 <span class="d">│  ├─</span> <span class="b">fix-flaky-timeout-test</span>
@@ -199,60 +211,78 @@
           </div>
         </article>
 
-        <article class="tile t-close reveal" style="--i:1">
-          <div class="tile-copy">
-            <h3>Close asks before anything is lost.</h3>
-            <p>Uncommitted changes or unpushed commits? Shika tells you, then lets you discard or push. It never commits for you.</p>
+        <article class="cell cell-pr">
+          <div class="cell-copy">
+            <h3>Open the pull request from the card.</h3>
+            <p>Create PR shows every file and an editable title, then stages, commits, pushes, and opens the PR against the branch the task started from.</p>
           </div>
-          <div class="tile-visual">
-            <div class="dialog-scene">
-              <div class="ui ui-dialog" aria-hidden="true">
-                <span class="title">Close “Fix the flaky timeout test”?</span>
-                <span class="text">The branch has commits that are not on the remote.</span>
-                <span class="text">Discard stops the session and deletes the worktree and local branch.</span>
-                <div class="buttons">
-                  <span class="ui-btn">Cancel<span>esc</span></span>
-                  <span class="ui-btn">Discard changes<span>d</span></span>
-                  <span class="ui-btn primary">Push changes<span>p</span></span>
-                </div>
+          <div class="cell-visual">
+            <div class="m m-dialog" aria-hidden="true">
+              <span class="title">Create pull request</span>
+              <span class="m-field">Retry failed Stripe webhooks with backoff</span>
+              <span class="m-route"><span class="br">retry-failed-webhooks</span><span class="arrow">into</span><span class="br">main</span></span>
+              <span class="m-files"><span>src/webhooks/retry.ts</span><span class="add">+58 −3</span></span>
+              <span class="m-files"><span>src/webhooks/retry.test.ts</span><span class="add">+6</span></span>
+              <div class="buttons">
+                <span class="m-btn">Cancel<span>esc</span></span>
+                <span class="m-btn primary">Create PR<span>↵</span></span>
               </div>
             </div>
           </div>
         </article>
 
-        <article class="tile t-native reveal">
-          <div class="native">
-            <div>
-              <h3>A native Mac app, written in Rust.</h3>
-              <p>Built on GPUI, the GPU-accelerated UI framework behind Zed. Each agent gets a real terminal that keeps running while hidden, so a busy CLI never stalls.</p>
+        <article class="cell cell-close">
+          <div class="cell-copy">
+            <h3>Close asks before anything is lost.</h3>
+            <p>Uncommitted changes or unpushed commits? Shika tells you, then lets you discard or push. Close never commits.</p>
+          </div>
+          <div class="cell-visual">
+            <div class="m m-dialog" aria-hidden="true">
+              <span class="title">Close “Fix the flaky timeout test”?</span>
+              <span class="text">The branch has commits that are not on the remote.</span>
+              <span class="text">Discard stops the session and deletes the worktree and local branch.</span>
+              <div class="buttons">
+                <span class="m-btn">Cancel<span>esc</span></span>
+                <span class="m-btn">Discard<span>d</span></span>
+                <span class="m-btn primary">Push<span>p</span></span>
+              </div>
             </div>
-            <div class="native-specs" aria-label="Built with">
-              <span class="spec">Rust</span>
-              <span class="spec">GPUI</span>
-              <span class="spec">alacritty_terminal</span>
-              <span class="spec">macOS 13+</span>
-            </div>
+          </div>
+        </article>
+
+        <article class="cell cell-native">
+          <div class="cell-copy">
+            <h3>A native Mac app, written in Rust.</h3>
+            <p>Built on GPUI, the GPU-accelerated UI framework behind Zed. Every agent gets a real terminal that keeps running while hidden, so a busy CLI never stalls.</p>
+          </div>
+          <div class="cell-visual">
+            <ul class="specs" aria-label="Built with">
+              <li><span>Language</span><b>Rust</b></li>
+              <li><span>UI</span><b>GPUI</b></li>
+              <li><span>Terminal</span><b>alacritty_terminal</b></li>
+              <li><span>Runs on</span><b>macOS 13+</b></li>
+            </ul>
           </div>
         </article>
       </div>
     </div>
   </section>
 
-  <section class="statement">
+  <section class="section statement">
     <div class="wrap">
-      <h2 class="reveal">Shika doesn't wrap a model API. <span class="soft">It runs the CLI you already pay for, in a real terminal, on your Mac.</span></h2>
+      <h2 class="reveal">Shika doesn't wrap a model API.</h2>
+      <p class="section-lede reveal">It runs the CLI you already pay for, in a real terminal, with your login, settings, and plan.</p>
       <div class="clis reveal">
         <span class="cli"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>Claude Code</span>
         <span class="cli"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23"/></svg>Cursor CLI</span>
         <span class="cli">Codex</span>
         <span class="cli">Pi</span>
-        <span class="cli-next">Kiro is next</span>
       </div>
       <ul class="nots reveal">
         <li><svg class="icon"><use href="#i-check"/></svg>No account</li>
         <li><svg class="icon"><use href="#i-check"/></svg>No API keys</li>
         <li><svg class="icon"><use href="#i-check"/></svg>No telemetry</li>
-        <li><svg class="icon"><use href="#i-check"/></svg>Never commits for you</li>
+        <li><svg class="icon"><use href="#i-check"/></svg>Commits only when you ask</li>
         <li><svg class="icon"><use href="#i-check"/></svg>Worktrees stay when you quit</li>
       </ul>
     </div>
@@ -266,6 +296,7 @@
         <ul class="reqs">
           <li><svg class="icon"><use href="#i-check"/></svg>Apple silicon Mac with macOS 13 or later</li>
           <li><svg class="icon"><use href="#i-check"/></svg>Claude Code, Codex, Cursor CLI, or Pi, installed and signed in</li>
+          <li><svg class="icon"><use href="#i-check"/></svg>GitHub CLI, signed in, if you want Create PR</li>
         </ul>
         <div class="cta-row">
           <a class="btn btn-primary" href="https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg"><svg class="icon"><use href="#i-download"/></svg>Download for Mac</a>
@@ -289,7 +320,7 @@
     <div class="wrap faq-grid">
       <div class="reveal">
         <h2>Questions</h2>
-        <p class="section-lede">Something else? <a href="https://github.com/xuanhieu2611/shika/issues" style="text-decoration:underline;text-underline-offset:3px">Open an issue</a>.</p>
+        <p class="section-lede">Something else? <a class="link" href="https://github.com/xuanhieu2611/shika/issues">Open an issue</a>.</p>
       </div>
       <div class="faq-list reveal" style="--i:1">
         <details>
@@ -298,7 +329,7 @@
         </details>
         <details>
           <summary>Which coding agents does it run?</summary>
-          <p>Claude Code, Codex, Cursor CLI, and Pi today. Kiro is next. Shika starts the binary you already have, so your login, settings and plan come with it.</p>
+          <p>Claude Code, Codex, Cursor CLI, and Pi. Shika starts the binary you already have, so your login, settings and plan come with it.</p>
         </details>
         <details>
           <summary>Will agents ask before running commands?</summary>
@@ -306,15 +337,15 @@
         </details>
         <details>
           <summary>Does Shika send my code or prompts anywhere?</summary>
-          <p>Shika has no telemetry or model API integration. Your agent CLI talks to its provider, Git fetch and push connect to your remotes, and any worktree setup commands you approve can use the network. Your CLI controls what it sends to its provider.</p>
+          <p>Shika has no telemetry or model API integration. Your agent CLI talks to its provider, Git fetch and push connect to your remotes, Create PR uses your GitHub CLI, and any worktree setup commands you approve can use the network. Your CLI controls what it sends to its provider.</p>
         </details>
         <details>
           <summary>Why a git worktree for every task?</summary>
           <p>So agents can edit the same repo at the same time without colliding, and your main checkout stays clean. Each worktree is a full checkout on its own branch, under <code>.worktrees/</code> in your repo.</p>
         </details>
         <details>
-          <summary>Will it push or commit for me?</summary>
-          <p>It never commits. Add a shell tab with <code>⌘T</code>, then review, commit and push yourself. When you close a card with a clean tree and unpushed commits, Shika offers to push them. A push keeps the card open until you close it.</p>
+          <summary>Will it commit or push for me?</summary>
+          <p>Only when you ask. Create PR (<code>⌘⇧P</code>) shows every change and the title first, then commits, pushes, and opens the pull request. It never merges or force-pushes. Close never commits: with a clean tree and unpushed commits, it offers to push them.</p>
         </details>
         <details>
           <summary>What happens when I quit?</summary>
@@ -333,21 +364,21 @@
   </section>
 
   <section class="final">
-    <div class="wrap">
-      <div class="final-mark reveal"><img src="img/logo-256.png" alt="" width="132" height="132" loading="lazy"></div>
+    <canvas class="field field-final" data-mode="frame" data-clear=".final-inner > *" data-src="img/forest-frame-2.webp" aria-hidden="true"></canvas>
+    <div class="wrap final-inner">
+      <img class="final-mark reveal" src="img/app-icon-256.png" alt="" width="96" height="96" loading="lazy">
       <h2 class="reveal">Keep track of everyone on the field.</h2>
       <p class="reveal">Free, open source, and native to your Mac.</p>
       <div class="cta-row reveal">
-        <a class="btn btn-primary" href="#install">Install Shika</a>
+        <a class="btn btn-primary" href="https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg"><svg class="icon"><use href="#i-download"/></svg>Download for Mac</a>
         <a class="btn btn-ghost" href="https://github.com/xuanhieu2611/shika"><svg class="icon"><use href="#i-github"/></svg>View on GitHub</a>
       </div>
     </div>
   </section>
 </main>
-
 <footer class="footer">
   <div class="wrap footer-inner">
-    <a class="brand" href="#top"><img src="img/app-icon-128.png" alt="" width="24" height="24" loading="lazy">Shika</a>
+    <a class="brand" href="#top"><img src="img/logo-256.png" alt="" width="28" height="28" loading="lazy">Shika</a>
     <nav aria-label="Footer">
       <a href="https://github.com/xuanhieu2611/shika">GitHub</a>
       <a href="https://github.com/xuanhieu2611/shika/issues">Issues</a>
@@ -358,7 +389,7 @@
     <span>Made by <a href="https://github.com/xuanhieu2611">Hieu Le</a></span>
   </div>
 </footer>
-
+<script src="field.js" defer></script>
 <script src="main.js" defer></script>
 </body>
 </html>
