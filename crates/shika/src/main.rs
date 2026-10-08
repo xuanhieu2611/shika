@@ -41,6 +41,7 @@ gpui::actions!(
         NewTerminal,
         CreatePr,
         CloseTerminal,
+        CloseTask,
         NextTerminal,
         PreviousTerminal,
         NextAgent,
@@ -2692,10 +2693,8 @@ impl Shika {
             "j" | "down" => self.move_selection(1, window, cx),
             "k" | "up" => self.move_selection(-1, window, cx),
             "a" => self.add_project(cx),
-            "n" => self.picker(window, cx),
             "r" => self.retry_preparation(window, cx),
             "enter" => self.focus_terminal(window, cx),
-            "c" => self.close(window, cx),
             "b" => {
                 if self.busy || self.selection.is_none() {
                     return;
@@ -3082,7 +3081,7 @@ impl Shika {
                     .py(px(4.))
                     .font_weight(FontWeight::MEDIUM)
                     .child("New agent")
-                    .child(kbd("n", chrome.sunken, chrome.ink_3))
+                    .child(kbd("\u{2318}N", chrome.sunken, chrome.ink_3))
                     .tooltip(move |_, cx| {
                         cx.new(|_| KeyTip {
                             bg: tip_bg,
@@ -3620,7 +3619,7 @@ impl Shika {
                         .gap_x(px(12.))
                         .child(hint("j k", "move", chrome))
                         .child(hint("↵", "terminal", chrome))
-                        .child(hint("c", "close", chrome)),
+                        .child(hint("\u{2318}\u{21e7}W", "close", chrome)),
                 )
             })
     }
@@ -3918,7 +3917,10 @@ impl Shika {
                                     } else {
                                         "Close task"
                                     })
-                                    .child(kbd("c", chrome.term_line, chrome.term_dim).py_0())
+                                    .child(
+                                        kbd("\u{2318}\u{21e7}W", chrome.term_line, chrome.term_dim)
+                                            .py_0(),
+                                    )
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.close(window, cx)),
                                     ),
@@ -4056,7 +4058,7 @@ impl Shika {
                             .text_size(px(11.5))
                             .text_color(chrome.term_fainter)
                             .child(key("j", "select"))
-                            .child(key("n", "new agent")),
+                            .child(key("\u{2318}N", "new agent")),
                     ),
             );
         }
@@ -4718,8 +4720,8 @@ const MONO: &str = "JetBrains Mono";
 const MIN_TERMINAL_WIDTH: f32 = 420.;
 /// The narrowest column that fits the footer's key hints, without and with
 /// the Leftover worktrees button.
-const FOOTER_HINTS_FIT: f32 = 400.;
-const FOOTER_HINTS_FIT_WITH_LEFTOVERS: f32 = 560.;
+const FOOTER_HINTS_FIT: f32 = 420.;
+const FOOTER_HINTS_FIT_WITH_LEFTOVERS: f32 = 580.;
 /// The invisible strip over the column's edge that starts a resize.
 const COLUMN_HANDLE_WIDTH: f32 = 8.;
 /// The top row of both halves of the window, which is the title bar.
@@ -5220,6 +5222,12 @@ impl Render for Shika {
                     this.close_tab(this.cards[i].active_tab, window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &CloseTask, window, cx| {
+                if this.busy || this.overlay.is_some() {
+                    return;
+                }
+                this.close(window, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &NextTerminal, window, cx| this.cycle_tab(true, window, cx)),
             )
@@ -5303,6 +5311,7 @@ fn main() -> anyhow::Result<()> {
             gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-shift-p", CreatePr, Some("Shika")),
             gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
+            gpui::KeyBinding::new("cmd-shift-w", CloseTask, Some("Shika")),
             gpui::KeyBinding::new("ctrl-tab", NextTerminal, Some("Shika")),
             gpui::KeyBinding::new("ctrl-shift-tab", PreviousTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
@@ -5350,6 +5359,7 @@ fn main() -> anyhow::Result<()> {
                 gpui::MenuItem::action("New terminal tab", NewTerminal),
                 gpui::MenuItem::action("Create PR", CreatePr),
                 gpui::MenuItem::action("Close terminal tab", CloseTerminal),
+                gpui::MenuItem::action("Close task", CloseTask),
                 gpui::MenuItem::action("Next terminal tab", NextTerminal),
                 gpui::MenuItem::action("Previous terminal tab", PreviousTerminal),
                 gpui::MenuItem::separator(),

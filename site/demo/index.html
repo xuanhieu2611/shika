@@ -35,7 +35,7 @@ a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
         <span style="width:12px;height:12px;border-radius:50%;background:var(--traffic-zoom);box-shadow:inset 0 0 0 0.5px rgba(0,0,0,0.12)"></span>
       </div>
       <span style="flex:1;padding-left:12px;font-size:13.5px;font-weight:600">Shika</span>
-      <button onClick="{{ newTop }}" style="display:flex;align-items:center;gap:8px;border:1px solid var(--line-control);background:var(--surface-raised);border-radius:7px;padding:4px 6px 4px 11px;font-size:12.5px;font-weight:500;color:var(--ink-1);cursor:default;box-shadow:var(--shadow-control)" style-hover="background:var(--surface-raised-hover)">New agent<span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-3);border-radius:4px;padding:1px 5px">n</span></button>
+      <button onClick="{{ newTop }}" style="display:flex;align-items:center;gap:8px;border:1px solid var(--line-control);background:var(--surface-raised);border-radius:7px;padding:4px 6px 4px 11px;font-size:12.5px;font-weight:500;color:var(--ink-1);cursor:default;box-shadow:var(--shadow-control)" style-hover="background:var(--surface-raised-hover)">New agent<span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-3);border-radius:4px;padding:1px 5px">⌘N</span></button>
     </div>
 
     <div style="flex:none;padding:6px 20px 18px;display:flex;flex-direction:column;gap:10px">
@@ -100,7 +100,7 @@ a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
         <div style="display:flex;flex-wrap:wrap;column-gap:12px;row-gap:6px;padding-right:6px;font-size:11px;color:var(--ink-3)">
           <span style="display:flex;gap:4px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">j k</span>move</span>
           <span style="display:flex;gap:4px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">↵</span>terminal</span>
-          <span style="display:flex;gap:4px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">c</span>close</span>
+          <span style="display:flex;gap:4px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--surface-sunken);color:var(--ink-2);border-radius:4px;padding:1px 5px">⌘⇧W</span>close</span>
         </div>
       </sc-if>
     </div>
@@ -120,7 +120,7 @@ a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
           </sc-for>
           <button onClick="{{ newShell }}" title="New shell tab ⌘T" aria-label="New shell tab" class="add-tab">+</button>
         </div>
-        <button onClick="{{ closeSel }}" class="close-task">Close task <span>c</span></button>
+        <button onClick="{{ closeSel }}" class="close-task">Close task <span>⌘⇧W</span></button>
       </div>
       <div class="terminal-meta">
         <span class="worktree-path">{{ wtPath }}</span>
@@ -140,7 +140,7 @@ a{color:var(--ink-2);}a:hover{color:var(--ink-1);}
         <img src="assets/shika-app-icon-256.png" alt="Shika" style="width:64px;height:64px;margin-bottom:6px"><span>No agent selected</span>
         <span style="display:flex;gap:14px;font-size:11.5px;color:var(--term-faint)">
           <span style="display:flex;gap:5px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--term-seg-bg);color:var(--term-dim);border-radius:4px;padding:1px 5px">j</span>select</span>
-          <span style="display:flex;gap:5px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--term-seg-bg);color:var(--term-dim);border-radius:4px;padding:1px 5px">n</span>new agent</span>
+          <span style="display:flex;gap:5px;align-items:center"><span style="font-family:var(--font-mono);font-size:10.5px;background:var(--term-seg-bg);color:var(--term-dim);border-radius:4px;padding:1px 5px">⌘N</span>new agent</span>
         </span>
       </div>
     </sc-if>
@@ -576,6 +576,7 @@ class Component extends DCLogic {
     else if (e.ctrlKey && !e.metaKey && k.toLowerCase() === 'q') this.setState({ focus: 'cards' });
     else if (e.metaKey && !e.ctrlKey && !e.altKey) {
       if (k.toLowerCase() === 't') this.newShell();
+      else if (k.toLowerCase() === 'w' && e.shiftKey) { if (a) this.requestClose(a.id, 'close'); }
       else if (k.toLowerCase() === 'w') { if (a) this.closeShell(a, a.selectedTab); }
       else if (k.toLowerCase() === 'n') this.openPicker();
       else if (k === ']' || k === '[') this.move(k === ']' ? 1 : -1, true);
@@ -585,10 +586,8 @@ class Component extends DCLogic {
     else if (st.focus === 'terminal') { this.termKey(e); return; }
     else if (k === 'j' || k === 'ArrowDown') this.move(1);
     else if (k === 'k' || k === 'ArrowUp') this.move(-1);
-    else if (k === 'n') this.openPicker();
     else if (k === 'a') this.addProject();
     else if (k === 'Enter') { if (a) this.setState({ focus: 'terminal' }); }
-    else if (k === 'c') { if (a) this.requestClose(a.id, 'close'); }
     else return;
     e.preventDefault();
   }

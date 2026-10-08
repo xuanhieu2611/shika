@@ -19,6 +19,7 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+Shift+P` | Preview commit, push, and Create PR for the task's original base | Dialog; cancel/completion restores previous focus |
 | `Cmd+T` | New independent shell tab in this task's worktree | New shell; startup input is queued |
 | `Cmd+W` | Close selected shell tab. On the pinned agent it does nothing and does not close the task | Preceding tab if the closed view had focus; otherwise preserve focus |
+| `Cmd+Shift+W` | Close the selected task. Same path as the Close task button: cancel setup, remove a failed card, or the safe-close flow | Unchanged until close finishes; a clean idle task closes immediately |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next/previous tab in this task, wrapping | Destination terminal |
 | `Cmd+1` through `Cmd+9` | Jump to that tab. `Cmd+1` is the pinned agent. A missing number does nothing | That terminal |
 | `Cmd+]` | Next agent in current row order | Terminal if invoked from a terminal; cards if invoked from cards |
@@ -44,7 +45,7 @@ Create PR is also in the Agent menu and terminal metadata row. Its dialog uses T
 - `j`/`k` and arrows navigate cards while the cards are focused, skipping project headers. An empty project is not a stop.
 - `Enter` enters the selected task's currently shown terminal.
 - `Ctrl+Q` returns from the terminal to the cards.
-- `n`, `a`, `b`, and `c` retain their card actions. `g` is not a shortcut.
+- `a`, `b`, and `r` retain their card actions. Plain `n` and `c` do nothing. `g` is not a shortcut.
 - Escape reaches the CLI when a terminal is focused. It is not an app-wide escape-to-navigation key.
 - Close cancellation still routes dirty or unpushed work to the task shell. It is a workflow transition, not generic focus restoration.
 - Cards remain sorted by attention within each project. This improvement does not stabilize their order during status changes.
@@ -67,7 +68,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 
 | Piece | Symbols / location | Responsibility |
 | --- | --- | --- |
-| Action definitions | `gpui::actions!`, `SelectTerminal` | `NewAgent`, `NextAgent`, `PreviousAgent`, and the numbered tab jump |
+| Action definitions | `gpui::actions!`, `SelectTerminal` | `NewAgent`, `CloseTask`, `NextAgent`, `PreviousAgent`, and the numbered tab jump |
 | Shortcut registration | `main`, `cx.bind_keys` | Command bindings scoped to the `Shika` key context |
 | Action dispatch | `Shika::render`, root `.key_context("Shika")` and `.on_action` | Routes actions from cards or descendant terminal views; handlers guard busy/overlay state |
 | Existing keys | `Shika::key` | Plain-key navigation, overlay editing, and terminal `Ctrl+Q` escape hatch |
