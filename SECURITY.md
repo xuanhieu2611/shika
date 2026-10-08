@@ -1,7 +1,9 @@
 # Security policy
 
-Shika is an early-stage, macOS-only project. Security fixes target the current
-`main` branch; older snapshots are not maintained separately.
+Shika is an early-stage, macOS-only project. Security fixes ship in the next
+[release](https://github.com/xuanhieu2611/shika/releases); older releases are not
+patched. Shika does not update itself yet, so download the latest release to get
+a fix.
 
 ## Reporting a concern
 
