@@ -657,6 +657,75 @@ pub fn git_state(
     })
 }
 
+/// Verify a switched task without deleting or adopting either branch.
+/// Full refs avoid revision-option ambiguity. Missing refs fail closed.
+pub fn switched_close_tips(
+    git: &Path,
+    path_env: &str,
+    session: &crate::Session,
+    current: &str,
+) -> Result<(String, String)> {
+    if is_dirty(git, path_env, &session.worktree)? {
+        return Err(Error::SwitchedCloseUnsafe(
+            "The worktree has uncommitted changes. Commit and push in the shell, then close again."
+                .into(),
+        ));
+    }
+    let base = compare_base(
+        git,
+        path_env,
+        &session.repo,
+        &session.worktree,
+        session.base_ref.as_deref(),
+    )?;
+    let mut tips = Vec::new();
+    for branch in [&session.branch, current] {
+        let reference = format!("refs/heads/{branch}");
+        let output = read_only_git(git, path_env, &session.worktree)
+            .args(["rev-parse", "--verify", &format!("{reference}^{{commit}}")])
+            .output()
+            .map_err(|_| Error::GitStatus(None))?;
+        if !output.status.success() {
+            return Err(Error::SwitchedCloseUnsafe(format!(
+                "Cannot verify branch {branch}. Return to the task branch before closing."
+            )));
+        }
+        // A local base equal to the branch being checked proves nothing about
+        // unpublished commits on that branch. In that case only remotes count.
+        let base_ref = read_only_git(git, path_env, &session.worktree)
+            .args(["rev-parse", "--symbolic-full-name", &base])
+            .output()
+            .map_err(|_| Error::GitStatus(None))?;
+        if !base_ref.status.success() {
+            return Err(Error::GitStatus(first_line(&base_ref.stderr)));
+        }
+        let base_is_branch = String::from_utf8_lossy(&base_ref.stdout).trim() == reference;
+        let mut command = read_only_git(git, path_env, &session.worktree);
+        command.args([
+            "rev-list",
+            "--max-count=1",
+            &reference,
+            "--not",
+            "--remotes",
+        ]);
+        if !base_is_branch {
+            command.arg(&base);
+        }
+        command.arg("--");
+        let unpublished = command.output().map_err(|_| Error::GitStatus(None))?;
+        if !unpublished.status.success() {
+            return Err(Error::GitStatus(first_line(&unpublished.stderr)));
+        }
+        if !unpublished.stdout.is_empty() {
+            return Err(Error::SwitchedCloseUnsafe(format!(
+                "Branch {branch} has unpublished commits. Push or integrate them before closing, or return to the task branch for the existing close choices."
+            )));
+        }
+        tips.push(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+    Ok((tips.remove(0), tips.remove(0)))
+}
+
 /// The ref a session's work is measured against: the recorded base while it
 /// still resolves, else the default branch, with its safety refusal.
 fn compare_base(

@@ -2,6 +2,15 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Themes, 2026-10-07
+
+Automated validation: workspace tests, formatting, and strict Clippy passed, and a debug bundle was built. Tests cover `theme` defaults, unknown and wrong-side ids, mode stepping, a byte-identical Shika chrome and palette snapshot across solid, glass, and Reduce transparency, and, for every catalog theme plus synthetic dark, light, and low-contrast themes, 4.5:1 secondary and status text on the column, the active tab matching the terminal, the shared column background, and solid popups. The bundle was opened with a disposable `--data-dir` and a forced mode opposite macOS's; it started and was quit. No screenshots or input were taken, so nothing below is established.
+
+- [ ] Theme Light and Dark force the window, traffic lights, menus, and tooltips whatever macOS says; System follows a live macOS appearance change again, in both directions.
+- [ ] `h` / `l` on Light theme and Dark theme step and wrap through the catalog, repaint the chrome, and recolor every live agent and shell terminal at once. The choice survives a relaunch.
+- [ ] Several derived themes (Catppuccin, Rosé Pine, Tokyo Night, Dracula, Gruvbox) look like themselves: cards, selected card, dialogs, key caps, segmented tracks, toast, status dots, timers, and tints, opaque and in glass, with frost on the sidebar alone and on the terminal.
+- [ ] The Settings panel scrolls in a 600px-high window and `j` / `k` keep the selected row in view.
+
 ## Confirmed PR publishing
 
 Automated validation: 285 workspace tests, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Sixteen publishing tests use real disposable Git repos/worktrees, fake gh, and a local bare push transport. They cover recorded main/dev mapping, explicit missing-target selection, origin mapping, preview preserving the real index, ignored files, stale previews, commit/push/target arguments, existing PR reuse excluding same-named fork branches, partial-failure retries without duplicate commits, hook failure preserving staged work, unfinished merge refusal, dirty-submodule detection, switched-source refusal, and bounded subprocess timeout. No real GitHub PR or normal app data was changed.
@@ -187,9 +196,25 @@ IME candidate placement, sustained typing feel, and the broader terminal matrix 
 - [ ] In an isolated app session, rename the task branch in its shell. Within a few seconds the card shows the new branch, while the title and worktree folder stay unchanged.
 - [ ] Commit, rename, push, create/merge a PR, then press Cmd+Shift+W. The clean pushed task closes and its local branch remains.
 - [ ] Rename with dirty files or unpushed commits. Close still asks; dirty work cannot be pushed, cancel keeps work, and explicit discard removes the renamed task branch.
-- [ ] Switch to an unrelated branch or detach HEAD. Close still refuses and preserves the worktree.
+- [ ] Switch to an unrelated branch with unpublished work, or detach HEAD. Close refuses safe recovery and preserves the worktree. A safe attached switch uses the separate confirmation below.
 
 Automated core tests exercise these Git lifecycles in disposable repositories. GUI checks above remain pending.
+
+## Branch-switch close
+
+Implementation validation after merging the latest main (PR publishing and themes): parallel `cargo test --workspace` passed 309 tests (165 core, 78 app, 66 terminal); formatting and strict workspace/all-targets Clippy passed. The debug bundle built and passed strict signature verification. The upstream `block` future-compatibility warning remains. Core recovery tests use disposable repositories and local bare remotes. Native GUI acceptance below is pending, not established by unit tests.
+
+- [ ] Create a task, `git switch -c better-name`, commit and push with a local bare remote. Cmd+Shift+W shows both branch names, preservation facts, Cancel, and Close task. Enter removes the card/worktree/journal and keeps both local branches and remote refs.
+- [ ] Repeat after merging into the base and with a push without `-u`. No need to return to the old branch.
+- [ ] Put unpublished commits only on the original branch; switch to a clean published branch. Close refuses and names the original branch. Repeat with unpublished work only on the current branch.
+- [ ] Dirty tracked and non-ignored untracked work blocks recovery. Detached HEAD and a deleted recorded ref also block it. Card/worktree/terminals remain.
+- [ ] Switch while the agent is active. The safe confirmation warns about stopping its turn. Confirm stops the agent and every shell; Cancel stops none.
+- [ ] Escape/click Cancel restores the opening card or terminal focus, including a selected shell. `d` and `p` do nothing in the recovery dialog; plain `c` does nothing on cards.
+- [ ] Change a branch tip or HEAD, or create dirty work through an external process while the dialog is open. Confirm refuses stale/unsafe cleanup; cancel and retry obtains fresh verification.
+- [ ] Existing genuine rename adoption, dirty/unpushed normal close choices, and empty draft branch deletion still work.
+- [ ] Check light/dark, translucency, long branch/task names, narrow windows, and multiple live tasks. No new colors or styling values.
+
+Contributor overview, safety limits, implementation map, and debugging: [docs/branch-switch-close.md](docs/branch-switch-close.md).
 
 ## Open-source presentation check, 2026-10-05
 

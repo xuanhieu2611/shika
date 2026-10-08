@@ -16,11 +16,12 @@ use notifications::Notifications;
 use shika_core::{
     Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize, JournalEntry,
     KnownBranches, PreparationConfig, PreparationControl, PreparationEvent, Project, ProjectBase,
-    PtyEvent, PtyId, PtySize, PublishPreview, Session, SessionGitState, Settings, Translucency,
+    PtyEvent, PtyId, PtySize, PublishPreview, Session, SessionGitState, Settings, ThemeMode,
+    ThemeSettings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalEvent, TerminalOptions,
-    TerminalSize, TerminalView, openable_uri,
+    TerminalSize, TerminalView, Theme, openable_uri,
 };
 use std::{
     collections::HashMap,
@@ -352,6 +353,11 @@ enum Selection {
     Project(String),
     Card(usize),
 }
+enum CloseCheck {
+    Normal(SessionGitState),
+    Switched(shika_core::SwitchedBranchClose),
+}
+
 enum Overlay {
     Publish {
         preview: PublishPreview,
@@ -368,6 +374,11 @@ enum Overlay {
         index: usize,
         state: SessionGitState,
     },
+    SwitchedClose {
+        index: usize,
+        preview: shika_core::SwitchedBranchClose,
+        working: bool,
+    },
     Preparation {
         project: String,
         preset: CliPreset,
@@ -377,8 +388,8 @@ enum Overlay {
     Leftovers,
     RemoveLeftover(usize),
     RemoveProject(String),
-    /// `row` is the selected setting: opacity, blur, translucency, font size,
-    /// the branch prefix, then notification sound. `edit` holds digits typed
+    /// `row` is the selected setting, one of the `*_ROW` constants. `edit`
+    /// holds digits typed
     /// into the selected number, or the prefix being typed, not yet applied.
     Settings {
         row: usize,
@@ -410,6 +421,9 @@ struct Shika {
     sidebar_scroll: gpui::ScrollHandle,
     /// The Base branch list, so Up and Down can bring the highlight into view.
     base_scroll: gpui::ScrollHandle,
+    /// The Settings panel, so `j` / `k` keep the selected row on screen when
+    /// a short window makes it scroll.
+    settings_scroll: gpui::ScrollHandle,
     last_revealed_selection: Option<Selection>,
     busy: bool,
     toast: Option<(String, Instant)>,
@@ -423,6 +437,9 @@ struct Shika {
     notifications: Notifications,
     clicks: std::sync::mpsc::Receiver<String>,
     appearance: Appearance,
+    /// Theme mode and the light and dark picks, as saved. Ids resolve to a
+    /// catalog theme when painting.
+    theme: ThemeSettings,
     /// Terminal text size. New panes and live ones both use it.
     font_size: FontSize,
     /// Last read of macOS Reduce transparency. Glass stays off while this is set.
@@ -473,6 +490,7 @@ impl Shika {
             Settings::default()
         });
         let appearance = settings.appearance;
+        let theme = settings.theme.clone();
         let font_size = settings.font_size;
         let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
         let notification_sound = settings.notification_sound;
@@ -480,9 +498,8 @@ impl Shika {
         let reduce_transparency = appearance::reduce_transparency();
         let entity = cx.entity().downgrade();
         let appearance_watch = window.observe_window_appearance(move |window, cx| {
-            let dark = appearance::is_dark(window.appearance());
             let _ = entity.update(cx, |this, cx| {
-                this.push_terminal_theme(dark, cx);
+                this.push_terminal_theme(window, cx);
                 cx.notify();
             });
         });
@@ -501,6 +518,7 @@ impl Shika {
             overlay_return_focus: None,
             sidebar_scroll: gpui::ScrollHandle::new(),
             base_scroll: gpui::ScrollHandle::new(),
+            settings_scroll: gpui::ScrollHandle::new(),
             last_revealed_selection: None,
             busy: false,
             toast: if load_errors.is_empty() {
@@ -517,6 +535,7 @@ impl Shika {
             notifications,
             clicks,
             appearance,
+            theme,
             font_size,
             reduce_transparency,
             appearance_watch,
@@ -1351,7 +1370,7 @@ impl Shika {
             if reduce != self.reduce_transparency {
                 self.reduce_transparency = reduce;
                 appearance::apply(&self.appearance, window);
-                self.push_terminal_theme(appearance::is_dark(window.appearance()), cx);
+                self.push_terminal_theme(window, cx);
                 changed = true;
             }
         }
@@ -2014,21 +2033,41 @@ impl Shika {
         let id = session.id.clone();
         let working = self.cards[index].running();
         let core = self.core.clone();
+        self.overlay_return_focus = window.focused(cx);
         self.busy = true;
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { core.session_git_state(&id, working) })
+                .spawn(async move {
+                    match core.session_git_state(&id, working) {
+                        Ok(state) => Ok(CloseCheck::Normal(state)),
+                        Err(shika_core::Error::TaskBranchChanged { .. }) => core
+                            .session_switched_close_check(&id)
+                            .map(CloseCheck::Switched),
+                        Err(e) => Err(e),
+                    }
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok(state) if state.requires_confirmation() => {
+                    Ok(CloseCheck::Switched(preview)) => {
+                        this.overlay = Some(Overlay::SwitchedClose {
+                            index,
+                            preview,
+                            working,
+                        });
+                        window.focus(&this.focus, cx);
+                    }
+                    Ok(CloseCheck::Normal(state)) if state.requires_confirmation() => {
                         this.overlay = Some(Overlay::Close { index, state });
                         window.focus(&this.focus, cx);
                     }
                     Ok(_) => this.finish_close(index, 0, window, cx),
-                    Err(e) => this.message(e.to_string()),
+                    Err(e) => {
+                        this.overlay_return_focus = None;
+                        this.message(e.to_string());
+                    }
                 };
                 cx.notify();
             });
@@ -2052,6 +2091,10 @@ impl Shika {
         // Use the same check before showing choices and before removing the
         // task. Redraw bytes and draft typing are never active-turn evidence.
         let working = self.cards[index].running();
+        let preview = match &self.overlay {
+            Some(Overlay::SwitchedClose { preview, .. }) if action == 3 => Some(preview.clone()),
+            _ => None,
+        };
         let core = self.core.clone();
         self.busy = true;
         cx.spawn_in(window, async move |this, cx| {
@@ -2061,6 +2104,10 @@ impl Shika {
                     match action {
                         1 => core.session_discard(&id),
                         2 => core.session_push_and_close(&id),
+                        3 => match preview {
+                            Some(preview) => core.session_close_switched(&id, &preview),
+                            None => Err(shika_core::Error::CloseNeedsConfirmation),
+                        },
                         _ => core.session_close(&id, working),
                     }
                 })
@@ -2071,6 +2118,7 @@ impl Shika {
                     Ok(()) => {
                         this.cards.remove(index);
                         this.overlay = None;
+                        this.overlay_return_focus = None;
                         this.selection = if this.cards.is_empty() {
                             this.projects
                                 .first()
@@ -2197,6 +2245,16 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         self.commit_setting_edit(window, cx);
+        if row == MODE_ROW {
+            self.set_theme_mode(self.theme.mode.step(delta), window, cx);
+            return;
+        }
+        if row == LIGHT_ROW || row == DARK_ROW {
+            let dark = row == DARK_ROW;
+            let from = appearance::resolve_theme(&self.theme, dark);
+            self.set_theme(dark, appearance::step_theme(from, delta), window, cx);
+            return;
+        }
         if row == FONT_ROW {
             self.set_font_size(self.font_size.step(delta), cx);
             return;
@@ -2207,9 +2265,9 @@ impl Shika {
         }
         let mut next = self.appearance;
         match row {
-            0 => next = next.with_opacity(i64::from(next.opacity) + delta * 5),
-            1 => next = next.with_blur(i64::from(next.blur) + delta * 5),
-            2 => {
+            OPACITY_ROW => next = next.with_opacity(i64::from(next.opacity) + delta * 5),
+            BLUR_ROW => next = next.with_blur(i64::from(next.blur) + delta * 5),
+            APPLY_ROW => {
                 next.translucency = if delta < 0 {
                     Translucency::Sidebar
                 } else {
@@ -2266,8 +2324,8 @@ impl Shika {
             return;
         };
         let next = match row {
-            0 => self.appearance.with_opacity(value),
-            1 => self.appearance.with_blur(value),
+            OPACITY_ROW => self.appearance.with_opacity(value),
+            BLUR_ROW => self.appearance.with_blur(value),
             _ => return,
         };
         self.set_appearance(next, window, cx);
@@ -2279,7 +2337,40 @@ impl Shika {
         self.appearance = next;
         self.reduce_transparency = appearance::reduce_transparency();
         appearance::apply(&next, window);
-        self.push_terminal_theme(appearance::is_dark(window.appearance()), cx);
+        self.push_terminal_theme(window, cx);
+        self.save_settings();
+        cx.notify();
+    }
+    /// System, Light, or Dark. A forced mode also sets the app's AppKit
+    /// appearance, so the traffic lights and menus match the paint.
+    fn set_theme_mode(&mut self, mode: ThemeMode, window: &mut Window, cx: &mut Context<Self>) {
+        if mode == self.theme.mode {
+            return;
+        }
+        self.theme.mode = mode;
+        appearance::apply_mode(mode);
+        self.push_terminal_theme(window, cx);
+        self.save_settings();
+        cx.notify();
+    }
+    /// The light or dark pick. It shows at once when that side is painting.
+    fn set_theme(
+        &mut self,
+        dark: bool,
+        theme: &'static Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = if dark {
+            &mut self.theme.dark
+        } else {
+            &mut self.theme.light
+        };
+        if *id == theme.id {
+            return;
+        }
+        *id = theme.id.to_string();
+        self.push_terminal_theme(window, cx);
         self.save_settings();
         cx.notify();
     }
@@ -2344,27 +2435,33 @@ impl Shika {
     fn terminal_opacity(&self) -> f32 {
         appearance::terminal_alpha_for(&self.appearance, self.reduce_transparency)
     }
+    /// Whether this paint is dark: the forced theme mode, or macOS's
+    /// appearance in System mode. Every theme lookup goes through here.
+    fn is_dark(&self, window: &Window) -> bool {
+        appearance::is_dark_for(self.theme.mode, window.appearance())
+    }
+    /// The catalog theme painting the window now.
+    fn active_theme(&self, window: &Window) -> &'static Theme {
+        appearance::resolve_theme(&self.theme, self.is_dark(window))
+    }
     fn terminal_palette(&self, window: &Window) -> Palette {
-        if appearance::is_dark(window.appearance()) {
-            Palette::shika_dark()
-        } else {
-            Palette::shika()
-        }
+        appearance::terminal_palette(
+            &self.appearance,
+            self.active_theme(window),
+            self.reduce_transparency,
+        )
     }
     fn chrome(&self, window: &Window) -> Chrome {
         appearance::chrome_for(
             &self.appearance,
-            appearance::is_dark(window.appearance()),
+            self.active_theme(window),
             self.reduce_transparency,
         )
     }
-    fn push_terminal_theme(&mut self, dark: bool, cx: &mut Context<Self>) {
+    /// Give every live terminal view the current theme's palette and alpha.
+    fn push_terminal_theme(&mut self, window: &Window, cx: &mut Context<Self>) {
         let opacity = self.terminal_opacity();
-        let palette = if dark {
-            Palette::shika_dark()
-        } else {
-            Palette::shika()
-        };
+        let palette = self.terminal_palette(window);
         for card in &self.cards {
             for pane in std::iter::once(&card.agent).chain(card.shells.iter()) {
                 pane.view.update(cx, |view, cx| {
@@ -2376,6 +2473,7 @@ impl Shika {
     }
     fn save_settings(&mut self) {
         let settings = Settings {
+            theme: self.theme.clone(),
             appearance: self.appearance,
             branch_prefix: self.branch_prefix.clone(),
             font_size: self.font_size,
@@ -2597,6 +2695,14 @@ impl Shika {
                         _ => {}
                     }
                 }
+                Some(Overlay::SwitchedClose { index, .. }) => {
+                    let i = *index;
+                    match key {
+                        "enter" => self.finish_close(i, 3, window, cx),
+                        "escape" => self.cancel_overlay(window, cx),
+                        _ => {}
+                    }
+                }
                 Some(Overlay::RemoveLeftover(i)) => {
                     let i = *i;
                     match key {
@@ -2633,7 +2739,7 @@ impl Shika {
                 Some(Overlay::Settings { row, edit }) => {
                     let at = *row;
                     let digit = key.len() == 1 && key.as_bytes()[0].is_ascii_digit();
-                    let number_row = matches!(at, 0 | 1 | FONT_ROW);
+                    let number_row = matches!(at, OPACITY_ROW | BLUR_ROW | FONT_ROW);
                     let max_len = if at == FONT_ROW { 4 } else { 3 };
                     match (edit.as_mut(), key) {
                         (Some(text), _) if digit || (at == FONT_ROW && key == ".") => {
@@ -2662,16 +2768,10 @@ impl Shika {
                         (None, "l" | "right") => self.step_setting(at, 1, window, cx),
                         (None, "enter" | "escape") => self.cancel_overlay(window, cx),
                         (_, "j" | "down" | "tab") => {
-                            self.commit_setting_edit(window, cx);
-                            if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
-                                *row = (at + 1) % SETTING_ROWS;
-                            }
+                            self.select_setting((at + 1) % SETTING_ROWS, window, cx)
                         }
                         (_, "k" | "up") => {
-                            self.commit_setting_edit(window, cx);
-                            if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
-                                *row = (at + SETTING_ROWS - 1) % SETTING_ROWS;
-                            }
+                            self.select_setting((at + SETTING_ROWS - 1) % SETTING_ROWS, window, cx)
                         }
                         _ => {}
                     }
@@ -2708,13 +2808,124 @@ impl Shika {
         cx.stop_propagation();
     }
 }
-/// Settings rows: opacity, blur, translucency, font size, the branch prefix,
-/// then notification sound.
-const SETTING_ROWS: usize = 6;
-const FONT_ROW: usize = 3;
-const PREFIX_ROW: usize = 4;
-const SOUND_ROW: usize = 5;
+/// Settings rows, top to bottom: the theme mode, the light and dark themes,
+/// opacity, blur, translucency, font size, the branch prefix, then
+/// notification sound.
+const MODE_ROW: usize = 0;
+const LIGHT_ROW: usize = 1;
+const DARK_ROW: usize = 2;
+const OPACITY_ROW: usize = 3;
+const BLUR_ROW: usize = 4;
+const APPLY_ROW: usize = 5;
+const FONT_ROW: usize = 6;
+const PREFIX_ROW: usize = 7;
+const SOUND_ROW: usize = 8;
+const SETTING_ROWS: usize = 9;
+/// Wide enough for the longest catalog name, such as "Catppuccin Macchiato".
+const THEME_FIELD_WIDTH: f32 = 168.;
 impl Shika {
+    /// Move the Settings selection, applying any typed value first, and keep
+    /// the row on screen. The rows follow the title in the panel.
+    fn select_setting(&mut self, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_setting_edit(window, cx);
+        if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
+            *row = to;
+            self.settings_scroll.scroll_to_item(to + 1);
+        }
+        cx.notify();
+    }
+    /// System, Light, or Dark. `h` / `l` step one segment.
+    fn mode_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = matches!(
+            &self.overlay,
+            Some(Overlay::Settings { row, .. }) if *row == MODE_ROW
+        );
+        let shadow = chrome.control_shadow;
+        let choice = |id: &'static str, label: &'static str, mode: ThemeMode| {
+            let chosen = self.theme.mode == mode;
+            segment(id, label, chosen, chrome.raised, chrome.ink_1, chrome.ink_3)
+                .when(chosen, |d| {
+                    d.shadow(vec![
+                        BoxShadow::new(px(0.), px(1.), shadow.into()).blur_radius(px(1.)),
+                    ])
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.set_theme_mode(mode, window, cx);
+                    this.select_setting(MODE_ROW, window, cx);
+                }))
+        };
+        list_row(selected, chrome)
+            .justify_between()
+            .child("Theme")
+            .child(
+                div()
+                    .flex()
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(px(7.))
+                    .bg(chrome.sunken)
+                    .child(choice("theme-mode-system", "System", ThemeMode::System))
+                    .child(choice("theme-mode-light", "Light", ThemeMode::Light))
+                    .child(choice("theme-mode-dark", "Dark", ThemeMode::Dark)),
+            )
+    }
+    /// The light or dark theme: minus, the theme's name, plus, like the
+    /// number rows. `h` / `l` step through that side of the catalog.
+    fn theme_row(
+        &self,
+        row: usize,
+        label: &'static str,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = matches!(
+            &self.overlay,
+            Some(Overlay::Settings { row: at, .. }) if *at == row
+        );
+        let name = appearance::resolve_theme(&self.theme, row == DARK_ROW).name;
+        let step = |delta: i64| {
+            cx.listener(move |this: &mut Self, _: &gpui::ClickEvent, window, cx| {
+                this.step_setting(row, delta, window, cx);
+                this.select_setting(row, window, cx);
+            })
+        };
+        let field = text_field(
+            SharedString::from(format!("setting-{row}-value")),
+            THEME_FIELD_WIDTH,
+            false,
+            chrome,
+        )
+        .font_family(UI_FONT)
+        .cursor_default()
+        .child(div().min_w_0().truncate().child(name))
+        .on_click(cx.listener(move |this, _, window, cx| this.select_setting(row, window, cx)));
+        list_row(selected, chrome)
+            .justify_between()
+            .child(label)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        step_button(
+                            SharedString::from(format!("setting-{row}-less")),
+                            "-",
+                            chrome,
+                        )
+                        .on_click(step(-1)),
+                    )
+                    .child(field)
+                    .child(
+                        step_button(
+                            SharedString::from(format!("setting-{row}-more")),
+                            "+",
+                            chrome,
+                        )
+                        .on_click(step(1)),
+                    ),
+            )
+    }
     /// The branch prefix row: a text field. Enter or a click starts typing.
     fn prefix_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let (selected, edit) = match &self.overlay {
@@ -4375,6 +4586,37 @@ impl Shika {
                 };
                 panel.child(buttons)
             }
+            Overlay::SwitchedClose {
+                index,
+                preview,
+                working,
+            } => {
+                let i = *index;
+                let mut panel = dialog(chrome, max_h)
+                    .child(dialog_title(div()).child(format!("Close “{}” after branch switch?", self.cards[i].title)))
+                    .child(dialog_text(chrome).child("This task started on:"))
+                    .child(dialog_text(chrome).font_family(MONO).child(preview.recorded.clone()))
+                    .child(dialog_text(chrome).child("The worktree is now on:"))
+                    .child(dialog_text(chrome).font_family(MONO).child(preview.current.clone()))
+                    .child(dialog_text(chrome).child("No unpublished work was found. Closing removes the worktree and stops all task terminals. Both local branches will be kept."));
+                if *working {
+                    panel = panel.child(
+                        dialog_text(chrome)
+                            .child("The agent is still active. Closing stops its current turn."),
+                    );
+                }
+                panel.child(
+                    dialog_buttons()
+                        .child(self.cancel_button("Cancel", chrome, cx))
+                        .child(
+                            primary_button("close-switched", "Close task", "↵", chrome).on_click(
+                                cx.listener(move |this, _, window, cx| {
+                                    this.finish_close(i, 3, window, cx)
+                                }),
+                            ),
+                        ),
+                )
+            }
             Overlay::Leftovers => {
                 let mut panel = dialog(chrome, max_h)
                     .child(dialog_title(div()).child("Leftover worktrees"))
@@ -4602,6 +4844,11 @@ impl Shika {
                     (true, _) => &[("", "type a number"), ("↵", "apply"), ("esc", "cancel")],
                     (false, PREFIX_ROW) => &[("j k", "choose"), ("↵", "edit"), ("esc", "done")],
                     (false, SOUND_ROW) => &[("j k", "choose"), ("h l", "sound"), ("esc", "done")],
+                    (false, MODE_ROW) => &[("j k", "choose"), ("h l", "mode"), ("esc", "done")],
+                    (false, LIGHT_ROW | DARK_ROW) => {
+                        &[("j k", "choose"), ("h l", "theme"), ("esc", "done")]
+                    }
+                    (false, APPLY_ROW) => &[("j k", "choose"), ("h l", "change"), ("esc", "done")],
                     (false, _) => &[
                         ("j k", "choose"),
                         ("h l", "change"),
@@ -4623,11 +4870,22 @@ impl Shika {
                 dialog(chrome, max_h)
                     .w(px(440.))
                     .gap(px(4.))
+                    .track_scroll(&self.settings_scroll)
                     .child(dialog_title(div()).mb(px(4.)).child("Settings"))
-                    .child(self.setting_row(0, "Background opacity", &opacity, "%", chrome, cx))
-                    .child(self.setting_row(1, "Background blur", &blur, "", chrome, cx))
+                    .child(self.mode_row(chrome, cx))
+                    .child(self.theme_row(LIGHT_ROW, "Light theme", chrome, cx))
+                    .child(self.theme_row(DARK_ROW, "Dark theme", chrome, cx))
+                    .child(self.setting_row(
+                        OPACITY_ROW,
+                        "Background opacity",
+                        &opacity,
+                        "%",
+                        chrome,
+                        cx,
+                    ))
+                    .child(self.setting_row(BLUR_ROW, "Background blur", &blur, "", chrome, cx))
                     .child(
-                        list_row(*row == 2, chrome)
+                        list_row(*row == APPLY_ROW, chrome)
                             .justify_between()
                             .child("Apply to")
                             .child(
@@ -4640,14 +4898,14 @@ impl Shika {
                                     .child(
                                         choice("translucent-sidebar", "Sidebar", !both).on_click(
                                             cx.listener(|this, _, window, cx| {
-                                                this.step_setting(2, -1, window, cx)
+                                                this.step_setting(APPLY_ROW, -1, window, cx)
                                             }),
                                         ),
                                     )
                                     .child(
                                         choice("translucent-both", "Sidebar and terminal", both)
                                             .on_click(cx.listener(|this, _, window, cx| {
-                                                this.step_setting(2, 1, window, cx)
+                                                this.step_setting(APPLY_ROW, 1, window, cx)
                                             })),
                                     ),
                             ),
@@ -5358,6 +5616,8 @@ fn main() -> anyhow::Result<()> {
         let bounds = Bounds::centered(None, size(px(1400.), px(880.)), cx);
         let settings = core.settings();
         let start = settings.as_ref().map(|s| s.appearance).unwrap_or_default();
+        // Before the window opens, so it starts in the forced appearance.
+        appearance::apply_mode(settings.as_ref().map(|s| s.theme.mode).unwrap_or_default());
         let handle = cx
             .open_window(
                 WindowOptions {

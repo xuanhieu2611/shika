@@ -51,7 +51,7 @@ Shika has no telemetry or model API integration. Your CLIs connect to their prov
 2. Write your prompt in the terminal. The first prompt names the task and branch; the CLI's session title can refine it later.
 3. Move between cards with `j` / `k`. Enter focuses the terminal; Ctrl+Q returns to cards. Ready means output went quiet or the process exited, so check the terminal for its result.
 4. Press Cmd+T to add an independent shell in that task's worktree. Review and test there. Commit/push manually, or use Create PR (Cmd+Shift+P): confirm the files and title, then Shika commits, pushes, and creates a GitHub PR targeting the task's original base. Requires `gh auth login`; never merges. Ctrl+Tab cycles tabs; Cmd+1 selects the pinned agent tab. Cmd+W closes only a shell.
-5. Press Cmd+Shift+W to close the task. Close asks before discarding uncommitted work or unpushed commits, and offers push when the tree is clean. A push keeps the card open. Close never commits. A clean idle task closes immediately.
+5. Press Cmd+Shift+W to close the task. Close asks before discarding uncommitted work or unpushed commits, and offers push when the tree is clean. A push keeps the card open. Close never commits. A clean idle task on its task branch closes immediately. After a branch switch, Close can verify both branches and ask to remove the worktree while keeping both local branches. Unsafe or unverifiable work blocks that recovery. See [branch-switch close](docs/branch-switch-close.md) for the safety rules and contributor guide.
 
 See [Confirmed PR publishing](docs/publishing.md) for behavior, decision rationale, implementation, and troubleshooting.
 
