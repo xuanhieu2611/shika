@@ -22,7 +22,7 @@ private channel is agreed before sharing those details.
 Shika launches coding-agent CLIs with automatic approval modes. A Git worktree
 separates changes between tasks but does not restrict process access to files,
 credentials, or the network. Review the
-[agent permission model](README.md#agent-permissions) before running Shika.
+[agent permission model](README.md#supported-agents) before running Shika.
 
 Configured worktree setup commands are trusted code and require local approval.
 See [worktree preparation](docs/worktree-preparation.md) for the trust and

@@ -2,7 +2,7 @@
 
 Shika starts each task with one pinned agent terminal. Developers can add independent shell terminals in the same worktree when they need to review code, edit files, or run tools. Tabs belong to a task, not to a global terminal workspace. Only one terminal is visible at a time.
 
-Start here before changing terminal-tab behavior. [PLAN.md](../PLAN.md#task-scoped-terminal-tabs) records the product decision and overrides the older fixed Agent/Shell specification in `PRD.md`. [design/DESIGN.md](../design/DESIGN.md) governs appearance. [keyboard-flow.md](keyboard-flow.md) explains app-wide focus and keyboard routing. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#task-scoped-terminal-tabs) separates validation evidence from intended behavior.
+Start here before changing terminal-tab behavior. This document records the product decision, which replaced the original fixed Agent/Shell toggle. [design/DESIGN.md](../design/DESIGN.md) governs appearance. [keyboard-flow.md](keyboard-flow.md) explains app-wide focus and keyboard routing. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#task-scoped-terminal-tabs) separates validation evidence from intended behavior.
 
 ## Why this changed
 
@@ -196,4 +196,4 @@ When extending the feature:
 - Guard every entry point, including menus and clicks, against overlay/busy conflicts. Revisit identity and cleanup before relaxing startup serialization.
 - If adding custom labels or command-derived titles, keep display metadata separate from positional selection and PTY ownership. Do not silently launch or install tools.
 - Reuse the existing actions, `KeyTip`, and design tokens. Extend the hidden-pane appearance traversal when adding terminal kinds.
-- Update this document, `PLAN.md`, `AGENTS.md`, `design/DESIGN.md`, relevant keyboard docs, and acceptance checks when behavior changes. Record validation honestly.
+- Update this document, `AGENTS.md`, `design/DESIGN.md`, relevant keyboard docs, and acceptance checks when behavior changes. Record validation honestly.

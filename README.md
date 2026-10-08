@@ -139,7 +139,7 @@ Shika is pure Rust on GPUI, in three crates:
 | `shika-terminal` | Terminal rendering |
 | `shika` | The app UI |
 
-Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for onboarding and feature guides. [PRD.md](PRD.md) records the original scope; [PLAN.md](PLAN.md) records later decisions.
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for onboarding, product principles, and feature guides.
 
 ```sh
 cargo fmt --all --check

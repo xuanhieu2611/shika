@@ -2,26 +2,40 @@
 
 Mac desktop app for running a few coding agents at once. The author adds a repo, presses New, and gets a git worktree plus the CLI they already pay for. They write the prompt, test, and push. Shika does not wrap a model API.
 
-Update this file when behavior, a checklist item, or a toolchain trap changes. Keep it short. `PRD.md` and `PLAN.md` stay the long spec.
+Update this file when behavior or a toolchain trap changes. Keep it short. The guides in `docs/` hold the detail.
 
 ## Commit attribution
 
 Never add yourself or any AI agent (Cursor, Claude, Codex, Pi, or others) as a commit author or co-author. Do not add AI `Co-authored-by` trailers or agent attribution to commit messages. Keep authorship with the human author. This applies to every agent, including merge commits.
 
-## Spec
+## Product rules
 
-`PRD.md` is the spec. `PLAN.md` is the build order and records later decisions from the author. Where they disagree, `PLAN.md` wins. Do not relitigate either file.
+Each rule lives with the feature it governs: the guides in `docs/` (start at `docs/README.md`), `design/DESIGN.md` for anything visible, and the product principles and non-goals in `CONTRIBUTING.md`. `docs/tasks-and-worktrees.md` covers the core lifecycle: worktree creation, base branch, dirty and unpushed checks, Close, and leftovers. Do not relitigate these rules; a change in direction comes from the author, and the guide changes with the code.
 
 In particular:
 
 - Desktop app, pure Rust on GPUI, Mac only. No kanban, no flat session list, no project tabs, no splits beyond the resizable agent column, no second visible terminal, no editor, no conversation history.
-- GPUI comes from the `zed-industries/zed` git repo at one pinned `rev`. The terminal engine is `alacritty_terminal`, and its types stay inside one module of `shika-terminal`. Never copy from Zed's `terminal` or `terminal_view` crates; they are GPL-3.0.
+- GPUI comes from the `zed-industries/zed` git repo at one pinned `rev`. The terminal engine is `alacritty_terminal`, and its types stay inside one module of `shika-terminal`. Never copy from Zed's `terminal` or `terminal_view` crates; they are GPL-3.0. Check GPUI names against the pinned `rev`, not against docs for another version.
+- The chrome uses the system font. The terminal uses the bundled JetBrains Mono, with Menlo as the fallback. Not SF Mono: GPUI loads only its regular weight.
 - This build launches Claude Code, Codex, Cursor CLI, and Pi. Kiro waits.
-- Shika creates the worktree. Never pass Cursor's `--worktree`. Do not invent a CLI flag; the launch args in `PLAN.md` were taken from each binary's `--help`.
+- Shika creates the worktree. Never pass Cursor's `--worktree`. Do not invent a CLI flag; the launch args below were taken from each binary's `--help`.
 - A `git push` in the shell does not remove the card. The author closes the card. A push typed inside the agent CLI is ignored.
 - Close asks before throwing away uncommitted work or unpushed commits: discard, or push when the tree is clean. Close does not commit.
 - Projects persist. Live sessions do not come back after a relaunch. Quit does not delete worktrees.
 - One terminal view per live PTY, kept alive when hidden, so a full PTY buffer cannot stall the CLI. New creates only the pinned agent tab. `+` or Cmd+T adds independent shell tabs in that worktree; each keeps running until closed. Tabs belong to the task, with one visible terminal and no splits. Before changing tabs, read `docs/terminal-tabs.md` for the decision, ownership/lifecycle map, startup and focus traps, debugging, and contributor guardrails.
+
+## CLIs and launch arguments
+
+Checked from each binary's `--help`: Claude Code and Cursor CLI on 2026-10-03, Codex CLI 0.160.0 and Pi 1.0.0 on 2026-10-05. Do not pass `agent --worktree` or `codex --worktree`. Recheck `--help` before changing a flag.
+
+| Preset | Binary | Launch args |
+| --- | --- | --- |
+| Claude Code | `claude` | `--dangerously-skip-permissions` |
+| Codex | `codex` | `--dangerously-bypass-approvals-and-sandbox` |
+| Cursor CLI | `agent` | `--yolo --trust --sandbox disabled` |
+| Pi | `pi` | `--approve` |
+
+Pi does not ask before a tool call; `--approve` skips its project-trust prompt on a new worktree. Kiro is not in this build.
 
 ## Where the build is
 
@@ -29,7 +43,7 @@ The GPUI app is implemented in `crates/shika`. The Tauri, React, xterm.js, Node,
 
 Optional preparation: `.shika/worktrees.json` in the main checkout declares `setup-worktree` commands, literal ignored `copy-files`, and `timeout-seconds` (default 600). New asks for local approval, again on parsed configuration changes. Copy/setup finish before the CLI starts, with two setup slots, output in the existing terminal, cancel, and fresh-worktree retry. Setup typing is suppressed; startup query replies must still reach the agent. Active preparations stay journaled but out of disposable leftovers. Failures remove only provably untouched trees; changed or unverifiable work stays for explicit cleanup. Quit/project removal cancel setup and retain trees. No configuration means the existing flow, no pooling, inferred installs, or execution of Cursor/Codex configuration. Commands are trusted code, not a sandbox, and must not daemonize. Before modifying this feature, read `docs/worktree-preparation.md`: decisions, launch/cleanup lifecycle, symbol map, input-phase traps, debugging fixture, and extension guardrails.
 
-Branch names: the first prompt line names the branch at once. About a second later the CLI's own session title, read from Claude Code's, Codex's, Cursor's, or Pi's private files, renames it once, without the project name and with the optional Settings prefix. Pi has a title only when one was set. Those files are not a public API, so reading them is best effort; on any failure the prompt name stays. A branch already on a remote is never renamed by Shika. External Git renames are followed only with an explicit reflog rename chain and no surviving original branch; the card and journal update, while real branch switches require separate verified Close recovery and never transfer ownership. `PLAN.md` has the rules; `docs/branch-naming.md` explains the why, the code map, the CLI file formats, and how to debug it.
+Branch names: the first prompt line names the branch at once. About a second later the CLI's own session title, read from Claude Code's, Codex's, Cursor's, or Pi's private files, renames it once, without the project name and with the optional Settings prefix. Pi has a title only when one was set. Those files are not a public API, so reading them is best effort; on any failure the prompt name stays. A branch already on a remote is never renamed by Shika. External Git renames are followed only with an explicit reflog rename chain and no surviving original branch; the card and journal update, while real branch switches require separate verified Close recovery and never transfer ownership. `docs/branch-naming.md` has the rules, the why, the code map, the CLI file formats, and how to debug it.
 
 Close offers explicit branch-switch recovery when both recorded and current branches exist, the worktree is clean, and neither branch has unpublished commits outside the accepted base or remote-tracking refs. Confirmation stops all task PTYs and removes only the worktree/card; both local branches stay. Dirty/unpublished work, missing refs, and detached HEAD block recovery. Ordinary discard/push still require task branch identity. Switching never transfers ownership. Read `docs/branch-switch-close.md` before modifying close: safety proof, preview/rechecks, code map, debugging, and contributor guardrails.
 

@@ -2,7 +2,7 @@
 
 How Shika lets users move between tasks without leaving their working context, why the shortcuts use Command, and where to look when focus or navigation goes wrong.
 
-Start here for keyboard-related contributions. [PLAN.md](../PLAN.md#keyboard-and-focus) holds the behavior rules; [design/DESIGN.md](../design/DESIGN.md) holds the visual and focus specification. This document explains the implementation, not a separate spec. For task-local shell ownership, terminal-tab lifecycle, and extension traps, read [terminal-tabs.md](terminal-tabs.md). [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow) tracks GUI validation.
+Start here for keyboard-related contributions. This document holds the keyboard rules and explains their implementation; [design/DESIGN.md](../design/DESIGN.md) holds the visual and focus specification. For task-local shell ownership, terminal-tab lifecycle, and extension traps, read [terminal-tabs.md](terminal-tabs.md). [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow) tracks GUI validation.
 
 ## What changed
 
@@ -171,4 +171,4 @@ For a keyboard contribution, exercise the agent and multiple shell tabs, both fo
 - Focus restoration is the default for non-workflow overlays; explicit workflow transitions may intentionally choose another destination.
 - Use existing theme tokens, `KeyTip`, menu conventions, and key hints. Do not add styling values for keyboard behavior.
 - Do not add animation delays to frequent keyboard transitions.
-- Update `PLAN.md`, `design/DESIGN.md`, `AGENTS.md`, this document, and relevant acceptance checks when changing the documented behavior. Keep acceptance evidence separate from intended behavior.
+- Update `design/DESIGN.md`, `AGENTS.md`, this document, and relevant acceptance checks when changing the documented behavior. Keep acceptance evidence separate from intended behavior.
