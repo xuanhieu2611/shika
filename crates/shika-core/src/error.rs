@@ -47,7 +47,7 @@ pub enum Error {
     #[error("Could not read git status.{}", detail(.0))]
     GitStatus(Option<String>),
     #[error(
-        "Cannot close while the worktree is on {current}. Switch back to task branch {expected} in the shell, then close again."
+        "The worktree is on {current}, not task branch {expected}. Switch back to {expected} in the shell, then try again."
     )]
     TaskBranchChanged { expected: String, current: String },
     #[error("Could not remove the worktree.{}", detail(.0))]
@@ -59,6 +59,8 @@ pub enum Error {
 
     #[error("Could not rename the branch.{}", detail(.0))]
     RenameBranch(Option<String>),
+    #[error("Could not publish PR: {0}")]
+    Publish(String),
     #[error("Could not push changes.{}", detail(.0))]
     Push(Option<String>),
     #[error("This task has work to keep. Choose discard or push before closing.")]

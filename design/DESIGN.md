@@ -23,6 +23,8 @@ The user is a developer who does not watch agents work. They start a task, go to
 
 **Terminal.** `Palette::shika` and `Palette::shika_dark` in `crates/shika-terminal/src/theme.rs` are the terminal colors, including the ANSI 16: `--term-bg` `#131512` under light chrome and `#10120F` under dark, foreground and cursor `--term-fg` `#D5D9CF`, selection that color at 18%. Font, size, line height, and padding are `TerminalConfig` in `crates/shika-terminal/src/view.rs`.
 
+**Publishing.** Create PR is a neutral text control in the terminal metadata row, using its existing 11.5px text, 6px radius, terminal colors and hover wash, with tooltip "Commit, push, create PR ⌘⇧P". The Agent menu exposes the same action. Its 400px confirmation dialog reuses dialog tokens, 360px mono text fields, selectable branch list rows, and scrollable file names capped at the existing base-list height. Title "Create PR?", facts name repository/source/target and all changed files, labels "Commit and PR title" and "PR target", Cancel `esc`, and primary "Commit, push, create PR" `↵` ("Publishing..." while busy). Tab switches fields, Enter confirms, Escape cancels. Missing recorded targets ask for explicit selection. Errors stay in the dialog; completion restores focus and opens the PR URL. No new color, size, or animation tokens. See `docs/publishing.md`.
+
 **Glass.** Opacity, blur, and whether frost covers the sidebar alone or the sidebar and terminal: `crates/shika/src/appearance.rs`, saved by `crates/shika-core/src/settings.rs`. The values are under Glass below. There is no `tokens/glass.css`.
 
 ---

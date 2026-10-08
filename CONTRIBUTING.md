@@ -14,6 +14,7 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 | Worktree setup, local files, approval, cancellation, or retry | [Worktree preparation](docs/worktree-preparation.md), especially its [contributor guide](docs/worktree-preparation.md#contributor-guide) |
 | Command shortcuts, focus restoration, or selected-row scrolling | [Keyboard flow](docs/keyboard-flow.md) |
 | Task titles and branch names from CLI metadata | [Branch naming](docs/branch-naming.md) |
+| Create PR, recorded-base targeting, commit/push, or publishing retries | [Confirmed PR publishing](docs/publishing.md), especially its [debugging playbook](docs/publishing.md#debugging-playbook) and [contributor guardrails](docs/publishing.md#contributor-guardrails-and-extension-points) |
 
 [MANUAL_CHECKS.md](MANUAL_CHECKS.md) records integrated acceptance evidence and remaining checks. [Terminal checks](crates/shika-terminal/MANUAL_CHECKS.md) cover the terminal-specific matrix. Passing unit tests do not establish every native GUI behavior. Machine-local temporary evidence is not a prerequisite for contributing; use the versioned tests and each guide's isolated reproduction steps.
 

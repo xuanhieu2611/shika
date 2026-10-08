@@ -19,7 +19,7 @@ In particular:
 - This build launches Claude Code, Codex, Cursor CLI, and Pi. Kiro waits.
 - Shika creates the worktree. Never pass Cursor's `--worktree`. Do not invent a CLI flag; the launch args in `PLAN.md` were taken from each binary's `--help`.
 - A `git push` in the shell does not remove the card. The author closes the card. A push typed inside the agent CLI is ignored.
-- Close asks before throwing away uncommitted work or unpushed commits: discard, or push when the tree is clean. The app does not commit.
+- Close asks before throwing away uncommitted work or unpushed commits: discard, or push when the tree is clean. Close does not commit.
 - Projects persist. Live sessions do not come back after a relaunch. Quit does not delete worktrees.
 - One terminal view per live PTY, kept alive when hidden, so a full PTY buffer cannot stall the CLI. New creates only the pinned agent tab. `+` or Cmd+T adds independent shell tabs in that worktree; each keeps running until closed. Tabs belong to the task, with one visible terminal and no splits. Before changing tabs, read `docs/terminal-tabs.md` for the decision, ownership/lifecycle map, startup and focus traps, debugging, and contributor guardrails.
 
@@ -40,6 +40,8 @@ Ready cards show a diff stat such as `2 files +64 −3`, fetched in the backgrou
 `MANUAL_CHECKS.md` records integrated acceptance results and remaining checks. `crates/shika-terminal/MANUAL_CHECKS.md` records terminal-specific checks. Implementation and passing unit tests do not establish every GUI check.
 
 Public code is MIT licensed. Bundled fonts retain their OFL licenses; copied icon notices are in `THIRD_PARTY_NOTICES.md` and ship in the app bundle. `design/DESIGN.md` is the visual spec. `design/Shika v3.dc.html` is an archived reference, not a standalone runnable demo. Runtime icons live in `assets/macos/`.
+
+Confirmed publishing: Create PR in the terminal metadata row, Agent menu, or Cmd+Shift+P previews all non-ignored changes and an editable task-derived title, then stages, commits if needed, pushes, and creates a PR via authenticated `gh`. Target the task's recorded starting base, never the project's current base/default; missing or deleted bases require explicit selection. No merge, force-push, tests, or task cleanup. Busy/active turns block it; stale previews are refused. Partial success stays for retry; existing open PRs are reused. Read `docs/publishing.md` before changing it. Close still never commits.
 
 ## Design
 
