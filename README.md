@@ -1,65 +1,109 @@
+<div align="center">
+
+<img src="design/assets/shika-app-icon.png" alt="Shika app icon" width="128" height="128">
+
 # Shika
 
-A keyboard-first Mac app for running Claude Code, Codex, Cursor CLI, and Pi in separate Git worktrees. Shika creates the worktree and opens the CLI you already use, with your existing login and plan. It does not wrap a model API.
+**Run your coding agents side by side.**
 
-I built Shika to solve the worktree and terminal juggling I run into when working with several coding agents. I use it every day, including to build Shika itself.
+Shika handles the worktrees, branches, and terminals. Every task isolated. Every project organized.
 
-[Website and interactive prototype](https://useshika.com) · [Contributing](CONTRIBUTING.md) · [Implementation decisions](PLAN.md)
+[![Download for Mac](https://img.shields.io/badge/Download_for_Mac-Shika.dmg-4d6745?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg)
+
+[Website and interactive demo](https://useshika.com) · [Releases](https://github.com/xuanhieu2611/shika/releases) · [Contributing](CONTRIBUTING.md)
+
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-555?logo=apple&logoColor=white) ![Apple silicon](https://img.shields.io/badge/Apple_silicon-arm64-555) ![Rust on GPUI](https://img.shields.io/badge/Rust-GPUI-555?logo=rust&logoColor=white) [![MIT license](https://img.shields.io/badge/license-MIT-555)](LICENSE)
+
+</div>
+
+<br>
 
 ![Shika running parallel tasks across two sample projects, with an agent terminal and task-owned shell tabs](docs/images/shika-native.png)
 
-*Native app screenshot with disposable sample projects and simulated CLI output. The website demo is an interactive prototype.*
+<p align="center"><sub>Native app screenshot with disposable sample projects and simulated CLI output. The website demo is an interactive prototype.</sub></p>
 
-## Try it
+## What it is
 
-Shika is early-stage, macOS-only software. Bugs and incomplete workflows are tracked in [MANUAL_CHECKS.md](MANUAL_CHECKS.md); a passing test suite does not establish every GUI check.
+A keyboard-first Mac app for running Claude Code, Codex, Cursor CLI, and Pi at the same time. Press New, and Shika creates a Git worktree and opens the CLI you already use, with your existing login and plan. It does not wrap a model API.
 
-[Download Shika.dmg](https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg), open it, and drag Shika to Applications. The download is signed and notarized. It needs an Apple silicon Mac with macOS 13 or later and at least one installed, authenticated supported CLI. Shika does not update itself yet; download each new version from [Releases](https://github.com/xuanhieu2611/shika/releases).
+I built Shika to stop juggling worktrees and terminals when working with several coding agents. I use it every day, including to build Shika itself.
 
-### Build from source
+- **A worktree per task.** Each agent gets its own branch and worktree under `.worktrees/`, started from the project's base branch.
+- **Branches that name themselves.** The first prompt names the branch, and the CLI's own session title can refine it a second later.
+- **Knows who needs you.** Each card shows whether its agent is working, asking you something, or ready to check, and a notification names the task.
+- **Shells next to the agent.** Add terminal tabs in the same worktree to review, test, commit, and push.
+- **Closing is safe.** Close asks before throwing away uncommitted work or unpushed commits, and never commits for you.
+- **Create PR in one step.** Confirm the files and title, and Shika commits, pushes, and opens a GitHub PR against the task's original base.
 
-You need macOS 13 or later, Rust, full Xcode (not only Command Line Tools), and at least one installed, authenticated supported CLI. GPUI is pinned in [Cargo.toml](Cargo.toml). Runtime Metal shaders avoid requiring Xcode's separate Metal Toolchain component.
+## Install
 
-```sh
-git clone https://github.com/xuanhieu2611/shika.git
-cd shika
-source "$HOME/.cargo/env"
-./scripts/bundle-app.sh
-open target/release/Shika.app
-```
+> [!NOTE]
+> Shika is early-stage, macOS-only software. Bugs and incomplete workflows are tracked in [MANUAL_CHECKS.md](MANUAL_CHECKS.md); a passing test suite does not establish every GUI check.
 
-Local bundles are ad hoc signed. The app discovers `claude`, `codex`, `agent` (Cursor CLI), and `pi` through your login shell's PATH, including when launched from Finder. Your CLI subscription or provider charges still apply.
+[Download Shika.dmg](https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg), open it, and drag Shika to Applications. The download is signed and notarized.
 
-## Agent permissions
+You need:
 
-The current presets launch CLIs in automatic approval modes:
+- An Apple silicon Mac with macOS 13 or later.
+- At least one supported CLI, installed and signed in.
 
-| CLI | Launch arguments |
-| --- | --- |
-| Claude Code | `--dangerously-skip-permissions` |
-| Codex | `--dangerously-bypass-approvals-and-sandbox` |
-| Cursor CLI | `--yolo --trust --sandbox disabled` |
-| Pi | `--approve` |
+Shika does not update itself yet. Download each new version from [Releases](https://github.com/xuanhieu2611/shika/releases).
 
-Claude Code, Codex, and Cursor CLI bypass permission prompts or sandboxing. Agents can execute commands with your user account's access. A worktree separates Git edits; it does not restrict access to files, credentials, or the network. Use Shika in projects you trust and review the agent's changes.
+## Supported agents
+
+Shika finds each CLI through your login shell's PATH, including when launched from Finder. Your CLI subscription or provider charges still apply.
+
+| Agent | Command | Launch arguments |
+| --- | --- | --- |
+| Claude Code | `claude` | `--dangerously-skip-permissions` |
+| Codex | `codex` | `--dangerously-bypass-approvals-and-sandbox` |
+| Cursor CLI | `agent` | `--yolo --trust --sandbox disabled` |
+| Pi | `pi` | `--approve` |
+
+> [!WARNING]
+> These presets launch each CLI in an automatic approval mode. Claude Code, Codex, and Cursor CLI bypass permission prompts or sandboxing, so agents can run commands with your user account's access. A worktree separates Git edits; it does not restrict access to files, credentials, or the network. Use Shika in projects you trust and review the agent's changes.
 
 Shika has no telemetry or model API integration. Your CLIs connect to their providers, Git fetch and push connect to your remotes, and approved setup commands can use the network.
 
-## Workflow
+## How it works
 
-1. Press `a` to add a Git repository, then Cmd+N to pick an agent. Shika creates a fresh branch and worktree under that repository's `.worktrees/`.
-2. Write your prompt in the terminal. The first prompt names the task and branch; the CLI's session title can refine it later.
-3. Move between cards with `j` / `k`. Enter focuses the terminal; Ctrl+Q returns to cards. Ready means output went quiet or the process exited, so check the terminal for its result.
-4. Press Cmd+T to add an independent shell in that task's worktree. Review and test there. Commit/push manually, or use Create PR (Cmd+Shift+P): confirm the files and title, then Shika commits, pushes, and creates a GitHub PR targeting the task's original base. Requires `gh auth login`; never merges. Ctrl+Tab cycles tabs; Cmd+1 selects the pinned agent tab. Cmd+W closes only a shell.
-5. Press Cmd+Shift+W to close the task. Close asks before discarding uncommitted work or unpushed commits, and offers push when the tree is clean. A push keeps the card open. Close never commits. A clean idle task on its task branch closes immediately. After a branch switch, Close can verify both branches and ask to remove the worktree while keeping both local branches. Unsafe or unverifiable work blocks that recovery. See [branch-switch close](docs/branch-switch-close.md) for the safety rules and contributor guide.
-
-See [Confirmed PR publishing](docs/publishing.md) for behavior, decision rationale, implementation, and troubleshooting.
+1. **Add a project.** Press `a` and pick a Git repository.
+2. **Start an agent.** Press Cmd+N and pick a CLI. Shika creates a fresh branch and worktree under that repository's `.worktrees/`.
+3. **Write your prompt** in the terminal. The first prompt names the task and branch.
+4. **Switch between tasks** with `j` / `k`. Enter focuses the terminal; Ctrl+Q returns to the cards. Ready means the agent finished its turn, so check the terminal for its result.
+5. **Review and ship.** Press Cmd+T for a shell in that task's worktree. Test there, then commit and push yourself, or press Cmd+Shift+P to create a PR.
+6. **Close the task** with Cmd+Shift+W.
 
 One terminal is visible at a time; hidden task terminals keep running. Projects persist, live sessions do not restore, and quitting leaves worktrees for explicit cleanup on the next launch. App data lives in `~/Library/Application Support/com.hieule.shika/`.
 
-## Optional worktree preparation
+### Keyboard shortcuts
 
-Create `.shika/worktrees.json` in a project's main checkout to prepare fresh worktrees before agents start:
+| Keys | Action |
+| --- | --- |
+| `a` | Add a project |
+| `b` | Change the selected project's base branch |
+| Cmd+N | New agent in the selected project |
+| `j` / `k` | Move between cards |
+| Enter / Ctrl+Q | Focus the terminal / return to the cards |
+| Cmd+] / Cmd+[ | Next / previous agent, from anywhere |
+| Cmd+T / Cmd+W | Add a shell tab / close the selected shell |
+| Ctrl+Tab, Cmd+1 to Cmd+9 | Cycle tabs, or jump to one (Cmd+1 is the agent) |
+| Cmd+Shift+P | Create PR |
+| Cmd+Shift+W | Close the task |
+| Cmd+B | Hide or show the column |
+| Cmd+, | Settings |
+
+### Creating a PR
+
+Create PR (Cmd+Shift+P) previews every non-ignored change and an editable title. Confirm it, and Shika stages, commits if needed, pushes, and creates a GitHub PR targeting the task's original base. It requires `gh auth login` and never merges. See [confirmed PR publishing](docs/publishing.md) for behavior, rationale, and troubleshooting.
+
+### Closing a task
+
+Close asks before discarding uncommitted work or unpushed commits, and offers push when the tree is clean. A `git push` keeps the card open, and Close never commits. A clean idle task on its own branch closes immediately. After a branch switch, Close can verify both branches and remove the worktree while keeping both local branches; unsafe or unverifiable work blocks that. See [branch-switch close](docs/branch-switch-close.md) for the safety rules.
+
+## Worktree preparation
+
+To prepare fresh worktrees before agents start, add `.shika/worktrees.json` to a project's main checkout:
 
 ```json
 {
@@ -69,11 +113,33 @@ Create `.shika/worktrees.json` in a project's main checkout to prepare fresh wor
 }
 ```
 
-Use your project's commands. Copied files must already be ignored by Git on both the main checkout and the task's base. Shika asks for local approval and asks again when configuration changes. Setup commands are trusted code, executed with your account's access. See [worktree preparation](docs/worktree-preparation.md) for configuration, progress, cancel, retry, and cleanup rules.
+Use your project's own commands. Copied files must already be ignored by Git on both the main checkout and the task's base. Shika asks for local approval, and asks again when the configuration changes. Setup commands are trusted code, run with your account's access. See [worktree preparation](docs/worktree-preparation.md) for progress, cancel, retry, and cleanup rules.
 
-## Development and contributing
+## Build from source
 
-Pure Rust on GPUI, with three crates: `shika-core` owns Git, persistence, and processes; `shika-terminal` owns terminal rendering; `shika` owns the app UI. Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for onboarding and feature guides. [PRD.md](PRD.md) records the original scope; [PLAN.md](PLAN.md) records later decisions.
+You need macOS 13 or later, Rust, full Xcode (not only Command Line Tools), and at least one supported CLI, installed and signed in. GPUI is pinned in [Cargo.toml](Cargo.toml). Runtime Metal shaders mean you don't need Xcode's separate Metal Toolchain component.
+
+```sh
+git clone https://github.com/xuanhieu2611/shika.git
+cd shika
+source "$HOME/.cargo/env"
+./scripts/bundle-app.sh
+open target/release/Shika.app
+```
+
+Local bundles are ad hoc signed.
+
+## Contributing
+
+Shika is pure Rust on GPUI, in three crates:
+
+| Crate | Owns |
+| --- | --- |
+| `shika-core` | Git, persistence, and processes |
+| `shika-terminal` | Terminal rendering |
+| `shika` | The app UI |
+
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for onboarding and feature guides. [PRD.md](PRD.md) records the original scope; [PLAN.md](PLAN.md) records later decisions.
 
 ```sh
 cargo fmt --all --check
@@ -82,14 +148,15 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ./scripts/bundle-app.sh --debug
 ```
 
-Never run automated UI checks against your normal app data. Use disposable repositories and a fresh directory:
-
-```sh
-open -n target/debug/Shika.app --args --data-dir /absolute/path/to/test-data
-```
+> [!IMPORTANT]
+> Never run automated UI checks against your normal app data. Use disposable repositories and a fresh data directory:
+>
+> ```sh
+> open -n target/debug/Shika.app --args --data-dir /absolute/path/to/test-data
+> ```
 
 Confirm Shika's own window is in front before sending keystrokes. A `cargo run` launch does not prove Finder PATH discovery. See [terminal checks](crates/shika-terminal/MANUAL_CHECKS.md) and the [acceptance record](MANUAL_CHECKS.md).
 
 ## License
 
-Shika is [MIT licensed](LICENSE). Fonts and copied icons retain their upstream licenses; see [third-party notices](THIRD_PARTY_NOTICES.md). Native notices are included in the app bundle.
+Shika is [MIT licensed](LICENSE). Fonts and copied icons keep their upstream licenses; see [third-party notices](THIRD_PARTY_NOTICES.md). Native notices are included in the app bundle.
