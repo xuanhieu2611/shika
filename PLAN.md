@@ -16,6 +16,12 @@ The PRD is the spec, except where this file records a later decision from the au
 - `j` / `k` and the arrows move through cards only, including cards hidden by the three-card cap, and skip project headers. An empty project is not a keyboard stop. Cmd+N opens the picker for the selected card's project, or the first project when nothing is selected, and Tab in the picker changes the project. `b` follows the selected card. An empty project's base branch is the click on its header label. Decided by the author 2026-10-05. Plain `n` no longer opens the picker; see the 2026-10-07 decision.
 - New and Close are Command shortcuts from either the cards or a terminal. Cmd+N opens the picker. Cmd+Shift+W closes the selected task through the existing safe-close flow, including cancelling setup and removing a failed card. Plain `n` and `c` do nothing, so a letter typed on the cards cannot open New or destroy a task. `j` / `k`, Enter, `a`, `b`, and `r` stay card-only. A clean idle task still closes immediately. Decided by the author 2026-10-07.
 
+## Confirmed PR publishing
+
+Later author decision: Create PR stages all non-ignored task changes, commits if needed, pushes, and creates a PR through the user's authenticated GitHub CLI, after a preview and explicit confirmation. The target is the task's recorded starting base, not the project's current base or GitHub's default. An unmappable/deleted base requires explicit target selection. The editable task title supplies the commit/PR title; the description comes from commits through `gh --fill`, with no model call. No merge, force-push, automatic tests, or task cleanup. Completed steps survive failures and retries reuse an existing open PR. Close remains unchanged and never commits. This supersedes the blanket exclusions of PR creation and committing on behalf of the user below and in `PRD.md`, only for this confirmed flow.
+
+Create PR appears beside the terminal metadata, in the Agent menu, and on Cmd+Shift+P. It is guarded against busy/overlay conflicts and active/blocked turns. Preview preserves the real index and confirmation refuses a changed tree, HEAD, branch, or origin. See `docs/publishing.md` for lifecycle, GitHub assumptions, retry semantics, code map, and guardrails.
+
 ## Task-scoped terminal tabs
 
 Later author decision: replace the fixed Agent/Shell control with optional terminal tabs per task. New creates only the pinned CLI tab. `+` or Cmd+T creates an independent login shell in that task's worktree; multiple shells support tools such as Neovim, lazygit, and dev servers. Shell tabs have stable numbered labels and individual close controls. Closing a shell stops its processes without closing the agent, changing git, or deleting the worktree. The agent tab cannot be individually closed; Close task keeps the existing safe-close flow and stops every owned PTY.
@@ -93,7 +99,7 @@ You do not name the task in a separate field.
 2. **Close is a choice when work would be lost.** If the agent is still working, the worktree has uncommitted changes, or the branch has commits that are not on the remote, Shika asks:
    - **Discard changes** stops the agent, deletes the worktree, and deletes the local branch. Uncommitted files and unpushed commits go away.
    - **Push changes** runs `git push -u origin HEAD` only when the worktree is clean and there is something to push. On success, Shika then removes the card and the worktree and leaves the local branch, because that branch is now on the remote. If the push fails, the card stays and the error is shown.
-   - If the worktree is dirty, Push is not offered. Shika does not commit. Escape leaves the card and focuses the shell so the user can commit and push, then close again.
+   - If the worktree is dirty, Push is not offered. Close does not commit. Escape leaves the card and focuses the shell so the user can commit and push, then close again.
    - Escape always cancels.
 3. **Nothing to lose closes immediately.** If the agent is not working, the worktree is clean, and the branch is already on the remote or has no commits of its own, Close removes the card and the worktree without asking. A pushed branch stays. An empty draft branch is deleted.
 4. **Projects persist. Live sessions do not restore.** Relaunch shows the project list and an empty terminal. A journal of Shika worktrees is kept so a quit or crash can list leftovers. Nothing is deleted automatically. The user removes leftovers from that list.
@@ -296,7 +302,7 @@ Check: add, new, move, focus terminal, ctrl+q back to the cards, close, all with
 
 A shell tab is the user's shell with cwd on the worktree. `git status` and `git diff` show that task. `git push` leaves the card in place.
 
-Close with nothing to lose removes the card and the worktree. Close while the agent is working, the tree is dirty, or commits are unpushed asks: discard, or push when the tree is clean. Discard removes the worktree and the local branch. Push, on success, removes the card and the worktree and keeps the branch. A dirty tree sends the user back to the shell to commit. Shika does not commit.
+Close with nothing to lose removes the card and the worktree. Close while the agent is working, the tree is dirty, or commits are unpushed asks: discard, or push when the tree is clean. Discard removes the worktree and the local branch. Push, on success, removes the card and the worktree and keeps the branch. A dirty tree sends the user back to the shell to commit. Close does not commit.
 
 Check: a push leaves the card; a later close of that clean pushed task removes the card and the directory and leaves the branch; discard of a dirty task removes the directory and the branch; the other agent's process is still running; `git worktree list` no longer has the removed path.
 
@@ -323,4 +329,4 @@ Then stop. Distribution (signed dmg, notarization, Homebrew) is out of scope unt
 
 ## Do not build
 
-Phone, web, Windows, Linux, Homebrew, accounts, sync, telemetry, a planner, pull requests, CI, review, worktree reuse, conversation history, more than one visible terminal, a split between terminals, a code editor, installing the CLIs, a custom chat transcript, a per-CLI question parser, Kiro, Codex's or Cursor's own worktree flag, auto-removing a card after `git push`, committing on behalf of the user.
+Phone, web, Windows, Linux, Homebrew, accounts, sync, telemetry, a planner, PR merge/review management, CI, review, worktree reuse, conversation history, more than one visible terminal, a split between terminals, a code editor, installing the CLIs, a custom chat transcript, a per-CLI question parser, Kiro, Codex's or Cursor's own worktree flag, auto-removing a card after `git push`, committing without the explicit Create PR confirmation.

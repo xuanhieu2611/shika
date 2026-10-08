@@ -2,6 +2,20 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Confirmed PR publishing
+
+Automated validation: 285 workspace tests, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Sixteen publishing tests use real disposable Git repos/worktrees, fake gh, and a local bare push transport. They cover recorded main/dev mapping, explicit missing-target selection, origin mapping, preview preserving the real index, ignored files, stale previews, commit/push/target arguments, existing PR reuse excluding same-named fork branches, partial-failure retries without duplicate commits, hook failure preserving staged work, unfinished merge refusal, dirty-submodule detection, switched-source refusal, and bounded subprocess timeout. No real GitHub PR or normal app data was changed.
+
+Remaining integrated checks (not established by unit/fixture tests):
+
+- [ ] Built .app opened via `open -n ... --args --data-dir /disposable/data` discovers gh outside system PATH; missing gh/auth failures state the cause without staging work.
+- [ ] Metadata Create PR, Agent menu, and Cmd+Shift+P work from cards and terminals; active/blocked agents, busy work, and overlays prevent conflicting entry. Cancel restores focus and unsent terminal drafts.
+- [ ] Light/dark, opaque/glass, hidden column, and minimum-size window: fields, file-list scrolling, branch-list selection, busy copy, and inline errors render legibly.
+- [ ] Disposable GitHub repository: start from main and dev, change project base afterward, confirm PR still targets each task's original base; delete its base and verify explicit selection with no fallback.
+- [ ] Review the diff and test manually, then publish edited/new/deleted files: normal hooks/identity/signing apply, title can be edited, description uses commits, GitHub URL opens, and task/PTYS remain alive. No merge happens.
+- [ ] Network/auth/protected-branch rejection and PR failure retain work. Reopen and retry; no empty/duplicate commit or duplicate PR. Existing PR receives subsequent approved commits.
+- [ ] Shell edits/commits/branch switches after preview refuse stale confirmation. Rebase/merge/conflicts refuse publishing. Close remains the existing non-committing safe-close flow.
+
 ## Agent activity and stable turn timer, 2026-10-07
 
 Automated validation: 269 workspace tests after rebasing onto current main, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Tests cover immutable turn epochs during typing/interactions/active Enter and Ready/Working flicker, once-per-turn notification budgets, blocked safe close, candidate/history submissions and native editor clearing, literal text questions, stale/quoted status chrome, content-based redraw/draft filtering, scrollback-independent live sampling without paint side effects, old lifecycle reads crossing submissions, same-sequence recovery, bridge bounds/order/cleanup, and optional launch failure.
