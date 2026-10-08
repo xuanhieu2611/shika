@@ -1,6 +1,6 @@
 [package]
 name = "shika-terminal"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Terminal engine wrapper and GPUI terminal view for Shika"
 license = "MIT"
