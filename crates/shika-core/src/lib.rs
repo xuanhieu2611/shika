@@ -10,7 +10,7 @@
 //!
 //! - **Blocking.** [`Core::add_project`], [`Core::create_session`],
 //!   [`Core::open_shell`], [`Core::session_dirty`], [`Core::session_git_state`],
-//!   [`Core::session_diff_stat`],
+//!   [`Core::session_diff_stat`], [`Core::session_publish_preview`], [`Core::session_publish`],
 //!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
 //!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
@@ -55,6 +55,7 @@ mod preparation;
 mod preparation_tests;
 mod projects;
 mod pty;
+mod publish;
 mod session;
 mod settings;
 mod worktree;
@@ -71,6 +72,7 @@ pub use path_env::{LoginShellError, PathEnv};
 pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
+pub use publish::PublishPreview;
 pub use session::{DiffStat, Session, SessionGitState};
 pub use settings::{
     Appearance, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, Settings, ThemeMode,
@@ -831,6 +833,50 @@ impl Core {
             &session.repo,
             &session.worktree,
             session.base_ref.as_deref(),
+        )
+    }
+
+    /// Preview a confirmed commit/push/PR operation without changing the
+    /// user's index. Blocking: requires authenticated GitHub CLI on login PATH.
+    pub fn session_publish_preview(&self, id: &str) -> Result<PublishPreview> {
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        let session = self.ensure_session_branch(&session)?;
+        let gh = self.path_env().resolve("gh").ok_or_else(|| {
+            Error::Publish(
+                "gh not found on PATH. Install GitHub CLI and run gh auth login in a shell.".into(),
+            )
+        })?;
+        publish::preview(&self.git()?, &gh, self.path_env().path(), &session)
+    }
+
+    /// Confirmed publish. Never merges, force-pushes, or closes the task.
+    /// Partial success is retained for retry; a stale preview is refused.
+    pub fn session_publish(
+        &self,
+        preview: &PublishPreview,
+        target: &str,
+        title: &str,
+    ) -> Result<String> {
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        let session = self
+            .sessions
+            .get(&preview.session_id)
+            .ok_or(Error::UnknownSession)?;
+        let session = self.ensure_session_branch(&session)?;
+        let gh = self.path_env().resolve("gh").ok_or_else(|| {
+            Error::Publish(
+                "gh not found on PATH. Install GitHub CLI and run gh auth login in a shell.".into(),
+            )
+        })?;
+        publish::publish(
+            &self.git()?,
+            &gh,
+            self.path_env().path(),
+            &session,
+            preview,
+            target,
+            title,
         )
     }
 

@@ -50,8 +50,8 @@ With tools:     Pi   │ Shell × │ Shell 2   +                [Close task c]
 | Cmd+1 through Cmd+9 | Jump to that tab and focus it. Cmd+1 is the pinned agent. A missing tab does nothing |
 | Cmd+] / Cmd+[ | Navigate tasks, not tabs; preserve card versus terminal focus |
 | Cmd+N | New agent, not new shell |
+| Cmd+Shift+W | Close task, from the cards or a terminal. Existing safe-close flow for the whole task |
 | Enter from cards / Ctrl+Q from terminal | Focus the selected tab / return to cards |
-| Close task, `c` from cards | Existing safe-close flow for the whole task |
 
 Tab actions are blocked while an overlay is open or the app is busy; adding shells is also blocked while the card is being created/prepared. Ordinary typing and Escape still belong to the terminal program. Command shortcuts, Ctrl+Tab, and Ctrl+Shift+Tab are app actions, not PTY input.
 

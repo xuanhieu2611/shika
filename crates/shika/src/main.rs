@@ -16,8 +16,8 @@ use notifications::Notifications;
 use shika_core::{
     Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize, JournalEntry,
     KnownBranches, PreparationConfig, PreparationControl, PreparationEvent, Project, ProjectBase,
-    PtyEvent, PtyId, PtySize, Session, SessionGitState, Settings, ThemeMode, ThemeSettings,
-    Translucency,
+    PtyEvent, PtyId, PtySize, PublishPreview, Session, SessionGitState, Settings, ThemeMode,
+    ThemeSettings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalEvent, TerminalOptions,
@@ -40,7 +40,9 @@ gpui::actions!(
         OpenSettings,
         NewAgent,
         NewTerminal,
+        CreatePr,
         CloseTerminal,
+        CloseTask,
         NextTerminal,
         PreviousTerminal,
         NextAgent,
@@ -352,6 +354,13 @@ enum Selection {
     Card(usize),
 }
 enum Overlay {
+    Publish {
+        preview: PublishPreview,
+        title: String,
+        target: String,
+        row: usize,
+        error: Option<String>,
+    },
     Picker {
         project: String,
         index: usize,
@@ -1878,6 +1887,116 @@ impl Shika {
         })
         .detach();
     }
+    fn create_pr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let Some(index) = self.selected_card() else {
+            return;
+        };
+        let card = &self.cards[index];
+        if card.creating || card.running() {
+            self.message("Wait for the agent to finish before publishing.".into());
+            cx.notify();
+            return;
+        }
+        let Some(session) = &card.session else {
+            return;
+        };
+        let id = session.id.clone();
+        let core = self.core.clone();
+        self.overlay_return_focus = window.focused(cx);
+        self.busy = true;
+        self.message("Preparing PR preview...".into());
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { core.session_publish_preview(&id) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok(preview) => {
+                        let target = preview.target.clone().unwrap_or_default();
+                        let title = preview.title.clone();
+                        let row = usize::from(target.is_empty());
+                        this.overlay = Some(Overlay::Publish {
+                            preview,
+                            title,
+                            target,
+                            row,
+                            error: None,
+                        });
+                        this.toast = None;
+                        window.focus(&this.focus, cx);
+                    }
+                    Err(e) => {
+                        this.overlay_return_focus = None;
+                        this.message(e.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    fn publish_pr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(Overlay::Publish {
+            preview,
+            title,
+            target,
+            error,
+            ..
+        }) = &mut self.overlay
+        else {
+            return;
+        };
+        if title.trim().is_empty()
+            || !preview.branches.contains(target)
+            || *target == preview.branch
+        {
+            *error = Some("Enter a title and choose a different, existing target branch.".into());
+            cx.notify();
+            return;
+        }
+        if self.cards.iter().any(|c| {
+            c.session
+                .as_ref()
+                .is_some_and(|s| s.id == preview.session_id)
+                && c.running()
+        }) {
+            *error = Some("Wait for the agent to finish before publishing.".into());
+            cx.notify();
+            return;
+        }
+        let (preview, title, target) = (preview.clone(), title.clone(), target.clone());
+        let core = self.core.clone();
+        self.busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { core.session_publish(&preview, &target, &title) }).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok(url) => {
+                        this.overlay = None;
+                        this.restore_overlay_focus(window, cx);
+                        this.message(format!("Published PR: {url}"));
+                        cx.open_url(&url);
+                    }
+                    Err(e) => {
+                        if let Some(Overlay::Publish { error, .. }) = &mut this.overlay {
+                            *error = Some(format!("{e} Completed commits and pushes were kept. Cancel and reopen Create PR to retry."));
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -1978,6 +2097,9 @@ impl Shika {
         .detach();
     }
     fn cancel_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy && matches!(self.overlay, Some(Overlay::Publish { .. })) {
+            return;
+        }
         self.commit_setting_edit(window, cx);
         let shell = match &self.overlay {
             Some(Overlay::Close { index, state }) if state.dirty || state.unpushed => Some(*index),
@@ -2376,6 +2498,48 @@ impl Shika {
             cx.notify();
             return;
         }
+        if matches!(&self.overlay, Some(Overlay::Publish { .. })) {
+            if !self.busy {
+                match stroke.key.as_str() {
+                    "enter" => self.publish_pr(window, cx),
+                    "escape" => self.cancel_overlay(window, cx),
+                    "tab" => {
+                        if let Some(Overlay::Publish { row, .. }) = &mut self.overlay {
+                            *row = 1 - *row;
+                        }
+                    }
+                    _ => {
+                        if let Some(Overlay::Publish {
+                            row,
+                            title,
+                            target,
+                            error,
+                            ..
+                        }) = &mut self.overlay
+                        {
+                            let value = if *row == 0 { title } else { target };
+                            if stroke.key == "backspace" {
+                                value.pop();
+                            } else if !stroke.modifiers.platform
+                                && !stroke.modifiers.control
+                                && !stroke.modifiers.alt
+                                && let Some(typed) = &stroke.key_char
+                            {
+                                for ch in typed.chars().filter(|c| !c.is_control()) {
+                                    if value.len() < 256 {
+                                        value.push(ch);
+                                    }
+                                }
+                            }
+                            *error = None;
+                        }
+                    }
+                }
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if matches!(&self.overlay, Some(Overlay::Base { .. })) {
             if !self.busy {
                 let plain = !stroke.modifiers.platform
@@ -2566,7 +2730,7 @@ impl Shika {
                     }
                 }
                 // Typed into above, before the modifier check.
-                Some(Overlay::Base { .. }) | None => {}
+                Some(Overlay::Base { .. }) | Some(Overlay::Publish { .. }) | None => {}
             }
             if let Some(project) = moved_to {
                 self.prefetch_base(project, cx);
@@ -2582,10 +2746,8 @@ impl Shika {
             "j" | "down" => self.move_selection(1, window, cx),
             "k" | "up" => self.move_selection(-1, window, cx),
             "a" => self.add_project(cx),
-            "n" => self.picker(window, cx),
             "r" => self.retry_preparation(window, cx),
             "enter" => self.focus_terminal(window, cx),
-            "c" => self.close(window, cx),
             "b" => {
                 if self.busy || self.selection.is_none() {
                     return;
@@ -3083,7 +3245,7 @@ impl Shika {
                     .py(px(4.))
                     .font_weight(FontWeight::MEDIUM)
                     .child("New agent")
-                    .child(kbd("n", chrome.sunken, chrome.ink_3))
+                    .child(kbd("\u{2318}N", chrome.sunken, chrome.ink_3))
                     .tooltip(move |_, cx| {
                         cx.new(|_| KeyTip {
                             bg: tip_bg,
@@ -3621,7 +3783,7 @@ impl Shika {
                         .gap_x(px(12.))
                         .child(hint("j k", "move", chrome))
                         .child(hint("↵", "terminal", chrome))
-                        .child(hint("c", "close", chrome)),
+                        .child(hint("\u{2318}\u{21e7}W", "close", chrome)),
                 )
             })
     }
@@ -3919,7 +4081,10 @@ impl Shika {
                                     } else {
                                         "Close task"
                                     })
-                                    .child(kbd("c", chrome.term_line, chrome.term_dim).py_0())
+                                    .child(
+                                        kbd("\u{2318}\u{21e7}W", chrome.term_line, chrome.term_dim)
+                                            .py_0(),
+                                    )
                                     .on_click(
                                         cx.listener(|this, _, window, cx| this.close(window, cx)),
                                     ),
@@ -3951,6 +4116,31 @@ impl Shika {
                                 .font_family(MONO)
                                 .child(path),
                         )
+                        .when(card.session.is_some() && !card.creating, |d| {
+                            d.child(
+                                div()
+                                    .id("create-pr")
+                                    .occlude()
+                                    .flex_none()
+                                    .rounded(px(6.))
+                                    .px(px(8.))
+                                    .py(px(4.))
+                                    .cursor_pointer()
+                                    .hover(move |style| style.bg(term_hover).text_color(term_white))
+                                    .child("Create PR")
+                                    .tooltip(move |_, cx| {
+                                        cx.new(|_| KeyTip {
+                                            bg: tip_bg,
+                                            fg: tip_fg,
+                                            text: "Commit, push, create PR  ⌘⇧P".into(),
+                                        })
+                                        .into()
+                                    })
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.create_pr(window, cx)
+                                    })),
+                            )
+                        })
                         .child(div().flex_none().text_color(chrome.term_faint).child(
                             if card.creating && cards_focused {
                                 "setup is non-interactive"
@@ -4032,7 +4222,7 @@ impl Shika {
                             .text_size(px(11.5))
                             .text_color(chrome.term_fainter)
                             .child(key("j", "select"))
-                            .child(key("n", "new agent")),
+                            .child(key("\u{2318}N", "new agent")),
                     ),
             );
         }
@@ -4080,6 +4270,102 @@ impl Shika {
         let top = height * if picker { 0.18 } else { 0.20 };
         let max_h = (height - top - px(24.)).max(px(120.));
         let panel = match overlay {
+            Overlay::Publish {
+                preview,
+                title,
+                target,
+                row,
+                error,
+            } => {
+                let mut panel = dialog(chrome, max_h)
+                    .child(dialog_title(div()).child("Create PR?"))
+                    .child(dialog_text(chrome).font_family(MONO).child(format!("{}: {} → {}", preview.repository, preview.branch, if target.is_empty() { "choose target" } else { target })))
+                    .child(dialog_text(chrome).child("Stages all non-ignored changes, commits, pushes, and creates a PR. Does not merge or close the task."))
+                    .child(dialog_text(chrome).child("Commit and PR title"))
+                    .child(text_field("pr-title", 360., *row == 0, chrome)
+                        .overflow_hidden().child(title.clone())
+                        .when(*row == 0, |d| d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus)))
+                        .on_click(cx.listener(|this, _, _, cx| { if !this.busy { if let Some(Overlay::Publish { row, .. }) = &mut this.overlay { *row = 0; } cx.notify(); } })))
+                    .child(dialog_text(chrome).child("PR target"))
+                    .child(text_field("pr-target", 360., *row == 1, chrome)
+                        .overflow_hidden().child(target.clone())
+                        .when(*row == 1, |d| d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus)))
+                        .on_click(cx.listener(|this, _, _, cx| { if !this.busy { if let Some(Overlay::Publish { row, .. }) = &mut this.overlay { *row = 1; } cx.notify(); } })));
+                if preview.target.is_none() {
+                    panel = panel.child(dialog_text(chrome).child("The recorded base is not an existing GitHub branch. Choose a target explicitly."));
+                }
+                if *row == 1 {
+                    panel = panel.child(
+                        div()
+                            .id("pr-branches")
+                            .max_h(px(BASE_LIST_MAX))
+                            .overflow_y_scroll()
+                            .children(
+                                preview
+                                    .branches
+                                    .iter()
+                                    .filter(|b| b.starts_with(target) && **b != preview.branch)
+                                    .map(|b| {
+                                        let branch = b.clone();
+                                        list_row(b == target, chrome)
+                                            .id(SharedString::from(format!("pr-branch-{b}")))
+                                            .cursor_pointer()
+                                            .font_family(MONO)
+                                            .child(b.clone())
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !this.busy {
+                                                    if let Some(Overlay::Publish {
+                                                        target,
+                                                        error,
+                                                        ..
+                                                    }) = &mut this.overlay
+                                                    {
+                                                        *target = branch.clone();
+                                                        *error = None;
+                                                    }
+                                                    cx.notify();
+                                                }
+                                            }))
+                                    }),
+                            ),
+                    );
+                }
+                panel = panel
+                    .child(
+                        dialog_text(chrome).child(format!("{} changed files", preview.files.len())),
+                    )
+                    .child(
+                        div()
+                            .id("pr-files")
+                            .max_h(px(BASE_LIST_MAX))
+                            .overflow_y_scroll()
+                            .children(preview.files.iter().map(|file| {
+                                dialog_text(chrome).font_family(MONO).child(file.clone())
+                            })),
+                    );
+                if let Some(error) = error {
+                    panel = panel.child(dialog_text(chrome).child(error.clone()));
+                }
+                panel.child(hint("tab", "switch field", chrome)).child(
+                    dialog_buttons()
+                        .child(self.cancel_button("Cancel", chrome, cx))
+                        .child(
+                            primary_button(
+                                "publish-pr",
+                                if self.busy {
+                                    "Publishing..."
+                                } else {
+                                    "Commit, push, create PR"
+                                },
+                                "↵",
+                                chrome,
+                            )
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.publish_pr(window, cx)),
+                            ),
+                        ),
+                )
+            }
             Overlay::Picker { project, index } => {
                 let name = self
                     .projects
@@ -4238,7 +4524,7 @@ impl Shika {
                 }
                 if state.dirty {
                     panel = panel.child(dialog_text(chrome).child(
-                        "The worktree has uncommitted changes. Commit in the shell before pushing. Shika does not commit.",
+                        "The worktree has uncommitted changes. Commit in the shell or use Create PR before closing. Close does not commit.",
                     ));
                 }
                 if state.unpushed {
@@ -4614,8 +4900,8 @@ const MONO: &str = "JetBrains Mono";
 const MIN_TERMINAL_WIDTH: f32 = 420.;
 /// The narrowest column that fits the footer's key hints, without and with
 /// the Leftover worktrees button.
-const FOOTER_HINTS_FIT: f32 = 400.;
-const FOOTER_HINTS_FIT_WITH_LEFTOVERS: f32 = 560.;
+const FOOTER_HINTS_FIT: f32 = 420.;
+const FOOTER_HINTS_FIT_WITH_LEFTOVERS: f32 = 580.;
 /// The invisible strip over the column's edge that starts a resize.
 const COLUMN_HANDLE_WIDTH: f32 = 8.;
 /// The top row of both halves of the window, which is the title bar.
@@ -5116,6 +5402,12 @@ impl Render for Shika {
                     this.close_tab(this.cards[i].active_tab, window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &CloseTask, window, cx| {
+                if this.busy || this.overlay.is_some() {
+                    return;
+                }
+                this.close(window, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &NextTerminal, window, cx| this.cycle_tab(true, window, cx)),
             )
@@ -5136,6 +5428,7 @@ impl Render for Shika {
                 cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleColumn, _, cx| this.toggle_column(cx)))
+            .on_action(cx.listener(|this, _: &CreatePr, window, cx| this.create_pr(window, cx)))
             .on_drag_move(cx.listener(
                 |this, event: &gpui::DragMoveEvent<ColumnDrag>, window, cx| {
                     this.drag_column(event.event.position.x, window, cx)
@@ -5196,7 +5489,9 @@ fn main() -> anyhow::Result<()> {
         let mut bindings = vec![
             gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
+            gpui::KeyBinding::new("cmd-shift-p", CreatePr, Some("Shika")),
             gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
+            gpui::KeyBinding::new("cmd-shift-w", CloseTask, Some("Shika")),
             gpui::KeyBinding::new("ctrl-tab", NextTerminal, Some("Shika")),
             gpui::KeyBinding::new("ctrl-shift-tab", PreviousTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
@@ -5242,7 +5537,9 @@ fn main() -> anyhow::Result<()> {
             gpui::Menu::new("Agent").items([
                 gpui::MenuItem::action("New agent", NewAgent),
                 gpui::MenuItem::action("New terminal tab", NewTerminal),
+                gpui::MenuItem::action("Create PR", CreatePr),
                 gpui::MenuItem::action("Close terminal tab", CloseTerminal),
+                gpui::MenuItem::action("Close task", CloseTask),
                 gpui::MenuItem::action("Next terminal tab", NextTerminal),
                 gpui::MenuItem::action("Previous terminal tab", PreviousTerminal),
                 gpui::MenuItem::separator(),

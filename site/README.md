@@ -22,7 +22,7 @@ Serve over HTTP: the runtime fetches its own page. No real agents or Git command
 
 Select a card, press Enter, and use `+` to add a shell. Try `git diff`, `git add .`, `git commit -m "Sample change"`, and `git push`; pushing keeps the card open. A second shell has its own input and output, and returning to another task restores that task's selected tab. Close warns about uncommitted work and unpushed commits; Push is available only when clean.
 
-`j` / `k` move between cards, `n` opens the four-agent picker, `a` adds a sample project, and Ctrl+Q returns to cards. The prototype implements native tab shortcuts, but browsers may reserve Cmd+T, Cmd+W, Cmd+1, and Ctrl+Tab; use the visible tab controls in that case. Escape stays in the terminal and cancels open dialogs. `?theme=light` or `?theme=dark` sets its appearance.
+`j` / `k` move between cards, Cmd+N opens the four-agent picker, Cmd+Shift+W closes the selected task, `a` adds a sample project, and Ctrl+Q returns to cards. Plain `n` and `c` do nothing. The prototype implements native tab shortcuts, but browsers may reserve Cmd+T, Cmd+W, Cmd+Shift+W, Cmd+1, and Ctrl+Tab; use the visible tab controls in that case. Escape stays in the terminal and cancels open dialogs. `?theme=light` or `?theme=dark` sets its appearance.
 
 ## Deployment
 

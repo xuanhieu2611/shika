@@ -11,6 +11,20 @@ Automated validation: workspace tests, formatting, and strict Clippy passed, and
 - [ ] Several derived themes (Catppuccin, Rosé Pine, Tokyo Night, Dracula, Gruvbox) look like themselves: cards, selected card, dialogs, key caps, segmented tracks, toast, status dots, timers, and tints, opaque and in glass, with frost on the sidebar alone and on the terminal.
 - [ ] The Settings panel scrolls in a 600px-high window and `j` / `k` keep the selected row in view.
 
+## Confirmed PR publishing
+
+Automated validation: 285 workspace tests, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Sixteen publishing tests use real disposable Git repos/worktrees, fake gh, and a local bare push transport. They cover recorded main/dev mapping, explicit missing-target selection, origin mapping, preview preserving the real index, ignored files, stale previews, commit/push/target arguments, existing PR reuse excluding same-named fork branches, partial-failure retries without duplicate commits, hook failure preserving staged work, unfinished merge refusal, dirty-submodule detection, switched-source refusal, and bounded subprocess timeout. No real GitHub PR or normal app data was changed.
+
+Remaining integrated checks (not established by unit/fixture tests):
+
+- [ ] Built .app opened via `open -n ... --args --data-dir /disposable/data` discovers gh outside system PATH; missing gh/auth failures state the cause without staging work.
+- [ ] Metadata Create PR, Agent menu, and Cmd+Shift+P work from cards and terminals; active/blocked agents, busy work, and overlays prevent conflicting entry. Cancel restores focus and unsent terminal drafts.
+- [ ] Light/dark, opaque/glass, hidden column, and minimum-size window: fields, file-list scrolling, branch-list selection, busy copy, and inline errors render legibly.
+- [ ] Disposable GitHub repository: start from main and dev, change project base afterward, confirm PR still targets each task's original base; delete its base and verify explicit selection with no fallback.
+- [ ] Review the diff and test manually, then publish edited/new/deleted files: normal hooks/identity/signing apply, title can be edited, description uses commits, GitHub URL opens, and task/PTYS remain alive. No merge happens.
+- [ ] Network/auth/protected-branch rejection and PR failure retain work. Reopen and retry; no empty/duplicate commit or duplicate PR. Existing PR receives subsequent approved commits.
+- [ ] Shell edits/commits/branch switches after preview refuse stale confirmation. Rebase/merge/conflicts refuse publishing. Close remains the existing non-committing safe-close flow.
+
 ## Agent activity and stable turn timer, 2026-10-07
 
 Automated validation: 269 workspace tests after rebasing onto current main, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Tests cover immutable turn epochs during typing/interactions/active Enter and Ready/Working flicker, once-per-turn notification budgets, blocked safe close, candidate/history submissions and native editor clearing, literal text questions, stale/quoted status chrome, content-based redraw/draft filtering, scrollback-independent live sampling without paint side effects, old lifecycle reads crossing submissions, same-sequence recovery, bridge bounds/order/cleanup, and optional launch failure.
@@ -53,7 +67,7 @@ The debug bundle was opened with disposable repository/data under `/tmp/shika-ta
 - [ ] New shows only the CLI tab; `+` and Cmd+T add shells in the same worktree, not new worktrees.
 - [ ] Run Neovim in one shell and lazygit in another. Switch among all three tabs; contents, processes, unsaved agent drafts, and task status remain independent.
 - [ ] Switch cards and return: each task restores its selected tab. Hidden shells continue draining output.
-- [ ] Ctrl+Tab / Ctrl+Shift+Tab wrap tabs. Cmd+1 is the agent and Cmd+2 onward select shells; a missing number does nothing. Cmd+] / Cmd+[ still switch tasks; Cmd+N still opens New. Tab actions do nothing in pickers/dialogs or while busy, and Ctrl+Tab does not reach the CLI.
+- [ ] Ctrl+Tab / Ctrl+Shift+Tab wrap tabs. Cmd+1 is the agent and Cmd+2 onward select shells; a missing number does nothing. Cmd+] / Cmd+[ still switch tasks; Cmd+N still opens New; Cmd+Shift+W closes the task. Plain `n` and `c` do nothing. Tab actions do nothing in pickers/dialogs or while busy, and Ctrl+Tab does not reach the CLI.
 - [ ] Cmd+W and `×` close only a shell, including an exited shell. Agent tab has no close control and ignores Cmd+W. Closing one shell leaves the agent, other shells, worktree, and git state intact.
 - [ ] Close an active shell, an inactive shell before the active one, and the last shell: selection and focus stay valid; numbered labels do not reuse closed numbers.
 - [ ] First shell creation queues immediate typing; Ctrl+Q during startup stays on cards after completion. Failed startup removes only its new tab without stealing focus.
@@ -133,7 +147,8 @@ Implemented with automated coverage for agent-only traversal (headers, wrapping,
 - [ ] Cmd+T, Ctrl+Tab, and Cmd+1 through Cmd+9 work from both the cards and a terminal and focus the destination. Cmd+Enter does nothing. On first shell open, immediate typing arrives in the shell, not the agent. Ctrl+Q during startup stays on the cards after startup completes.
 - [ ] Cmd+] / Cmd+[ skip headers, wrap across projects, reveal collapsed cards, and preserve terminal versus card focus. Each task keeps its agent/shell choice and draft.
 - [ ] In a sidebar taller than the viewport, j/k and Command navigation reveal the selected header/card with minimal scrolling. Manual scrolling is not reset by terminal output or timer redraws.
-- [ ] Cmd+N opens New for the current project from either terminal. Escape returns to that exact terminal; launching focuses the new agent.
+- [ ] Cmd+N opens New for the current project from either surface. Escape returns to that exact terminal; launching focuses the new agent. Plain `n` on the cards does nothing.
+- [ ] Cmd+Shift+W closes a clean idle task with no dialog, and still asks when the tree is dirty, commits are unpushed, or the agent is working. It does nothing while a dialog is open and does not reach the CLI. Cmd+W still closes only a shell. Plain `c` does nothing.
 - [ ] Cmd+, then Escape returns to the terminal that opened Settings. Base branch apply/cancel restores previous focus. Dirty Close cancellation still routes to the shell.
 - [ ] Command flow shortcuts do nothing while an overlay is open, including text editing, and never send input to the PTY. Escape and ordinary CLI bindings still reach the CLI.
 - [ ] The Agent menu lists shortcuts. New and agent/shell tooltips show their Command keys. Check light and dark appearance.
@@ -179,7 +194,7 @@ IME candidate placement, sustained typing feel, and the broader terminal matrix 
 ## External branch renames
 
 - [ ] In an isolated app session, rename the task branch in its shell. Within a few seconds the card shows the new branch, while the title and worktree folder stay unchanged.
-- [ ] Commit, rename, push, create/merge a PR, then press `c`. The clean pushed task closes and its local branch remains.
+- [ ] Commit, rename, push, create/merge a PR, then press Cmd+Shift+W. The clean pushed task closes and its local branch remains.
 - [ ] Rename with dirty files or unpushed commits. Close still asks; dirty work cannot be pushed, cancel keeps work, and explicit discard removes the renamed task branch.
 - [ ] Switch to an unrelated branch or detach HEAD. Close still refuses and preserves the worktree.
 
