@@ -44,7 +44,7 @@ The debug bundle was opened with disposable repository/data under `/tmp/shika-ta
 - [ ] New shows only the CLI tab; `+` and Cmd+T add shells in the same worktree, not new worktrees.
 - [ ] Run Neovim in one shell and lazygit in another. Switch among all three tabs; contents, processes, unsaved agent drafts, and task status remain independent.
 - [ ] Switch cards and return: each task restores its selected tab. Hidden shells continue draining output.
-- [ ] Ctrl+Tab / Ctrl+Shift+Tab wrap tabs. Cmd+1 is the agent and Cmd+2 onward select shells; a missing number does nothing. Cmd+] / Cmd+[ still switch tasks; Cmd+N still opens New. Tab actions do nothing in pickers/dialogs or while busy, and Ctrl+Tab does not reach the CLI.
+- [ ] Ctrl+Tab / Ctrl+Shift+Tab wrap tabs. Cmd+1 is the agent and Cmd+2 onward select shells; a missing number does nothing. Cmd+] / Cmd+[ still switch tasks; Cmd+N still opens New; Cmd+Shift+W closes the task. Plain `n` and `c` do nothing. Tab actions do nothing in pickers/dialogs or while busy, and Ctrl+Tab does not reach the CLI.
 - [ ] Cmd+W and `×` close only a shell, including an exited shell. Agent tab has no close control and ignores Cmd+W. Closing one shell leaves the agent, other shells, worktree, and git state intact.
 - [ ] Close an active shell, an inactive shell before the active one, and the last shell: selection and focus stay valid; numbered labels do not reuse closed numbers.
 - [ ] First shell creation queues immediate typing; Ctrl+Q during startup stays on cards after completion. Failed startup removes only its new tab without stealing focus.
@@ -124,7 +124,8 @@ Implemented with automated coverage for agent-only traversal (headers, wrapping,
 - [ ] Cmd+T, Ctrl+Tab, and Cmd+1 through Cmd+9 work from both the cards and a terminal and focus the destination. Cmd+Enter does nothing. On first shell open, immediate typing arrives in the shell, not the agent. Ctrl+Q during startup stays on the cards after startup completes.
 - [ ] Cmd+] / Cmd+[ skip headers, wrap across projects, reveal collapsed cards, and preserve terminal versus card focus. Each task keeps its agent/shell choice and draft.
 - [ ] In a sidebar taller than the viewport, j/k and Command navigation reveal the selected header/card with minimal scrolling. Manual scrolling is not reset by terminal output or timer redraws.
-- [ ] Cmd+N opens New for the current project from either terminal. Escape returns to that exact terminal; launching focuses the new agent.
+- [ ] Cmd+N opens New for the current project from either surface. Escape returns to that exact terminal; launching focuses the new agent. Plain `n` on the cards does nothing.
+- [ ] Cmd+Shift+W closes a clean idle task with no dialog, and still asks when the tree is dirty, commits are unpushed, or the agent is working. It does nothing while a dialog is open and does not reach the CLI. Cmd+W still closes only a shell. Plain `c` does nothing.
 - [ ] Cmd+, then Escape returns to the terminal that opened Settings. Base branch apply/cancel restores previous focus. Dirty Close cancellation still routes to the shell.
 - [ ] Command flow shortcuts do nothing while an overlay is open, including text editing, and never send input to the PTY. Escape and ordinary CLI bindings still reach the CLI.
 - [ ] The Agent menu lists shortcuts. New and agent/shell tooltips show their Command keys. Check light and dark appearance.
@@ -170,7 +171,7 @@ IME candidate placement, sustained typing feel, and the broader terminal matrix 
 ## External branch renames
 
 - [ ] In an isolated app session, rename the task branch in its shell. Within a few seconds the card shows the new branch, while the title and worktree folder stay unchanged.
-- [ ] Commit, rename, push, create/merge a PR, then press `c`. The clean pushed task closes and its local branch remains.
+- [ ] Commit, rename, push, create/merge a PR, then press Cmd+Shift+W. The clean pushed task closes and its local branch remains.
 - [ ] Rename with dirty files or unpushed commits. Close still asks; dirty work cannot be pushed, cancel keeps work, and explicit discard removes the renamed task branch.
 - [ ] Switch to an unrelated branch or detach HEAD. Close still refuses and preserves the worktree.
 
