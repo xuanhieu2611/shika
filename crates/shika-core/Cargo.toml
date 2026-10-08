@@ -1,6 +1,6 @@
 [package]
 name = "shika-core"
-version = "0.2.0"
+version = "0.3.0"
 description = "Shika's backend: projects, worktrees, CLI presets, PTY processes, and sessions"
 edition = "2024"
 license = "MIT"
