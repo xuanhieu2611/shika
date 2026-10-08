@@ -4881,7 +4881,7 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shika"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -4897,7 +4897,7 @@ dependencies = [
 
 [[package]]
 name = "shika-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs 7.0.0",
  "libc",
@@ -4911,7 +4911,7 @@ dependencies = [
 
 [[package]]
 name = "shika-terminal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
