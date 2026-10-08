@@ -16,6 +16,7 @@ The card-navigation model is still available. A small native shortcut layer now 
 
 | Shortcut | Action | Focus afterward |
 | --- | --- | --- |
+| `Cmd+Shift+P` | Preview commit, push, and Create PR for the task's original base | Dialog; cancel/completion restores previous focus |
 | `Cmd+T` | New independent shell tab in this task's worktree | New shell; startup input is queued |
 | `Cmd+W` | Close selected shell tab. On the pinned agent it does nothing and does not close the task | Preceding tab if the closed view had focus; otherwise preserve focus |
 | `Cmd+Shift+W` | Close the selected task. Same path as the Close task button: cancel setup, remove a failed card, or the safe-close flow | Unchanged until close finishes; a clean idle task closes immediately |
@@ -36,6 +37,8 @@ Other improvements:
 - A selection change scrolls the selected header/card into view with minimal movement. Ordinary redraws do not undo manual scrolling.
 - First shell open focuses the new view immediately. Early typing is queued until the PTY is bound; startup completion does not reclaim focus if the user has returned to the cards.
 - The native Agent menu lists the new actions and shortcuts. New agent, new shell, and shell close expose Command shortcuts in tooltips.
+
+Create PR is also in the Agent menu and terminal metadata row. Its dialog uses Tab to switch title/target fields, Enter to confirm publishing, and Escape to cancel. Plain card keys never run while editing. Busy/overlay conflicts and active/blocked turns block entry. See [publishing.md](publishing.md); publishing runs on a worker, not by writing commands into a terminal.
 
 ## What did not change
 

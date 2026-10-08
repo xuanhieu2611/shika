@@ -10,6 +10,8 @@ These guides explain why features exist, how they are implemented, and where to 
 | [Terminal tabs](terminal-tabs.md) | Task-local agent/shell tabs, PTY ownership, startup, selection, close, and hidden terminals |
 | [Keyboard flow](keyboard-flow.md) | Native shortcuts, terminal/card focus, overlay restoration, and selection scrolling |
 | [Worktree preparation](worktree-preparation.md) | Setup approval, copy/setup commands, cancellation, retry, and failure cleanup |
+| [Confirmed PR publishing](publishing.md) | Decision rationale, recorded-base targeting, approved-tree checks, commit/push/gh lifecycle, debugging, retries, and contribution guardrails |
 | [Branch naming](branch-naming.md) | First-prompt names, CLI session-title discovery, branch renaming, and fallbacks |
+| [Branch-switch close](branch-switch-close.md) | Safe recovery after switching branches, publication checks, branch preservation, confirmation rechecks, and debugging |
 
 [MANUAL_CHECKS.md](../MANUAL_CHECKS.md) and [terminal checks](../crates/shika-terminal/MANUAL_CHECKS.md) track acceptance evidence and remaining GUI checks. Passing unit tests is not proof that all native UI behavior has been exercised.

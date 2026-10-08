@@ -203,6 +203,90 @@ impl<'de> Deserialize<'de> for FontSize {
     }
 }
 
+/// Which side of the theme catalog paints the window.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemeMode {
+    /// Follow the macOS appearance.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeMode {
+    /// The modes in Settings order, left to right.
+    pub const ALL: [ThemeMode; 3] = [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark];
+
+    /// One segment left (`-1`) or right (`1`), stopping at the ends.
+    pub fn step(self, delta: i64) -> Self {
+        let at = Self::ALL.iter().position(|mode| *mode == self).unwrap_or(0) as i64;
+        let next = (at + delta.signum()).clamp(0, Self::ALL.len() as i64 - 1);
+        Self::ALL[next as usize]
+    }
+}
+
+/// An unknown mode, or a value that is not a string, is the default rather
+/// than a broken file.
+impl<'de> Deserialize<'de> for ThemeMode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(
+            match serde_json::Value::deserialize(deserializer)?.as_str() {
+                Some("light") => Self::Light,
+                Some("dark") => Self::Dark,
+                _ => Self::System,
+            },
+        )
+    }
+}
+
+/// The ids of the default themes, the same as the catalog's in
+/// `shika-terminal`. Core does not know the catalog.
+pub const DEFAULT_LIGHT_THEME: &str = "shika-light";
+pub const DEFAULT_DARK_THEME: &str = "shika-dark";
+
+/// The theme mode and the picked theme for each side, as catalog ids. An id
+/// the catalog does not know, or one from the other side, is kept as saved;
+/// the app paints that side's default until the user picks again.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ThemeSettings {
+    pub mode: ThemeMode,
+    #[serde(deserialize_with = "theme_id_or_light")]
+    pub light: String,
+    #[serde(deserialize_with = "theme_id_or_dark")]
+    pub dark: String,
+}
+
+impl Default for ThemeSettings {
+    fn default() -> Self {
+        Self {
+            mode: ThemeMode::System,
+            light: DEFAULT_LIGHT_THEME.into(),
+            dark: DEFAULT_DARK_THEME.into(),
+        }
+    }
+}
+
+fn theme_id_or_light<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    theme_id_or(deserializer, DEFAULT_LIGHT_THEME)
+}
+
+fn theme_id_or_dark<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    theme_id_or(deserializer, DEFAULT_DARK_THEME)
+}
+
+/// A theme id that is not a string takes the side's default.
+fn theme_id_or<'de, D: Deserializer<'de>>(
+    deserializer: D,
+    default: &str,
+) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::String(id) => id,
+        _ => default.into(),
+    })
+}
+
 fn notification_sound_on() -> bool {
     true
 }
@@ -211,6 +295,9 @@ fn notification_sound_on() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    /// Theme mode and the light and dark picks. Missing means System,
+    /// Shika Light, and Shika Dark.
+    pub theme: ThemeSettings,
     pub appearance: Appearance,
     /// Put in front of every branch name Shika picks, like `dev/`. Stored
     /// as typed; [`crate::normalize_branch_prefix`] makes it safe for git.
@@ -229,6 +316,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            theme: ThemeSettings::default(),
             appearance: Appearance::default(),
             branch_prefix: String::new(),
             font_size: FontSize::default(),
@@ -319,6 +407,11 @@ mod tests {
         let path = temp_file("round-trip");
         let file = SettingsFile::open(path.clone());
         let settings = Settings {
+            theme: ThemeSettings {
+                mode: ThemeMode::Dark,
+                light: "catppuccin-latte".into(),
+                dark: "catppuccin-mocha".into(),
+            },
             appearance: Appearance {
                 opacity: 75,
                 blur: 30,
@@ -334,6 +427,10 @@ mod tests {
         };
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"theme\": {"));
+        assert!(text.contains("\"mode\": \"dark\""));
+        assert!(text.contains("\"light\": \"catppuccin-latte\""));
+        assert!(text.contains("\"dark\": \"catppuccin-mocha\""));
         assert!(text.contains("\"translucency\": \"sidebarAndTerminal\""));
         assert!(text.contains("\"branchPrefix\": \"dev/\""));
         assert!(text.contains("\"fontSize\": 14.5"));
@@ -362,7 +459,51 @@ mod tests {
         assert_eq!(settings.font_size.points(), 32.0);
         assert!(settings.notification_sound);
         assert_eq!(settings.column, Column::default());
+        assert_eq!(settings.theme, ThemeSettings::default());
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn theme_defaults_to_system_and_the_shika_themes() {
+        let theme = Settings::default().theme;
+        assert_eq!(theme.mode, ThemeMode::System);
+        assert_eq!(theme.light, "shika-light");
+        assert_eq!(theme.dark, "shika-dark");
+    }
+
+    #[test]
+    fn unknown_theme_values_take_defaults_and_ids_are_kept() {
+        let path = temp_file("theme");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{ "theme": { "mode": "sepia", "dark": 7 } }"#).unwrap();
+        let settings = SettingsFile::open(path.clone()).load().unwrap();
+        assert_eq!(settings.theme, ThemeSettings::default());
+        // An id the catalog may not know, or one from the other side, stays
+        // as saved. The app resolves it when it paints.
+        fs::write(
+            &path,
+            r#"{ "theme": { "mode": "light", "light": "shika-dark", "dark": "gone" } }"#,
+        )
+        .unwrap();
+        let settings = SettingsFile::open(path.clone()).load().unwrap();
+        assert_eq!(settings.theme.mode, ThemeMode::Light);
+        assert_eq!(settings.theme.light, "shika-dark");
+        assert_eq!(settings.theme.dark, "gone");
+        fs::write(&path, r#"{ "theme": { "mode": "dark" } }"#).unwrap();
+        let settings = SettingsFile::open(path.clone()).load().unwrap();
+        assert_eq!(settings.theme.mode, ThemeMode::Dark);
+        assert_eq!(settings.theme.light, "shika-light");
+        assert_eq!(settings.theme.dark, "shika-dark");
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn theme_mode_steps_and_stops_at_the_ends() {
+        assert_eq!(ThemeMode::System.step(1), ThemeMode::Light);
+        assert_eq!(ThemeMode::Light.step(1), ThemeMode::Dark);
+        assert_eq!(ThemeMode::Dark.step(1), ThemeMode::Dark);
+        assert_eq!(ThemeMode::Dark.step(-1), ThemeMode::Light);
+        assert_eq!(ThemeMode::System.step(-1), ThemeMode::System);
     }
 
     #[test]
