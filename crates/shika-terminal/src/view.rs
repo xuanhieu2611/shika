@@ -1596,7 +1596,7 @@ mod tests {
             shift: true,
             ..Modifiers::none()
         };
-        for key in ["[", "]"] {
+        for key in ["[", "]", "w"] {
             assert_eq!(key_for(&stroke(key, command_shift), true), None);
         }
     }
