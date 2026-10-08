@@ -2,7 +2,7 @@
 
 This guide explains the timer-reset bug, the replacement state model, and how to debug or extend it. Read it before changing agent status, timers, notifications, input capture, or activity-based Close checks.
 
-[PLAN.md](../PLAN.md#agent-activity-and-turn-timer) records the product decision. [design/DESIGN.md](../design/DESIGN.md) defines the visible states. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#agent-activity-and-stable-turn-timer-2026-10-07) separates verified behavior from remaining native checks.
+This guide records the product decision. [design/DESIGN.md](../design/DESIGN.md) defines the visible states. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#agent-activity-and-stable-turn-timer-2026-10-07) separates verified behavior from remaining native checks.
 
 ## What was wrong
 

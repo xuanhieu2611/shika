@@ -1,6 +1,6 @@
 # Closing a task after a branch switch
 
-Contributor guide for safe-close recovery. [PLAN.md](../PLAN.md) records the decision; [branch-naming.md](branch-naming.md) explains task branch identity; [keyboard-flow.md](keyboard-flow.md) and [terminal-tabs.md](terminal-tabs.md) cover focus and PTY ownership. Appearance follows [design/DESIGN.md](../design/DESIGN.md).
+Contributor guide for safe-close recovery. [tasks-and-worktrees.md](tasks-and-worktrees.md) has the ordinary Close rules; [branch-naming.md](branch-naming.md) explains task branch identity; [keyboard-flow.md](keyboard-flow.md) and [terminal-tabs.md](terminal-tabs.md) cover focus and PTY ownership. Appearance follows [design/DESIGN.md](../design/DESIGN.md).
 
 ## Why this exists
 

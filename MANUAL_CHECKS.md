@@ -78,7 +78,7 @@ The debug bundle was opened with disposable repository/data under `/tmp/shika-ta
 
 ## Acceptance record, 2026-10-04
 
-The PLAN Done when flow was exercised with two disposable git repositories and the installed, authenticated Claude Code and Cursor CLI. App data was isolated.
+The MVP acceptance flow was exercised with two disposable git repositories and the installed, authenticated Claude Code and Cursor CLI. App data was isolated.
 
 - PASS: The app opened with open discovers both binaries under ~/.local/bin through the login-shell PATH.
 - PASS: Claude and Cursor launch in separate Shika worktrees. Terminals measure their pane before the PTY starts.
@@ -115,7 +115,7 @@ The author checked the first version by eye and it looked good. Typed values and
 
 ## Branch names from the CLI title, 2026-10-05
 
-Checked without the GUI: the installed Claude Code (2.1.289) and Cursor CLI (2026.10.01) were started in disposable worktrees under `/private/tmp` with the launch args from `PLAN.md` and given one conversational prompt. Each wrote its session title about 1.1 seconds after Enter: Claude "Shika settings dark mode toggle", Cursor "Shika Dark Mode". Shika's readers found both, and the slugs in project `shika` were `settings-dark-mode-toggle` and `dark-mode`.
+Checked without the GUI: the installed Claude Code (2.1.289) and Cursor CLI (2026.10.01) were started in disposable worktrees under `/private/tmp` with the launch args in `AGENTS.md` and given one conversational prompt. Each wrote its session title about 1.1 seconds after Enter: Claude "Shika settings dark mode toggle", Cursor "Shika Dark Mode". Shika's readers found both, and the slugs in project `shika` were `settings-dark-mode-toggle` and `dark-mode`.
 
 To check in the built app, with isolated data and a disposable repo:
 

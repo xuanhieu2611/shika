@@ -2,7 +2,7 @@
 
 How Shika names the git branch and the card for a new task, why it works this way, and where to look when it does not.
 
-Added 2026-10-05. `PLAN.md` ("How a new task is named") holds the binding rules; this file explains them.
+Added 2026-10-05. This file holds the naming rules and explains them.
 
 ## What the user sees
 
@@ -192,7 +192,7 @@ Tests use a scratch `CliHome::at(...)` and never read the real `~/.claude`, `~/.
 1. Find where the CLI stores its session title, with real data from the installed version. Do not guess a format.
 2. Add a reader to `CliHome` in `cli_title.rs` and match its preset id in `CliHome::read`. Keep it read-only and return None on anything unexpected.
 3. Add tests with sample files: title present, not yet named, broken file, a session for another folder.
-4. Record the location and the CLI version checked in `PLAN.md` and in this file.
+4. Record the location and the CLI version checked in this file.
 
 ### Ideas not built
 

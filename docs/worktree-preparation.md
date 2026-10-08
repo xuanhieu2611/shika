@@ -4,7 +4,7 @@ Shika keeps creating a fresh, isolated worktree for each card. Optional project 
 
 This is preparation, not a warm-worktree pool or a compiler-cache feature. It does not promise faster launches or end-to-end performance parity with another app. Projects without configuration keep the existing workflow. Shika does not infer a package manager, run a build automatically, share mutable dependency folders, or execute Cursor/Codex configuration.
 
-Start here when contributing to this feature. [PLAN.md](../PLAN.md#optional-worktree-preparation) records the product decision; this document explains usage and implementation. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#optional-worktree-preparation) separates verified behavior from remaining GUI checks.
+Start here when contributing to this feature. This document records the product decision and explains usage and implementation. [tasks-and-worktrees.md](tasks-and-worktrees.md) covers the worktree lifecycle it extends. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#optional-worktree-preparation) separates verified behavior from remaining GUI checks.
 
 ## Two-minute overview
 
@@ -331,4 +331,4 @@ Before extending the feature:
 4. Add failure/race tests with temporary repositories and a fake CLI before adding native acceptance claims. Use the fixture for UI checks, never normal app data.
 5. Treat schema changes as consent changes: add backward-compatible defaults only deliberately, keep unknown-field rejection, and update parsing/approval tests. The approval record contains the parsed config, not a versioned script digest. Consider whether deserializing a new field's default into old approval records would silently authorize new behavior; specify migration/reconsent rather than assuming equality is sufficient.
 6. Globs/directories, daemon support, persistent setup logs, pooling, and compiler caches need separate design decisions. Do not quietly broaden trust or ownership boundaries as an optimization.
-7. Update this guide, the short [AGENTS.md](../AGENTS.md) handoff, [PLAN.md](../PLAN.md), and relevant acceptance checks together. For UI changes, read [design/DESIGN.md](../design/DESIGN.md) and [keyboard flow](keyboard-flow.md). Keep intended behavior separate from verified GUI results.
+7. Update this guide, the short [AGENTS.md](../AGENTS.md) handoff, and relevant acceptance checks together. For UI changes, read [design/DESIGN.md](../design/DESIGN.md) and [keyboard flow](keyboard-flow.md). Keep intended behavior separate from verified GUI results.

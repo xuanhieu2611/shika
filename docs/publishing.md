@@ -2,7 +2,7 @@
 
 Contributor and coding-agent guide for Shika's **Create PR** feature: what changed, why, how the implementation works, and how to debug or extend it safely.
 
-Start with [AGENTS.md](../AGENTS.md) for architecture and build constraints. [PLAN.md](../PLAN.md#confirmed-pr-publishing) records this feature's product decision and overrides the original exclusions in [PRD.md](../PRD.md). Read [design/DESIGN.md](../design/DESIGN.md) before UI changes, [keyboard-flow.md](keyboard-flow.md) for dispatch/focus, and [terminal-tabs.md](terminal-tabs.md) for task/PTY ownership. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#confirmed-pr-publishing) separates validation evidence from remaining acceptance checks.
+Start with [AGENTS.md](../AGENTS.md) for architecture and build constraints. This guide records the product decision: Create PR is the only flow in which Shika commits for the user, and only after confirmation. Read [design/DESIGN.md](../design/DESIGN.md) before UI changes, [keyboard-flow.md](keyboard-flow.md) for dispatch/focus, and [terminal-tabs.md](terminal-tabs.md) for task/PTY ownership. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#confirmed-pr-publishing) separates validation evidence from remaining acceptance checks.
 
 ## What changed
 
@@ -273,6 +273,6 @@ Verify that the isolated process's window is frontmost before synthetic input. A
 - Reuse existing design tokens and focus restoration; keep plain field typing out of card/terminal shortcuts.
 - Do not install gh, edit global configuration, or collect credentials as a workaround.
 - Add regression tests for the behavior you change; record GUI evidence separately.
-- Update this guide, `PLAN.md`, the short `AGENTS.md` handoff, and affected design/keyboard/acceptance docs with behavioral changes.
+- Update this guide, the short `AGENTS.md` handoff, and affected design/keyboard/acceptance docs with behavioral changes.
 
 Potential improvements include richer PR-body preview/editing, clearer completed-step progress, more complete URL/SSH configuration support, and cancellation or concurrent publishing. Each must preserve the safety contract. Fork/upstream selection needs distinct source/target repository identities; persistent jobs need reconciliation with uncertain remote results; merging or CI/review management needs a separate product decision. None is implemented by this feature.
