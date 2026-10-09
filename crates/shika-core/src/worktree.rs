@@ -1,15 +1,16 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{ErrorKind, Read};
+use std::io::{self, BufReader, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::diff::{self, FileDiff, FileKey, FileStatus, SessionDiff};
 use crate::error::{Error, Result, first_line};
 
 /// Variables that would make git follow another checkout instead of the
@@ -824,18 +825,13 @@ pub fn diff_stat(
     worktree: &Path,
     base: Option<&str>,
 ) -> Result<crate::DiffStat> {
+    check_worktree(git, path_env, worktree).map_err(Error::GitStatus)?;
     let base = diff_base(git, path_env, repo, worktree, base);
     // Comparing the base to the working tree covers commits and edits at once.
     let output = read_only_git(git, path_env, worktree)
-        .args([
-            "diff",
-            "--numstat",
-            "--no-color",
-            "--no-ext-diff",
-            "--find-renames",
-            &base,
-            "--",
-        ])
+        .args(["diff", "--numstat"])
+        .args(TASK_DIFF)
+        .args([&base, "--"])
         .output()
         .map_err(|_| Error::GitStatus(None))?;
     if !output.status.success() {
@@ -854,21 +850,140 @@ pub fn diff_stat(
         stat.insertions += added.parse::<usize>().unwrap_or(0);
         stat.deletions += deleted.parse::<usize>().unwrap_or(0);
     }
-    let output = read_only_git(git, path_env, worktree)
-        .args(["ls-files", "--others", "--exclude-standard", "-z"])
-        .output()
-        .map_err(|_| Error::GitStatus(None))?;
-    if !output.status.success() {
-        return Err(Error::GitStatus(first_line(&output.stderr)));
-    }
-    for path in output.stdout.split(|byte| *byte == 0) {
+    let untracked = untracked(git, path_env, worktree).map_err(Error::GitStatus)?;
+    for path in untracked.split(|byte| *byte == 0) {
         if path.is_empty() {
             continue;
         }
         stat.files += 1;
-        stat.insertions += untracked_lines(&worktree.join(OsStr::from_bytes(path)));
+        stat.insertions += diff::untracked_lines(&worktree.join(OsStr::from_bytes(path)));
     }
     Ok(stat)
+}
+
+/// Options every task diff shares, so the Changes panel and the card's stat
+/// count the same files and lines whatever the user's git config says:
+/// no color, no external diff or textconv program, renames found, and
+/// submodules as one commit line each (`diff.submodule=log` would print no
+/// patch for them).
+const TASK_DIFF: [&str; 5] = [
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--find-renames",
+    "--submodule=short",
+];
+
+/// Patch options on top of [`TASK_DIFF`]: three lines of context, and the
+/// `a/` and `b/` prefixes the parser expects even under `diff.noprefix` or
+/// `diff.mnemonicPrefix`.
+const TASK_PATCH: [&str; 3] = ["-U3", "--src-prefix=a/", "--dst-prefix=b/"];
+
+/// The task's whole change for the Changes panel, measured exactly as
+/// [`diff_stat`] measures it. After the base is found, two git processes:
+/// the patch, streamed and parsed as it arrives, and the untracked list.
+/// Reads only, and only this worktree: one whose `.git` is missing or broken
+/// is an error, never the main checkout around it.
+pub fn session_diff(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    worktree: &Path,
+    base: Option<&str>,
+) -> Result<SessionDiff> {
+    check_worktree(git, path_env, worktree).map_err(Error::ReadChanges)?;
+    let base = diff_base(git, path_env, repo, worktree, base);
+    let untracked = untracked(git, path_env, worktree).map_err(Error::ReadChanges)?;
+    let paths: Vec<&[u8]> = untracked
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .collect();
+    let mut command = read_only_git(git, path_env, worktree);
+    command
+        .arg("diff")
+        .args(TASK_DIFF)
+        .args(TASK_PATCH)
+        .args([&base, "--"]);
+    stream_git(command, |patch| {
+        diff::session_diff(patch, &paths, worktree, &base)
+    })
+}
+
+/// One file of an earlier [`session_diff`] read again, uncapped up to the
+/// expand limit, against the same base. A tracked file costs one git process
+/// limited to its path (both paths of a rename, so the pair is still found);
+/// an untracked file is read directly. None when the file no longer differs.
+pub fn file_diff(
+    git: &Path,
+    path_env: &str,
+    worktree: &Path,
+    key: &FileKey,
+) -> Result<Option<FileDiff>> {
+    if key.status == FileStatus::Untracked {
+        return Ok(diff::expand_untracked(worktree, key));
+    }
+    check_worktree(git, path_env, worktree).map_err(Error::ReadChanges)?;
+    let mut command = read_only_git(git, path_env, worktree);
+    // Literal pathspecs, so a `*` or `:` in a name is only itself.
+    command
+        .arg("--literal-pathspecs")
+        .arg("diff")
+        .args(TASK_DIFF)
+        .args(TASK_PATCH)
+        .args([key.base.as_str(), "--"])
+        .arg(OsStr::from_bytes(&key.path));
+    if let Some(old) = &key.old_path {
+        command.arg(OsStr::from_bytes(old));
+    }
+    stream_git(command, |patch| diff::expand_tracked(patch, key))
+}
+
+/// Untracked paths that are not ignored, NUL separated. The error is git's
+/// first line.
+fn untracked(git: &Path, path_env: &str, worktree: &Path) -> Result<Vec<u8>, Option<String>> {
+    let output = read_only_git(git, path_env, worktree)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .map_err(|_| None)?;
+    if !output.status.success() {
+        return Err(first_line(&output.stderr));
+    }
+    Ok(output.stdout)
+}
+
+/// Run git and hand its stdout to `read` as a stream, so the output is never
+/// held whole. Stderr is drained on its own thread so a chatty git cannot
+/// stall on a full pipe.
+fn stream_git<T>(
+    mut command: Command,
+    read: impl FnOnce(BufReader<ChildStdout>) -> io::Result<T>,
+) -> Result<T> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(|_| Error::ReadChanges(None))?;
+    let (Some(stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Error::ReadChanges(None));
+    };
+    let errors = std::thread::spawn(move || {
+        let mut text = Vec::new();
+        let _ = stderr.read_to_end(&mut text);
+        text
+    });
+    let value = read(BufReader::with_capacity(64 * 1024, stdout));
+    if value.is_err() {
+        let _ = child.kill();
+    }
+    let status = child.wait().map_err(|_| Error::ReadChanges(None))?;
+    let errors = errors.join().unwrap_or_default();
+    if !status.success() {
+        return Err(Error::ReadChanges(first_line(&errors)));
+    }
+    value.map_err(|err| Error::ReadChanges(Some(err.to_string())))
 }
 
 /// Where the task branch left its base. Falls back to HEAD, so only
@@ -896,56 +1011,46 @@ fn diff_base(
     }
 }
 
-/// Lines in an untracked file, counted as `git diff` would count them for a
-/// new file. Binary, unreadable, and non-file entries count none; a symlink is
-/// one line, its target.
-fn untracked_lines(path: &Path) -> usize {
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return 0;
-    };
-    if meta.file_type().is_symlink() {
-        return 1;
+/// A git call for background reads in a task worktree. Optional locks are
+/// off so a refresh never takes the index lock out from under the user's own
+/// git commands. Discovery stops at `worktree`: a task worktree sits at
+/// `<repo>/.worktrees/<branch>`, so with its `.git` file missing, git would
+/// otherwise walk up and read the main checkout as if it were the task.
+/// `GIT_CEILING_DIRECTORIES` is the worktree's parent, which git resolves
+/// through symlinks. Every caller passes a task worktree root, never the main
+/// checkout; use [`git_cmd`] there.
+fn read_only_git(program: &Path, path_env: &str, worktree: &Path) -> Command {
+    let mut cmd = git_cmd(program, path_env, worktree);
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    if let Some(parent) = worktree.parent() {
+        cmd.env("GIT_CEILING_DIRECTORIES", parent);
     }
-    if !meta.is_file() {
-        return 0;
-    }
-    let Ok(mut file) = fs::File::open(path) else {
-        return 0;
-    };
-    // Git calls a file binary when its first 8000 bytes hold a NUL.
-    const BINARY_PROBE: usize = 8000;
-    let mut buf = vec![0; 64 * 1024];
-    let mut probed = 0;
-    let mut lines = 0;
-    let mut last = b'\n';
-    loop {
-        let n = match file.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
-            Err(_) => return 0,
-        };
-        let chunk = &buf[..n];
-        if probed < BINARY_PROBE {
-            let take = (BINARY_PROBE - probed).min(n);
-            if chunk[..take].contains(&0) {
-                return 0;
-            }
-            probed += take;
-        }
-        lines += chunk.iter().filter(|byte| **byte == b'\n').count();
-        last = chunk[n - 1];
-    }
-    // A last line without a newline still counts.
-    lines + usize::from(last != b'\n')
+    cmd
 }
 
-/// A git call for background reads. Optional locks are off so a refresh never
-/// takes the index lock out from under the user's own git commands.
-fn read_only_git(program: &Path, path_env: &str, dir: &Path) -> Command {
-    let mut cmd = git_cmd(program, path_env, dir);
-    cmd.env("GIT_OPTIONAL_LOCKS", "0");
-    cmd
+/// Fails unless git, run in `worktree`, finds that same directory as the top
+/// of its checkout. The ceiling in [`read_only_git`] already stops discovery
+/// there; this also holds when the parent path cannot be written as a ceiling
+/// (git splits the list at `:`, which a macOS folder name can hold). Paths
+/// are compared canonicalized, so `/tmp` and `/private/tmp` agree. The error
+/// is git's first line, or a sentence naming the worktree.
+fn check_worktree(git: &Path, path_env: &str, worktree: &Path) -> Result<(), Option<String>> {
+    let output = read_only_git(git, path_env, worktree)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|_| None)?;
+    if !output.status.success() {
+        return Err(first_line(&output.stderr));
+    }
+    let top = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+    let found = fs::canonicalize(OsStr::from_bytes(top));
+    match (found, fs::canonicalize(worktree)) {
+        (Ok(found), Ok(expected)) if found == expected => Ok(()),
+        _ => Err(Some(format!(
+            "{} is not a git worktree of its own.",
+            worktree.display()
+        ))),
+    }
 }
 
 fn commits_not_in(git: &Path, path_env: &str, worktree: &Path, excluded: &[&str]) -> Result<bool> {
@@ -1103,6 +1208,7 @@ fn save(path: &Path, entries: &[JournalEntry]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diff::Collapse;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1601,5 +1707,549 @@ mod tests {
             "{text}"
         );
         assert_eq!(again.list().unwrap()[1], entry);
+    }
+
+    fn changes(repo: &Path, draft: &Draft) -> SessionDiff {
+        session_diff(&git(), "", repo, &draft.path, None).unwrap()
+    }
+
+    fn file<'a>(diff: &'a SessionDiff, path: &str) -> &'a FileDiff {
+        diff.files
+            .iter()
+            .find(|file| file.path == path)
+            .unwrap_or_else(|| panic!("{path} not in {:?}", paths(diff)))
+    }
+
+    fn paths(diff: &SessionDiff) -> Vec<&str> {
+        diff.files.iter().map(|file| file.path.as_str()).collect()
+    }
+
+    /// Each line as `kind old new text`, for compact assertions.
+    fn rows(file: &FileDiff) -> Vec<String> {
+        file.hunks
+            .iter()
+            .flat_map(|hunk| &hunk.lines)
+            .map(|line| {
+                let no = |n: Option<u32>| n.map_or("-".to_string(), |n| n.to_string());
+                let kind = match line.kind {
+                    diff::LineKind::Context => ' ',
+                    diff::LineKind::Added => '+',
+                    diff::LineKind::Removed => '-',
+                    diff::LineKind::NoNewline => '\\',
+                };
+                format!("{kind} {} {} {}", no(line.old), no(line.new), line.text)
+            })
+            .collect()
+    }
+
+    fn numbered(count: usize, tag: &str) -> String {
+        (0..count).map(|n| format!("{tag} {n}\n")).collect()
+    }
+
+    #[test]
+    fn changes_of_a_clean_task_are_empty() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        assert_eq!(changes(&repo, &draft), SessionDiff::default());
+    }
+
+    #[test]
+    fn changes_show_edits_with_line_numbers() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("a.txt"), "one\n2\nthree\nfour\n").unwrap();
+        let diff = changes(&repo, &draft);
+        let a = file(&diff, "a.txt");
+        assert_eq!(a.status, FileStatus::Modified);
+        assert_eq!(a.status.letter(), 'M');
+        assert_eq!((a.insertions, a.deletions), (2, 1));
+        assert_eq!(a.hunks.len(), 1);
+        assert_eq!(a.hunks[0].header, "@@ -1,3 +1,4 @@");
+        assert_eq!(
+            rows(a),
+            [
+                "  1 1 one",
+                "- 2 - two",
+                "+ - 2 2",
+                "  3 3 three",
+                "+ - 4 four"
+            ]
+        );
+        assert!(a.collapsed.is_none() && a.hidden_lines == 0 && a.old_path.is_none());
+    }
+
+    #[test]
+    fn changes_count_commits_and_edits_from_where_the_branch_left() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+        fs::write(draft.path.join("added.txt"), "new\n").unwrap();
+        commit_all(&draft.path, "task");
+        fs::write(draft.path.join("added.txt"), "new\nmore\n").unwrap();
+        // Later work on the default branch is not the task's.
+        fs::write(repo.join("main.txt"), "main\n").unwrap();
+        commit_all(&repo, "main moves on");
+        let diff = changes(&repo, &draft);
+        assert_eq!(paths(&diff), ["a.txt", "added.txt"]);
+        let added = file(&diff, "added.txt");
+        assert_eq!(added.status, FileStatus::Added);
+        assert_eq!(rows(added), ["+ - 1 new", "+ - 2 more"]);
+        assert_eq!(diff.stat, counts(2, 3, 0));
+        assert_eq!(diff.stat, stat(&repo, &draft));
+    }
+
+    #[test]
+    fn deleted_files_show_their_old_lines() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::remove_file(draft.path.join("a.txt")).unwrap();
+        let diff = changes(&repo, &draft);
+        let a = file(&diff, "a.txt");
+        assert_eq!(a.status, FileStatus::Deleted);
+        assert_eq!(rows(a), ["- 1 - one", "- 2 - two", "- 3 - three"]);
+        assert_eq!(diff.stat, counts(1, 0, 3));
+    }
+
+    #[test]
+    fn renames_with_and_without_edits() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let body = numbered(10, "line");
+        fs::write(repo.join("same.txt"), &body).unwrap();
+        fs::write(repo.join("edit.txt"), numbered(10, "other")).unwrap();
+        commit_all(&repo, "base");
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+        run(&draft.path, &["mv", "same.txt", "moved.txt"]);
+        run(&draft.path, &["mv", "edit.txt", "edited.txt"]);
+        let edited = numbered(10, "other").replace("other 5", "changed");
+        fs::write(draft.path.join("edited.txt"), edited).unwrap();
+        let diff = changes(&repo, &draft);
+        let moved = file(&diff, "moved.txt");
+        assert_eq!(moved.status, FileStatus::Renamed);
+        assert_eq!(moved.old_path.as_deref(), Some("same.txt"));
+        assert!(moved.hunks.is_empty() && moved.collapsed.is_none());
+        let edited = file(&diff, "edited.txt");
+        assert_eq!(edited.status.letter(), 'R');
+        assert_eq!(edited.old_path.as_deref(), Some("edit.txt"));
+        assert_eq!((edited.insertions, edited.deletions), (1, 1));
+        assert!(rows(edited).contains(&"+ - 6 changed".to_string()));
+        assert_eq!(diff.stat, stat(&repo, &draft));
+    }
+
+    #[test]
+    fn binary_mode_only_and_empty_files_have_no_lines() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        fs::write(repo.join("run.sh"), "echo hi\n").unwrap();
+        fs::write(repo.join("logo.png"), [0x89, b'P', 0, 1, b'\n']).unwrap();
+        commit_all(&repo, "base");
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+        run(&draft.path, &["update-index", "--chmod=+x", "run.sh"]);
+        fs::set_permissions(
+            draft.path.join("run.sh"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(draft.path.join("logo.png"), [0x89, b'P', 0, 2, b'\n']).unwrap();
+        fs::write(draft.path.join("empty.txt"), "").unwrap();
+        run(&draft.path, &["add", "empty.txt"]);
+        let diff = changes(&repo, &draft);
+        let mode = file(&diff, "run.sh");
+        assert_eq!(
+            mode.mode_change,
+            Some(diff::ModeChange {
+                old: "100644".into(),
+                new: "100755".into()
+            })
+        );
+        assert!(mode.hunks.is_empty() && !mode.binary);
+        let logo = file(&diff, "logo.png");
+        assert!(logo.binary && logo.hunks.is_empty() && logo.collapsed.is_none());
+        assert_eq!((logo.insertions, logo.deletions), (0, 0));
+        let empty = file(&diff, "empty.txt");
+        assert_eq!(empty.status, FileStatus::Added);
+        assert!(empty.hunks.is_empty() && empty.collapsed.is_none());
+        assert_eq!(diff.stat, counts(3, 0, 0));
+        assert_eq!(diff.stat, stat(&repo, &draft));
+    }
+
+    #[test]
+    fn untracked_files_show_as_added_without_following_symlinks() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("new.txt"), "a\nb").unwrap();
+        fs::write(draft.path.join("blob.bin"), [1, 0, b'\n', b'\n']).unwrap();
+        fs::write(draft.path.join("empty.txt"), "").unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", draft.path.join("link")).unwrap();
+        fs::write(draft.path.join(".gitignore"), "*.log\n").unwrap();
+        fs::write(draft.path.join("build.log"), "ignored\n").unwrap();
+        let diff = changes(&repo, &draft);
+        assert_eq!(
+            paths(&diff),
+            [".gitignore", "blob.bin", "empty.txt", "link", "new.txt"]
+        );
+        assert!(diff.files.iter().all(|f| f.status == FileStatus::Untracked));
+        let new = file(&diff, "new.txt");
+        assert_eq!(new.hunks[0].header, "@@ -0,0 +1,2 @@");
+        assert_eq!(
+            rows(new),
+            ["+ - 1 a", "+ - 2 b", "\\ - - \\ No newline at end of file"]
+        );
+        let blob = file(&diff, "blob.bin");
+        assert!(blob.binary && blob.hunks.is_empty());
+        assert!(file(&diff, "empty.txt").hunks.is_empty());
+        let link = file(&diff, "link");
+        assert_eq!(link.hunks[0].header, "@@ -0,0 +1 @@");
+        assert_eq!(rows(link)[0], "+ - 1 /etc/hosts");
+        assert_eq!(diff.stat, counts(5, 4, 0));
+        assert_eq!(diff.stat, stat(&repo, &draft));
+        // Reading the diff stages nothing.
+        assert!(porcelain(&draft.path).contains("?? new.txt"));
+    }
+
+    #[test]
+    fn line_endings_and_invalid_utf8_come_through() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        fs::write(repo.join("tail.txt"), "a\nb\n").unwrap();
+        fs::write(repo.join("crlf.txt"), "x\r\ny\r\n").unwrap();
+        commit_all(&repo, "base");
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+        fs::write(draft.path.join("tail.txt"), "a\nb").unwrap();
+        fs::write(draft.path.join("crlf.txt"), "x\r\nY\r\n").unwrap();
+        fs::write(draft.path.join("latin1.txt"), b"caf\xe9\n").unwrap();
+        run(&draft.path, &["add", "latin1.txt"]);
+        let diff = changes(&repo, &draft);
+        assert_eq!(
+            rows(file(&diff, "tail.txt")),
+            [
+                "  1 1 a",
+                "- 2 - b",
+                "+ - 2 b",
+                "\\ - - \\ No newline at end of file"
+            ]
+        );
+        assert_eq!(
+            rows(file(&diff, "crlf.txt")),
+            ["  1 1 x\r", "- 2 - y\r", "+ - 2 Y\r"]
+        );
+        assert_eq!(rows(file(&diff, "latin1.txt")), ["+ - 1 caf\u{fffd}"]);
+        assert_eq!(diff.stat, stat(&repo, &draft));
+    }
+
+    #[test]
+    fn a_typechange_is_two_entries_and_one_file() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::remove_file(draft.path.join("a.txt")).unwrap();
+        std::os::unix::fs::symlink("target", draft.path.join("a.txt")).unwrap();
+        let diff = changes(&repo, &draft);
+        let statuses: Vec<FileStatus> = diff.files.iter().map(|f| f.status).collect();
+        assert_eq!(statuses, [FileStatus::Deleted, FileStatus::Added]);
+        assert_eq!(diff.stat, counts(1, 1, 3));
+        assert_eq!(diff.stat, stat(&repo, &draft));
+        let added = file_diff(&git(), "", &draft.path, &diff.files[1].key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(added.status, FileStatus::Added);
+    }
+
+    #[test]
+    fn unusual_paths_round_trip() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let names = [
+            "sp ace.txt",
+            "dir b/x b/y.txt",
+            "ünï cødé.txt",
+            "q\"uote.txt",
+            "tab\there.txt",
+            "new\nline.txt",
+            "star*.txt",
+            "back\\slash.txt",
+        ];
+        fs::create_dir_all(repo.join("dir b/x b")).unwrap();
+        for name in names {
+            fs::write(repo.join(name), "one\n").unwrap();
+        }
+        fs::write(repo.join("star.txt"), "one\n").unwrap();
+        fs::write(repo.join("m b x"), "m\n").unwrap();
+        fs::write(repo.join("old b x.txt"), numbered(5, "r")).unwrap();
+        commit_all(&repo, "base");
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+        for name in names {
+            fs::write(draft.path.join(name), "one\ntwo\n").unwrap();
+        }
+        fs::set_permissions(
+            draft.path.join("m b x"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        for dir in ["new b", "bin b", "untracked ü b"] {
+            fs::create_dir_all(draft.path.join(dir)).unwrap();
+        }
+        run(&draft.path, &["mv", "old b x.txt", "new b/ü x.txt"]);
+        fs::write(draft.path.join("bin b/ary.bin"), [0, 1]).unwrap();
+        run(&draft.path, &["add", "bin b/ary.bin"]);
+        fs::write(draft.path.join("untracked ü b/c.txt"), "u\n").unwrap();
+        let diff = changes(&repo, &draft);
+        for name in names {
+            let changed = file(&diff, name);
+            assert_eq!(changed.status, FileStatus::Modified, "{name}");
+            assert_eq!(rows(changed), ["  1 1 one", "+ - 2 two"], "{name}");
+        }
+        assert!(file(&diff, "m b x").mode_change.is_some());
+        assert_eq!(
+            file(&diff, "new b/ü x.txt").old_path.as_deref(),
+            Some("old b x.txt")
+        );
+        assert!(file(&diff, "bin b/ary.bin").binary);
+        assert_eq!(rows(file(&diff, "untracked ü b/c.txt")), ["+ - 1 u"]);
+        assert_eq!(diff.stat, stat(&repo, &draft));
+        // Expanding reads the same file back by its exact bytes, and a `*`
+        // matches only itself.
+        for changed in &diff.files {
+            let again = file_diff(&git(), "", &draft.path, &changed.key)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{} gone", changed.path));
+            assert_eq!(&again, changed);
+        }
+    }
+
+    #[test]
+    fn a_file_over_the_line_cap_collapses_and_expands() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("big.txt"), numbered(2_001, "big")).unwrap();
+        fs::write(draft.path.join("small.txt"), "s\n").unwrap();
+        commit_all(&draft.path, "task");
+        // An untracked file over 1 MiB is not read at all.
+        let huge = "y".repeat(1023) + "\n";
+        fs::write(draft.path.join("huge.log.txt"), huge.repeat(1100)).unwrap();
+        let diff = changes(&repo, &draft);
+        let big = file(&diff, "big.txt");
+        assert_eq!(big.collapsed, Some(Collapse::Lines));
+        assert!(big.hunks.is_empty());
+        assert_eq!((big.insertions, big.hidden_lines), (2_001, 2_001));
+        let huge_file = file(&diff, "huge.log.txt");
+        assert_eq!(huge_file.collapsed, Some(Collapse::Size(1100 * 1024)));
+        assert_eq!(huge_file.hidden_lines, 1_100);
+        // A file over its own cap leaves the others alone.
+        assert_eq!(file(&diff, "small.txt").collapsed, None);
+        assert_eq!(diff.stat, stat(&repo, &draft));
+
+        let expanded = file_diff(&git(), "", &draft.path, &big.key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(expanded.collapsed, None);
+        assert_eq!((expanded.hidden_lines, rows(&expanded).len()), (0, 2_001));
+        assert_eq!(rows(&expanded)[2_000], "+ - 2001 big 2000");
+        let expanded = file_diff(&git(), "", &draft.path, &huge_file.key)
+            .unwrap()
+            .unwrap();
+        assert_eq!((expanded.hidden_lines, rows(&expanded).len()), (0, 1_100));
+        // A file that no longer differs has nothing to expand.
+        run(&draft.path, &["reset", "--hard", "HEAD~1"]);
+        fs::remove_file(draft.path.join("huge.log.txt")).unwrap();
+        assert_eq!(file_diff(&git(), "", &draft.path, &big.key).unwrap(), None);
+        assert_eq!(
+            file_diff(&git(), "", &draft.path, &huge_file.key).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_total_cap_collapses_every_file_past_it() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        // 26 files of 1,990 lines pass 50,000 lines in the 26th.
+        for n in 0..26 {
+            fs::write(
+                draft.path.join(format!("f{n:02}.txt")),
+                numbered(1_990, "x"),
+            )
+            .unwrap();
+        }
+        fs::write(draft.path.join("y.txt"), numbered(2_001, "y")).unwrap();
+        fs::write(draft.path.join("z.txt"), "z\n").unwrap();
+        commit_all(&draft.path, "task");
+        let diff = changes(&repo, &draft);
+        let collapsed: Vec<_> = diff.files.iter().map(|f| f.collapsed).collect();
+        // f00 to f24 fit; f25 and z.txt are past the cap. y.txt is past it
+        // too, but over its own line cap, which names it.
+        let mut expected = vec![None; 25];
+        expected.push(Some(Collapse::Budget));
+        expected.push(Some(Collapse::Lines));
+        expected.push(Some(Collapse::Budget));
+        assert_eq!(collapsed, expected);
+        let small = file(&diff, "z.txt");
+        assert_eq!(small.hidden_lines, 1);
+        assert_eq!(diff.stat, counts(28, 26 * 1_990 + 2_001 + 1, 0));
+        assert_eq!(diff.stat, stat(&repo, &draft));
+        // A file past the budget expands like a large one.
+        let expanded = file_diff(&git(), "", &draft.path, &small.key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(expanded.collapsed, None);
+        assert_eq!(rows(&expanded), ["+ - 1 z"]);
+    }
+
+    #[test]
+    fn expand_stops_at_the_hard_limit() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("gen.txt"), numbered(120_000, "g")).unwrap();
+        commit_all(&draft.path, "task");
+        let diff = changes(&repo, &draft);
+        let generated = file(&diff, "gen.txt");
+        assert_eq!(generated.collapsed, Some(Collapse::Lines));
+        let expanded = file_diff(&git(), "", &draft.path, &generated.key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(expanded.collapsed, None);
+        assert_eq!(rows(&expanded).len(), 100_000);
+        assert_eq!(expanded.hidden_lines, 20_000);
+        assert_eq!(expanded.insertions, 120_000);
+    }
+
+    #[test]
+    fn the_diff_stat_agrees_on_a_mixed_tree() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        fs::write(repo.join("keep.txt"), numbered(50, "k")).unwrap();
+        fs::write(repo.join("gone.txt"), numbered(5, "g")).unwrap();
+        fs::write(repo.join("move.txt"), numbered(20, "m")).unwrap();
+        fs::write(repo.join("swap"), "s\n").unwrap();
+        commit_all(&repo, "base");
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+        fs::write(draft.path.join("keep.txt"), numbered(60, "K")).unwrap();
+        commit_all(&draft.path, "task");
+        fs::remove_file(draft.path.join("gone.txt")).unwrap();
+        run(&draft.path, &["mv", "move.txt", "moved.txt"]);
+        fs::remove_file(draft.path.join("swap")).unwrap();
+        std::os::unix::fs::symlink("keep.txt", draft.path.join("swap")).unwrap();
+        fs::write(draft.path.join("big.txt"), numbered(3_000, "b")).unwrap();
+        run(&draft.path, &["add", "big.txt"]);
+        fs::write(draft.path.join("loose.txt"), "l\nm").unwrap();
+        fs::write(draft.path.join("loose.bin"), [0, 0]).unwrap();
+        let diff = changes(&repo, &draft);
+        assert_eq!(diff.stat, stat(&repo, &draft));
+        let sum = |f: fn(&FileDiff) -> usize| diff.files.iter().map(f).sum::<usize>();
+        assert_eq!(sum(|f| f.insertions), diff.stat.insertions);
+        assert_eq!(sum(|f| f.deletions), diff.stat.deletions);
+    }
+
+    /// The reads that must fail, not fall through to the main checkout, when
+    /// a task worktree has lost its `.git` file.
+    fn assert_reads_fail(repo: &Path, draft: &Draft, key: &FileKey) {
+        let stat = diff_stat(&git(), "", repo, &draft.path, None);
+        assert!(matches!(stat, Err(Error::GitStatus(_))), "{stat:?}");
+        let changes = session_diff(&git(), "", repo, &draft.path, None);
+        assert!(matches!(changes, Err(Error::ReadChanges(_))), "{changes:?}");
+        let expanded = file_diff(&git(), "", &draft.path, key);
+        assert!(
+            matches!(expanded, Err(Error::ReadChanges(_))),
+            "{expanded:?}"
+        );
+    }
+
+    #[test]
+    fn a_worktree_without_its_git_file_never_reads_the_main_checkout() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("a.txt"), "one\n").unwrap();
+        let key = file(&changes(&repo, &draft), "a.txt").key.clone();
+        // The main checkout around `.worktrees/` is clean, so reading it
+        // instead would look like "No changes".
+        fs::remove_file(draft.path.join(".git")).unwrap();
+        assert_reads_fail(&repo, &draft, &key);
+        let changes = session_diff(&git(), "", &repo, &draft.path, None).unwrap_err();
+        assert!(
+            changes.to_string().contains("not a git repository"),
+            "{changes}"
+        );
+        // A broken `.git` file fails in git itself.
+        fs::write(draft.path.join(".git"), "gitdir: /nonexistent/dir\n").unwrap();
+        assert_reads_fail(&repo, &draft, &key);
+    }
+
+    #[test]
+    fn a_colon_in_the_path_still_stops_at_the_worktree() {
+        // Git splits `GIT_CEILING_DIRECTORIES` at `:`, so this ceiling is
+        // wrong; the top-level check still catches the main checkout.
+        let scratch = Scratch::new();
+        let repo = scratch.repo("a:b");
+        fs::write(repo.join("a.txt"), "one\n").unwrap();
+        commit_all(&repo, "base");
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+        fs::write(draft.path.join("a.txt"), "two\n").unwrap();
+        assert_eq!(stat(&repo, &draft), counts(1, 1, 1));
+        let key = file(&changes(&repo, &draft), "a.txt").key.clone();
+        fs::remove_file(draft.path.join(".git")).unwrap();
+        assert_reads_fail(&repo, &draft, &key);
+    }
+
+    #[test]
+    fn a_worktree_reached_through_a_symlink_still_reads() {
+        let scratch = Scratch::new();
+        let (repo, draft) = repo_with_draft(&scratch);
+        fs::write(draft.path.join("a.txt"), "one\n").unwrap();
+        let link = scratch.path.join("link");
+        std::os::unix::fs::symlink(&draft.path, &link).unwrap();
+        let linked = Draft {
+            branch: draft.branch.clone(),
+            path: link,
+        };
+        assert_eq!(stat(&repo, &linked), counts(1, 0, 2));
+        assert_eq!(changes(&repo, &linked).stat, counts(1, 0, 2));
+    }
+
+    /// Timing on a large change: 200 files with 150 lines replaced in each,
+    /// 60,000 changed lines. Run with
+    /// `cargo test -p shika-core --release large_diff_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn large_diff_timing() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        for n in 0..200 {
+            fs::write(
+                repo.join(format!("f{n:03}.rs")),
+                numbered(300, "let base ="),
+            )
+            .unwrap();
+        }
+        commit_all(&repo, "base");
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+        for n in 0..200 {
+            let text: String = (0..300)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        format!("let task = {i};\n")
+                    } else {
+                        format!("let base = {i}\n")
+                    }
+                })
+                .collect();
+            fs::write(draft.path.join(format!("f{n:03}.rs")), text).unwrap();
+        }
+        let mut best = (Duration::MAX, Duration::MAX);
+        let mut collapsed = 0;
+        for _ in 0..5 {
+            let started = Instant::now();
+            let diff = changes(&repo, &draft);
+            let full = started.elapsed();
+            let started = Instant::now();
+            let numstat = stat(&repo, &draft);
+            let quick = started.elapsed();
+            assert_eq!(diff.stat, numstat);
+            assert_eq!(diff.stat.insertions + diff.stat.deletions, 60_000);
+            best = (best.0.min(full), best.1.min(quick));
+            collapsed = diff.files.iter().filter(|f| f.collapsed.is_some()).count();
+        }
+        eprintln!(
+            "session_diff {:?}, diff_stat {:?}, {collapsed} of 200 files past the total cap",
+            best.0, best.1
+        );
     }
 }

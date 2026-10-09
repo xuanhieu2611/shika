@@ -11,6 +11,9 @@ gpui = { workspace = true }
 gpui_platform = { workspace = true }
 shika-core = { path = "../shika-core" }
 shika-terminal = { path = "../shika-terminal" }
+# Display width for cutting diff lines to the columns on screen. The same
+# version alacritty_terminal uses.
+unicode-width = "0.2.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"

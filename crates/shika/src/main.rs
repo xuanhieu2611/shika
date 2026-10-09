@@ -1,5 +1,6 @@
 mod activity;
 mod appearance;
+mod changes;
 mod lifecycle;
 mod model;
 mod notifications;
@@ -49,7 +50,8 @@ gpui::actions!(
         PreviousTerminal,
         NextAgent,
         PreviousAgent,
-        ToggleColumn
+        ToggleColumn,
+        ToggleChanges
     ]
 );
 
@@ -464,6 +466,8 @@ struct Shika {
     /// Each project's base branch, resolved off the main thread. A project
     /// missing here shows no base label.
     bases: HashMap<String, ProjectBase>,
+    /// The read-only Changes panel right of the terminal.
+    changes: changes::Panel,
 }
 impl Shika {
     fn new(
@@ -497,6 +501,7 @@ impl Shika {
         let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
         let notification_sound = settings.notification_sound;
         let column = settings.column;
+        let changes = changes::Panel::new(settings.changes, cx.focus_handle(), diagnostics.clone());
         let reduce_transparency = appearance::reduce_transparency();
         let entity = cx.entity().downgrade();
         let appearance_watch = window.observe_window_appearance(move |window, cx| {
@@ -547,6 +552,7 @@ impl Shika {
             column,
             column_drag_from: None,
             bases: HashMap::new(),
+            changes,
         };
         cx.spawn_in(window, async move |this, cx| {
             let catalog = cx
@@ -650,7 +656,9 @@ impl Shika {
         if self.busy || self.overlay.is_some() {
             return;
         }
-        let terminal_focused = !self.focus.is_focused(window);
+        // From the Changes panel, focus stays in the panel, which follows.
+        let panel_focused = self.changes.open && self.changes.focus.is_focused(window);
+        let terminal_focused = !self.focus.is_focused(window) && !panel_focused;
         if let Some(i) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) {
             self.selection = Some(Selection::Card(i));
             if terminal_focused {
@@ -1322,6 +1330,15 @@ impl Shika {
             }
             cx.notify();
         }
+        if let Some(from) = self.changes.drag_from
+            && !cx.has_active_drag()
+        {
+            self.changes.drag_from = None;
+            if from != self.changes.width {
+                self.save_settings();
+            }
+            cx.notify();
+        }
         let now = Instant::now();
         let mut changed = false;
         // Reconcile agent/shell branch renames independently of the one-shot
@@ -1571,6 +1588,11 @@ impl Shika {
             .detach();
         }
         for id in ready {
+            // The Changes panel reads again at the same moment, if it shows
+            // this task. No other refresh happens while it is open.
+            if self.changes.shows(&id) {
+                self.fetch_changes(cx);
+            }
             self.fetch_diff_stat(id, cx);
         }
         for (id, title) in rename {
@@ -2417,22 +2439,33 @@ impl Shika {
         self.save_settings();
         cx.notify();
     }
-    /// The column's width on screen, or `None` while it is hidden. A window
-    /// too narrow for the stored width and a readable terminal shows less.
+    /// The column's and the Changes panel's widths on screen, `None` while
+    /// hidden or closed. A window too narrow for the stored widths and a
+    /// readable terminal shows less: the panel gives way first, then the
+    /// column.
+    fn pane_widths(&self, window: &Window) -> (Option<Pixels>, Option<Pixels>) {
+        let (column, panel) = changes::pane_widths(
+            f32::from(window.viewport_size().width),
+            MIN_TERMINAL_WIDTH,
+            (!self.column.hidden).then_some(f32::from(self.column.width)),
+            self.changes
+                .open
+                .then_some(f32::from(self.changes.width.width)),
+        );
+        (column.map(px), panel.map(px))
+    }
+    /// The column's width on screen, or `None` while it is hidden.
     fn column_width(&self, window: &Window) -> Option<Pixels> {
-        if self.column.hidden {
-            return None;
-        }
-        let room = window.viewport_size().width - px(MIN_TERMINAL_WIDTH);
-        let min = px(f32::from(Column::MIN_WIDTH));
-        Some(px(f32::from(self.column.width)).min(room).max(min))
+        self.pane_widths(window).0
     }
     /// The column's edge follows the pointer and stops at the narrowest
     /// width. A drag never hides the column; only the toggle does.
     fn drag_column(&mut self, x: Pixels, window: &mut Window, cx: &mut Context<Self>) {
         cx.set_active_drag_cursor_style(gpui::CursorStyle::ResizeLeftRight, window);
         self.column_drag_from.get_or_insert(self.column);
-        let room = window.viewport_size().width - px(MIN_TERMINAL_WIDTH);
+        // Beside the Changes panel as shown, the terminal still keeps 420.
+        let panel = self.pane_widths(window).1.unwrap_or(px(0.));
+        let room = window.viewport_size().width - px(MIN_TERMINAL_WIDTH) - panel;
         let next = self.column.with_width(f32::from(x.min(room)));
         if next != self.column {
             self.column = next;
@@ -2486,6 +2519,7 @@ impl Shika {
             font_size: self.font_size,
             notification_sound: self.notification_sound,
             column: self.column,
+            changes: self.changes.width,
         };
         if let Err(e) = self.core.save_settings(&settings) {
             self.message(e.to_string());
@@ -3608,7 +3642,29 @@ impl Shika {
                 )
             })
             .when_some(stat, |d, stat| {
-                d.child(separator()).child(div().flex_none().child(stat))
+                let (ink, tip_bg, tip_fg) = (chrome.ink_1, chrome.toast_bg, chrome.toast_fg);
+                d.child(separator()).child(
+                    div()
+                        .id(("diff-stat", i))
+                        .flex_none()
+                        .cursor_pointer()
+                        .hover(move |style| style.text_color(ink))
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| KeyTip {
+                                bg: tip_bg,
+                                fg: tip_fg,
+                                text: "Show changes  \u{2325}\u{2318}B".into(),
+                            })
+                            .into()
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            // Not the card's own click, which would focus
+                            // its terminal.
+                            cx.stop_propagation();
+                            this.show_changes_for(i, window, cx);
+                        }))
+                        .child(stat),
+                )
             })
             .child(div().flex_1())
             .when(selected && cards_focused, |d| {
@@ -4085,7 +4141,8 @@ impl Shika {
                         .flex_col()
                         .justify_end()
                         .pl(px(12.))
-                        .pr(px(12.))
+                        // Closed, the Changes toggle follows 8 after Close task.
+                        .pr(px(if self.changes.open { 12. } else { 8. }))
                         .child(
                             div().h(px(TAB_HEIGHT)).flex().items_center().child(
                                 div()
@@ -4120,7 +4177,23 @@ impl Shika {
                                     ),
                             ),
                         ),
-                );
+                )
+                .when(!self.changes.open, |d| {
+                    d.child(
+                        baseline(div())
+                            .flex()
+                            .flex_col()
+                            .justify_end()
+                            .pr(px(12.))
+                            .child(
+                                div()
+                                    .h(px(TAB_HEIGHT))
+                                    .flex()
+                                    .items_center()
+                                    .child(self.changes_toggle(chrome, cx)),
+                            ),
+                    )
+                });
             let pane = card.active_pane();
             right = right
                 .child(self.title_drag(header, cx))
@@ -4239,7 +4312,27 @@ impl Shika {
                                 .left_0()
                                 .right_0()
                                 .h(px(BAR_HEIGHT))
-                                .children(show_column),
+                                .flex()
+                                .children(show_column)
+                                .child(div().flex_1())
+                                .when(!self.changes.open, |d| {
+                                    d.child(
+                                        div()
+                                            .flex_none()
+                                            .h_full()
+                                            .flex()
+                                            .flex_col()
+                                            .justify_end()
+                                            .pr(px(12.))
+                                            .child(
+                                                div()
+                                                    .h(px(TAB_HEIGHT))
+                                                    .flex()
+                                                    .items_center()
+                                                    .child(self.changes_toggle(chrome, cx)),
+                                            ),
+                                    )
+                                }),
                             cx,
                         ),
                     )
@@ -5413,6 +5506,8 @@ impl Render for Shika {
         let home = home_dir();
         let reveal_selection = self.selection != self.last_revealed_selection;
         self.last_revealed_selection = self.selection.clone();
+        // The Changes panel follows the selected card. Closed, this is a no-op.
+        self.sync_changes(cx);
         let mut projects = div()
             .id("projects")
             .track_scroll(&self.sidebar_scroll)
@@ -5435,7 +5530,7 @@ impl Render for Shika {
                 cx,
             ));
         }
-        let column_width = self.column_width(window);
+        let (column_width, changes_width) = self.pane_widths(window);
         let sidebar = column_width.map(|width| {
             div()
                 .w(width)
@@ -5489,10 +5584,18 @@ impl Render for Shika {
                 cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleColumn, _, cx| this.toggle_column(cx)))
+            .on_action(
+                cx.listener(|this, _: &ToggleChanges, window, cx| this.toggle_changes(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &CreatePr, window, cx| this.create_pr(window, cx)))
             .on_drag_move(cx.listener(
                 |this, event: &gpui::DragMoveEvent<ColumnDrag>, window, cx| {
                     this.drag_column(event.event.position.x, window, cx)
+                },
+            ))
+            .on_drag_move(cx.listener(
+                |this, event: &gpui::DragMoveEvent<changes::ChangesDrag>, window, cx| {
+                    this.drag_changes(event.event.position.x, window, cx)
                 },
             ))
             .relative()
@@ -5504,7 +5607,12 @@ impl Render for Shika {
             .text_color(chrome.ink_1)
             .children(sidebar)
             .child(self.terminal_side(&chrome, cards_focused, home.as_deref(), window, cx))
-            .children(column_width.map(|width| self.column_handle(width, &chrome, cx)));
+            .children(changes_width.map(|width| self.changes_panel(width, &chrome, window, cx)))
+            .children(column_width.map(|width| self.column_handle(width, &chrome, cx)))
+            .children(changes_width.map(|width| {
+                let left = window.viewport_size().width - width;
+                self.changes_handle(left, &chrome, cx)
+            }));
         if let Some(overlay) = &self.overlay {
             root = root.child(self.overlay_view(overlay, &chrome, home.as_deref(), window, cx));
         }
@@ -5558,6 +5666,7 @@ fn main() -> anyhow::Result<()> {
             gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-[", PreviousAgent, Some("Shika")),
             gpui::KeyBinding::new("cmd-b", ToggleColumn, Some("Shika")),
+            gpui::KeyBinding::new("cmd-alt-b", ToggleChanges, Some("Shika")),
             gpui::KeyBinding::new("cmd-q", Quit, None),
             gpui::KeyBinding::new("cmd-,", OpenSettings, None),
             gpui::KeyBinding::new("cmd-h", Hide, None),
@@ -5618,10 +5727,10 @@ fn main() -> anyhow::Result<()> {
                 gpui::MenuItem::action("Next agent", NextAgent),
                 gpui::MenuItem::action("Previous agent", PreviousAgent),
             ]),
-            gpui::Menu::new("View").items([gpui::MenuItem::action(
-                "Hide or show agent column",
-                ToggleColumn,
-            )]),
+            gpui::Menu::new("View").items([
+                gpui::MenuItem::action("Hide or show agent column", ToggleColumn),
+                gpui::MenuItem::action("Hide or show changes", ToggleChanges),
+            ]),
         ]);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {

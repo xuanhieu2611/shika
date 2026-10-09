@@ -14,6 +14,7 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 | Agent state, elapsed timers, notifications, or activity-based Close checks | [Agent activity and elapsed turns](docs/agent-activity.md), including its [debugging playbook](docs/agent-activity.md#debugging-playbook) |
 | Worktree setup, local files, approval, cancellation, or retry | [Worktree preparation](docs/worktree-preparation.md), especially its [contributor guide](docs/worktree-preparation.md#contributor-guide) |
 | Command shortcuts, focus restoration, or selected-row scrolling | [Keyboard flow](docs/keyboard-flow.md) |
+| The read-only diff beside the terminal, its refresh, caps, or width | [Changes panel](docs/changes-panel.md) |
 | Task titles and branch names from CLI metadata | [Branch naming](docs/branch-naming.md) |
 | Close after the user switched branches | [Branch-switch close](docs/branch-switch-close.md) |
 | Sparkle updates, the release feed, or signing keys | [Software updates](docs/updates.md) |
@@ -32,7 +33,7 @@ These hold for every feature. A change to one is a decision for the maintainer, 
 - **No approval prompts from Shika.** Each CLI starts in its automatic approval mode, using flags checked against its `--help` (see [AGENTS.md](AGENTS.md#clis-and-launch-arguments)).
 - **One fresh worktree per task.** Tasks in a repository are independent. Shika does not reuse worktrees or merge between agents.
 - **The user owns git.** Shika never commits or pushes on its own. A push does not close a task, and Close asks before anything is lost. Create PR commits only after an explicit confirmation.
-- **Grouped by project, one terminal on screen.** Projects and their task cards in one column, and the selected task's terminal beside it.
+- **Grouped by project, one terminal on screen.** Projects and their task cards in one column, and the selected task's terminal beside it. On request, a read-only Changes panel shows that task's diff right of the terminal. It is for reading what an agent changed, not a second terminal or an editor.
 - **Keyboard first.** Every workflow works without the mouse, and typing in a terminal never triggers app keys.
 - **Nothing hidden.** No telemetry, no accounts, and no global hooks or edits to another tool's configuration.
 
@@ -48,6 +49,7 @@ Open an issue before working on any of these:
 - Conversation history or a browser of closed tasks.
 - More than one visible terminal, or splits between terminals.
 - A code editor.
+- Editing, staging, or reverting from the Changes panel.
 - Installing the CLIs.
 - A custom chat transcript or a per-CLI question parser.
 - Closing a card automatically after `git push`.

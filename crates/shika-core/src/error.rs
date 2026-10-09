@@ -46,6 +46,9 @@ pub enum Error {
     NoSuchBranch(String),
     #[error("Could not read git status.{}", detail(.0))]
     GitStatus(Option<String>),
+    /// The Changes panel's diff failed. The detail is git's first error line.
+    #[error("Could not read changes.{}", detail(.0))]
+    ReadChanges(Option<String>),
     #[error(
         "The worktree is on {current}, not task branch {expected}. Switch back to {expected} in the shell, then try again."
     )]

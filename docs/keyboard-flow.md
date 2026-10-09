@@ -2,7 +2,7 @@
 
 How Shika lets users move between tasks without leaving their working context, why the shortcuts use Command, and where to look when focus or navigation goes wrong.
 
-Start here for keyboard-related contributions. This document holds the keyboard rules and explains their implementation; [design/DESIGN.md](../design/DESIGN.md) holds the visual and focus specification. For task-local shell ownership, terminal-tab lifecycle, and extension traps, read [terminal-tabs.md](terminal-tabs.md). [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow) tracks GUI validation.
+Start here for keyboard-related contributions. This document holds the keyboard rules and explains their implementation; [design/DESIGN.md](../design/DESIGN.md) holds the visual and focus specification. For task-local shell ownership, terminal-tab lifecycle, and extension traps, read [terminal-tabs.md](terminal-tabs.md). The Changes panel's own keys and refresh rules are in [changes-panel.md](changes-panel.md). [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow) tracks GUI validation.
 
 ## What changed
 
@@ -25,6 +25,7 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+]` | Next agent in current row order | Terminal if invoked from a terminal; cards if invoked from cards |
 | `Cmd+[` | Previous agent in current row order | Same preservation rule |
 | `Cmd+B` | Hide or show the agent column | Unchanged; with the column hidden, `j`/`k` from cards still change the agent on screen |
+| `Cmd+Option+B` | Open or close the read-only Changes panel | Opening focuses the panel; closing from the panel restores the focus saved when it opened; closing from elsewhere moves no focus |
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
 
 Next/previous agent skips project headers, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
@@ -37,6 +38,7 @@ Other improvements:
 - A selection change scrolls the selected header/card into view with minimal movement. Ordinary redraws do not undo manual scrolling.
 - First shell open focuses the new view immediately. Early typing is queued until the PTY is bound; startup completion does not reclaim focus if the user has returned to the cards.
 - The native Agent menu lists the new actions and shortcuts. New agent, new shell, and shell close expose Command shortcuts in tooltips.
+- The View menu lists "Hide or show changes" with `Cmd+Option+B`, and the panel's toggle shows it in its tooltip.
 
 Create PR is also in the Agent menu and terminal metadata row. Its dialog uses Tab to switch title/target fields, Enter to confirm publishing, and Escape to cancel. Plain card keys never run while editing. Busy/overlay conflicts and active/blocked turns block entry. See [publishing.md](publishing.md); publishing runs on a worker, not by writing commands into a terminal.
 
@@ -47,11 +49,11 @@ Create PR is also in the Agent menu and terminal metadata row. Its dialog uses T
 - `Enter` enters the selected task's currently shown terminal while the cards have focus.
 - `Ctrl+Q` returns from the terminal to the cards.
 - `a`, `b`, and `r` retain their card actions. Plain `n` and `c` do nothing. `g` is not a shortcut.
-- Escape reaches the CLI when a terminal is focused. It is not an app-wide escape-to-navigation key.
+- Escape reaches the CLI when a terminal is focused. It is not an app-wide escape-to-navigation key. It closes the Changes panel only while the panel itself has focus.
 - Verified branch-switch Close has a separate confirmation: Enter closes while keeping both local branches, Escape restores the opening focus. Unsafe recovery is blocked rather than offering Push/Discard; see [branch-switch-close.md](branch-switch-close.md).
 - Close cancellation still routes dirty or unpushed work to the task shell. It is a workflow transition, not generic focus restoration.
 - Cards remain sorted by attention within each project. This improvement does not stabilize their order during status changes.
-- One terminal is visible at a time. Hidden views and PTYs stay alive.
+- One terminal is visible at a time. Hidden views and PTYs stay alive. The Changes panel is a read-only diff beside it, not a second terminal.
 - There is no prefix mode, configurable keymap, or saved keyboard preference. Terminal tabs add no persistence. Core's memory-only Session now records `shell_ptys`; `open_shell` creates a fresh PTY on each call and `close_shell` validates task ownership before stopping one.
 
 ## Why Command, not a multiplexer prefix
@@ -85,6 +87,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 | Scroll arithmetic | `crates/shika/src/model.rs`: `reveal_delta` | Minimal offset adjustment; oversized rows align their top |
 | Terminal ownership | `crates/shika-terminal/src/view.rs`: `init`, `key_for` | Keeps Command shortcuts, Ctrl+Tab, and Ctrl+Shift+Tab out of PTY key encoding; retains terminal copy/paste and history bindings |
 | Discovery | `main` menu registration, `top_row`, `terminal_side`, `KeyTip` | Native Agent menu and existing themed tooltip component |
+| Changes panel | `ToggleChanges` (binding `cmd-alt-b` in the `Shika` context, View menu); `crates/shika/src/changes.rs`: `Shika::toggle_changes`, `close_changes`, `restore_changes_focus`, `changes_key` on the panel's `Changes` key context, `Panel::focus`, `Panel::return_focus`; `move_agent` | Toggle, saved return focus, panel-local scrolling keys (see [changes-panel.md](changes-panel.md#architecture-and-code-map)) |
 
 ### Agent navigation
 
@@ -108,6 +111,16 @@ Successful asynchronous completion only binds the host. It does not focus again.
 
 Preserve this sequence. Delaying focus can send early typing to the previous view; unconditionally focusing on completion can override `Ctrl+Q`.
 
+### Changes panel focus
+
+The Changes panel is a third focus surface, next to the cards and the terminal. `Cmd+Option+B` toggles it through the root `Shika` context like `Cmd+B`, with the same busy/overlay guards; `key_for` already keeps it out of the PTY because it carries Command.
+
+Opening saves `window.focused(cx)` in the panel's own return slot (`Panel::return_focus`), the same pattern as `overlay_return_focus` but separate from it, since a dialog can open over an open panel. Closing from inside the panel (Escape, the toggle, the button) consumes that handle once and falls back to the cards when its view is gone; a saved terminal of a card other than the selected one gives way to the selected card's shown terminal, because the panel followed the selection there. Closing while the terminal or cards have focus moves nothing. A click on a card's diff stat stores that card's terminal as the return focus.
+
+The root `Shika::key` capture handler leaves plain keys alone unless the cards have focus, so they reach the panel's `on_key_down` (`changes_key`), which stops propagation for the keys it handles. `Ctrl+Q` is handled by that capture handler before the panel sees it, as for a terminal. `move_agent` treats the panel as its own surface: from the panel it changes the selection without focusing a terminal.
+
+While the panel has focus, its plain keys (`j`/`k`, arrows, `d`/`u`, Space, `g`/`G`, `]`/`[`, `h`/`l`, `o`, `r`, Escape) are handled in its own key context and never reach a PTY. `Ctrl+Q` returns to the cards and leaves the panel open. Command shortcuts keep working: `Cmd+]` / `Cmd+[` change the agent and keep focus in the panel, which follows the new card; tab shortcuts focus their destination terminal. Clicking the terminal focuses it and leaves the panel open. The panel keys are listed in [changes-panel.md](changes-panel.md#controls-and-focus).
+
 ### Selected-row visibility
 
 The sidebar div uses `track_scroll` with `sidebar_scroll`. `render()` compares selection with `last_revealed_selection`; only a changed selection attaches the invisible measurement canvas to the selected header/card.
@@ -129,6 +142,7 @@ Do not run this on every redraw: terminal output and timer updates must not prev
 | Early shell typing goes to agent, or startup steals focus | Check `new_shell`'s immediate focus and completion branch, then `pending_input` / `bind_host`. |
 | Selected row remains offscreen | Check sidebar tracking, selection-change detection, selected-row canvas prepaint, `reveal_delta`, and the deferred callback's selection guard. Test with enough projects to overflow the sidebar. |
 | Manual scrolling snaps back | Verify reveal is triggered by selection changes only, not every render/tick. |
+| A panel key reaches the CLI, or Escape in the panel lands in the wrong place | The panel's key context and focus at the time of the key; the panel's saved return handle, consumed once on close. |
 
 Reproduce with a built `.app`, disposable repositories, local bare remotes, and an isolated data directory. Never use a contributor's or author's normal app data for automated testing:
 

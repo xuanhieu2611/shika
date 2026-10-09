@@ -112,6 +112,14 @@ pub struct StatusColors {
     pub text: Rgba,
 }
 
+/// One diff hue in the Changes panel: the opaque row tint, and the text that
+/// meets 4.5:1 on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DiffColors {
+    pub tint: Rgba,
+    pub text: Rgba,
+}
+
 /// Colors for one paint of the window. Solid at 100% opacity, and whenever
 /// macOS Reduce transparency is on. Glass uses the frosted tints. The names
 /// follow `design/DESIGN.md`: `ink_1` is `--ink-1`, `line_2` is `--line-2`.
@@ -193,6 +201,12 @@ pub struct Chrome {
     pub term_fainter: Rgba,
     pub term_empty: Rgba,
     pub term_empty_alpha: f32,
+    /// The terminal palette's foreground: context lines in the Changes panel.
+    pub term_text: Rgba,
+    /// Added and removed lines in the Changes panel, and the file header
+    /// counts. Never chrome.
+    pub diff_added: DiffColors,
+    pub diff_removed: DiffColors,
 }
 
 impl Chrome {
@@ -486,6 +500,43 @@ fn shika_chrome(frame: &Frame, dark: bool) -> Chrome {
         term_fainter: if dark { rgb(0x5A5F55) } else { rgb(0xA3A79B) },
         term_empty: term.empty,
         term_empty_alpha: frame.term_alpha,
+        term_text: rgba_of(frame.palette.foreground),
+        diff_added: diff_colors(&frame.palette, dark, 2),
+        diff_removed: diff_colors(&frame.palette, dark, 1),
+    }
+}
+
+/// A diff hue from the terminal palette's ANSI `index` (2 green for added, 1
+/// red for removed). The tint is the terminal background mixed toward the
+/// hue, 8% on a light theme and 10% on a dark one, and opaque, like a
+/// CLI-colored cell. The text darkens the hue toward black (lightens it
+/// toward white on a dark theme) until it meets 4.5:1 on that tint, which
+/// keeps the hue. Every theme, Shika's included, derives them this way.
+pub fn diff_colors(palette: &Palette, dark: bool, index: usize) -> DiffColors {
+    let hue = rgba_of(palette.ansi[index]);
+    let tint = quantize(mix(
+        rgba_of(palette.background),
+        hue,
+        if dark { 0.10 } else { 0.08 },
+    ));
+    // Checked on the 8-bit colors the screen shows, in 1% steps, so the
+    // text stays as close to the palette's hue as the ratio allows.
+    let toward = extreme(tint);
+    let text = (0..=100)
+        .map(|i| quantize(mix(hue, toward, f32::from(i as u8) / 100.)))
+        .find(|candidate| contrast(*candidate, tint) >= TEXT_CONTRAST)
+        .unwrap_or(toward);
+    DiffColors { tint, text }
+}
+
+/// A color rounded to 8 bits a channel, as it reaches the screen.
+fn quantize(color: Rgba) -> Rgba {
+    let channel = |c: f32| (c * 255.).round() / 255.;
+    Rgba {
+        r: channel(color.r),
+        g: channel(color.g),
+        b: channel(color.b),
+        a: color.a,
     }
 }
 
@@ -620,6 +671,9 @@ fn derived_chrome(frame: &Frame, theme: &Theme) -> Chrome {
         term_fainter: mix(ink_3, bg, 0.45),
         term_empty: term.empty,
         term_empty_alpha: frame.term_alpha,
+        term_text: fg,
+        diff_added: diff_colors(&frame.palette, dark, 2),
+        diff_removed: diff_colors(&frame.palette, dark, 1),
     }
 }
 
@@ -1228,6 +1282,62 @@ mod tests {
             terminal_palette(&glass, shika_theme(false), false).background,
             Rgb::hex(0xF6F8F2)
         );
+    }
+
+    fn hex(color: Rgba) -> u32 {
+        let byte = |c: f32| (c * 255.0).round() as u32;
+        byte(color.r) << 16 | byte(color.g) << 8 | byte(color.b)
+    }
+
+    #[test]
+    fn diff_colors_keep_the_design_values() {
+        let solid = Appearance::default();
+        let glass = Appearance {
+            opacity: 60,
+            blur: 30,
+            translucency: Translucency::Sidebar,
+        };
+        let cases = [
+            (solid, false, [0xE3E8DE, 0x3A7439, 0xECE4DE, 0xAE4539]),
+            (glass, false, [0xE7EEE3, 0x3B763A, 0xF1EAE3, 0xB2463A]),
+            (solid, true, [0x252D24, 0x8CC98A, 0x2E2521, 0xE0786B]),
+            (glass, true, [0x242C23, 0x8CC98A, 0x2C231F, 0xE0786B]),
+        ];
+        for (appearance, dark, expected) in cases {
+            let chrome = chrome_for(&appearance, shika_theme(dark), false);
+            let got = [
+                hex(chrome.diff_added.tint),
+                hex(chrome.diff_added.text),
+                hex(chrome.diff_removed.tint),
+                hex(chrome.diff_removed.text),
+            ];
+            assert_eq!(
+                got.map(|c| format!("{c:06X}")),
+                expected.map(|c| format!("{c:06X}")),
+                "dark {dark} glass {}",
+                chrome.glass
+            );
+        }
+    }
+
+    #[test]
+    fn diff_colors_are_opaque_and_readable_in_every_theme() {
+        for theme in every_theme() {
+            for (appearance, reduce) in modes() {
+                let chrome = chrome_for(&appearance, theme, reduce);
+                for colors in [chrome.diff_added, chrome.diff_removed] {
+                    assert_eq!(colors.tint.a, 1.0, "{}", theme.id);
+                    let ratio = contrast(colors.text, colors.tint);
+                    assert!(ratio >= TEXT_CONTRAST, "{}: {ratio}", theme.id);
+                }
+                assert_eq!(
+                    chrome.term_text,
+                    rgba_of(theme.palette.foreground),
+                    "{}",
+                    theme.id
+                );
+            }
+        }
     }
 
     #[test]
