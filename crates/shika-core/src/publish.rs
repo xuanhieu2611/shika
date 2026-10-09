@@ -26,6 +26,40 @@ pub struct PublishPreview {
     pub(crate) origin: String,
 }
 
+/// The PR a confirmed publish created or reused, and the commit it pushed.
+/// The card watches its checks from this; nothing about it is persisted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedPr {
+    pub url: String,
+    /// Explicit GitHub repository, including host, as in the preview.
+    pub repository: String,
+    /// None when the URL does not end in `/pull/<number>`; the card then
+    /// shows no checks mark.
+    pub number: Option<u64>,
+    pub head: String,
+}
+
+/// Where a PR's checks stand for one commit. Read-only: Shika never
+/// re-runs, cancels, or lists checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChecksState {
+    /// GitHub reports no checks for the commit, or none yet.
+    NoChecks,
+    Pending,
+    Passed,
+    /// At least one check failed, even while others still run.
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrChecks {
+    /// The PR head commit the state belongs to.
+    pub head: String,
+    /// False once the PR is merged or closed.
+    pub open: bool,
+    pub state: ChecksState,
+}
+
 fn fail(message: impl Into<String>) -> Error {
     Error::Publish(message.into())
 }
@@ -113,6 +147,9 @@ fn text(bytes: Vec<u8>) -> String {
     String::from_utf8_lossy(&bytes).trim().to_owned()
 }
 fn gh(gh: &Path, env: &str, dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    run(gh_cmd(gh, env, dir, args))
+}
+fn gh_cmd(gh: &Path, env: &str, dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(gh);
     cmd.current_dir(dir).env("PATH", env).args(args);
     for key in worktree::GIT_REDIRECTS {
@@ -120,7 +157,99 @@ fn gh(gh: &Path, env: &str, dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
     }
     // A gh environment default must not redirect an explicitly scoped task.
     cmd.env_remove("GH_REPO");
-    run(cmd)
+    cmd
+}
+
+/// `https://HOST/OWNER/REPO/pull/N` to N. Anything else gives no number,
+/// so the card shows no mark rather than watching another PR.
+fn pr_number(url: &str) -> Option<u64> {
+    let (_, number) = url.trim_end_matches('/').rsplit_once("/pull/")?;
+    number.parse().ok().filter(|n| *n > 0)
+}
+
+#[derive(Deserialize)]
+struct PrView {
+    #[serde(rename = "headRefOid")]
+    head: String,
+    state: String,
+    #[serde(rename = "statusCheckRollup", default)]
+    rollup: Vec<RollupItem>,
+}
+/// A CheckRun has `status` and `conclusion`; a commit StatusContext has
+/// `state`. gh returns both kinds in one list.
+#[derive(Deserialize)]
+struct RollupItem {
+    status: Option<String>,
+    conclusion: Option<String>,
+    state: Option<String>,
+}
+
+/// Fail as soon as one check fails, so the card turns red while slower
+/// checks still run. Cancelled, skipped, neutral, and stale runs do not ask
+/// for a fix and count as finished.
+fn classify(items: &[RollupItem]) -> ChecksState {
+    if items.is_empty() {
+        return ChecksState::NoChecks;
+    }
+    let mut pending = false;
+    for item in items {
+        let verdict = match item.state.as_deref().filter(|s| !s.is_empty()) {
+            Some(state) => state,
+            None if item.status.as_deref() != Some("COMPLETED") => "PENDING",
+            None => item
+                .conclusion
+                .as_deref()
+                .filter(|c| !c.is_empty())
+                .unwrap_or("PENDING"),
+        };
+        match verdict {
+            "FAILURE" | "ERROR" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
+                return ChecksState::Failed;
+            }
+            "PENDING" | "EXPECTED" => pending = true,
+            _ => {}
+        }
+    }
+    if pending {
+        ChecksState::Pending
+    } else {
+        ChecksState::Passed
+    }
+}
+
+/// One read of a PR's head and checks. Bounded, non-interactive, and
+/// scoped to the explicit repository, like publishing.
+pub(crate) fn checks(
+    gh_bin: &Path,
+    env: &str,
+    dir: &Path,
+    repository: &str,
+    number: u64,
+) -> Result<PrChecks> {
+    let output = run_with_timeout(
+        gh_cmd(
+            gh_bin,
+            env,
+            dir,
+            &[
+                "pr",
+                "view",
+                &number.to_string(),
+                "--repo",
+                repository,
+                "--json",
+                "headRefOid,state,statusCheckRollup",
+            ],
+        ),
+        Duration::from_secs(20),
+    )?;
+    let view: PrView =
+        serde_json::from_slice(&output).map_err(|_| fail("Could not read PR checks."))?;
+    Ok(PrChecks {
+        state: classify(&view.rollup),
+        open: view.state == "OPEN",
+        head: view.head,
+    })
 }
 
 /// Recognize ordinary HTTPS, SSH, and SCP-style GitHub remotes. Local remotes
@@ -343,7 +472,7 @@ pub(crate) fn publish(
     preview: &PublishPreview,
     target: &str,
     title: &str,
-) -> Result<String> {
+) -> Result<PublishedPr> {
     let dir = &session.worktree;
     ensure_not_integrating(git_bin, env, dir)?;
     if title.trim().is_empty() || title.contains(['\n', '\r', '\0']) {
@@ -506,7 +635,12 @@ pub(crate) fn publish(
                 format!("{}/{}", owner.login, repository.name).eq_ignore_ascii_case(repo_name)
             })
     }) {
-        return Ok(pr.url.clone());
+        return Ok(PublishedPr {
+            number: pr_number(&pr.url),
+            url: pr.url.clone(),
+            repository: repo,
+            head: approved_head,
+        });
     }
     let output = gh(
         gh_bin,
@@ -532,7 +666,12 @@ pub(crate) fn publish(
             "PR command completed without a recognizable URL. Check GitHub before retrying.",
         ));
     }
-    Ok(url)
+    Ok(PublishedPr {
+        number: pr_number(&url),
+        url,
+        repository: repo,
+        head: approved_head,
+    })
 }
 
 #[cfg(test)]
@@ -655,7 +794,7 @@ mod tests {
         fn preview(&self) -> PublishPreview {
             preview(&self.git, &self.gh, "/usr/bin:/bin", &self.session).unwrap()
         }
-        fn publish(&self, preview: &PublishPreview) -> Result<String> {
+        fn publish(&self, preview: &PublishPreview) -> Result<PublishedPr> {
             publish(
                 &self.git,
                 &self.gh,
@@ -698,10 +837,11 @@ mod tests {
         let f = Fixture::new();
         f.edit();
         let p = f.preview();
-        assert_eq!(
-            f.publish(&p).unwrap(),
-            "https://github.com/test/repo/pull/1"
-        );
+        let published = f.publish(&p).unwrap();
+        assert_eq!(published.url, "https://github.com/test/repo/pull/1");
+        assert_eq!(published.repository, "github.com/test/repo");
+        assert_eq!(published.number, Some(1));
+        assert_eq!(published.head, f.git(&["rev-parse", "HEAD"]));
         assert_eq!(f.git(&["log", "-1", "--format=%s"]), "Add useful feature");
         assert!(f.git(&["status", "--porcelain"]).is_empty());
         let remote_head = text(
@@ -714,6 +854,16 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(remote_head, f.git(&["rev-parse", "HEAD"]));
+        // The card resumes watching checks when this local ref moves.
+        assert_eq!(
+            worktree::pushed_head(&f.git, "/usr/bin:/bin", &f.session.worktree, "feat/task")
+                .unwrap(),
+            Some(remote_head)
+        );
+        assert_eq!(
+            worktree::pushed_head(&f.git, "/usr/bin:/bin", &f.session.worktree, "missing").unwrap(),
+            None
+        );
         let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
         assert!(calls.contains("pr create --repo github.com/test/repo --head feat/task --base dev --title Add useful feature --fill"));
         assert!(!calls.contains("merge"));
@@ -750,7 +900,9 @@ mod tests {
         let f = Fixture::new();
         f.edit();
         std::fs::write(f.root.join("existing"), "").unwrap();
-        f.publish(&f.preview()).unwrap();
+        let published = f.publish(&f.preview()).unwrap();
+        assert_eq!(published.number, Some(1));
+        assert_eq!(published.head, f.git(&["rev-parse", "HEAD"]));
         assert!(
             !std::fs::read_to_string(f.root.join("calls"))
                 .unwrap()
@@ -945,5 +1097,84 @@ mod tests {
         ] {
             assert!(repository(url).is_err());
         }
+    }
+    #[test]
+    fn pr_number_comes_only_from_a_pull_url() {
+        assert_eq!(pr_number("https://github.com/org/repo/pull/42"), Some(42));
+        assert_eq!(pr_number("https://ghe.example/org/repo/pull/7/"), Some(7));
+        for url in [
+            "https://github.com/org/repo",
+            "https://github.com/org/repo/pull/",
+            "https://github.com/org/repo/pull/0",
+            "https://github.com/org/repo/pull/12/files",
+        ] {
+            assert_eq!(pr_number(url), None, "{url}");
+        }
+    }
+    fn items(json: &str) -> Vec<RollupItem> {
+        serde_json::from_str(json).unwrap()
+    }
+    #[test]
+    fn checks_fail_fast_and_finish_only_when_every_check_is_done() {
+        use ChecksState::*;
+        assert_eq!(classify(&[]), NoChecks);
+        let run = |status: &str, conclusion: &str| {
+            format!(
+                r#"{{"__typename":"CheckRun","status":"{status}","conclusion":"{conclusion}"}}"#
+            )
+        };
+        let done = run("COMPLETED", "SUCCESS");
+        let skipped = run("COMPLETED", "SKIPPED");
+        let cancelled = run("COMPLETED", "CANCELLED");
+        let running = run("IN_PROGRESS", "");
+        let failed = run("COMPLETED", "FAILURE");
+        let status = |state: &str| format!(r#"{{"__typename":"StatusContext","state":"{state}"}}"#);
+        let case = |parts: &[&str]| classify(&items(&format!("[{}]", parts.join(","))));
+        assert_eq!(case(&[&done, &skipped, &cancelled]), Passed);
+        assert_eq!(case(&[&done, &running]), Pending);
+        assert_eq!(case(&[&running, &failed]), Failed);
+        assert_eq!(case(&[&run("COMPLETED", "TIMED_OUT")]), Failed);
+        assert_eq!(case(&[&run("QUEUED", "")]), Pending);
+        assert_eq!(case(&[&done, &status("SUCCESS")]), Passed);
+        assert_eq!(case(&[&status("PENDING")]), Pending);
+        assert_eq!(case(&[&done, &status("ERROR")]), Failed);
+    }
+    #[test]
+    fn checks_read_one_pr_view_scoped_to_the_repository() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "shika-checks-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let gh = root.join("gh");
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/calls'\necho '{{\"headRefOid\":\"abc\",\"state\":\"MERGED\",\"statusCheckRollup\":[{{\"__typename\":\"CheckRun\",\"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\"}}]}}'\n",
+                root.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let checks = checks(&gh, "/usr/bin:/bin", &root, "github.com/test/repo", 42).unwrap();
+        assert_eq!(
+            checks,
+            PrChecks {
+                head: "abc".into(),
+                open: false,
+                state: ChecksState::Failed,
+            }
+        );
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(
+            calls.trim(),
+            "pr view 42 --repo github.com/test/repo --json headRefOid,state,statusCheckRollup"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

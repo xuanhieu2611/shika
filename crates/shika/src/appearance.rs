@@ -170,6 +170,9 @@ pub struct Chrome {
     pub asking: StatusColors,
     pub working: StatusColors,
     pub waiting: StatusColors,
+    /// A PR's checks failed. Not an agent status: it colors only the PR
+    /// mark on the card's second line.
+    pub failed: StatusColors,
     pub term_header: Rgba,
     pub term_header_alpha: f32,
     /// The terminal's default background with its alpha: the metadata row
@@ -471,6 +474,17 @@ fn shika_chrome(frame: &Frame, dark: bool) -> Chrome {
             dot: if dark { rgb(0x6B7065) } else { rgb(0xA3A79B) },
             text: ink_3,
         },
+        failed: if dark {
+            StatusColors {
+                dot: rgb(0xF07A6B),
+                text: rgb(0xF59B8F),
+            }
+        } else {
+            StatusColors {
+                dot: rgb(0xDD4B3E),
+                text: rgb(0xB42318),
+            }
+        },
         term_header: term.header,
         term_header_alpha: term.header_alpha,
         term_surface: term.surface,
@@ -506,7 +520,7 @@ pub const TEXT_CONTRAST: f32 = 4.5;
 /// - Lines, washes, and rings are the foreground at a low alpha, so they
 ///   read the same over solid and glass.
 /// - Status hues are ANSI green (ready), yellow (asking), and blue
-///   (working). Text darkens the hue toward black on a light theme, or
+///   (working); failed PR checks are ANSI red. Text darkens the hue toward black on a light theme, or
 ///   lightens it toward white on a dark one, until it meets 4.5:1; that
 ///   keeps the hue where mixing toward a tinted foreground would grey it.
 ///   Waiting is the ink scale's grey. Card tints mix the hue lightly into
@@ -605,6 +619,7 @@ fn derived_chrome(frame: &Frame, theme: &Theme) -> Chrome {
             dot: ink_4,
             text: ink_3,
         },
+        failed: status(1),
         term_header: term.header,
         term_header_alpha: term.header_alpha,
         term_surface: term.surface,
@@ -1249,6 +1264,7 @@ mod tests {
                     ("asking", chrome.asking.text),
                     ("working", chrome.working.text),
                     ("waiting", chrome.waiting.text),
+                    ("failed", chrome.failed.text),
                     ("term_dim", chrome.term_dim),
                 ];
                 for (name, color) in readable {

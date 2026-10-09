@@ -72,7 +72,7 @@ pub use path_env::{LoginShellError, PathEnv};
 pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
-pub use publish::PublishPreview;
+pub use publish::{ChecksState, PrChecks, PublishPreview, PublishedPr};
 pub use session::{DiffStat, Session, SessionGitState};
 pub use settings::{
     Appearance, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, Settings, ThemeMode,
@@ -930,7 +930,7 @@ impl Core {
         preview: &PublishPreview,
         target: &str,
         title: &str,
-    ) -> Result<String> {
+    ) -> Result<PublishedPr> {
         let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
         let session = self
             .sessions
@@ -950,6 +950,35 @@ impl Core {
             preview,
             target,
             title,
+        )
+    }
+
+    /// Blocking, one bounded `gh pr view`. Read-only and takes no lock, like
+    /// the diff stat, so a slow network never holds up close or publishing.
+    pub fn session_pr_checks(&self, id: &str, repository: &str, number: u64) -> Result<PrChecks> {
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        let gh = self
+            .path_env()
+            .resolve("gh")
+            .ok_or_else(|| Error::Publish("gh not found on PATH.".into()))?;
+        publish::checks(
+            &gh,
+            self.path_env().path(),
+            &session.worktree,
+            repository,
+            number,
+        )
+    }
+
+    /// Blocking but local: the commit `origin/<branch>` points at, which a
+    /// push from the task's shell or agent moves. None when there is none.
+    pub fn session_pushed_head(&self, id: &str) -> Result<Option<String>> {
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        worktree::pushed_head(
+            &self.git()?,
+            self.path_env().path(),
+            &session.worktree,
+            &session.branch,
         )
     }
 

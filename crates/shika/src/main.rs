@@ -1,5 +1,6 @@
 mod activity;
 mod appearance;
+mod checks;
 mod lifecycle;
 mod model;
 mod notifications;
@@ -305,6 +306,8 @@ struct Card {
     named: bool,
     /// What the task changed, fetched each time the card turns Ready.
     diff: Option<DiffStat>,
+    /// The checks on the PR that Create PR made or reused. Memory only.
+    pr: Option<checks::PrWatch>,
     /// The `since` of the Ready turn the user has seen. Every turn that ends
     /// gets a new `since`, so its dot and tint return until it is seen.
     seen: Option<Instant>,
@@ -977,6 +980,7 @@ impl Shika {
             title_watch: TitleWatch::default(),
             named: false,
             diff: None,
+            pr: None,
             seen: None,
             launch_preset: preset.id.clone(),
             launch_control: Some(control.clone()),
@@ -1520,6 +1524,7 @@ impl Shika {
                         &session.id,
                         project,
                         &card.title,
+                        Status::Ready.label(),
                         self.notification_sound,
                     );
                 }
@@ -1573,6 +1578,7 @@ impl Shika {
         for id in ready {
             self.fetch_diff_stat(id, cx);
         }
+        self.watch_checks(now, cx);
         for (id, title) in rename {
             let core = self.core.clone();
             cx.spawn(async move |this, cx| {
@@ -1647,6 +1653,84 @@ impl Shika {
             self.toast = None;
             changed = true;
         }
+        if changed {
+            cx.notify();
+        }
+    }
+    /// Starts each card's due checks read off the main thread. Cards with
+    /// no PR cost nothing here.
+    fn watch_checks(&mut self, now: Instant, cx: &mut Context<Self>) {
+        for card in &mut self.cards {
+            let (Some(session), Some(watch)) = (&card.session, &mut card.pr) else {
+                continue;
+            };
+            let Some(due) = watch.due(now) else {
+                continue;
+            };
+            let core = self.core.clone();
+            let id = session.id.clone();
+            let (repository, number) = (watch.repository.clone(), watch.number);
+            cx.spawn(async move |this, cx| {
+                let session_id = id.clone();
+                let read = cx
+                    .background_executor()
+                    .spawn(async move {
+                        match due {
+                            checks::Due::Poll => checks::Read::Poll(
+                                core.session_pr_checks(&id, &repository, number).ok(),
+                            ),
+                            checks::Due::Ref => {
+                                checks::Read::Ref(core.session_pushed_head(&id).ok().flatten())
+                            }
+                        }
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.checks_read(&session_id, number, read, cx)
+                });
+            })
+            .detach();
+        }
+    }
+    /// A checks read finished. Merged or closed PRs lose their mark; a mark
+    /// that turns red posts one notification.
+    fn checks_read(&mut self, id: &str, number: u64, read: checks::Read, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let Some(card) = self
+            .cards
+            .iter_mut()
+            .find(|c| c.session.as_ref().is_some_and(|s| s.id == id))
+        else {
+            return;
+        };
+        let Some(watch) = card.pr.as_mut().filter(|w| w.number == number) else {
+            return;
+        };
+        let changed = match read {
+            checks::Read::Ref(head) => watch.ref_read(head, now),
+            checks::Read::Poll(result) => {
+                let polled = watch.polled(result, now);
+                if polled.closed {
+                    card.pr = None;
+                }
+                if polled.failed {
+                    let project = self
+                        .projects
+                        .iter()
+                        .find(|p| p.id == card.project)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("Shika");
+                    self.notifications.post(
+                        id,
+                        project,
+                        &card.title,
+                        model::CHECKS_FAILED,
+                        self.notification_sound,
+                    );
+                }
+                polled.changed
+            }
+        };
         if changed {
             cx.notify();
         }
@@ -1990,6 +2074,7 @@ impl Shika {
             return;
         }
         let (preview, title, target) = (preview.clone(), title.clone(), target.clone());
+        let session_id = preview.session_id.clone();
         let core = self.core.clone();
         self.busy = true;
         cx.notify();
@@ -1998,11 +2083,16 @@ impl Shika {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok(url) => {
+                    Ok(published) => {
                         this.overlay = None;
                         this.restore_overlay_focus(window, cx);
-                        this.message(format!("Published PR: {url}"));
-                        cx.open_url(&url);
+                        if let Some(card) = this.cards.iter_mut().find(|c| {
+                            c.session.as_ref().is_some_and(|s| s.id == session_id)
+                        }) {
+                            card.pr = checks::PrWatch::new(&published, Instant::now());
+                        }
+                        this.message(format!("Published PR: {}", published.url));
+                        cx.open_url(&published.url);
                     }
                     Err(e) => {
                         if let Some(Overlay::Publish { error, .. }) = &mut this.overlay {
@@ -3610,6 +3700,9 @@ impl Shika {
             .when_some(stat, |d, stat| {
                 d.child(separator()).child(div().flex_none().child(stat))
             })
+            .when_some(card.pr.as_ref(), |d, pr| {
+                d.child(separator()).child(pr_mark(i, pr, chrome, cx))
+            })
             .child(div().flex_1())
             .when(selected && cards_focused, |d| {
                 d.children(hints.iter().map(|(key, label)| {
@@ -5147,6 +5240,67 @@ fn hint(key: &str, label: &str, chrome: &Chrome) -> gpui::Div {
             d.child(kbd(key.to_string(), chrome.sunken, chrome.ink_2))
         })
         .child(label.to_string())
+}
+
+/// The PR number and its checks: a ring while they run, a check when they
+/// pass, a cross in the failed color when one fails, and the number alone
+/// when the repository reports none. A click opens the PR.
+fn pr_mark(
+    card: usize,
+    pr: &checks::PrWatch,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> impl IntoElement {
+    let mark = pr.mark();
+    let color = if mark == checks::Mark::Failed {
+        chrome.failed.text
+    } else {
+        chrome.ink_3
+    };
+    let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+    let tip = model::checks_tip(mark);
+    let url = pr.url.clone();
+    div()
+        .id(SharedString::from(format!("pr-{card}")))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .text_color(color)
+        .when(mark == checks::Mark::Failed, |d| {
+            d.font_weight(FontWeight::MEDIUM)
+        })
+        .child(
+            div()
+                .font_family(MONO)
+                .text_size(px(11.5))
+                .child(format!("#{}", pr.number)),
+        )
+        .map(|d| match mark {
+            checks::Mark::Pending => d.child(
+                div()
+                    .flex_none()
+                    .size(px(7.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(chrome.ink_4),
+            ),
+            checks::Mark::Passed => d.child("\u{2713}"),
+            checks::Mark::Failed => d.child("\u{2717}"),
+            checks::Mark::None => d,
+        })
+        .tooltip(move |_, cx| {
+            cx.new(|_| KeyTip {
+                bg: tip_bg,
+                fg: tip_fg,
+                text: tip.into(),
+            })
+            .into()
+        })
+        .on_click(cx.listener(move |_, _, _, cx| {
+            cx.stop_propagation();
+            cx.open_url(&url);
+        }))
 }
 
 /// The right end of a card's first line, one 13px slot so the signals line
