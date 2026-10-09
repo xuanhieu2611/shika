@@ -10,7 +10,8 @@
 //!
 //! - **Blocking.** [`Core::add_project`], [`Core::create_session`],
 //!   [`Core::open_shell`], [`Core::session_dirty`], [`Core::session_git_state`],
-//!   [`Core::session_diff_stat`], [`Core::session_publish_preview`], [`Core::session_publish`],
+//!   [`Core::session_diff_stat`], [`Core::session_diff`], [`Core::session_file_diff`],
+//!   [`Core::session_publish_preview`], [`Core::session_publish`],
 //!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
 //!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
@@ -48,6 +49,7 @@
 mod activity;
 mod agents;
 mod cli_title;
+mod diff;
 mod error;
 mod path_env;
 mod preparation;
@@ -67,6 +69,9 @@ use std::time::{Duration, Instant};
 
 pub use activity::{AgentActivity, AgentActivityState};
 pub use agents::{CliCatalog, CliPreset};
+pub use diff::{
+    Collapse, DiffLine, FileDiff, FileKey, FileStatus, Hunk, LineKind, ModeChange, SessionDiff,
+};
 pub use error::{Error, Result};
 pub use path_env::{LoginShellError, PathEnv};
 pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
@@ -75,8 +80,8 @@ pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::{ChecksState, PrChecks, PublishPreview, PublishedPr};
 pub use session::{DiffStat, Session, SessionGitState};
 pub use settings::{
-    Appearance, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, Settings, ThemeMode,
-    ThemeSettings, Translucency,
+    Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, Settings,
+    ThemeMode, ThemeSettings, Translucency,
 };
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 pub use worktree::{JournalEntry, KnownBranches};
@@ -907,6 +912,39 @@ impl Core {
             &session.worktree,
             session.base_ref.as_deref(),
         )
+    }
+
+    /// Blocking. The task's whole change for the Changes panel: every file's
+    /// hunks, measured exactly as [`Core::session_diff_stat`] measures it, so
+    /// `stat` matches the card. Reads only (`GIT_OPTIONAL_LOCKS=0`) and takes
+    /// no lock. Caps keep a huge change cheap: a file with more than 2,000
+    /// changed lines, or a patch or untracked file over 1 MiB, comes
+    /// collapsed, and so does every file after about 50,000 parsed lines;
+    /// [`FileDiff::collapsed`] says which cap. Expand one with
+    /// [`Core::session_file_diff`]. A git failure is [`Error::ReadChanges`]
+    /// with git's first error line, and so is a worktree whose `.git` is
+    /// missing or broken: git never reads the main checkout in its place.
+    pub fn session_diff(&self, id: &str) -> Result<SessionDiff> {
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        worktree::session_diff(
+            &self.git()?,
+            self.path_env().path(),
+            &session.repo,
+            &session.worktree,
+            session.base_ref.as_deref(),
+        )
+    }
+
+    /// Blocking. One file of an earlier [`Core::session_diff`], read again
+    /// from the tree without the task caps, against the same base, up to a
+    /// hard limit of 100,000 lines or 16 MiB; past that the file keeps its
+    /// first hunks and counts the rest in `hidden_lines`. Pass the file's
+    /// [`FileDiff::key`] and replace that file with the result. One git
+    /// process for a tracked file, none for an untracked one. None when the
+    /// file no longer differs; refresh the whole diff then.
+    pub fn session_file_diff(&self, id: &str, key: &FileKey) -> Result<Option<FileDiff>> {
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        worktree::file_diff(&self.git()?, self.path_env().path(), &session.worktree, key)
     }
 
     /// Preview a confirmed commit/push/PR operation without changing the
@@ -2252,6 +2290,78 @@ mod tests {
             core.session_diff_stat("missing"),
             Err(Error::UnknownSession)
         );
+        core.session_discard(&session.id).unwrap();
+    }
+
+    #[test]
+    fn session_diff_reads_the_session_worktree_and_expands_a_file() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let session = create_fake_session(&core, &project.id);
+        assert_eq!(
+            core.session_diff(&session.id).unwrap(),
+            SessionDiff::default()
+        );
+        fs::write(session.worktree.join("a.txt"), "one\ntwo\n").unwrap();
+        git(&session.worktree, &["add", "a.txt"]);
+        git(&session.worktree, &["commit", "-m", "task"]);
+        fs::write(session.worktree.join("b.txt"), "b\n").unwrap();
+        let diff = core.session_diff(&session.id).unwrap();
+        assert_eq!(diff.stat, core.session_diff_stat(&session.id).unwrap());
+        let paths: Vec<(&str, FileStatus)> = diff
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.status))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("a.txt", FileStatus::Added),
+                ("b.txt", FileStatus::Untracked)
+            ]
+        );
+        let again = core
+            .session_file_diff(&session.id, &diff.files[0].key)
+            .unwrap();
+        assert_eq!(again.as_ref(), Some(&diff.files[0]));
+        assert_eq!(core.session_diff("missing"), Err(Error::UnknownSession));
+        assert_eq!(
+            core.session_file_diff("missing", &diff.files[0].key),
+            Err(Error::UnknownSession)
+        );
+        core.session_discard(&session.id).unwrap();
+    }
+
+    #[test]
+    fn a_session_worktree_without_its_git_file_is_an_error_not_the_main_checkout() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let session = create_fake_session(&core, &project.id);
+        fs::write(session.worktree.join("b.txt"), "b\n").unwrap();
+        let key = core.session_diff(&session.id).unwrap().files[0].key.clone();
+        let dot_git = session.worktree.join(".git");
+        let saved = fs::read(&dot_git).unwrap();
+        fs::remove_file(&dot_git).unwrap();
+        // The main checkout around `.worktrees/` is clean: reading it instead
+        // would show "No changes" and hide the card's stat.
+        match core.session_diff(&session.id) {
+            Err(Error::ReadChanges(Some(line))) => {
+                assert!(line.contains("not a git repository"), "{line}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            core.session_diff_stat(&session.id),
+            Err(Error::GitStatus(_))
+        ));
+        // An untracked file is read from the worktree without git.
+        assert!(core.session_file_diff(&session.id, &key).is_ok());
+        fs::write(&dot_git, saved).unwrap();
+        assert_eq!(core.session_diff(&session.id).unwrap().files.len(), 1);
         core.session_discard(&session.id).unwrap();
     }
 
