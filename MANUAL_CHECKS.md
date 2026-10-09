@@ -38,6 +38,17 @@ Remaining integrated checks (not established by unit/fixture tests):
 - [ ] Network/auth/protected-branch rejection and PR failure retain work. Reopen and retry; no empty/duplicate commit or duplicate PR. Existing PR receives subsequent approved commits.
 - [ ] Shell edits/commits/branch switches after preview refuse stale confirmation. Rebase/merge/conflicts refuse publishing. Close remains the existing non-committing safe-close flow.
 
+## PR checks mark, 2026-10-08
+
+Automated validation: workspace tests, formatting, and strict Clippy passed. Core tests cover PR number parsing, check classification (fail fast, pending, passed, cancelled and skipped as finished, commit statuses), one scoped `gh pr view` call against a fake gh, and `origin/<branch>` moving after a real push to a local bare remote. App tests cover the watch schedule: first read after 10 seconds, 30/60/300 second intervals, error backoff, no GitHub reads after a pass, slow reads while red, a push restarting the round, stale previous-head results, the empty-rollup grace, the six-hour cap, merged/closed PRs, and notifying once per change into red. No real GitHub PR was read or changed by the tests. See [PR checks on the card](docs/pr-checks.md).
+
+Remaining integrated checks (not established by unit/fixture tests):
+
+- [ ] Disposable GitHub repository with Actions: Create PR shows `#N` with the ring, then a check on success. A failing job turns the mark red with the cross and posts one "Checks failed" notification titled `{project} - {task}`; a click on it selects the card.
+- [ ] Push a fix from the task shell, and separately from the agent: the mark returns to the ring within about 10 seconds and settles on the new commit's result. Re-running the failed job on GitHub without a push clears red within five minutes.
+- [ ] A repository with no checks shows `#N` alone after about three minutes. Merging or closing the PR removes the mark. Offline or signed-out gh keeps the last mark and never shows a toast.
+- [ ] Clicking the mark opens the PR and does not focus the terminal; the tooltip names the state. Mark renders legibly in light/dark, opaque/glass, and a narrow column, where the branch truncates before it.
+
 ## Agent activity and stable turn timer, 2026-10-07
 
 Automated validation: 269 workspace tests after rebasing onto current main, formatting, strict Clippy, debug app bundle, and strict signature verification passed. Tests cover immutable turn epochs during typing/interactions/active Enter and Ready/Working flicker, once-per-turn notification budgets, blocked safe close, candidate/history submissions and native editor clearing, literal text questions, stale/quoted status chrome, content-based redraw/draft filtering, scrollback-independent live sampling without paint side effects, old lifecycle reads crossing submissions, same-sequence recovery, bridge bounds/order/cleanup, and optional launch failure.
