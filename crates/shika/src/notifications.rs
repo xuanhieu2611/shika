@@ -150,12 +150,12 @@ mod native {
             })
         }
 
-        pub fn post(&self, session: &str, project: &str, task: &str, sound: bool) {
+        pub fn post(&self, session: &str, project: &str, task: &str, body: &str, sound: bool) {
             self.diagnostics
                 .write(&format!("posting={session} sound={sound}"));
             let content = UNMutableNotificationContent::new();
             content.setTitle(&NSString::from_str(&super::title(project, task)));
-            content.setBody(&NSString::from_str(crate::model::Status::Ready.label()));
+            content.setBody(&NSString::from_str(body));
             // The system alert, the sound chosen in System Settings. A missing
             // sound is why the banner used to arrive silently.
             if sound {
@@ -279,13 +279,13 @@ impl Notifications {
         }
     }
 
-    pub fn post(&self, session: &str, project: &str, task: &str, sound: bool) {
+    pub fn post(&self, session: &str, project: &str, task: &str, body: &str, sound: bool) {
         #[cfg(target_os = "macos")]
         if let Some(native) = &self.native {
-            native.post(session, project, task, sound);
+            native.post(session, project, task, body, sound);
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = (session, project, task, sound);
+        let _ = (session, project, task, body, sound);
     }
 }
 

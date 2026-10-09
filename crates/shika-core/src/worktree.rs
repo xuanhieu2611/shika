@@ -495,6 +495,35 @@ pub fn head_branch(git: &Path, path_env: &str, worktree: &Path) -> Result<Option
     ))
 }
 
+/// The local remote-tracking ref of `branch` on origin. Git updates it on
+/// every push from this worktree, so it is the cheap signal that a new
+/// commit reached the PR.
+pub fn pushed_head(
+    git: &Path,
+    path_env: &str,
+    worktree: &Path,
+    branch: &str,
+) -> Result<Option<String>> {
+    let output = git_cmd(git, path_env, worktree)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{branch}^{{commit}}"),
+        ])
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    if !output.status.success() {
+        return Err(Error::GitStatus(first_line(&output.stderr)));
+    }
+    let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!head.is_empty()).then_some(head))
+}
+
 /// Proves a rename chain from the recorded task branch to the current branch.
 /// Missing refs or equal commits alone cannot distinguish a rename from a
 /// branch switch. Git preserves explicit rename entries in the branch reflog.

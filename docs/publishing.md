@@ -31,6 +31,7 @@ Unchanged:
 
 - Close never commits; its discard/push choices and cleanup rules still apply.
 - Publishing does not merge, force-push, run tests, or remove a card/worktree.
+- After publishing, the card shows a read-only checks mark for that PR (see [PR checks on the card](pr-checks.md)). Shika never re-runs, cancels, or lists checks.
 - Shika does not install tools, authenticate on the developer's behalf, store credentials, or call a model API.
 - Terminal tabs, PTY ownership, task naming, and session persistence are not expanded. Publishing does not inject commands into a running shell or agent terminal.
 
@@ -169,6 +170,10 @@ The login-shell PATH is reused for Git and gh. Git-redirection environment varia
 
 Publishing creates no PTY and owns no terminal tab. The preview/dialog are memory-only, with no durable publishing job or automatic resume after relaunch. Quit or a lost network response can leave an uncertain remote result; inspect Git/GitHub before retrying.
 
+## Checks on the card
+
+After a successful publish, the card shows a read-only checks mark for the PR that was created or reused, such as `#42` with a ring, a check, or a red cross, and posts one "Checks failed" notification when it turns red. `session_publish` returns a `PublishedPr` (URL, repository, number, pushed commit) for this. The design, schedule, and debugging live in [PR checks on the card](pr-checks.md).
+
 ## Failures and recovery
 
 There is no automatic rollback across Git and GitHub.
@@ -275,4 +280,4 @@ Verify that the isolated process's window is frontmost before synthetic input. A
 - Add regression tests for the behavior you change; record GUI evidence separately.
 - Update this guide, the short `AGENTS.md` handoff, and affected design/keyboard/acceptance docs with behavioral changes.
 
-Potential improvements include richer PR-body preview/editing, clearer completed-step progress, more complete URL/SSH configuration support, and cancellation or concurrent publishing. Each must preserve the safety contract. Fork/upstream selection needs distinct source/target repository identities; persistent jobs need reconciliation with uncertain remote results; merging or CI/review management needs a separate product decision. None is implemented by this feature.
+Potential improvements include richer PR-body preview/editing, clearer completed-step progress, more complete URL/SSH configuration support, and cancellation or concurrent publishing. Each must preserve the safety contract. Fork/upstream selection needs distinct source/target repository identities; persistent jobs need reconciliation with uncertain remote results; merging or CI/review management needs a separate product decision. None is implemented by this feature. The checks mark is read-only; keep it that way, and keep its GitHub reads bounded to running or failed checks on PRs Shika published.

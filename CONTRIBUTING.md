@@ -20,6 +20,7 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 | Sparkle updates, the release feed, or signing keys | [Software updates](docs/updates.md) |
 | Agent and shell tabs, PTY ownership, or hidden terminals | [Terminal tabs](docs/terminal-tabs.md) |
 | Create PR, recorded-base targeting, commit/push, or publishing retries | [Confirmed PR publishing](docs/publishing.md), especially its [debugging playbook](docs/publishing.md#debugging-playbook) and [contributor guardrails](docs/publishing.md#contributor-guardrails-and-extension-points) |
+| The CI checks mark on a card after Create PR | [PR checks on the card](docs/pr-checks.md), especially its [debugging playbook](docs/pr-checks.md#debugging-playbook) |
 
 [MANUAL_CHECKS.md](MANUAL_CHECKS.md) records integrated acceptance evidence and remaining checks. [Terminal checks](crates/shika-terminal/MANUAL_CHECKS.md) cover the terminal-specific matrix. Passing unit tests do not establish every native GUI behavior. Machine-local temporary evidence is not a prerequisite for contributing; use the versioned tests and each guide's isolated reproduction steps.
 
@@ -44,7 +45,7 @@ Open an issue before working on any of these:
 - Windows, Linux, web, or phone builds.
 - Accounts, sync, or telemetry.
 - A planner agent that splits work between agents.
-- Merging PRs, managing reviews, or review comments.
+- Merging PRs, managing reviews, or review comments. The card's PR checks mark is read-only; listing, re-running, or cancelling checks is management.
 - Reusing or archiving worktrees, or a CLI's own worktree flag.
 - Conversation history or a browser of closed tasks.
 - More than one visible terminal, or splits between terminals.

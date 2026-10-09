@@ -416,6 +416,20 @@ pub fn short_time(elapsed: Duration) -> String {
         format!("{}h {}m", minutes / 60, minutes % 60)
     }
 }
+/// The notification body when a PR's checks fail.
+pub const CHECKS_FAILED: &str = "Checks failed";
+
+/// The tooltip on a card's PR mark. The click opens the PR.
+pub fn checks_tip(mark: crate::checks::Mark) -> &'static str {
+    use crate::checks::Mark;
+    match mark {
+        Mark::Pending => "Checks running",
+        Mark::Passed => "Checks passed",
+        Mark::Failed => CHECKS_FAILED,
+        Mark::None => "Open PR",
+    }
+}
+
 /// What a ready task changed: `2 files +64 −3`, with a real minus sign.
 pub fn diff_stat_label(files: usize, insertions: usize, deletions: usize) -> String {
     format!(
