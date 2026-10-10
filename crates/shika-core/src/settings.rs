@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -339,6 +340,69 @@ fn notification_sound_on() -> bool {
     true
 }
 
+/// Which agents New offers. A missing id is enabled. New still hides an
+/// agent whose binary is not on the login-shell PATH, so turning one on
+/// before it is installed makes it appear later, until it is turned off.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentSettings {
+    /// Ids the user turned off. Every other id is enabled.
+    disabled: BTreeSet<String>,
+}
+
+impl AgentSettings {
+    pub fn enabled(&self, id: &str) -> bool {
+        !self.disabled.contains(id)
+    }
+
+    pub fn set_enabled(&mut self, id: &str, on: bool) {
+        if id.is_empty() {
+            return;
+        }
+        if on {
+            self.disabled.remove(id);
+        } else {
+            self.disabled.insert(id.to_string());
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        self.disabled.is_empty()
+    }
+
+    /// An object of id to boolean. Anything else, including a non-boolean
+    /// value, leaves that id enabled instead of failing the whole file.
+    fn from_json(value: &serde_json::Value) -> Self {
+        let Some(object) = value.as_object() else {
+            return Self::default();
+        };
+        let mut disabled = BTreeSet::new();
+        for (id, flag) in object {
+            if !id.is_empty() && flag.as_bool() == Some(false) {
+                disabled.insert(id.clone());
+            }
+        }
+        Self { disabled }
+    }
+}
+
+impl Serialize for AgentSettings {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.disabled.len()))?;
+        for id in &self.disabled {
+            map.serialize_entry(id, &false)?;
+        }
+        map.end()
+    }
+}
+
+fn agents_or_default<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<AgentSettings, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(AgentSettings::from_json(&value))
+}
+
 /// `settings.json`. A missing file, or a missing field, takes the default.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -363,6 +427,14 @@ pub struct Settings {
     /// panel is open is not saved.
     #[serde(deserialize_with = "changes_or_default")]
     pub changes: Changes,
+    /// Which agents New lists. A missing id is on. Only explicit offs are
+    /// written. New still requires the binary on the login-shell PATH.
+    #[serde(
+        default,
+        skip_serializing_if = "AgentSettings::is_default",
+        deserialize_with = "agents_or_default"
+    )]
+    pub agents: AgentSettings,
 }
 
 impl Default for Settings {
@@ -375,6 +447,7 @@ impl Default for Settings {
             notification_sound: true,
             column: Column::default(),
             changes: Changes::default(),
+            agents: AgentSettings::default(),
         }
     }
 }
@@ -478,6 +551,7 @@ mod tests {
                 hidden: true,
             },
             changes: Changes { width: 610 },
+            agents: AgentSettings::default(),
         };
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -518,6 +592,43 @@ mod tests {
         assert_eq!(settings.column, Column::default());
         assert_eq!(settings.changes, Changes::default());
         assert_eq!(settings.theme, ThemeSettings::default());
+        assert!(settings.agents.enabled("claude"));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn agent_choices_default_on_and_only_offs_are_saved() {
+        let settings = Settings::default();
+        assert!(settings.agents.enabled("claude"));
+        assert!(settings.agents.enabled("pi"));
+
+        let path = temp_file("agents");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{ "agents": { "pi": false, "claude": true, "gone": false, "codex": "no", "": false } }"#,
+        )
+        .unwrap();
+        let loaded = SettingsFile::open(path.clone()).load().unwrap();
+        assert!(loaded.agents.enabled("claude"));
+        assert!(loaded.agents.enabled("codex"));
+        assert!(!loaded.agents.enabled("pi"));
+        assert!(!loaded.agents.enabled("gone"));
+        assert!(loaded.agents.enabled(""));
+
+        fs::write(&path, r#"{ "agents": [] }"#).unwrap();
+        let loaded = SettingsFile::open(path.clone()).load().unwrap();
+        assert!(loaded.agents.enabled("pi"));
+
+        let mut settings = Settings::default();
+        settings.agents.set_enabled("cursor", false);
+        settings.agents.set_enabled("", false);
+        let file = SettingsFile::open(path.clone());
+        file.save(&settings).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"cursor\": false"));
+        assert!(!text.contains("\"claude\""));
+        assert_eq!(file.load().unwrap().agents, settings.agents);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

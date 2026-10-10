@@ -18,10 +18,10 @@ use gpui::{
 use model::{PromptCapture, Status, TitleWatch};
 use notifications::Notifications;
 use shika_core::{
-    Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize, JournalEntry,
-    KnownBranches, PreparationConfig, PreparationControl, PreparationEvent, Project, ProjectBase,
-    PtyEvent, PtyId, PtySize, PublishPreview, Session, SessionGitState, Settings, ThemeMode,
-    ThemeSettings, Translucency,
+    AgentSettings, Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize,
+    JournalEntry, KnownBranches, PreparationConfig, PreparationControl, PreparationEvent, Project,
+    ProjectBase, PtyEvent, PtyId, PtySize, PublishPreview, Session, SessionGitState, Settings,
+    ThemeMode, ThemeSettings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalEvent, TerminalOptions,
@@ -385,6 +385,34 @@ impl CardMenu {
     }
 }
 
+/// Settings sections, top to bottom in the list on the left.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsSection {
+    Appearance,
+    Agents,
+}
+
+impl SettingsSection {
+    const ALL: [SettingsSection; 2] = [SettingsSection::Appearance, SettingsSection::Agents];
+
+    /// One section up (`-1`) or down (`1`), wrapping.
+    fn step(self, delta: i64) -> Self {
+        let at = Self::ALL
+            .iter()
+            .position(|section| *section == self)
+            .unwrap_or(0) as i64;
+        let len = Self::ALL.len() as i64;
+        Self::ALL[(at + delta).rem_euclid(len) as usize]
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Agents => "Agents",
+        }
+    }
+}
+
 enum Overlay {
     CardMenu(CardMenu),
     Rename {
@@ -421,10 +449,11 @@ enum Overlay {
     Leftovers,
     RemoveLeftover(usize),
     RemoveProject(String),
-    /// `row` is the selected setting, one of the `*_ROW` constants. `edit`
-    /// holds digits typed
-    /// into the selected number, or the prefix being typed, not yet applied.
+    /// `section` is Appearance or Agents. `row` is the selected row in that
+    /// section: an appearance `*_ROW`, or a preset index. `edit` holds digits
+    /// typed into the selected number, or the prefix being typed, not yet applied.
     Settings {
+        section: SettingsSection,
         row: usize,
         edit: Option<String>,
     },
@@ -454,8 +483,8 @@ struct Shika {
     sidebar_scroll: gpui::ScrollHandle,
     /// The Base branch list, so Up and Down can bring the highlight into view.
     base_scroll: gpui::ScrollHandle,
-    /// The Settings panel, so `j` / `k` keep the selected row on screen when
-    /// a short window makes it scroll.
+    /// The Settings row list, so `j` / `k` keep the selected row on screen
+    /// when a short window makes that list scroll.
     settings_scroll: gpui::ScrollHandle,
     last_revealed_selection: Option<Selection>,
     busy: bool,
@@ -487,6 +516,8 @@ struct Shika {
     branch_prefix: String,
     /// Play the system alert sound with a ready notification.
     notification_sound: bool,
+    /// Which agents New lists. A missing id is on.
+    agents: AgentSettings,
     /// The agent column's stored width and whether it is hidden.
     column: Column,
     /// The column as it was when the current drag on its edge began. The
@@ -529,6 +560,7 @@ impl Shika {
         let font_size = settings.font_size;
         let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
         let notification_sound = settings.notification_sound;
+        let agents = settings.agents.clone();
         let column = settings.column;
         let changes = changes::Panel::new(settings.changes, cx.focus_handle(), diagnostics.clone());
         let reduce_transparency = appearance::reduce_transparency();
@@ -578,6 +610,7 @@ impl Shika {
             title_drag: false,
             branch_prefix,
             notification_sound,
+            agents,
             column,
             column_drag_from: None,
             bases: HashMap::new(),
@@ -788,18 +821,24 @@ impl Shika {
         if self.busy {
             return;
         }
-        let Some(Overlay::Picker { project, index }) = &self.overlay else {
+        let (project, index) = match &self.overlay {
+            Some(Overlay::Picker { project, index }) => (project.clone(), *index),
+            _ => return,
+        };
+        let Some(preset) = self.offered_presets().into_iter().nth(index) else {
             return;
         };
-        let Some(preset) = self
-            .catalog
-            .as_ref()
-            .and_then(|c| c.presets.get(*index))
+        self.request_launch(project, preset, None, window, cx);
+    }
+    /// Installed agents the user has left on, in preset order.
+    fn offered_presets(&self) -> Vec<CliPreset> {
+        let Some(catalog) = &self.catalog else {
+            return Vec::new();
+        };
+        shika_core::picker_presets(&catalog.presets, |id| self.agents.enabled(id))
+            .into_iter()
             .cloned()
-        else {
-            return;
-        };
-        self.request_launch(project.clone(), preset, None, window, cx);
+            .collect()
     }
 
     fn request_launch(
@@ -2535,7 +2574,24 @@ impl Shika {
             return;
         }
         self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Settings { row: 0, edit: None });
+        self.show_settings(SettingsSection::Appearance, window, cx);
+    }
+    /// Replace whatever overlay is up. The picker uses this to open Agents
+    /// without dropping the focus it already saved.
+    fn show_settings(
+        &mut self,
+        section: SettingsSection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        self.overlay = Some(Overlay::Settings {
+            section,
+            row: 0,
+            edit: None,
+        });
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -2592,7 +2648,7 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         self.commit_setting_edit(window, cx);
-        if let Some(Overlay::Settings { row: at, edit }) = &mut self.overlay {
+        if let Some(Overlay::Settings { row: at, edit, .. }) = &mut self.overlay {
             *at = row;
             *edit = Some(digits.to_string());
         }
@@ -2601,9 +2657,13 @@ impl Shika {
     /// Apply typed digits, pulled into range, or the typed prefix, made
     /// safe for git. Nothing typed keeps a number.
     fn commit_setting_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Overlay::Settings { row, edit }) = &mut self.overlay else {
+        let Some(Overlay::Settings { section, row, edit }) = &mut self.overlay else {
             return;
         };
+        if *section != SettingsSection::Appearance {
+            *edit = None;
+            return;
+        }
         let row = *row;
         if row == PREFIX_ROW {
             if let Some(text) = edit.take() {
@@ -2795,6 +2855,7 @@ impl Shika {
             notification_sound: self.notification_sound,
             column: self.column,
             changes: self.changes.width,
+            agents: self.agents.clone(),
         };
         if let Err(e) = self.core.save_settings(&settings) {
             self.message(e.to_string());
@@ -2867,6 +2928,7 @@ impl Shika {
             return;
         }
         if let Some(Overlay::Settings {
+            section: SettingsSection::Appearance,
             row: PREFIX_ROW,
             edit: Some(text),
         }) = &mut self.overlay
@@ -3013,20 +3075,45 @@ impl Shika {
             if self.busy {
                 return;
             }
+            let offered_len = self.offered_presets().len();
+            let catalog_ready = self.catalog.is_some();
+            let settings_nav = match &self.overlay {
+                Some(Overlay::Settings { section, row, edit }) => {
+                    Some((*section, *row, edit.is_some()))
+                }
+                _ => None,
+            };
+            if let Some((section, at, editing)) = settings_nav {
+                if !editing && matches!(key, "[" | "]") {
+                    let delta = if key == "]" { 1 } else { -1 };
+                    self.select_section(section.step(delta), window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                if !editing && section == SettingsSection::Agents {
+                    self.on_agents_key(at, key, window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+            }
             // A project the picker moved to, to fetch its base branch.
             let mut moved_to = None;
             match &mut self.overlay {
                 Some(Overlay::Picker { index, project }) => {
-                    let len = self
-                        .catalog
-                        .as_ref()
-                        .map(|catalog| catalog.presets.len())
-                        .unwrap_or(0);
+                    let len = offered_len;
                     let chosen = key.parse::<usize>().ok().filter(|n| (1..=len).contains(n));
                     match key {
                         "j" | "down" if len > 0 => *index = (*index + 1) % len,
                         "k" | "up" if len > 0 => *index = (*index + len - 1) % len,
-                        "enter" => self.launch(window, cx),
+                        "enter" => {
+                            if catalog_ready && len == 0 {
+                                self.show_settings(SettingsSection::Agents, window, cx);
+                            } else {
+                                self.launch(window, cx);
+                            }
+                        }
                         "escape" => self.cancel_overlay(window, cx),
                         "tab" => {
                             if let Some(at) = self.projects.iter().position(|p| &p.id == project) {
@@ -3098,7 +3185,7 @@ impl Shika {
                         _ => {}
                     }
                 }
-                Some(Overlay::Settings { row, edit }) => {
+                Some(Overlay::Settings { row, edit, .. }) => {
                     let at = *row;
                     let digit = key.len() == 1 && key.as_bytes()[0].is_ascii_digit();
                     let number_row = matches!(at, OPACITY_ROW | BLUR_ROW | FONT_ROW);
@@ -3189,16 +3276,88 @@ const SOUND_ROW: usize = 8;
 const SETTING_ROWS: usize = 9;
 /// Wide enough for the longest catalog name, such as "Catppuccin Macchiato".
 const THEME_FIELD_WIDTH: f32 = 168.;
+/// Settings is wide enough for a section list and the appearance controls.
+const SETTINGS_WIDTH: f32 = 640.;
+/// Tall enough for the appearance rows. A short window uses less.
+const SETTINGS_HEIGHT: f32 = 520.;
+const SETTINGS_NAV_WIDTH: f32 = 148.;
 impl Shika {
     /// Move the Settings selection, applying any typed value first, and keep
-    /// the row on screen. The rows follow the title in the panel.
+    /// the row on screen. The rows are the children of the scrolling list.
     fn select_setting(&mut self, to: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_setting_edit(window, cx);
         if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
             *row = to;
-            self.settings_scroll.scroll_to_item(to + 1);
+            self.settings_scroll.scroll_to_item(to);
         }
         cx.notify();
+    }
+    /// Switch section. A typed value is applied first. The same section keeps
+    /// its row.
+    fn select_section(
+        &mut self,
+        section: SettingsSection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_setting_edit(window, cx);
+        if let Some(Overlay::Settings {
+            section: at,
+            row,
+            edit,
+        }) = &mut self.overlay
+            && *at != section
+        {
+            *at = section;
+            *row = 0;
+            *edit = None;
+            self.settings_scroll.scroll_to_item(0);
+        }
+        cx.notify();
+    }
+    fn set_agent_enabled(&mut self, id: &str, on: bool, cx: &mut Context<Self>) {
+        if self.agents.enabled(id) == on {
+            return;
+        }
+        self.agents.set_enabled(id, on);
+        self.save_settings();
+        cx.notify();
+    }
+    fn set_agent_row(&mut self, row: usize, on: bool, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .catalog
+            .as_ref()
+            .and_then(|catalog| catalog.presets.get(row))
+            .map(|preset| preset.id.clone())
+        else {
+            return;
+        };
+        self.set_agent_enabled(&id, on, cx);
+    }
+    fn on_agents_key(
+        &mut self,
+        row: usize,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self
+            .catalog
+            .as_ref()
+            .map(|catalog| catalog.presets.len())
+            .unwrap_or(0);
+        match key {
+            "j" | "down" | "tab" if count > 0 => {
+                self.select_setting((row + 1) % count, window, cx);
+            }
+            "k" | "up" if count > 0 => {
+                self.select_setting((row + count - 1) % count, window, cx);
+            }
+            "h" | "left" => self.set_agent_row(row, false, cx),
+            "l" | "right" => self.set_agent_row(row, true, cx),
+            "enter" | "escape" => self.cancel_overlay(window, cx),
+            _ => {}
+        }
     }
     /// System, Light, or Dark. `h` / `l` step one segment.
     fn mode_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3295,7 +3454,7 @@ impl Shika {
     /// The branch prefix row: a text field. Enter or a click starts typing.
     fn prefix_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let (selected, edit) = match &self.overlay {
-            Some(Overlay::Settings { row, edit }) => (
+            Some(Overlay::Settings { row, edit, .. }) => (
                 *row == PREFIX_ROW,
                 edit.as_deref().filter(|_| *row == PREFIX_ROW),
             ),
@@ -3316,7 +3475,8 @@ impl Shika {
                     this.overlay,
                     Some(Overlay::Settings {
                         row: PREFIX_ROW,
-                        edit: Some(_)
+                        edit: Some(_),
+                        ..
                     })
                 ) {
                     let prefix = this.branch_prefix.clone();
@@ -3376,7 +3536,7 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (selected, edit) = match &self.overlay {
-            Some(Overlay::Settings { row: at, edit }) => {
+            Some(Overlay::Settings { row: at, edit, .. }) => {
                 (*at == row, edit.as_deref().filter(|_| *at == row))
             }
             _ => (false, None),
@@ -4798,6 +4958,346 @@ impl Shika {
             ))
     }
 
+    fn settings_keys(
+        &self,
+        section: SettingsSection,
+        row: usize,
+        editing: bool,
+    ) -> &'static [(&'static str, &'static str)] {
+        if section == SettingsSection::Agents {
+            return if self.catalog.is_none() {
+                &[("[ ]", "section"), ("esc", "done")]
+            } else {
+                &[
+                    ("j k", "choose"),
+                    ("h l", "enable"),
+                    ("[ ]", "section"),
+                    ("esc", "done"),
+                ]
+            };
+        }
+        match (editing, row) {
+            (true, PREFIX_ROW) => &[("", "type a prefix"), ("↵", "apply"), ("esc", "cancel")],
+            (true, _) => &[("", "type a number"), ("↵", "apply"), ("esc", "cancel")],
+            (false, PREFIX_ROW) => &[
+                ("j k", "choose"),
+                ("↵", "edit"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ],
+            (false, SOUND_ROW) => &[
+                ("j k", "choose"),
+                ("h l", "sound"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ],
+            (false, MODE_ROW) => &[
+                ("j k", "choose"),
+                ("h l", "mode"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ],
+            (false, LIGHT_ROW | DARK_ROW) => &[
+                ("j k", "choose"),
+                ("h l", "theme"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ],
+            (false, APPLY_ROW) => &[
+                ("j k", "choose"),
+                ("h l", "change"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ],
+            (false, _) => &[
+                ("j k", "choose"),
+                ("h l", "change"),
+                ("", "type a number"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ],
+        }
+    }
+    fn settings_nav(
+        &self,
+        current: SettingsSection,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut nav = div()
+            .w(px(SETTINGS_NAV_WIDTH))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .pr(px(12.))
+            .border_r_1()
+            .border_color(chrome.line_2);
+        for section in SettingsSection::ALL {
+            nav = nav.child(
+                list_row(section == current, chrome)
+                    .id(SharedString::from(format!(
+                        "settings-section-{}",
+                        section.label()
+                    )))
+                    .cursor_pointer()
+                    .child(section.label())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_section(section, window, cx);
+                    })),
+            );
+        }
+        nav
+    }
+    /// One preset: its name, where the binary is, and whether New offers it.
+    fn agent_row(
+        &self,
+        index: usize,
+        preset: &CliPreset,
+        home: Option<&std::path::Path>,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = matches!(
+            &self.overlay,
+            Some(Overlay::Settings {
+                section: SettingsSection::Agents,
+                row,
+                ..
+            }) if *row == index
+        );
+        let on = self.agents.enabled(&preset.id);
+        let detail = match &preset.path {
+            Some(path) => model::tilde(path, home),
+            None => format!("{} not found on PATH", preset.binary),
+        };
+        let name_color = if preset.found() {
+            chrome.ink_1
+        } else {
+            chrome.ink_4
+        };
+        let shadow = chrome.control_shadow;
+        let off_id = preset.id.clone();
+        let on_id = preset.id.clone();
+        let segment_shadow = move |chosen: bool, control: gpui::Stateful<gpui::Div>| {
+            control.when(chosen, |d| {
+                d.shadow(vec![
+                    BoxShadow::new(px(0.), px(1.), shadow.into()).blur_radius(px(1.)),
+                ])
+            })
+        };
+        list_row(selected, chrome)
+            .id(SharedString::from(format!("agent-setting-{}", preset.id)))
+            .gap(px(12.))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_setting(index, window, cx);
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(name_color)
+                    .child(preset.name.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(MONO)
+                    .text_size(px(11.))
+                    .text_color(chrome.ink_3)
+                    .child(detail),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(px(7.))
+                    .bg(chrome.sunken)
+                    .child(
+                        segment_shadow(
+                            !on,
+                            segment(
+                                SharedString::from(format!("agent-{}-off", preset.id)),
+                                "Off",
+                                !on,
+                                chrome.raised,
+                                chrome.ink_1,
+                                chrome.ink_3,
+                            ),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.set_agent_enabled(&off_id, false, cx);
+                                this.select_setting(index, window, cx);
+                            },
+                        )),
+                    )
+                    .child(
+                        segment_shadow(
+                            on,
+                            segment(
+                                SharedString::from(format!("agent-{}-on", preset.id)),
+                                "On",
+                                on,
+                                chrome.raised,
+                                chrome.ink_1,
+                                chrome.ink_3,
+                            ),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.set_agent_enabled(&on_id, true, cx);
+                                this.select_setting(index, window, cx);
+                            },
+                        )),
+                    ),
+            )
+    }
+    fn settings_panel(
+        &self,
+        section: SettingsSection,
+        row: usize,
+        max_h: Pixels,
+        chrome: &Chrome,
+        home: Option<&std::path::Path>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let panel_h = if max_h < px(SETTINGS_HEIGHT) {
+            max_h
+        } else {
+            px(SETTINGS_HEIGHT)
+        };
+        let editing = matches!(self.overlay, Some(Overlay::Settings { edit: Some(_), .. }));
+        let keys = self.settings_keys(section, row, editing);
+        let mut rows = div()
+            .id("settings-rows")
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.settings_scroll)
+            .flex()
+            .flex_col()
+            .gap(px(4.));
+        match section {
+            SettingsSection::Appearance => {
+                let opacity = self.appearance.opacity.to_string();
+                let blur = self.appearance.blur.to_string();
+                let font = self.font_size.text();
+                let both = self.appearance.translucency == Translucency::SidebarAndTerminal;
+                let shadow = chrome.control_shadow;
+                let choice = |id: &'static str, label: &'static str, on: bool| {
+                    segment(id, label, on, chrome.raised, chrome.ink_1, chrome.ink_3).when(
+                        on,
+                        |d| {
+                            d.shadow(vec![
+                                BoxShadow::new(px(0.), px(1.), shadow.into()).blur_radius(px(1.)),
+                            ])
+                        },
+                    )
+                };
+                rows = rows
+                    .child(self.mode_row(chrome, cx))
+                    .child(self.theme_row(LIGHT_ROW, "Light theme", chrome, cx))
+                    .child(self.theme_row(DARK_ROW, "Dark theme", chrome, cx))
+                    .child(self.setting_row(
+                        OPACITY_ROW,
+                        "Background opacity",
+                        &opacity,
+                        "%",
+                        chrome,
+                        cx,
+                    ))
+                    .child(self.setting_row(BLUR_ROW, "Background blur", &blur, "", chrome, cx))
+                    .child(
+                        list_row(row == APPLY_ROW, chrome)
+                            .justify_between()
+                            .child("Apply to")
+                            .child(
+                                div()
+                                    .flex()
+                                    .p(px(2.))
+                                    .gap(px(2.))
+                                    .rounded(px(7.))
+                                    .bg(chrome.sunken)
+                                    .child(
+                                        choice("translucent-sidebar", "Sidebar", !both).on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.step_setting(APPLY_ROW, -1, window, cx);
+                                                this.select_setting(APPLY_ROW, window, cx);
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        choice("translucent-both", "Sidebar and terminal", both)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.step_setting(APPLY_ROW, 1, window, cx);
+                                                this.select_setting(APPLY_ROW, window, cx);
+                                            })),
+                                    ),
+                            ),
+                    )
+                    .child(self.setting_row(
+                        FONT_ROW,
+                        "Terminal font size",
+                        &font,
+                        "px",
+                        chrome,
+                        cx,
+                    ))
+                    .child(self.prefix_row(chrome, cx))
+                    .child(self.sound_row(chrome, cx));
+            }
+            SettingsSection::Agents => {
+                if let Some(presets) = self.catalog.as_ref().map(|catalog| catalog.presets.clone())
+                {
+                    for (index, preset) in presets.iter().enumerate() {
+                        rows = rows.child(self.agent_row(index, preset, home, chrome, cx));
+                    }
+                } else {
+                    rows = rows.child(
+                        list_row(false, chrome)
+                            .text_color(chrome.ink_3)
+                            .child("Resolving login-shell PATH..."),
+                    );
+                }
+            }
+        }
+        dialog_shell(SETTINGS_WIDTH, panel_h, chrome)
+            .h(panel_h)
+            .overflow_hidden()
+            .pt(px(20.))
+            .px(px(20.))
+            .pb(px(16.))
+            .gap(px(8.))
+            .child(dialog_title(div()).child("Settings"))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap(px(12.))
+                    .child(self.settings_nav(section, chrome, cx))
+                    .child(rows),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .flex_wrap()
+                    .gap_x(px(12.))
+                    .gap_y(px(6.))
+                    .px(px(10.))
+                    .children(keys.iter().map(|(key, label)| hint(key, label, chrome))),
+            )
+            .child(dialog_buttons().child(self.cancel_button("Done", chrome, cx)))
+    }
+
     /// The pointer menu, or the picker/dialogs near the top. No overlay dims
     /// the window: Settings previews opacity and blur on it, and the rest match.
     fn overlay_view(
@@ -4960,12 +5460,47 @@ impl Shika {
                                     .child("tab to change project"),
                             ),
                     );
-                if let Some(catalog) = &self.catalog {
-                    for (i, preset) in catalog.presets.iter().enumerate() {
-                        let detail = match &preset.path {
-                            Some(path) => model::tilde(path, home),
-                            None => format!("{} not found on PATH", preset.binary),
-                        };
+                let offered = self.offered_presets();
+                let offer_settings = self.catalog.is_some() && offered.is_empty();
+                if self.catalog.is_none() {
+                    panel = panel.child(
+                        list_row(false, chrome)
+                            .text_color(chrome.ink_3)
+                            .child("Resolving login-shell PATH..."),
+                    );
+                } else if offered.is_empty() {
+                    panel = panel
+                        .child(
+                            div()
+                                .px(px(10.))
+                                .pt(px(4.))
+                                .pb(px(2.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(dialog_text(chrome).child("No agents available"))
+                                .child(
+                                    dialog_text(chrome)
+                                        .text_color(chrome.ink_3)
+                                        .child("Turn one on in Settings."),
+                                ),
+                        )
+                        .child(
+                            list_row(true, chrome)
+                                .id("picker-open-settings")
+                                .cursor_pointer()
+                                .child("Open Settings")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_settings(SettingsSection::Agents, window, cx);
+                                })),
+                        );
+                } else {
+                    for (i, preset) in offered.iter().enumerate() {
+                        let detail = preset
+                            .path
+                            .as_deref()
+                            .map(|path| model::tilde(path, home))
+                            .unwrap_or_default();
                         panel = panel.child(
                             list_row(i == *index, chrome)
                                 .id(SharedString::from(format!("preset-{i}")))
@@ -4977,11 +5512,7 @@ impl Shika {
                                         .flex_none()
                                         .text_size(px(13.5))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .text_color(if preset.found() {
-                                            chrome.ink_1
-                                        } else {
-                                            chrome.ink_4
-                                        })
+                                        .text_color(chrome.ink_1)
                                         .child(preset.name.clone()),
                                 )
                                 .child(
@@ -5003,12 +5534,6 @@ impl Shika {
                                 })),
                         );
                     }
-                } else {
-                    panel = panel.child(
-                        list_row(false, chrome)
-                            .text_color(chrome.ink_3)
-                            .child("Resolving login-shell PATH..."),
-                    );
                 }
                 panel.child(
                     div()
@@ -5022,7 +5547,11 @@ impl Shika {
                         .border_color(chrome.line_2)
                         .text_size(px(11.))
                         .text_color(chrome.ink_3)
-                        .child("↵ start")
+                        .child(if offer_settings {
+                            "↵ settings"
+                        } else {
+                            "↵ start"
+                        })
                         .child("esc cancel")
                         .child(match self.bases.get(project).and_then(|b| b.name.clone()) {
                             // Where New will start, so it is never a surprise.
@@ -5368,105 +5897,8 @@ impl Shika {
                             )),
                     )
             }
-            Overlay::Settings { row, edit } => {
-                let opacity = self.appearance.opacity.to_string();
-                let blur = self.appearance.blur.to_string();
-                let font = self.font_size.text();
-                let both = self.appearance.translucency == Translucency::SidebarAndTerminal;
-                let keys: &[(&str, &str)] = match (edit.is_some(), *row) {
-                    (true, PREFIX_ROW) => {
-                        &[("", "type a prefix"), ("↵", "apply"), ("esc", "cancel")]
-                    }
-                    (true, _) => &[("", "type a number"), ("↵", "apply"), ("esc", "cancel")],
-                    (false, PREFIX_ROW) => &[("j k", "choose"), ("↵", "edit"), ("esc", "done")],
-                    (false, SOUND_ROW) => &[("j k", "choose"), ("h l", "sound"), ("esc", "done")],
-                    (false, MODE_ROW) => &[("j k", "choose"), ("h l", "mode"), ("esc", "done")],
-                    (false, LIGHT_ROW | DARK_ROW) => {
-                        &[("j k", "choose"), ("h l", "theme"), ("esc", "done")]
-                    }
-                    (false, APPLY_ROW) => &[("j k", "choose"), ("h l", "change"), ("esc", "done")],
-                    (false, _) => &[
-                        ("j k", "choose"),
-                        ("h l", "change"),
-                        ("", "type a number"),
-                        ("esc", "done"),
-                    ],
-                };
-                let shadow = chrome.control_shadow;
-                let choice = |id: &'static str, label: &'static str, on: bool| {
-                    segment(id, label, on, chrome.raised, chrome.ink_1, chrome.ink_3).when(
-                        on,
-                        |d| {
-                            d.shadow(vec![
-                                BoxShadow::new(px(0.), px(1.), shadow.into()).blur_radius(px(1.)),
-                            ])
-                        },
-                    )
-                };
-                dialog(chrome, max_h)
-                    .w(px(440.))
-                    .gap(px(4.))
-                    .track_scroll(&self.settings_scroll)
-                    .child(dialog_title(div()).mb(px(4.)).child("Settings"))
-                    .child(self.mode_row(chrome, cx))
-                    .child(self.theme_row(LIGHT_ROW, "Light theme", chrome, cx))
-                    .child(self.theme_row(DARK_ROW, "Dark theme", chrome, cx))
-                    .child(self.setting_row(
-                        OPACITY_ROW,
-                        "Background opacity",
-                        &opacity,
-                        "%",
-                        chrome,
-                        cx,
-                    ))
-                    .child(self.setting_row(BLUR_ROW, "Background blur", &blur, "", chrome, cx))
-                    .child(
-                        list_row(*row == APPLY_ROW, chrome)
-                            .justify_between()
-                            .child("Apply to")
-                            .child(
-                                div()
-                                    .flex()
-                                    .p(px(2.))
-                                    .gap(px(2.))
-                                    .rounded(px(7.))
-                                    .bg(chrome.sunken)
-                                    .child(
-                                        choice("translucent-sidebar", "Sidebar", !both).on_click(
-                                            cx.listener(|this, _, window, cx| {
-                                                this.step_setting(APPLY_ROW, -1, window, cx)
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        choice("translucent-both", "Sidebar and terminal", both)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.step_setting(APPLY_ROW, 1, window, cx)
-                                            })),
-                                    ),
-                            ),
-                    )
-                    .child(self.setting_row(
-                        FONT_ROW,
-                        "Terminal font size",
-                        &font,
-                        "px",
-                        chrome,
-                        cx,
-                    ))
-                    .child(self.prefix_row(chrome, cx))
-                    .child(self.sound_row(chrome, cx))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_x(px(12.))
-                            .gap_y(px(6.))
-                            .mt(px(6.))
-                            .px(px(10.))
-                            .children(keys.iter().map(|(key, label)| hint(key, label, chrome))),
-                    )
-                    .child(dialog_buttons().child(self.cancel_button("Done", chrome, cx)))
+            Overlay::Settings { section, row, .. } => {
+                self.settings_panel(*section, *row, max_h, chrome, home, cx)
             }
         };
         div()
