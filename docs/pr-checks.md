@@ -33,7 +33,7 @@ Added:
 Unchanged:
 
 - Publishing itself: confirmation, targeting, staging, commit, push, PR reuse, and partial-failure rules are exactly as in [publishing.md](publishing.md). Only the return type changed.
-- Agent status. The mark is not an agent state: it does not change the signal at the right of the card's first line, the card tint, the elapsed timer, the card order, or Close.
+- Agent status. The mark is not an agent state: it does not change the signal at the right of the card's first line, the elapsed timer, the card order, or Close.
 - Persistence. Nothing is written to `projects.json`, `worktrees.json`, or `settings.json`.
 - Shika still never merges, re-runs, cancels, or lists checks, and never manages reviews.
 
@@ -55,7 +55,7 @@ The guiding constraint is that Shika should feel like a terminal: fast, light, a
 | Notify each time the mark turns red, not on pass | A failure asks for action; a pass does not. A repeated failure after a re-run or a new push is new information. |
 | Hide failure | gh missing, offline, signed out, or rate limited keeps the last mark and backs off. A background read never raises a toast. |
 | Memory only | Live sessions do not survive a relaunch, so neither does their watch. No reconciliation logic is needed. |
-| Red colors only the mark | "Status is the only color" in DESIGN.md. Green already means Ready, so a passing mark stays ink-3. Red is new and reserved for failed checks. The card gets no tint and does not move, so a background event never rearranges the column. |
+| Red colors only the mark | "Status is the only color" in DESIGN.md. Green already means Ready, so a passing mark stays ink-3. Red is new and reserved for failed checks. The card does not move, so a background event never rearranges the column. |
 
 ## User-facing contract
 
@@ -250,9 +250,9 @@ Never test against an existing personal or production project, or against normal
 - Keep GitHub reads bounded: only for PRs Shika published, only while checks are pending or failed, with a slowing interval and a cap. A settled, passing watch must make no network calls.
 - Keep every subprocess off the UI thread, bounded, non-interactive, and scoped with an explicit `--repo`. Do not add a GitHub HTTP client or store tokens; gh owns authentication.
 - Keep failures silent and the last mark visible. Do not add toasts for background reads.
-- Keep the mark separate from agent status: no tint, no reorder, no change to Close or the status signal, unless the author decides otherwise in DESIGN.md.
+- Keep the mark separate from agent status: no reorder, no change to Close or the status signal, unless the author decides otherwise in DESIGN.md.
 - Keep head matching. Never show a result for a commit other than the one the user last pushed, inside the grace window.
 - Put timing and state changes in `checks.rs` with tests that inject time. Keep `main.rs` to scheduling and painting.
 - Update this guide, the short AGENTS.md handoff, DESIGN.md for visible changes, and MANUAL_CHECKS.md with behavioral changes.
 
-Possible improvements, each needing a product decision: counting only required checks, watching PRs created outside Create PR for a card's branch, a slow read after a pass to catch re-runs, ordering failed cards higher, or a card tint for red. Each must keep the cost model above: nothing for cards without a PR, and nothing for finished, passing PRs.
+Possible improvements, each needing a product decision: counting only required checks, watching PRs created outside Create PR for a card's branch, a slow read after a pass to catch re-runs, or ordering failed cards higher. Each must keep the cost model above: nothing for cards without a PR, and nothing for finished, passing PRs.

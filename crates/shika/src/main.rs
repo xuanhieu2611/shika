@@ -341,7 +341,7 @@ struct Card {
     /// The checks on the PR that Create PR made or reused. Memory only.
     pr: Option<checks::PrWatch>,
     /// The `since` of the Ready turn the user has seen. Every turn that ends
-    /// gets a new `since`, so its dot and tint return until it is seen.
+    /// gets a new `since`, so its dot returns until it is seen.
     seen: Option<Instant>,
     launch_preset: String,
     launch: Launch,
@@ -2220,7 +2220,7 @@ impl Shika {
         })
         .detach();
     }
-    /// The picker for one project, from its `+` or its empty box.
+    /// The picker for one project, from its `+`.
     fn picker_for(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;
@@ -4227,7 +4227,7 @@ impl Shika {
         self.title_drag(row, cx)
     }
 
-    /// One project: its header, then its empty box or every card.
+    /// One project: its header, then every card.
     fn project_group(
         &self,
         project: &Project,
@@ -4250,6 +4250,7 @@ impl Shika {
         let base_name = self.bases.get(&id).and_then(|b| b.name.clone());
         let base_group = SharedString::from(format!("base-group-{id}"));
         let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+        let path = SharedString::from(model::tilde(&project.path, home));
         let header = div()
             .id(SharedString::from(format!("project-{id}")))
             .relative()
@@ -4274,22 +4275,24 @@ impl Shika {
                 window.focus(&this.focus, cx);
                 cx.notify();
             }))
+            // The path is in the name's tooltip, not on the row.
             .child(
                 div()
-                    .flex_none()
+                    .id(SharedString::from(format!("name-{id}")))
+                    .min_w_0()
+                    .truncate()
                     .text_size(px(15.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(chrome.ink_1)
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| KeyTip {
+                            bg: tip_bg,
+                            fg: tip_fg,
+                            text: path.clone(),
+                        })
+                        .into()
+                    })
                     .child(project.name.clone()),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .font_family(MONO)
-                    .text_size(px(12.))
-                    .text_color(chrome.ink_3)
-                    .child(model::tilde(&project.path, home)),
             )
             // The branch New starts from. A click or `b` changes it.
             .when_some(base_name, |d, name| {
@@ -4351,15 +4354,6 @@ impl Shika {
                         }
                     })),
             )
-            .when(!indices.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_size(px(11.5))
-                        .text_color(chrome.ink_3)
-                        .child(model::plural(indices.len(), "agent")),
-                )
-            })
             .child(
                 div()
                     .id(SharedString::from(format!("new-in-{id}")))
@@ -4385,30 +4379,6 @@ impl Shika {
             .filter(|d| d.card.project == id)
             .collect::<Vec<_>>();
         let mut column = div().flex().flex_col().gap(px(CARD_GAP)).child(header);
-        // The empty box waits until the last card has finished leaving.
-        if indices.is_empty() && departing.is_empty() {
-            let card_rest = chrome.card_rest;
-            let ink_2 = chrome.ink_2;
-            column = column.child(
-                div()
-                    .id(SharedString::from(format!("empty-{id}")))
-                    .border_1()
-                    .border_dashed()
-                    .border_color(chrome.dashed)
-                    .rounded(px(10.))
-                    .px(px(14.))
-                    .py(px(12.))
-                    .text_size(px(12.5))
-                    .line_height(px(16.))
-                    .text_color(chrome.ink_3)
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(card_rest).text_color(ink_2))
-                    .child("No one is on this repo. Press + to start an agent.")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.picker_for(id.clone(), window, cx)
-                    })),
-            );
-        }
         let shown = indices
             .iter()
             .map(|&at| self.cards[at].agent.view.entity_id())
@@ -4528,7 +4498,7 @@ impl Shika {
         let stat = card
             .diff
             .filter(|d| card.status == Status::Ready && d.files > 0)
-            .map(|d| model::diff_stat_label(d.files, d.insertions, d.deletions));
+            .map(|d| model::diff_stat_parts(d.files, d.insertions, d.deletions));
         // Setup progress and failure are facts the signal cannot say. Waiting,
         // Working, and Ready stay on the signal, the tint, the timer, and the
         // diff stat.
@@ -4553,11 +4523,11 @@ impl Shika {
                     .truncate()
                     .text_size(px(14.))
                     .line_height(px(20.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if card.named {
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if card.named || selected {
                         chrome.ink_1
                     } else {
-                        chrome.ink_3
+                        chrome.ink_2
                     })
                     .child(card.title.clone()),
             )
@@ -4587,7 +4557,9 @@ impl Shika {
             .whitespace_nowrap()
             .text_size(px(12.))
             .line_height(px(16.))
-            .text_color(chrome.ink_3)
+            // The CLI and branch sit back so the task reads first. Results
+            // (the diff stat, the PR mark, the hints) stay a step brighter.
+            .text_color(chrome.ink_4)
             .child(div().flex_none().child(card.preset.clone()))
             // Where the task came from, quiet: not a status.
             .when(card.started_by.is_some(), |d| {
@@ -4646,7 +4618,19 @@ impl Shika {
                 // Text on the card, not a control. A click here is the
                 // card's click: select it and focus its terminal. The
                 // panel opens from the shortcut, the toggle, or the menu.
-                d.child(separator()).child(div().flex_none().child(stat))
+                // The counts take the Changes panel's diff colors; the file
+                // count stays ink.
+                let (files, added, removed) = stat;
+                d.child(separator()).child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .gap(px(4.))
+                        .text_color(chrome.ink_3)
+                        .child(files)
+                        .child(div().text_color(chrome.diff_added.text).child(added))
+                        .child(div().text_color(chrome.diff_removed.text).child(removed)),
+                )
             })
             .when_some(card.pr.as_ref(), |d, pr| {
                 d.child(separator()).child(pr_mark(&key, pr, chrome, cx))
@@ -4661,6 +4645,7 @@ impl Shika {
                         .gap(px(4.))
                         .ml(px(6.))
                         .text_size(px(11.))
+                        .text_color(chrome.ink_3)
                         .child(kbd(*key, chrome.sunken, chrome.ink_2).py_0())
                         .child(*label)
                 }))
@@ -4672,6 +4657,9 @@ impl Shika {
             .flex_col()
             .gap(px(6.))
             .rounded(px(10.))
+            .pt(px(12.))
+            .px(px(14.))
+            .pb(px(11.))
             .when_some(at, |d, i| {
                 d.capture_any_mouse_down(cx.listener(
                     move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -4692,54 +4680,13 @@ impl Shika {
                     this.focus_terminal(window, cx);
                 }))
             });
+        // The selected card is a soft wash over the column, like a hover,
+        // so glass shows through it. The key hints show when the cards have
+        // focus. Every other card is bare text.
         let base = if selected {
-            // The ring sits outside the card, like the design's box-shadow,
-            // so the selected card keeps the resting card's size.
-            let (ring, width) = if cards_focused {
-                (chrome.focus, 1.5)
-            } else {
-                (chrome.line_selected_dim, 1.)
-            };
-            let mut shadows = vec![];
-            if cards_focused {
-                shadows.push(
-                    BoxShadow::new(px(0.), px(2.), chrome.card_shadow.into())
-                        .blur_radius(px(chrome.card_shadow_blur)),
-                );
-            }
-            shadows.push(BoxShadow::new(px(0.), px(0.), ring.into()).spread_radius(px(width)));
             base.bg(chrome.card_selected)
-                .pt(px(12.))
-                .px(px(14.))
-                .pb(px(11.))
-                .shadow(shadows)
         } else {
-            // A drop shadow would also paint under a translucent card, so the
-            // resting ring is a border and the padding gives back its 1px.
             base.overflow_hidden()
-                .bg(if card.status == Status::Asking {
-                    chrome.card_asking
-                } else if card.unseen() {
-                    chrome.card_ready
-                } else {
-                    chrome.card_rest
-                })
-                .border_1()
-                .border_color(chrome.line_subtle)
-                .pt(px(11.))
-                .px(px(13.))
-                .pb(px(10.))
-                .when(chrome.glass, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .h(px(1.))
-                            .bg(chrome.card_highlight),
-                    )
-                })
         };
         base.child(task)
             .child(meta)
@@ -6451,7 +6398,7 @@ const MONO: &str = "JetBrains Mono";
 /// The 960px window minimum leaves room for the default 540px column.
 const MIN_TERMINAL_WIDTH: f32 = 420.;
 /// Every card's height: the 20px task line, the 6px gap, the 16px meta line,
-/// and 23px of padding (a resting card's 21 plus its 1px border on each side).
+/// and 23px of padding.
 /// A closed card's row collapses from this.
 const CARD_HEIGHT: f32 = 65.;
 /// The space between cards, and between a project header and its cards.
