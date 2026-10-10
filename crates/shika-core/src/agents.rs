@@ -75,6 +75,15 @@ pub fn binaries() -> Vec<&'static str> {
     PRESETS.iter().map(|preset| preset.binary).collect()
 }
 
+/// Agents New can start, in preset order: the binary is on PATH, and the
+/// caller has not turned that id off.
+pub fn picker_presets(presets: &[CliPreset], enabled: impl Fn(&str) -> bool) -> Vec<&CliPreset> {
+    presets
+        .iter()
+        .filter(|preset| preset.found() && enabled(&preset.id))
+        .collect()
+}
+
 pub(crate) fn presets_from(env: &PathEnv) -> Vec<CliPreset> {
     PRESETS
         .iter()
@@ -140,6 +149,15 @@ mod tests {
         assert_eq!(presets[3].args, ["--approve"]);
         assert!(presets[3].found());
         assert_eq!(binaries(), ["claude", "codex", "agent", "pi"]);
+
+        let offered = picker_presets(&presets, |id| id != "pi");
+        assert_eq!(
+            offered
+                .iter()
+                .map(|preset| preset.id.as_str())
+                .collect::<Vec<_>>(),
+            ["claude", "codex"]
+        );
     }
 
     #[test]

@@ -33,6 +33,12 @@ Next/previous agent skips project headers, crosses projects, and wraps. Each tas
 
 These actions do nothing while the app is busy or any overlay is open. `Cmd+N` uses the first project when nothing is selected and opens Add project when there are no projects.
 
+## Settings sections
+
+Settings (`Cmd-,`) is Appearance and Agents. `j`/`k` move within the section. `[` and `]` change section. Appearance keeps its row keys. On Agents, `h` turns the selected CLI off and `l` turns it on. Escape closes Settings.
+
+New lists only CLIs that are on the login-shell PATH and turned on. Number keys match that list. When none are available, Enter opens Settings on Agents and keeps the focus return New captured, so Done still restores it.
+
 Other improvements:
 
 - Picker cancellation, Settings dismissal, and Base branch completion/cancellation restore the focus that opened the overlay.

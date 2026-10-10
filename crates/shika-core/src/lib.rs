@@ -68,7 +68,7 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub use activity::{AgentActivity, AgentActivityState};
-pub use agents::{CliCatalog, CliPreset};
+pub use agents::{CliCatalog, CliPreset, picker_presets};
 pub use diff::{
     Collapse, DiffLine, FileDiff, FileKey, FileStatus, Hunk, LineKind, ModeChange, SessionDiff,
 };
@@ -80,8 +80,8 @@ pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::{ChecksState, PrChecks, PublishPreview, PublishedPr};
 pub use session::{DiffStat, Session, SessionGitState, task_title};
 pub use settings::{
-    Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, Settings,
-    ThemeMode, ThemeSettings, Translucency,
+    AgentSettings, Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize,
+    Settings, ThemeMode, ThemeSettings, Translucency,
 };
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 pub use worktree::{JournalEntry, KnownBranches};
