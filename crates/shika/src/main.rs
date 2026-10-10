@@ -365,7 +365,20 @@ enum CloseCheck {
     Switched(shika_core::SwitchedBranchClose),
 }
 
+/// A context menu stays bound to the clicked card, not the current selection
+/// or a vector index that asynchronous setup cleanup could invalidate.
+struct CardMenu {
+    target: gpui::EntityId,
+    position: gpui::Point<Pixels>,
+}
+impl CardMenu {
+    fn target_index(&self, mut ids: impl Iterator<Item = gpui::EntityId>) -> Option<usize> {
+        ids.position(|id| id == self.target)
+    }
+}
+
 enum Overlay {
+    CardMenu(CardMenu),
     Publish {
         preview: PublishPreview,
         title: String,
@@ -2126,6 +2139,53 @@ impl Shika {
             });
         }).detach();
     }
+    fn open_card_menu(
+        &mut self,
+        index: usize,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let Some(card) = self.cards.get(index) else {
+            return;
+        };
+        self.overlay_return_focus = window.focused(cx);
+        self.overlay = Some(Overlay::CardMenu(CardMenu {
+            target: card.agent.view.entity_id(),
+            position,
+        }));
+        // Do not select the card or enter its terminal just to open a menu.
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn close_from_card_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(Overlay::CardMenu(menu)) = &self.overlay else {
+            return;
+        };
+        let index = menu.target_index(self.cards.iter().map(|card| card.agent.view.entity_id()));
+        self.overlay = None;
+        // Close captures its opening focus for its own confirmation flow.
+        self.restore_overlay_focus(window, cx);
+        if let Some(index) = index {
+            let panel_focused = self.changes.open && self.changes.focus.is_focused(window);
+            let terminal_focused = !self.focus.is_focused(window) && !panel_focused;
+            self.selection = Some(Selection::Card(index));
+            if terminal_focused {
+                // Never leave a hidden, previously selected terminal focused.
+                self.focus_terminal(window, cx);
+            }
+            self.close(window, cx);
+        }
+        cx.notify();
+    }
+
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -2621,6 +2681,18 @@ impl Shika {
             cx.quit();
             return;
         }
+        // Menu typing belongs to the app, never to the previously focused PTY.
+        if matches!(self.overlay, Some(Overlay::CardMenu(_))) {
+            if !stroke.modifiers.platform && !stroke.modifiers.control && !stroke.modifiers.alt {
+                match stroke.key.as_str() {
+                    "enter" => self.close_from_card_menu(window, cx),
+                    "escape" => self.cancel_overlay(window, cx),
+                    _ => {}
+                }
+                cx.stop_propagation();
+            }
+            return;
+        }
         // Ctrl+Q leaves a focused terminal. Escape is typed into the program.
         if self.overlay.is_none()
             && !self.focus.is_focused(window)
@@ -2908,7 +2980,10 @@ impl Shika {
                     }
                 }
                 // Typed into above, before the modifier check.
-                Some(Overlay::Base { .. }) | Some(Overlay::Publish { .. }) | None => {}
+                Some(Overlay::Base { .. })
+                | Some(Overlay::Publish { .. })
+                | Some(Overlay::CardMenu(_))
+                | None => {}
             }
             if let Some(project) = moved_to {
                 self.prefetch_base(project, cx);
@@ -3775,6 +3850,16 @@ impl Shika {
             });
         let base = div()
             .id(SharedString::from(format!("card-{i}")))
+            .capture_any_mouse_down(cx.listener(
+                move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    if event.button == MouseButton::Right
+                        || (event.button == MouseButton::Left && event.modifiers.control)
+                    {
+                        cx.stop_propagation();
+                        this.open_card_menu(i, event.position, window, cx);
+                    }
+                },
+            ))
             .relative()
             .flex()
             .flex_col()
@@ -4471,8 +4556,51 @@ impl Shika {
         right
     }
 
-    /// The picker, a dialog, or Settings, near the top. No overlay dims the
-    /// window: Settings previews opacity and blur on it, and the rest match.
+    /// A pointer-anchored menu with a transparent, click-consuming backdrop.
+    fn card_menu_view(
+        &self,
+        menu: &CardMenu,
+        chrome: &Chrome,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let hover = chrome.row_selected;
+        let panel = dialog_shell(400., window.viewport_size().height, chrome)
+            .w_auto()
+            .p(px(8.))
+            .occlude()
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .child(
+                list_row(false, chrome)
+                    .id("card-menu-close")
+                    .gap(px(20.))
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .child("Close task")
+                    .child(kbd("\u{2318}\u{21e7}W", chrome.sunken, chrome.ink_3))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.close_from_card_menu(window, cx);
+                    })),
+            );
+        div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_any_mouse_down(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.cancel_overlay(window, cx);
+            }))
+            .child(gpui::deferred(
+                gpui::anchored()
+                    .position(menu.position)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(panel),
+            ))
+    }
+
+    /// The pointer menu, or the picker/dialogs near the top. No overlay dims
+    /// the window: Settings previews opacity and blur on it, and the rest match.
     fn overlay_view(
         &self,
         overlay: &Overlay,
@@ -4480,12 +4608,18 @@ impl Shika {
         home: Option<&std::path::Path>,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> gpui::AnyElement {
+        if let Overlay::CardMenu(menu) = overlay {
+            return self
+                .card_menu_view(menu, chrome, window, cx)
+                .into_any_element();
+        }
         let height = window.viewport_size().height;
         let picker = matches!(overlay, Overlay::Picker { .. });
         let top = height * if picker { 0.18 } else { 0.20 };
         let max_h = (height - top - px(24.)).max(px(120.));
         let panel = match overlay {
+            Overlay::CardMenu(_) => unreachable!("card menus render at the pointer"),
             Overlay::Publish {
                 preview,
                 title,
@@ -5133,6 +5267,7 @@ impl Shika {
             .justify_center()
             .pt(top)
             .child(panel)
+            .into_any_element()
     }
 }
 impl Focusable for Shika {
@@ -5713,10 +5848,11 @@ impl Render for Shika {
                 }
             }))
             .on_action(cx.listener(|this, _: &CloseTask, window, cx| {
-                if this.busy || this.overlay.is_some() {
-                    return;
+                if matches!(this.overlay, Some(Overlay::CardMenu(_))) {
+                    this.close_from_card_menu(window, cx);
+                } else if !this.busy && this.overlay.is_none() {
+                    this.close(window, cx);
                 }
-                this.close(window, cx);
             }))
             .on_action(
                 cx.listener(|this, _: &NextTerminal, window, cx| this.cycle_tab(true, window, cx)),
@@ -5935,6 +6071,29 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+
+    #[test]
+    fn card_menu_stays_bound_to_the_clicked_card_after_reordering_or_removal() {
+        let first = gpui::EntityId::from(1);
+        let clicked = gpui::EntityId::from(2);
+        let third = gpui::EntityId::from(3);
+        let menu = CardMenu {
+            target: clicked,
+            position: gpui::point(px(100.), px(200.)),
+        };
+        assert_eq!(
+            menu.target_index([first, clicked, third].into_iter()),
+            Some(1)
+        );
+        assert_eq!(
+            menu.target_index([clicked, third, first].into_iter()),
+            Some(0)
+        );
+        assert_eq!(menu.target_index([clicked, third].into_iter()), Some(0));
+        // A disappeared target must not close the card that inherited its index.
+        assert_eq!(menu.target_index([first, third].into_iter()), None);
+        assert_eq!(menu.target_index(std::iter::empty()), None);
+    }
 
     #[test]
     fn agent_navigation_skips_headers_and_wraps_in_both_directions() {

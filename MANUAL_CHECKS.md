@@ -2,6 +2,25 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Card context menu
+
+See [docs/keyboard-flow.md](docs/keyboard-flow.md#card-context-menu). Use disposable repositories and an isolated `--data-dir`.
+
+Validation: workspace tests passed (369 passed, one existing ignored), formatting and strict Clippy passed. A scratch copy outside the repository, built as an ad hoc signed `.app` with GPUI/platform `test-support` and an isolated data directory, injected events through `Window::dispatch_event` / `dispatch_keystroke` and captured `render_to_image` frames. The two cards were synthetic setup-failed cards: no worktrees or live PTYs were created. The production source has no test hook.
+
+- PASS (injected): right-click and Control-click the unselected card opened Close task without changing selection. Escape and an outside click dismissed and restored the previously selected terminal's focus. The outside click did not activate the underlying header control.
+- PASS (injected): plain `j` and Cmd+N neither changed selection nor opened another overlay; no input was queued to the previously focused terminal. Click, Enter, and Cmd+Shift+W removed only the clicked failed card, keeping the other card.
+- PASS (frames): light, dark, Catppuccin Frappé, and 60% sidebar opacity showed a solid, readable menu using the existing overlay and key-cap colors.
+
+The remaining checks below require real macOS input and/or live tasks; injected events do not establish native event translation or Git safety dialogs.
+
+- [ ] Right-click and Control-click a selected or unselected card, including its branch, diff stat, and PR mark: Close task `⌘⇧W` appears at the pointer, with no selection change or terminal input.
+- [ ] Click Close task, Enter, and Cmd+Shift+W target the clicked card, even when another card was selected; clean idle tasks close, dirty/unpushed/active tasks use the existing confirmation, and branch-switch recovery remains unchanged.
+- [ ] Escape and outside clicks dismiss, restore terminal/cards/Changes focus, preserve selection and unsent drafts, and never activate an underlying control or type into a PTY. Other app shortcuts do nothing while the menu is open.
+- [ ] Setup-running cards cancel through Close; failed cards are removed; asynchronous cleanup cannot make the menu close a different card.
+- [ ] Menu fits near window edges and over a scrolled column; light, dark, a derived theme, and translucent backgrounds keep the popup solid and readable, with the existing hover wash.
+- [ ] Left-click selection, card keys, terminal input, the Close task button, and Agent menu remain unchanged.
+
 ## Changes panel
 
 Designed 2026-10-08; see [docs/changes-panel.md](docs/changes-panel.md). Use a built `.app`, an isolated `--data-dir`, and a disposable repository with a local bare remote.

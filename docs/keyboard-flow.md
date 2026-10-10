@@ -42,6 +42,14 @@ Other improvements:
 
 Create PR is also in the Agent menu and terminal metadata row. Its dialog uses Tab to switch title/target fields, Enter to confirm publishing, and Escape to cancel. Plain card keys never run while editing. Busy/overlay conflicts and active/blocked turns block entry. See [publishing.md](publishing.md); publishing runs on a worker, not by writing commands into a terminal.
 
+## Card context menu
+
+Right-click or Control-click anywhere on a card opens a one-item menu at the pointer: **Close task** `Cmd+Shift+W`. No close button or hover control is added to the card. The menu stays inside the window, uses the existing solid overlay and list-row tokens, and works in light, dark, derived themes, and glass.
+
+Opening does not change selection or enter a terminal. Escape or an outside click dismisses it and restores the opening focus; the outside click is consumed. Click Close task, Enter, or Cmd+Shift+W to close the clicked task through the existing `Shika::close` path, including setup cancellation, failed-card removal, and Git/active-turn safety checks. Dirty/unpushed close cancellation still routes to that task's shell. Other app actions are blocked while the menu is open, and plain typing never reaches a PTY.
+
+Implementation: `Overlay::CardMenu`, `CardMenu::target_index`, `open_card_menu`, `close_from_card_menu`, and `card_menu_view` in `main.rs`. The menu binds to the agent view's stable entity ID, not the selected card or its vector index; asynchronous setup cleanup or selection changes cannot retarget it. If that card disappears, activation just dismisses the menu. The unit test `card_menu_stays_bound_to_the_clicked_card_after_reordering_or_removal` covers target lookup, not native mouse dispatch. GUI acceptance is tracked in `MANUAL_CHECKS.md`.
+
 ## What did not change
 
 - `j`/`k` and arrows navigate cards while the cards are focused, skipping project headers. An empty project is not a stop. They do not focus the terminal, so a second `j` still moves.
