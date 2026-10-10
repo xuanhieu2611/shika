@@ -33,13 +33,13 @@ It is not:
 
 `Core` is `Send + Sync` and is shared as `Arc<Core>`. The crate docs in `src/lib.rs` list which methods block. The short version:
 
-- **Blocking** methods run git, the user's login shell, or setup commands, and can take seconds: `add_project`, `create_session`, `create_session_with_preparation`, `create_lead`, `open_shell`, every `session_*` git method, `leftover_remove`, `remove_project`, the base-branch methods, and the first call to `path_env` or `cli_catalog` (the login shell gets up to 20 seconds). Call them from a background executor, never from the GPUI main thread.
+- **Blocking** methods run git, the user's login shell, or setup commands, and can take seconds: `add_project`, `project_preparation_draft`, `save_project_preparation`, `save_and_approve_project_preparation`, `create_session`, `create_session_with_preparation`, `create_lead`, `open_shell`, every `session_*` git method, `leftover_remove`, `remove_project`, the base-branch methods, and the first call to `path_env` or `cli_catalog` (the login shell gets up to 20 seconds). Call them from a background executor, never from the GPUI main thread.
 - **Quick** methods read a small JSON file, take a short lock, or queue bytes: `open`, `projects`, `settings`, `save_settings`, `worktree_journal`, `leftovers_list`, `sessions`, `session`, `lead_for_project`, `workers_of`, `write`, `resize`.
 
 `Core::operations` is one mutex that serializes everything that changes worktrees, branches, the journal, or the live session list: creating and removing worktrees, close, discard, push, rename, publish, and `remove_project`. Take it for any new method that mutates those. Two kinds of work deliberately stay outside it:
 
 - **Reads** that must not hold up Close: `session_diff_stat`, `session_diff`, `session_file_diff`, `session_pr_checks`, `session_pushed_head`, `session_activity`. They use `GIT_OPTIONAL_LOCKS=0` (see [Invariants](#invariants)).
-- **Slow preparation.** Setup commands run outside the lock so Close and Discard stay responsive. The worktree is journaled first, and `Core::preparing` keeps leftovers from offering a tree that has an active writer.
+- **Slow preparation.** Setup commands run outside the lock so Close and Discard stay responsive. The worktree is journaled first, and `Core::preparing` keeps leftovers from offering a tree that has an active writer. In-app configuration saves also validate copy-source metadata/ignore rules outside the lock; only the project/config recheck and atomic write/removal hold it. Settings saves do not grant consent. First-New's explicit `save_and_approve_project_preparation` also records consent for the reread parsed value, but allocates no task or command; normal launch still rechecks it. `skip_preparation_onboarding` refuses an appeared config and stores only the local per-project `worktreeSetupReviewed` preference, never permission.
 
 A poisoned lock is recovered with `unwrap_or_else(|e| e.into_inner())`; keep that pattern.
 
@@ -56,9 +56,9 @@ All modules are private except `control`. The crate root re-exports the public s
 | `pty` | `portable-pty` wrapper: one reader thread and one writer thread per PTY, environment setup, exit events. | `PtyId`, `PtySize`, `PtyEvent`, `PtyExit`, `PtySink`; internally `PtyHub`, `SpawnRequest`, `CONTROL_VARS` |
 | `agents` | The four CLI presets and their launch flags. | `CliPreset`, `CliCatalog` |
 | `path_env` | The login-shell `PATH`, captured once, and the absolute CLI paths resolved from it. | `PathEnv`, `LoginShellError` |
-| `projects` | `projects.json`: add (git root lookup), remove, base branch, preparation approval. | `Project`, `ProjectAdded` |
+| `projects` | `projects.json`: add (git root lookup), remove, base branch, preparation approval and local onboarding decision. | `Project`, `ProjectAdded` |
 | `settings` | `settings.json`: theme, appearance, font size, branch prefix, sound, column, Changes width. Missing fields take defaults. | `Settings`, `ThemeSettings`, `ThemeMode`, `Appearance`, `Translucency`, `FontSize`, `Column`, `Changes` |
-| `preparation` | Opt-in `.shika/worktrees.json`: parse, approval comparison, rooted file copy, setup commands in process groups, two-slot limiter, cancel. | `PreparationConfig`, `PreparationControl`, `PreparationEvent` |
+| `preparation` | Opt-in `.shika/worktrees.json`: parse, Settings/first-New metadata suggestions, validated atomic save/disable, approval comparison, rooted file copy, setup commands in process groups, two-slot limiter, cancel. | `PreparationConfig`, `PreparationDraft`, `PreparationControl`, `PreparationEvent` |
 | `activity` | Pi lifecycle bridge: a private directory and extension that report Idle or Working through a small file. No terminal bytes. | `AgentActivity`, `AgentActivityState` |
 | `cli_title` | Read-only access to the session title each CLI keeps in its own private files. | internal `CliHome` |
 | `diff` | Parses git's unified patch into UI-free types with caps. | `SessionDiff`, `FileDiff`, `Hunk`, `DiffLine`, `FileKey`, `FileStatus`, `Collapse`, `LineKind`, `ModeChange` |
@@ -239,7 +239,7 @@ Tests never touch real app data or the user's repositories:
 - `pty::tests` provides `channel_sink`, `collect_until`, and `collect_to_exit` for reading what a child printed.
 - The Lead tests in `lib.rs` start with `a_lead_`, `workers_get_`, `only_a_lead_started_workers_agent_`, and `closing_a_lead_`; the control protocol tests are in `control.rs`.
 
-The preparation integration tests (`preparation_tests.rs`) have a known collision when run in parallel: their fixture names its root from the PID and a timestamp, and equal timestamps can share a directory. If you see `AlreadyExists` from `Fixture::new`, rerun serially with `cargo test -p shika-core preparation -- --test-threads=1`, and keep the parallel run in PR validation. This is documented, with the diagnosis, in [worktree-preparation.md](../../docs/worktree-preparation.md); a serial pass is not evidence that it is fixed.
+Preparation integration fixtures (`preparation_tests.rs`) reserve exclusive roots with `create_dir`, PID/timestamp/counter, and collision retries. This replaces timestamp-only `create_dir_all`, which let parallel fixtures share/delete each other's repositories. Do not regress to adopting existing roots, and retain parallel workspace validation. See [worktree-preparation.md](../../docs/worktree-preparation.md).
 
 Rules for manual testing: use disposable repositories and local bare remotes with `open -n target/debug/Shika.app --args --data-dir /absolute/test/data`. Never run an experiment against `~/Library/Application Support/com.hieule.shika`. Unit tests passing does not establish GUI behavior; see [MANUAL_CHECKS.md](../../MANUAL_CHECKS.md).
 

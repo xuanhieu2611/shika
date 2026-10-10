@@ -108,7 +108,11 @@ Close asks before discarding uncommitted work or unpushed commits, and offers pu
 
 ## Worktree preparation
 
-To prepare fresh worktrees before agents start, add `.shika/worktrees.json` to a project's main checkout:
+The first **New** for an unconfigured project offers detected files and install commands. Choose **Save, approve and start** to prepare this and future agents automatically, **Customize setup…** to edit, or **Start without setup**. Shika remembers the choice per project; adding a project runs nothing. Existing configurations use the normal approval dialog.
+
+For later changes, open **Settings > Projects**, then choose that project's **Worktree setup…** to configure files to copy, setup commands, and a timeout. With no saved configuration, Shika prefills an unsaved draft with existing ignored root `.env` / `.env.local` files and an npm or pnpm installer when package metadata is unambiguous. Review, edit, or remove suggestions before saving; nothing runs automatically. Save creates `.shika/worktrees.json` in that project's main checkout. Opening or cancelling setup creates nothing; saving does not run commands or grant launch approval. Disable setup removes the configuration for future tasks, without changing running tasks.
+
+You can also create the same file yourself:
 
 ```json
 {
@@ -117,6 +121,8 @@ To prepare fresh worktrees before agents start, add `.shika/worktrees.json` to a
   "timeout-seconds": 600
 }
 ```
+
+Once the agent starts, **Cmd+T** opens a shell in its worktree. Run your dev command (for example, `npm run dev`), then Cmd-click the localhost URL. Shika does not start servers automatically.
 
 Use your project's own commands. Copied files must already be ignored by Git on both the main checkout and the task's base. Shika asks for local approval, and asks again when the configuration changes. Setup commands are trusted code, run with your account's access. See [worktree preparation](docs/worktree-preparation.md) for progress, cancel, retry, and cleanup rules.
 

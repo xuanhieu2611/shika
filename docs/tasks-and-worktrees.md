@@ -7,12 +7,14 @@ Related guides: [branch-naming.md](branch-naming.md) for how the draft branch ge
 ## Projects
 
 - A project is a local git repository. A nested folder becomes the repository root (`git rev-parse --show-toplevel`), and Shika says so.
-- Projects persist in `projects.json` as `{ id, name, path, baseBranch?, approvedPreparation? }`. The name is the folder name.
+- Projects persist in `projects.json` as `{ id, name, path, baseBranch?, approvedPreparation?, worktreeSetupReviewed? }`. The last two fields separate local setup consent from the onboarding preference; see [preparation state](worktree-preparation.md#configuration-consent-and-onboarding-state). The name is the folder name.
 - Live sessions do not persist. Relaunch shows the projects and an empty terminal. Session ids, titles, status, and PTY ids are memory only.
 
 ## A new task
 
 One agent, one fresh worktree. Shika never reuses an old worktree, because reuse is how stale files leak into the next task. Tasks in one repository are independent; Shika does not resolve conflicts between agents.
+
+Before allocation, author New may offer [first-use setup review](worktree-preparation.md#first-new) or approval of an existing config. Cancelling allocates nothing. This does not change the fresh-worktree lifecycle below.
 
 1. Append `.worktrees/` to `$(git rev-parse --git-path info/exclude)` if the line is missing. Never edit the user's `.gitignore`.
 2. Create the draft from the main repository:
@@ -22,7 +24,8 @@ One agent, one fresh worktree. Shika never reuses an old worktree, because reuse
    ```
 
    `--no-track` is required. Starting from `origin/dev` would otherwise make `origin/dev` the upstream, so a fresh card would look pushed and a plain `git push` would target `dev`.
-3. Start the CLI in that folder with the login-shell `PATH`, `PWD` set to the worktree, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, and `GIT_OBJECT_DIRECTORY` removed. The launch arguments are in [AGENTS.md](../AGENTS.md#clis-and-launch-arguments).
+3. Journal ownership before optional approved [copy/setup](worktree-preparation.md#launch-lifecycle-and-lock-boundaries). If preparation is configured, it must finish successfully before the CLI starts; without configuration, no setup is inferred.
+4. Start the CLI in that folder with the login-shell `PATH`, `PWD` set to the worktree, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, and `GIT_OBJECT_DIRECTORY` removed. The launch arguments are in [AGENTS.md](../AGENTS.md#clis-and-launch-arguments).
 
 Shika creates the worktree. Never pass a CLI's own worktree flag, such as Cursor's or Codex's `--worktree`.
 

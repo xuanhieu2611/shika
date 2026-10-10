@@ -15,15 +15,25 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "shika-preparation-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = loop {
+            let root = std::env::temp_dir().join(format!(
+                "shika-preparation-{}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            ));
+            // Reserve exclusively. Never adopt another fixture's root when
+            // concurrent clocks return the same timestamp or a stale path exists.
+            match fs::create_dir(&root) {
+                Ok(()) => break root,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("Cannot allocate preparation fixture: {e}"),
+            }
+        };
         let root = root.canonicalize().unwrap();
         let repo = root.join("repo with spaces");
         fs::create_dir(&repo).unwrap();
@@ -142,6 +152,709 @@ fn git(repo: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn preparation_onboarding_preview_leaves_repo_and_local_preferences_unchanged() {
+    let f = Fixture::new();
+    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
+    let before = fs::read(f.root.join("data/projects.json")).unwrap();
+    assert!(
+        f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+    assert_eq!(draft.config.copy_files, [".env.local"]);
+    assert!(draft.existing.is_none());
+    // Leaving a preview without saving/skipping is a read-only cancellation.
+    assert_eq!(fs::read(f.root.join("data/projects.json")).unwrap(), before);
+    assert!(
+        f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    assert!(!f.repo.join(".shika").exists());
+    assert!(!f.repo.join(".worktrees").exists());
+    assert!(f.core.sessions().is_empty());
+    assert!(f.core.worktree_journal().unwrap().is_empty());
+}
+
+#[test]
+fn preparation_onboarding_skip_is_per_project_persistent_and_not_consent() {
+    let f = Fixture::new();
+    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
+    let other = f.root.join("other project");
+    fs::create_dir(&other).unwrap();
+    git(&other, &["init", "-b", "main"]);
+    let other = f.core.add_project(&other).unwrap().project;
+    f.core.skip_preparation_onboarding(&f.project.id).unwrap();
+    assert!(
+        !f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    assert!(f.core.preparation_onboarding_pending(&other.id).unwrap());
+    assert!(!f.repo.join(".shika").exists());
+    assert!(!f.repo.join(".worktrees").exists());
+    let reopened = Core::open_with(f.root.join("data"), f.core.path_env().clone()).unwrap();
+    assert!(
+        !reopened
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    assert!(reopened.preparation_onboarding_pending(&other.id).unwrap());
+    // Settings still offers suggestions after skipping. A later saved config
+    // needs actual consent regardless of the local onboarding preference.
+    assert_eq!(
+        reopened
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .config
+            .copy_files,
+        [".env.local"]
+    );
+    let session = f.launch().unwrap();
+    assert!(!session.worktree.join(".env.local").exists());
+    assert!(!f.repo.join(".shika").exists());
+    let journal_before = f.core.worktree_journal().unwrap();
+    let config = f.config(&["touch ran.generated"], &[], 600);
+    assert!(
+        !reopened
+            .preparation_approved(&f.project.id, &config)
+            .unwrap()
+    );
+    assert_eq!(f.launch(), Err(Error::PreparationNeedsApproval));
+    assert_eq!(f.core.worktree_journal().unwrap(), journal_before);
+}
+
+#[test]
+fn preparation_onboarding_skip_refuses_a_configuration_added_since_preview() {
+    let f = Fixture::new();
+    let before = fs::read(f.root.join("data/projects.json")).unwrap();
+    let config = f.config(&["true"], &[], 600);
+    assert!(f.core.skip_preparation_onboarding(&f.project.id).is_err());
+    assert_eq!(fs::read(f.root.join("data/projects.json")).unwrap(), before);
+    assert_eq!(
+        f.core.project_preparation(&f.project.id).unwrap(),
+        Some(config)
+    );
+    assert!(
+        f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    assert!(f.core.worktree_journal().unwrap().is_empty());
+}
+
+#[test]
+fn preparation_onboarding_save_and_approve_starts_only_at_normal_launch() {
+    let f = Fixture::new();
+    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
+    let mut draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+    draft.config.commands = vec!["test -f .env.local && printf prepared > ready.generated".into()];
+    f.core
+        .save_and_approve_project_preparation(&f.project.id, None, &draft.config)
+        .unwrap();
+    assert!(
+        !f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    assert!(!f.repo.join(".worktrees").exists());
+    assert!(!f.repo.join("ready.generated").exists());
+    assert!(f.core.sessions().is_empty());
+    assert!(f.core.worktree_journal().unwrap().is_empty());
+    let reopened = Core::open_with(f.root.join("data"), f.core.path_env().clone()).unwrap();
+    assert!(
+        reopened
+            .preparation_approved(&f.project.id, &draft.config)
+            .unwrap()
+    );
+    assert!(
+        !reopened
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    let first = f.launch().unwrap();
+    assert_eq!(
+        fs::read_to_string(first.worktree.join("ready.generated")).unwrap(),
+        "prepared"
+    );
+    fs::write(f.repo.join(".env.local"), "updated-fixture").unwrap();
+    let second = f.launch().unwrap();
+    assert_ne!(first.worktree, second.worktree);
+    assert_eq!(
+        fs::read_to_string(second.worktree.join(".env.local")).unwrap(),
+        "updated-fixture"
+    );
+    assert_eq!(
+        fs::read_to_string(first.worktree.join(".env.local")).unwrap(),
+        "fixture-only"
+    );
+    assert!(second.worktree.join("ready.generated").exists());
+    // No implicit re-detection or weakened consent for subsequent agents.
+    f.config(&["touch changed.generated"], &[], 600);
+    assert_eq!(f.launch(), Err(Error::PreparationNeedsApproval));
+    f.core
+        .save_project_preparation(
+            &f.project.id,
+            f.core.project_preparation(&f.project.id).unwrap().as_ref(),
+            None,
+        )
+        .unwrap();
+    assert!(
+        !f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+}
+
+#[test]
+fn preparation_onboarding_save_and_approve_rejects_invalid_or_stale_drafts() {
+    let f = Fixture::new();
+    let before = fs::read(f.root.join("data/projects.json")).unwrap();
+    let mut draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+    draft.config.timeout_seconds = 0;
+    assert!(
+        f.core
+            .save_and_approve_project_preparation(&f.project.id, None, &draft.config)
+            .is_err()
+    );
+    assert!(!f.repo.join(".shika").exists());
+    draft.config.timeout_seconds = 600;
+    let external = f.config(&["true"], &[], 600);
+    assert!(
+        f.core
+            .save_and_approve_project_preparation(&f.project.id, None, &draft.config)
+            .is_err()
+    );
+    assert_eq!(
+        f.core.project_preparation(&f.project.id).unwrap(),
+        Some(external)
+    );
+    assert_eq!(fs::read(f.root.join("data/projects.json")).unwrap(), before);
+    assert!(f.core.worktree_journal().unwrap().is_empty());
+    assert!(f.core.sessions().is_empty());
+    assert!(
+        f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+}
+
+#[test]
+fn preparation_onboarding_approval_write_failure_never_runs_saved_commands() {
+    let f = Fixture::new();
+    let mut draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+    draft.config.commands = vec!["touch ran.generated".into()];
+    // Repository and local consent are separate files. Simulate a failed local
+    // atomic write after the repository configuration was successfully saved.
+    fs::create_dir(f.root.join("data/projects.json.tmp")).unwrap();
+    let error = f
+        .core
+        .save_and_approve_project_preparation(&f.project.id, None, &draft.config)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Setup was saved, but local approval")
+    );
+    assert_eq!(
+        f.core.project_preparation(&f.project.id).unwrap(),
+        Some(draft.config.clone())
+    );
+    assert!(
+        !f.core
+            .preparation_approved(&f.project.id, &draft.config)
+            .unwrap()
+    );
+    assert_eq!(f.launch(), Err(Error::PreparationNeedsApproval));
+    assert!(f.core.sessions().is_empty());
+    assert!(f.core.worktree_journal().unwrap().is_empty());
+    assert!(!f.repo.join("ran.generated").exists());
+    assert!(!f.repo.join(".worktrees").exists());
+}
+
+#[test]
+fn setup_suggestions_are_unsaved_and_never_used_by_new() {
+    let f = Fixture::new();
+    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
+    fs::write(
+        f.repo.join("package.json"),
+        r#"{"packageManager":"npm@10.8.0","scripts":{"preinstall":"touch ran.generated"}}"#,
+    )
+    .unwrap();
+    fs::write(f.repo.join("package-lock.json"), "{}").unwrap();
+    let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+    assert!(draft.existing.is_none());
+    assert_eq!(draft.config.copy_files, [".env.local"]);
+    assert_eq!(draft.config.commands, ["npm ci"]);
+    assert_eq!(draft.config.timeout_seconds, 600);
+    assert!(draft.note.contains("not saved"));
+    assert!(!f.repo.join(".shika").exists());
+    assert!(!f.repo.join("ran.generated").exists());
+    assert!(
+        !f.core
+            .preparation_approved(&f.project.id, &draft.config)
+            .unwrap()
+    );
+    // Detection is a preview, not implicit core setup. Author-facing New offers
+    // onboarding; programmatic launches never infer or save preparation.
+    let session = f.launch().unwrap();
+    assert!(!session.worktree.join(".env.local").exists());
+    assert!(!f.repo.join(".shika").exists());
+    f.core
+        .save_project_preparation(&f.project.id, None, Some(&draft.config))
+        .unwrap();
+    assert_eq!(f.launch(), Err(Error::PreparationNeedsApproval));
+}
+
+#[test]
+fn setup_suggestions_preserve_existing_configuration_even_when_empty() {
+    let f = Fixture::new();
+    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
+    fs::write(
+        f.repo.join("package.json"),
+        r#"{"packageManager":"pnpm@10.0.0"}"#,
+    )
+    .unwrap();
+    let saved = f.config(&[], &[], 42);
+    let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+    assert_eq!(draft.existing, Some(saved.clone()));
+    assert_eq!(draft.config, saved);
+    // Existing config also avoids reading unsafe package metadata entirely.
+    fs::remove_file(f.repo.join("package.json")).unwrap();
+    symlink("missing", f.repo.join("package.json")).unwrap();
+    assert!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .existing
+            .is_some()
+    );
+}
+
+#[test]
+fn setup_suggestions_only_include_root_regular_ignored_dotenv_files() {
+    let f = Fixture::new();
+    fs::write(f.repo.join(".env"), "not ignored").unwrap();
+    fs::write(f.repo.join(".env.local"), "ignored").unwrap();
+    fs::write(f.repo.join(".env.production"), "not suggested").unwrap();
+    let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+    assert_eq!(draft.config.copy_files, [".env.local"]);
+    fs::write(
+        f.repo.join(".gitignore"),
+        ".env\n.env.local\n.env.production\n*.generated\n",
+    )
+    .unwrap();
+    assert_eq!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .config
+            .copy_files,
+        [".env", ".env.local"]
+    );
+    git(&f.repo, &["add", "-f", ".env.local"]);
+    assert_eq!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .config
+            .copy_files,
+        [".env"]
+    );
+    fs::remove_file(f.repo.join(".env")).unwrap();
+    symlink("tracked.txt", f.repo.join(".env")).unwrap();
+    assert!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .config
+            .copy_files
+            .is_empty()
+    );
+    fs::remove_file(f.repo.join(".env")).unwrap();
+    fs::create_dir(f.repo.join(".env")).unwrap();
+    assert!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .config
+            .copy_files
+            .is_empty()
+    );
+    assert!(!f.repo.join(".shika").exists());
+}
+
+#[test]
+fn setup_suggestions_use_unambiguous_npm_and_pnpm_metadata() {
+    let f = Fixture::new();
+    for (package, locks, command) in [
+        ("{}", vec!["package-lock.json"], "npm ci"),
+        ("{}", vec!["npm-shrinkwrap.json"], "npm ci"),
+        (
+            r#"{"packageManager":"npm@10.8.0"}"#,
+            vec!["npm-shrinkwrap.json", "package-lock.json"],
+            "npm ci",
+        ),
+        (
+            "{}",
+            vec!["pnpm-lock.yaml"],
+            "pnpm install --frozen-lockfile",
+        ),
+        (
+            r#"{"packageManager":"pnpm@10.0.0+sha512.example"}"#,
+            vec!["pnpm-lock.yaml"],
+            "pnpm install --frozen-lockfile",
+        ),
+        (r#"{"packageManager":"npm@10.8.0"}"#, vec![], "npm install"),
+        (
+            r#"{"packageManager":"pnpm@10.0.0"}"#,
+            vec![],
+            "pnpm install",
+        ),
+    ] {
+        fs::write(f.repo.join("package.json"), package).unwrap();
+        for lock in &locks {
+            fs::write(f.repo.join(lock), "fixture lock").unwrap();
+        }
+        let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+        assert_eq!(draft.config.commands, [command], "{package}: {locks:?}");
+        if locks.is_empty() {
+            assert!(draft.note.contains("may create one"));
+        }
+        for lock in locks {
+            fs::remove_file(f.repo.join(lock)).unwrap();
+        }
+    }
+    assert!(!f.repo.join(".shika").exists());
+}
+
+#[test]
+fn setup_suggestions_skip_conflicts_unsupported_managers_and_unknown_toolchains() {
+    let f = Fixture::new();
+    fs::write(f.repo.join("Cargo.toml"), "[package]\nname = 'fixture'\n").unwrap();
+    assert!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .config
+            .commands
+            .is_empty()
+    );
+    for (package, locks) in [
+        ("{}", vec![]),
+        ("{}", vec!["package-lock.json", "pnpm-lock.yaml"]),
+        ("{}", vec!["package-lock.json", "yarn.lock"]),
+        (
+            r#"{"packageManager":"pnpm@10.0.0"}"#,
+            vec!["package-lock.json"],
+        ),
+        (r#"{"packageManager":"npm@10.8.0"}"#, vec!["pnpm-lock.yaml"]),
+        (
+            r#"{"packageManager":"yarn@4.0.0"}"#,
+            vec!["package-lock.json"],
+        ),
+        (r#"{"packageManager":"npm; touch ran.generated"}"#, vec![]),
+        (r#"{"packageManager":42}"#, vec!["package-lock.json"]),
+        ("{}", vec!["bun.lock"]),
+        ("{}", vec!["bun.lockb"]),
+    ] {
+        fs::write(f.repo.join("package.json"), package).unwrap();
+        for lock in &locks {
+            fs::write(f.repo.join(lock), "fixture").unwrap();
+        }
+        let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+        assert!(draft.config.commands.is_empty(), "{package}: {locks:?}");
+        assert!(draft.note.contains("manually"));
+        for lock in locks {
+            fs::remove_file(f.repo.join(lock)).unwrap();
+        }
+    }
+    assert!(!f.repo.join("ran.generated").exists());
+}
+
+#[test]
+fn setup_suggestions_skip_invalid_unbounded_and_symlinked_package_metadata() {
+    let f = Fixture::new();
+    fs::write(f.repo.join("package-lock.json"), "{}").unwrap();
+    for package in ["{", "[]", &" ".repeat(65537)] {
+        fs::write(f.repo.join("package.json"), package).unwrap();
+        let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+        assert!(draft.config.commands.is_empty());
+        assert!(draft.note.contains("safely"));
+    }
+    fs::remove_file(f.repo.join("package.json")).unwrap();
+    let outside = f.root.join("outside.json");
+    fs::write(&outside, r#"{"packageManager":"npm@10.8.0"}"#).unwrap();
+    symlink(&outside, f.repo.join("package.json")).unwrap();
+    assert!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .config
+            .commands
+            .is_empty()
+    );
+    fs::remove_file(f.repo.join("package.json")).unwrap();
+    fs::create_dir(f.repo.join("package.json")).unwrap();
+    assert!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .config
+            .commands
+            .is_empty()
+    );
+    fs::remove_dir(f.repo.join("package.json")).unwrap();
+    fs::write(
+        f.repo.join("package.json"),
+        r#"{"packageManager":"npm@10.8.0"}"#,
+    )
+    .unwrap();
+    fs::remove_file(f.repo.join("package-lock.json")).unwrap();
+    symlink(&outside, f.repo.join("package-lock.json")).unwrap();
+    // Unsafe lock metadata must not degrade into an unfrozen installer.
+    assert!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .config
+            .commands
+            .is_empty()
+    );
+    assert!(!f.repo.join(".shika").exists());
+}
+
+#[test]
+fn setup_editor_creates_configuration_without_running_or_approving_it() {
+    let f = Fixture::new();
+    assert!(!f.repo.join(".shika").exists());
+    assert_eq!(f.core.project_preparation(&f.project.id).unwrap(), None);
+    // Merely opening the editor must not write anything.
+    assert!(!f.repo.join(".shika").exists());
+    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
+    let config = PreparationConfig {
+        copy_files: vec![".env.local".into()],
+        commands: vec!["touch ran.generated".into()],
+        timeout_seconds: 600,
+    };
+    f.core
+        .save_project_preparation(&f.project.id, None, Some(&config))
+        .unwrap();
+    assert_eq!(
+        f.core.project_preparation(&f.project.id).unwrap(),
+        Some(config.clone())
+    );
+    assert!(!f.repo.join("ran.generated").exists());
+    assert!(!f.repo.join(".worktrees").exists());
+    assert!(!f.core.preparation_approved(&f.project.id, &config).unwrap());
+    assert!(
+        !f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    assert_eq!(f.launch(), Err(Error::PreparationNeedsApproval));
+    f.approve(&config);
+    let session = f.launch().unwrap();
+    assert_eq!(
+        fs::read_to_string(session.worktree.join(".env.local")).unwrap(),
+        "fixture-only"
+    );
+    assert!(session.worktree.join("ran.generated").exists());
+    // Editing is not renewed consent and must not modify a running task.
+    let changed = PreparationConfig {
+        commands: vec!["true".into()],
+        ..config.clone()
+    };
+    f.core
+        .save_project_preparation(&f.project.id, Some(&config), Some(&changed))
+        .unwrap();
+    assert!(
+        !f.core
+            .preparation_approved(&f.project.id, &changed)
+            .unwrap()
+    );
+    assert_eq!(f.launch(), Err(Error::PreparationNeedsApproval));
+    fs::write(f.repo.join(".shika/notes.txt"), "unrelated").unwrap();
+    f.core
+        .save_project_preparation(&f.project.id, Some(&changed), None)
+        .unwrap();
+    assert!(!f.repo.join(preparation::CONFIG_PATH).exists());
+    assert_eq!(
+        fs::read_to_string(f.repo.join(".shika/notes.txt")).unwrap(),
+        "unrelated"
+    );
+    assert!(session.worktree.join(".env.local").exists());
+    f.launch().unwrap(); // Disabling restores the no-config launch path.
+}
+
+#[test]
+fn setup_editor_empty_template_and_formatting_edits_do_not_infer_setup_or_consent() {
+    let f = Fixture::new();
+    let empty = PreparationConfig {
+        commands: vec![],
+        copy_files: vec![],
+        timeout_seconds: 600,
+    };
+    f.core
+        .save_project_preparation(&f.project.id, None, Some(&empty))
+        .unwrap();
+    assert_eq!(
+        f.core.project_preparation(&f.project.id).unwrap(),
+        Some(empty.clone())
+    );
+    assert!(!f.core.preparation_approved(&f.project.id, &empty).unwrap());
+    f.approve(&empty);
+    // Parsed equality, not JSON formatting, is the existing consent fence.
+    fs::write(f.repo.join(preparation::CONFIG_PATH), "{}").unwrap();
+    f.core
+        .save_project_preparation(&f.project.id, Some(&empty), Some(&empty))
+        .unwrap();
+    assert!(f.core.preparation_approved(&f.project.id, &empty).unwrap());
+    assert!(f.core.worktree_journal().unwrap().is_empty());
+    assert_eq!(fs::read_dir(f.repo.join(".shika")).unwrap().count(), 1);
+}
+
+#[test]
+fn setup_editor_refuses_stale_invalid_and_unsafe_saves() {
+    let f = Fixture::new();
+    let original = f.config(&["true"], &[], 600);
+    let changed = PreparationConfig {
+        commands: vec!["echo changed".into()],
+        ..original.clone()
+    };
+    assert!(
+        f.core
+            .save_project_preparation(&f.project.id, None, Some(&changed))
+            .is_err()
+    );
+    assert!(
+        f.core
+            .save_project_preparation(&f.project.id, None, None)
+            .is_err()
+    );
+    for invalid in [
+        PreparationConfig {
+            timeout_seconds: 0,
+            ..original.clone()
+        },
+        PreparationConfig {
+            timeout_seconds: 3601,
+            ..original.clone()
+        },
+        PreparationConfig {
+            commands: vec![String::new()],
+            ..original.clone()
+        },
+        PreparationConfig {
+            commands: vec!["a".repeat(65536)],
+            ..original.clone()
+        },
+        PreparationConfig {
+            copy_files: vec!["../outside".into()],
+            ..original.clone()
+        },
+        PreparationConfig {
+            copy_files: vec!["tracked.txt".into()],
+            ..original.clone()
+        },
+        PreparationConfig {
+            copy_files: vec!["missing.env".into()],
+            ..original.clone()
+        },
+    ] {
+        assert!(
+            f.core
+                .save_project_preparation(&f.project.id, Some(&original), Some(&invalid))
+                .is_err()
+        );
+        assert_eq!(
+            f.core.project_preparation(&f.project.id).unwrap(),
+            Some(original.clone())
+        );
+    }
+    fs::write(f.repo.join(".env.local"), "fixture").unwrap();
+    let duplicates = PreparationConfig {
+        copy_files: vec![".env.local".into(), ".env.local".into()],
+        ..original.clone()
+    };
+    assert!(
+        f.core
+            .save_project_preparation(&f.project.id, Some(&original), Some(&duplicates))
+            .is_err()
+    );
+    let external = f.config(&["external edit"], &[], 600);
+    assert!(
+        f.core
+            .save_project_preparation(&f.project.id, Some(&original), Some(&changed))
+            .is_err()
+    );
+    assert!(
+        f.core
+            .save_project_preparation(&f.project.id, Some(&original), None)
+            .is_err()
+    );
+    assert_eq!(
+        f.core.project_preparation(&f.project.id).unwrap(),
+        Some(external)
+    );
+    // An invalid external config must not be silently replaced either.
+    fs::write(f.repo.join(preparation::CONFIG_PATH), "not json").unwrap();
+    assert!(
+        f.core
+            .save_project_preparation(&f.project.id, None, Some(&changed))
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(f.repo.join(preparation::CONFIG_PATH)).unwrap(),
+        "not json"
+    );
+    assert_eq!(fs::read_dir(f.repo.join(".shika")).unwrap().count(), 1);
+}
+
+#[test]
+fn setup_editor_never_follows_config_or_copy_source_links() {
+    let f = Fixture::new();
+    let config = PreparationConfig {
+        copy_files: vec![],
+        commands: vec![],
+        timeout_seconds: 600,
+    };
+    let outside = f.root.join("outside");
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, f.repo.join(".shika")).unwrap();
+    assert!(
+        f.core
+            .save_project_preparation(&f.project.id, None, Some(&config))
+            .is_err()
+    );
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    fs::remove_file(f.repo.join(".shika")).unwrap();
+    fs::create_dir(f.repo.join(".shika")).unwrap();
+    let target = outside.join("config");
+    fs::write(&target, "{}").unwrap();
+    symlink(&target, f.repo.join(preparation::CONFIG_PATH)).unwrap();
+    assert!(
+        f.core
+            .save_project_preparation(&f.project.id, None, Some(&config))
+            .is_err()
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), "{}");
+    fs::remove_file(f.repo.join(preparation::CONFIG_PATH)).unwrap();
+    symlink(&target, f.repo.join(".env.local")).unwrap();
+    let config = PreparationConfig {
+        copy_files: vec![".env.local".into()],
+        ..config
+    };
+    assert!(
+        f.core
+            .save_project_preparation(&f.project.id, None, Some(&config))
+            .is_err()
+    );
+    assert!(!f.repo.join(preparation::CONFIG_PATH).exists());
 }
 
 #[test]

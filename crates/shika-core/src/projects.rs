@@ -9,9 +9,8 @@ use crate::error::{Error, Result};
 use crate::preparation::PreparationConfig;
 use crate::worktree::git_cmd;
 
-/// A saved repository. The JSON shape is the one `projects.json` has always
-/// had, plus an optional `baseBranch`, so files written by the Tauri build
-/// load unchanged.
+/// A saved repository. Optional base, setup consent, and onboarding preference
+/// fields have backward-compatible defaults, so older project files still load.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
@@ -26,6 +25,20 @@ pub struct Project {
     /// contents are never stored here. Missing means setup is unapproved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_preparation: Option<PreparationConfig>,
+    /// Local onboarding preference, not execution consent. Missing means the
+    /// next author-created New may offer setup once for this project.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub worktree_setup_reviewed: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+impl Project {
+    pub fn preparation_onboarding_pending(&self) -> bool {
+        !self.worktree_setup_reviewed && self.approved_preparation.is_none()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +96,7 @@ impl ProjectDb {
             path: toplevel,
             base_branch: None,
             approved_preparation: None,
+            worktree_setup_reviewed: false,
         };
         projects.push(project.clone());
         save(&self.path, &projects)?;
@@ -113,6 +127,21 @@ impl ProjectDb {
             .find(|project| project.id == id)
             .ok_or(Error::UnknownProject)?;
         project.approved_preparation = Some(config);
+        project.worktree_setup_reviewed = true;
+        save(&self.path, &projects)
+    }
+
+    pub fn review_preparation(&self, id: &str) -> Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut projects = load(&self.path)?;
+        let project = projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .ok_or(Error::UnknownProject)?;
+        if project.worktree_setup_reviewed {
+            return Ok(());
+        }
+        project.worktree_setup_reviewed = true;
         save(&self.path, &projects)
     }
 
@@ -416,6 +445,44 @@ mod tests {
             db.set_base_branch("missing", None).unwrap_err(),
             Error::UnknownProject
         );
+    }
+
+    #[test]
+    fn legacy_projects_offer_setup_unless_already_approved() {
+        let mut project: Project =
+            serde_json::from_str(r#"{"id":"old","name":"demo","path":"/tmp/demo"}"#).unwrap();
+        assert!(!project.worktree_setup_reviewed);
+        assert!(project.preparation_onboarding_pending());
+        assert!(
+            serde_json::to_value(&project)
+                .unwrap()
+                .get("worktreeSetupReviewed")
+                .is_none()
+        );
+        project.approved_preparation = Some(PreparationConfig {
+            commands: vec![],
+            copy_files: vec![],
+            timeout_seconds: 600,
+        });
+        assert!(!project.preparation_onboarding_pending());
+        let roundtrip: Project =
+            serde_json::from_value(serde_json::to_value(project).unwrap()).unwrap();
+        assert!(!roundtrip.preparation_onboarding_pending());
+    }
+
+    #[test]
+    fn reviewed_setup_survives_reopen_without_granting_execution_consent() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let file = scratch.path.join("projects.json");
+        let db = ProjectDb::open(file.clone());
+        let project = add(&db, &repo).unwrap().project;
+        db.review_preparation(&project.id).unwrap();
+        let read = ProjectDb::open(file).get(&project.id).unwrap();
+        assert!(read.worktree_setup_reviewed);
+        assert!(!read.preparation_onboarding_pending());
+        assert!(read.approved_preparation.is_none());
+        assert_eq!(db.review_preparation("missing"), Err(Error::UnknownProject));
     }
 
     #[test]

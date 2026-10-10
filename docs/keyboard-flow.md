@@ -38,7 +38,7 @@ These actions do nothing while the app is busy or any overlay is open. A Lead ha
 
 ## Settings sections
 
-Settings (`Cmd-,`) is Appearance, Keyboard, and Agents. `j`/`k` move within the section. `[` and `]` change section. Appearance keeps its row keys. On Keyboard, Enter or a click on the chord records the next Command shortcut, Delete clears that row, and Escape cancels the recording. A chord already used by another Keyboard row moves to the new row. A chord used by a fixed shortcut, such as New agent, is refused. On Agents, `h` turns the selected CLI off and `l` turns it on. Escape closes Settings.
+Settings (`Cmd-,`) is Appearance, Keyboard, Agents, and Projects. `j`/`k` move within the section. `[` and `]` change section. Appearance keeps its row keys. On Keyboard, Enter or a click on the chord records the next Command shortcut, Delete clears that row, and Escape cancels the recording. A chord already used by another Keyboard row moves to the new row. A chord used by a fixed shortcut, such as New agent, is refused. On Agents, `h` turns the selected CLI off and `l` turns it on. Projects lists repositories by name/path; Enter or a click opens that project's Worktree setup. Escape closes Settings, except inside setup where it returns to Projects.
 
 New lists only CLIs that are on the login-shell PATH and turned on. Number keys match that list. When none are available, Enter opens Settings on Agents and keeps the focus return New captured, so Done still restores it.
 
@@ -51,6 +51,12 @@ Other improvements:
 - The View menu lists "Hide or show changes" with `Cmd+Option+B`, and the panel's toggle shows it in its tooltip.
 
 Create PR is also in the Agent menu and terminal metadata row. Its dialog uses Tab to switch title/target fields, Enter to confirm publishing, and Escape to cancel. Plain card keys never run while editing. Busy/overlay conflicts and active/blocked turns block entry. See [publishing.md](publishing.md); publishing runs on a worker, not by writing commands into a terminal.
+
+## Worktree setup
+
+After selecting a CLI, the first author-created New for an unconfigured project offers a compact setup preview with Customize setup…, Start without setup, and Save, approve and start. Tab / Shift+Tab traverses controls; Enter activates the focused one (save/start when suggestions exist, skip otherwise). Held/repeated Enter cannot submit the setup dialog. Customize expands the existing native editor. Escape/Cancel returns to the same project's CLI picker without saving a decision or changing card selection; cancelling the picker restores its original focus. Save/approve/start prepares the chosen agent; skip remembers a local per-project preference and continues the normal launch without granting consent. Existing configurations keep the ordinary approval dialog. Retry, Lead, and its workers do not open onboarding.
+
+Settings > Projects > Worktree setup… opens a project's configuration dialog; there is no project-header or Agent-menu control. Projects supports `j`/`k`, arrows, and Enter, independent of card selection. No new global shortcut is taken. Tab / Shift+Tab traverses native fields and buttons and scrolls the focused row into view, Enter activates the focused control (or saves from a field), and Escape cancels. Plain typing, clipboard shortcuts, and IME stay in the native field; app actions are blocked while the dialog is open. Save/cancel/disable returns to Projects at the same row, retaining Settings's original return focus; Done then restores it without changing card selection. Missing configurations may receive unsaved, editable suggestions; existing configurations stay unchanged. Source/config validation errors retain the editor; malformed existing config refuses entry. Loading and saving run on background executors. See [worktree preparation](worktree-preparation.md#configure-once).
 
 ## Card context menu
 

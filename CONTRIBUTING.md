@@ -12,7 +12,7 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 | --- | --- |
 | Worktree creation, base branch, dirty and unpushed checks, Close, or leftovers | [Tasks and worktrees](docs/tasks-and-worktrees.md) |
 | Agent state, elapsed timers, notifications, or activity-based Close checks | [Agent activity and elapsed turns](docs/agent-activity.md), including its [debugging playbook](docs/agent-activity.md#debugging-playbook) |
-| Worktree setup, local files, approval, cancellation, or retry | [Worktree preparation](docs/worktree-preparation.md), especially its [contributor guide](docs/worktree-preparation.md#contributor-guide) |
+| Worktree setup, first-New onboarding, suggestions, local files, approval, cancellation, or retry | [Worktree preparation](docs/worktree-preparation.md): [evolution and rationale](docs/worktree-preparation.md#how-the-feature-evolved), [state routing](docs/worktree-preparation.md#configuration-consent-and-onboarding-state), and [contributor guide](docs/worktree-preparation.md#contributor-guide) |
 | Command shortcuts, focus restoration, or selected-row scrolling | [Keyboard flow](docs/keyboard-flow.md) |
 | The read-only diff beside the terminal, its refresh, caps, or width | [Changes panel](docs/changes-panel.md) |
 | Manual task names and their effects on Git/publishing | [Manual task names](docs/task-names.md) |
@@ -34,7 +34,7 @@ These hold for every feature. A change to one is a decision for the maintainer, 
 - **A Mac app for coding-agent tasks.** It is not a terminal multiplexer, an editor, or a chat client. Pure Rust on GPUI, with no web view.
 - **Bring your own CLI.** Shika launches Claude Code, Codex, Cursor CLI, or Pi with the user's own login and plan. It does not call a model API.
 - **The real terminal is the interface.** The user reads and answers the agent in the CLI's own UI. Shika does not draw a transcript or replace a CLI's question widgets.
-- **No approval prompts from Shika.** Each CLI starts in its automatic approval mode, using flags checked against its `--help` (see [AGENTS.md](AGENTS.md#clis-and-launch-arguments)).
+- **No per-tool approval prompts from Shika.** Each CLI starts in its automatic approval mode, using flags checked against its `--help` (see [AGENTS.md](AGENTS.md#clis-and-launch-arguments)). This does not waive explicit author confirmation for trusted repository setup, publishing, or destructive cleanup; Shika does not silently authorize those operations.
 - **One fresh worktree per task.** Tasks in a repository are independent. Shika does not reuse worktrees or merge between agents.
 - **The Lead is a manager, not a micromanager.** The author is the CEO, the Lead briefs workers and reads their own reports, and quality rests on the repository's CI and the author's testing. See [Lead agent](docs/lead-agent.md#the-lead-is-a-manager).
 - **The user owns git.** Shika never commits or pushes on its own. A push does not close a task, and Close asks before anything is lost. Create PR commits only after an explicit confirmation.
