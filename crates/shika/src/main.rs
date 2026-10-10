@@ -4575,7 +4575,7 @@ impl Shika {
             })
             .child(if card.closing {
                 // A card on its way out has no status to signal.
-                div().flex_none().w(px(13.)).into_any_element()
+                div().flex_none().w(px(SIGNAL_SLOT)).into_any_element()
             } else {
                 card_signal(&key, card.status, card.unseen(), chrome)
             });
@@ -6460,6 +6460,9 @@ const CARD_GAP: f32 = 6.;
 const CLOSING_CARD_OPACITY: f32 = 0.5;
 /// A closing task's terminal fades to a trace of its output.
 const CLOSING_TERMINAL_OPACITY: f32 = 0.06;
+/// The status signal at the right end of a card's first line: the 14px
+/// working pixels, or an 8px dot centered in it.
+const SIGNAL_SLOT: f32 = 14.;
 /// A closed card shrinks toward its center to this size as it fades out.
 const EXIT_SCALE: f32 = 0.94;
 /// The narrowest column that fits the footer's key hints, without and with
@@ -6713,11 +6716,11 @@ fn pr_mark(
         }))
 }
 
-/// The right end of a card's first line, one 13px slot so the signals line
+/// The right end of a card's first line, one 14px slot so the signals line
 /// up down the column: working pixels, a ready dot until the result is seen,
 /// a grey waiting dot, and nothing once a Ready result has been seen.
 fn card_signal(card: &str, status: Status, unseen: bool, chrome: &Chrome) -> gpui::AnyElement {
-    let slot = div().flex_none().flex().justify_center().w(px(13.));
+    let slot = div().flex_none().flex().justify_center().w(px(SIGNAL_SLOT));
     let color = chrome.status(status).dot;
     match status {
         Status::Working => slot.child(working_pixels(card, color)),
@@ -6728,7 +6731,7 @@ fn card_signal(card: &str, status: Status, unseen: bool, chrome: &Chrome) -> gpu
 }
 
 /// The terminal area. While its task closes, the terminal fades to a trace
-/// behind a grey wave and "Closing...", so the CLI's exit line and the
+/// behind grey sparkling pixels and "Closing...", so the CLI's exit line and the
 /// stopped session do not read as the result. Opacity only: the terminal
 /// keeps its size, so its PTY is never resized.
 fn closing_terminal(card: &Card, pane: &Pane, chrome: &Chrome) -> gpui::AnyElement {
@@ -6760,12 +6763,11 @@ fn closing_terminal(card: &Card, pane: &Pane, chrome: &Chrome) -> gpui::AnyEleme
                 .gap(px(12.))
                 .text_size(px(13.))
                 .text_color(chrome.term_faint)
-                .child(pixel_wave(
-                    format!("closing-wave-{view}"),
+                .child(pixel_sparkle(
+                    format!("closing-pixels-{view}"),
                     chrome.term_dim,
                     4.,
-                    3.,
-                    6.,
+                    2.,
                 ))
                 .child("Closing...")
                 .with_animation(
@@ -6777,37 +6779,73 @@ fn closing_terminal(card: &Card, pane: &Pane, chrome: &Chrome) -> gpui::AnyEleme
         .into_any_element()
 }
 
-/// A working card's indicator: three 3px squares rising and falling in a
-/// staggered wave every 1.2s. Offsets snap to whole points so the squares
-/// stay crisp and step like pixels. GPUI skips the loop when macOS asks for
-/// reduced motion, leaving the first frame, a still staircase.
+/// A working card's indicator: a 5x5 field of 2px pixels, 14px square, that
+/// twinkle about eight at a time. Every size and offset is a whole point, so
+/// the pixels stay crisp and the field sits 3px from the top of the 20px
+/// line, level with the 8px dots. GPUI skips the loop when macOS asks for
+/// reduced motion, leaving the first frame, a scatter of lit pixels.
 fn working_pixels(card: &str, color: gpui::Rgba) -> gpui::AnyElement {
-    pixel_wave(format!("working-{card}"), color, 3., 2., 5.)
+    pixel_sparkle(format!("working-{card}"), color, 2., 1.)
 }
 
-/// Three squares of `size` rising up to `rise` in a staggered wave every
-/// 1.2s, the shape of the working pixels.
-fn pixel_wave(id: String, color: gpui::Rgba, size: f32, gap: f32, rise: f32) -> gpui::AnyElement {
+/// One sparkle cycle. Each pixel lights once per cycle.
+const SPARKLE_CYCLE: Duration = Duration::from_millis(2000);
+/// The share of a cycle one pixel stays lit, rising and falling.
+const SPARKLE_TWINKLE: f32 = 0.36;
+/// When each pixel of the 5x5 field lights, row by row: pixel `i` starts at
+/// `SPARKLE_SLOT[i] / 25` of the cycle. Pixels that start within four slots
+/// of each other are never neighbors, so the field reads as scattered light
+/// rather than a sweep.
+const SPARKLE_SLOT: [u8; 25] = [
+    2, 14, 9, 20, 8, //
+    7, 19, 4, 15, 3, //
+    1, 13, 24, 10, 22, //
+    21, 6, 18, 5, 17, //
+    16, 11, 23, 12, 0,
+];
+
+/// How lit a pixel is at phase `t` of the cycle: off, or a third, two
+/// thirds, or full, in one rise and fall starting at its slot.
+fn sparkle_level(t: f32, slot: u8) -> f32 {
+    let local = (t - f32::from(slot) / 25.).rem_euclid(1.);
+    if local >= SPARKLE_TWINKLE {
+        return 0.;
+    }
+    ((std::f32::consts::PI * local / SPARKLE_TWINKLE).sin() * 3.).round() / 3.
+}
+
+/// A 5x5 field of `size` pixels, `gap` apart, that twinkle in `color`. A lit
+/// pixel blooms: a soft glow of its own color, as strong as the pixel is lit.
+fn pixel_sparkle(id: String, color: gpui::Rgba, size: f32, gap: f32) -> gpui::AnyElement {
+    let side = 5. * size + 4. * gap;
     div()
         .flex_none()
         .relative()
-        .w(px(3. * size + 2. * gap))
-        .h(px(size + rise))
+        .size(px(side))
         .with_animation(
             SharedString::from(id),
-            gpui::Animation::new(Duration::from_millis(1200))
+            gpui::Animation::new(SPARKLE_CYCLE)
                 .repeat_synced()
                 .with_max_fps(30.),
             move |d, t| {
-                d.children((0..3).map(|i| {
-                    let phase = t - i as f32 / 6.;
-                    let lift = (1. - (std::f32::consts::TAU * phase).cos()) / 2.;
-                    div()
-                        .absolute()
-                        .left(px(i as f32 * (size + gap)))
-                        .top(px(rise - (lift * rise).round()))
-                        .size(px(size))
-                        .bg(color)
+                d.children(SPARKLE_SLOT.iter().enumerate().filter_map(|(i, &slot)| {
+                    let level = sparkle_level(t, slot);
+                    (level > 0.).then(|| {
+                        div()
+                            .absolute()
+                            .left(px((i % 5) as f32 * (size + gap)))
+                            .top(px((i / 5) as f32 * (size + gap)))
+                            .size(px(size))
+                            .bg(with_alpha(color, color.a * level))
+                            .shadow(vec![
+                                BoxShadow::new(
+                                    px(0.),
+                                    px(0.),
+                                    with_alpha(color, color.a * level * 0.5).into(),
+                                )
+                                .blur_radius(px(size * 1.5)),
+                            ])
+                    })
                 }))
             },
         )
@@ -7329,6 +7367,46 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+
+    #[test]
+    fn every_sparkle_pixel_lights_once_per_cycle() {
+        let mut slots = SPARKLE_SLOT.to_vec();
+        slots.sort_unstable();
+        assert_eq!(slots, (0..25).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn sparkle_pixels_that_start_together_are_never_neighbors() {
+        for (a, &sa) in SPARKLE_SLOT.iter().enumerate() {
+            for (b, &sb) in SPARKLE_SLOT.iter().enumerate() {
+                let apart = (i32::from(sa) - i32::from(sb)).rem_euclid(25);
+                let near = (1..=4).contains(&apart.min(25 - apart));
+                let (ax, ay, bx, by) = (a % 5, a / 5, b % 5, b / 5);
+                let touching = ax.abs_diff(bx) <= 1 && ay.abs_diff(by) <= 1;
+                assert!(!(near && touching), "pixels {a} and {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn sparkle_keeps_about_eight_pixels_lit_in_steps() {
+        // The first frame is the still frame under reduced motion.
+        let lit = |t: f32| {
+            SPARKLE_SLOT
+                .iter()
+                .filter(|&&s| sparkle_level(t, s) > 0.)
+                .count()
+        };
+        assert!(lit(0.) >= 6);
+        for step in 0..300 {
+            let t = step as f32 / 300.;
+            assert!((7..=10).contains(&lit(t)), "{} lit at {t}", lit(t));
+            for &slot in &SPARKLE_SLOT {
+                let level = sparkle_level(t, slot);
+                assert!([0., 1. / 3., 2. / 3., 1.].contains(&level));
+            }
+        }
+    }
 
     #[test]
     fn card_menu_stays_bound_to_the_clicked_card_after_reordering_or_removal() {
