@@ -14,6 +14,7 @@ These guides explain why features exist, how they are implemented, and where to 
 | [Worktree preparation](worktree-preparation.md) | Setup approval, copy/setup commands, cancellation, retry, and failure cleanup |
 | [Confirmed PR publishing](publishing.md) | Decision rationale, recorded-base targeting, approved-tree checks, commit/push/gh lifecycle, debugging, retries, and contribution guardrails |
 | [PR checks on the card](pr-checks.md) | The read-only CI mark after Create PR, its polling schedule, head matching, classification, notifications, and debugging |
+| [Manual task names](task-names.md) | Rename task, display-name versus branch identity, commit/PR defaults, automatic-title priority, and the public FAQ |
 | [Branch naming](branch-naming.md) | First-prompt names, CLI session-title discovery, branch renaming, and fallbacks |
 | [Software updates](updates.md) | Sparkle loading, the signed feed and its redirect, releasing, signing keys, and testing an update locally |
 | [Branch-switch close](branch-switch-close.md) | Safe recovery after switching branches, publication checks, branch preservation, confirmation rechecks, and debugging |

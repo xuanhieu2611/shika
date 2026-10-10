@@ -16,6 +16,9 @@ pub struct Session {
     pub preset_id: String,
     pub preset_name: String,
     pub title: String,
+    /// A user-supplied display name wins over prompt/CLI titles. Memory only;
+    /// automatic branch naming remains independent.
+    pub manual_title: bool,
     pub branch: String,
     /// The project's repository root, kept so closing never depends on the
     /// project list.
@@ -61,6 +64,29 @@ pub struct DiffStat {
     pub files: usize,
     pub insertions: usize,
     pub deletions: usize,
+}
+
+/// Normalize a manual task name. Unicode is allowed; controls and line breaks
+/// are not. The limit matches the card's existing 80-character title cap.
+pub fn task_title(text: &str) -> Result<String> {
+    if text
+        .chars()
+        .any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}'))
+    {
+        return Err(Error::InvalidTaskTitle(
+            "Use a single-line task name.".into(),
+        ));
+    }
+    let title = text.trim();
+    if title.is_empty() {
+        return Err(Error::InvalidTaskTitle("Enter a task name.".into()));
+    }
+    if title.chars().count() > 80 {
+        return Err(Error::InvalidTaskTitle(
+            "Use 80 characters or fewer.".into(),
+        ));
+    }
+    Ok(title.into())
 }
 
 pub(crate) struct SessionStore {
@@ -160,6 +186,20 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Pure metadata mutation under the short session lock, never the Git
+    /// operations lock. Automatic naming checks the override under this lock.
+    pub(crate) fn set_title(&self, id: &str, title: &str) -> Result<Session> {
+        let title = task_title(title)?;
+        let mut sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
+        let session = sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+            .ok_or(Error::UnknownSession)?;
+        session.title = title;
+        session.manual_title = true;
+        Ok(session.clone())
+    }
+
     pub(crate) fn rename(&self, id: &str, branch: String, title: String) -> Result<Session> {
         let mut sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
         let session = sessions
@@ -167,7 +207,9 @@ impl SessionStore {
             .find(|session| session.id == id)
             .ok_or(Error::UnknownSession)?;
         session.branch = branch;
-        session.title = title;
+        if !session.manual_title {
+            session.title = title;
+        }
         Ok(session.clone())
     }
 
@@ -183,7 +225,9 @@ impl SessionStore {
             .find(|session| session.id == id)
             .ok_or(Error::UnknownSession)?;
         session.branch = branch;
-        session.title = title;
+        if !session.manual_title {
+            session.title = title;
+        }
         session.cli_titled = true;
         Ok(session.clone())
     }
@@ -273,6 +317,7 @@ mod tests {
             preset_id: "claude".to_string(),
             preset_name: "Claude Code".to_string(),
             title: "New Claude Code".to_string(),
+            manual_title: false,
             branch: "shika-draft-1".to_string(),
             repo: PathBuf::from("/repo"),
             worktree: PathBuf::from("/repo/.worktrees/shika-draft-1"),
@@ -281,6 +326,54 @@ mod tests {
             shell_ptys: Vec::new(),
             cli_titled: false,
         }
+    }
+
+    #[test]
+    fn manual_titles_win_in_both_automatic_update_orders() {
+        let store = SessionStore::new();
+        store.insert(sample("a", "repo", PtyId(1)));
+        store.set_title("a", "  My task  ").unwrap();
+        let prompted = store
+            .rename("a", "prompt-branch".into(), "Prompt".into())
+            .unwrap();
+        assert_eq!(prompted.title, "My task");
+        let titled = store
+            .apply_cli_title("a", "cli-branch".into(), "CLI title".into())
+            .unwrap();
+        assert_eq!(titled.title, "My task");
+        assert_eq!(titled.branch, "cli-branch");
+        assert!(titled.cli_titled && titled.manual_title);
+        let renamed = store.set_title("a", "Second name").unwrap();
+        assert_eq!(renamed.title, "Second name");
+        assert_eq!(renamed.branch, titled.branch);
+        assert_eq!(store.set_title("gone", "Name"), Err(Error::UnknownSession));
+    }
+
+    #[test]
+    fn task_names_are_trimmed_bounded_unicode_and_single_line() {
+        assert_eq!(
+            task_title("  Sửa lỗi đăng nhập  ").unwrap(),
+            "Sửa lỗi đăng nhập"
+        );
+        assert!(task_title(&"é".repeat(80)).is_ok());
+        for text in [
+            "",
+            "   ",
+            "line\nline",
+            "line\rline",
+            "tab\there",
+            "nul\0",
+            "line\u{2028}line",
+            "line\u{2029}line",
+            &"é".repeat(81),
+        ] {
+            assert!(matches!(task_title(text), Err(Error::InvalidTaskTitle(_))));
+        }
+        let store = SessionStore::new();
+        let original = sample("a", "repo", PtyId(1));
+        store.insert(original.clone());
+        assert!(store.set_title("a", " ").is_err());
+        assert_eq!(store.get("a"), Some(original));
     }
 
     #[test]

@@ -16,6 +16,7 @@ The card-navigation model is still available. A small native shortcut layer now 
 
 | Shortcut | Action | Focus afterward |
 | --- | --- | --- |
+| `Cmd+Shift+R` | Rename the selected live task, without renaming Git | Dialog; completion/cancel restores previous focus and selection |
 | `Cmd+Shift+P` | Preview commit, push, and Create PR for the task's original base | Dialog; cancel/completion restores previous focus |
 | `Cmd+T` | New independent shell tab in this task's worktree | New shell; startup input is queued |
 | `Cmd+W` | Close selected shell tab. On the pinned agent it does nothing and does not close the task | Preceding tab if the closed view had focus; otherwise preserve focus |
@@ -41,6 +42,16 @@ Other improvements:
 - The View menu lists "Hide or show changes" with `Cmd+Option+B`, and the panel's toggle shows it in its tooltip.
 
 Create PR is also in the Agent menu and terminal metadata row. Its dialog uses Tab to switch title/target fields, Enter to confirm publishing, and Escape to cancel. Plain card keys never run while editing. Busy/overlay conflicts and active/blocked turns block entry. See [publishing.md](publishing.md); publishing runs on a worker, not by writing commands into a terminal.
+
+## Card context menu
+
+Right-click or Control-click anywhere on a card opens a menu at the pointer: **Rename task…** `Cmd+Shift+R`, then **Close task** `Cmd+Shift+W`. Rename is disabled until a live session exists (setup-running/failed cards cannot be renamed). No close button or hover control is added to the card. The menu stays inside the window, uses the existing solid overlay and list-row tokens, and works in light, dark, derived themes, and glass.
+
+Opening does not change selection or enter a terminal. Escape or an outside click dismisses it and restores the opening focus; the outside click is consumed. Click Close task or press Cmd+Shift+W to close the clicked task through the existing `Shika::close` path, including setup cancellation, failed-card removal, and Git/active-turn safety checks. Dirty/unpushed close cancellation still routes to that task's shell. Up/Down, `j`/`k`, or Tab switch the highlighted item; Enter activates it (Rename by default on live cards, Close otherwise). Hover also changes the highlight. Cmd+Shift+R opens Rename for the clicked card, regardless of highlight. Other app actions are blocked while the menu is open, and plain typing never reaches a PTY.
+
+Rename opens a native single-line input with the full name selected; typing, editing, clipboard, and IME belong to that input, not card keys or a PTY. Enter applies after composition finishes; Escape cancels outside composition. A mouse confirmation during composition is ignored. App actions are blocked while editing. Both exits restore opening focus without changing selection. The dialog targets the clicked card by stable identity even if notification routing changes selection. See [task-names.md](task-names.md) for the public FAQ, validation, title priority, publishing effects, and implementation guardrails.
+
+Implementation: `Overlay::CardMenu`, `CardMenu::target_index`, `open_card_menu`, `close_from_card_menu`, and `card_menu_view` in `main.rs`. The menu binds to the agent view's stable entity ID, not the selected card or its vector index; asynchronous setup cleanup or selection changes cannot retarget it. If that card disappears, activation just dismisses the menu. The unit test `card_menu_stays_bound_to_the_clicked_card_after_reordering_or_removal` covers target lookup, not native mouse dispatch. GUI acceptance is tracked in `MANUAL_CHECKS.md`.
 
 ## What did not change
 

@@ -52,6 +52,8 @@ Git reads for the diff stat use `GIT_OPTIONAL_LOCKS=0` and take no core lock.
 
 ## Push and Close
 
+Close task is available from the terminal header, the Agent menu, Cmd+Shift+W, or a card's right-click / Control-click menu. Every entry uses the same safe-close flow. The context menu targets the clicked card, not the current selection, and adds no always-visible card control. See [keyboard-flow.md](keyboard-flow.md#card-context-menu) for focus and dismissal.
+
 - **A push does not finish a task.** A `git push` in a shell tab, or typed inside the agent CLI, leaves the card, the session, and the worktree in place. The user closes the task when they want it gone.
 - **Nothing to lose closes immediately.** If the agent is idle, the tree is clean, and the branch is already on a remote or has no commits of its own, Close removes the card and the worktree without asking. A pushed branch stays. An empty draft branch is deleted.
 - **Otherwise Close asks.** If the agent is working or blocked, the tree is dirty, or commits are unpushed, the dialog offers:

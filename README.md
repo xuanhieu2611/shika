@@ -89,9 +89,14 @@ One terminal is visible at a time; hidden task terminals keep running. Projects 
 | Cmd+T / Cmd+W | Add a shell tab / close the selected shell |
 | Ctrl+Tab, Cmd+1 to Cmd+9 | Cycle tabs, or jump to one (Cmd+1 is the agent) |
 | Cmd+Shift+P | Create PR |
+| Cmd+Shift+R | Rename the task (not its Git branch) |
 | Cmd+Shift+W | Close the task |
 | Cmd+B | Hide or show the column |
 | Cmd+, | Settings |
+
+### Renaming a task
+
+Right-click a card and choose Rename task, or press Cmd+Shift+R. Your name takes priority over automatic card titles and becomes the next Create PR title default. Renaming does not change the Git branch, worktree, existing commits, or existing PRs. Automatic branch naming continues independently. See the [task-name FAQ](docs/task-names.md) for examples and exact effects.
 
 ### Creating a PR
 

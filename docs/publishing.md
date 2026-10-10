@@ -60,7 +60,7 @@ The dialog displays:
 
 - Explicit GitHub repository, source branch, and target.
 - Changed file names relative to the task's current HEAD.
-- A title initially copied from the task title, used for both a new commit and a new PR.
+- A title initially copied from the task title, including a manual [Rename task](task-names.md) name, used for both a new commit and a new PR. Renaming alone creates no commit and rewrites no existing commit or PR; the editable title here still requires confirmation.
 - An editable target field with matching existing GitHub branches.
 
 Tab switches fields; clicking selects a field or branch. Enter or **Commit, push, create PR** confirms. Escape or Cancel restores the previous focus before publishing begins. While publishing, the action reads **Publishing...** and dismissal is blocked.
