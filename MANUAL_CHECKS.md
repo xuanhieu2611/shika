@@ -277,6 +277,7 @@ Implemented with automated coverage for agent-only traversal (headers, wrapping,
 - [ ] Cmd+, then Escape returns to the terminal that opened Settings. Base branch apply/cancel restores previous focus. Dirty Close cancellation still routes to the shell.
 - [ ] Command flow shortcuts do nothing while an overlay is open, including text editing, and never send input to the PTY. Escape and ordinary CLI bindings still reach the CLI.
 - [ ] The Agent menu lists shortcuts. New and agent/shell tooltips show their Command keys. Check light and dark appearance.
+- [ ] Settings, Keyboard: set Hide or show changes to ⌘R. ⌥⌘B stops opening the panel, and ⌘R opens and closes it from the cards, a terminal, and the panel. The toggle tooltip and the View menu show ⌘R. Set Go to agent 1 to ⌘1. ⌘1 selects the first card in the column and no longer jumps to a tab. With fewer than four cards, ⌘4 does nothing. Escape cancels a recording. ⌘N is refused. Delete clears the row.
 
 ## Optional worktree preparation
 

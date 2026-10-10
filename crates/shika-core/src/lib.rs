@@ -86,7 +86,7 @@ pub use session::{
 };
 pub use settings::{
     AgentSettings, Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize,
-    Settings, ThemeMode, ThemeSettings, Translucency,
+    KeyOverrides, Settings, ThemeMode, ThemeSettings, Translucency,
 };
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 pub use worktree::{JournalEntry, KnownBranches};

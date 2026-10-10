@@ -8,6 +8,7 @@ mod lifecycle;
 mod model;
 mod name_input;
 mod notifications;
+mod shortcuts;
 mod updates;
 
 use appearance::{Chrome, with_alpha};
@@ -21,9 +22,9 @@ use model::{PromptCapture, Status, TitleWatch};
 use notifications::Notifications;
 use shika_core::{
     AgentSettings, Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize,
-    JournalEntry, KnownBranches, LaunchOptions, LeadEnv, PreparationConfig, PreparationControl,
-    PreparationEvent, Project, ProjectBase, PtyEvent, PtyId, PtySize, PublishPreview, Session,
-    SessionGitState, Settings, ThemeMode, ThemeSettings, Translucency,
+    JournalEntry, KeyOverrides, KnownBranches, LaunchOptions, LeadEnv, PreparationConfig,
+    PreparationControl, PreparationEvent, Project, ProjectBase, PtyEvent, PtyId, PtySize,
+    PublishPreview, Session, SessionGitState, Settings, ThemeMode, ThemeSettings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalEvent, TerminalOptions,
@@ -70,10 +71,17 @@ impl Render for ColumnDrag {
     }
 }
 
-/// Jump to a task-local tab. Zero is the pinned agent, so Cmd+1 selects it.
+/// Jump to a task-local tab. Zero is the pinned agent, so Cmd+1 selects it
+/// until Settings points that chord at an agent.
 #[derive(Clone, PartialEq, Eq, Debug, gpui::Action)]
 #[action(namespace = shika, no_json)]
 struct SelectTerminal(usize);
+
+/// Select the nth card in the column, skipping project headers. Zero is the
+/// first card. A missing card does nothing.
+#[derive(Clone, PartialEq, Eq, Debug, gpui::Action)]
+#[action(namespace = shika, no_json)]
+struct SelectAgent(usize);
 
 /// Card traversal follows row order and skips project headers.
 /// `j` / `k` and Cmd+] / Cmd+[ both use it.
@@ -96,6 +104,17 @@ fn adjacent_agent(
         }
     }
     None
+}
+
+/// The nth card in column order, skipping project headers. None when the
+/// column does not have that many cards.
+fn nth_card(rows: &[Selection], n: usize) -> Option<usize> {
+    rows.iter()
+        .filter_map(|row| match row {
+            Selection::Card(index) => Some(*index),
+            Selection::Project(_) => None,
+        })
+        .nth(n)
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -442,11 +461,16 @@ impl CardMenu {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsSection {
     Appearance,
+    Keyboard,
     Agents,
 }
 
 impl SettingsSection {
-    const ALL: [SettingsSection; 2] = [SettingsSection::Appearance, SettingsSection::Agents];
+    const ALL: [SettingsSection; 3] = [
+        SettingsSection::Appearance,
+        SettingsSection::Keyboard,
+        SettingsSection::Agents,
+    ];
 
     /// One section up (`-1`) or down (`1`), wrapping.
     fn step(self, delta: i64) -> Self {
@@ -461,6 +485,7 @@ impl SettingsSection {
     fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
+            Self::Keyboard => "Keyboard",
             Self::Agents => "Agents",
         }
     }
@@ -504,9 +529,10 @@ enum Overlay {
     Leftovers,
     RemoveLeftover(usize),
     RemoveProject(String),
-    /// `section` is Appearance or Agents. `row` is the selected row in that
-    /// section: an appearance `*_ROW`, or a preset index. `edit` holds digits
-    /// typed into the selected number, or the prefix being typed, not yet applied.
+    /// `section` is Appearance, Keyboard, or Agents. `row` is the selected row
+    /// in that section: an appearance `*_ROW`, a keyboard command, or a preset
+    /// index. `edit` holds digits typed into the selected number, or the
+    /// prefix being typed, not yet applied.
     Settings {
         section: SettingsSection,
         row: usize,
@@ -595,6 +621,12 @@ struct Shika {
     notification_sound: bool,
     /// Which agents New lists. A missing id is on.
     agents: AgentSettings,
+    /// Shortcut overrides. Missing entries keep the built-in chords.
+    keys: KeyOverrides,
+    /// Settings, Keyboard, is waiting for the next Command shortcut.
+    key_recording: bool,
+    /// Why the last recorded shortcut was refused. Shown in the Keyboard footer.
+    key_note: Option<String>,
     /// The agent column's stored width and whether it is hidden.
     column: Column,
     /// The column as it was when the current drag on its edge began. The
@@ -648,6 +680,7 @@ impl Shika {
         let branch_prefix = shika_core::normalize_branch_prefix(&settings.branch_prefix);
         let notification_sound = settings.notification_sound;
         let agents = settings.agents.clone();
+        let keys = settings.keys.clone();
         let column = settings.column;
         let changes = changes::Panel::new(settings.changes, cx.focus_handle(), diagnostics.clone());
         let (control, control_error) = match control::Server::start() {
@@ -704,6 +737,9 @@ impl Shika {
             branch_prefix,
             notification_sound,
             agents,
+            keys,
+            key_recording: false,
+            key_note: None,
             column,
             column_drag_from: None,
             bases: HashMap::new(),
@@ -761,6 +797,7 @@ impl Shika {
             }
         })
         .detach();
+        install_keys(cx, &this.keys);
         this
     }
     fn message(&mut self, text: String) {
@@ -877,16 +914,35 @@ impl Shika {
         if self.busy || self.overlay.is_some() {
             return;
         }
-        // From the Changes panel, focus stays in the panel, which follows.
+        if let Some(i) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) {
+            self.select_card_keeping_surface(i, window, cx);
+        }
+    }
+    /// Select a card and keep the surface that invoked it: a terminal stays
+    /// in the destination terminal, the Changes panel stays in the panel,
+    /// and the cards stay on the cards.
+    fn select_card_keeping_surface(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let panel_focused = self.changes.open && self.changes.focus.is_focused(window);
         let terminal_focused = !self.focus.is_focused(window) && !panel_focused;
-        if let Some(i) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) {
-            self.selection = Some(Selection::Card(i));
-            if terminal_focused {
-                self.focus_terminal(window, cx);
-            }
-            cx.notify();
+        self.selection = Some(Selection::Card(index));
+        if terminal_focused {
+            self.focus_terminal(window, cx);
         }
+        cx.notify();
+    }
+    fn select_agent(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let Some(card) = nth_card(&self.rows(), index) else {
+            return;
+        };
+        self.select_card_keeping_surface(card, window, cx);
     }
     fn restore_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self
@@ -2937,6 +2993,8 @@ impl Shika {
             return;
         }
         self.commit_setting_edit(window, cx);
+        self.key_recording = false;
+        self.key_note = None;
         let shell = match &self.overlay {
             // The Lead has no shell to commit in.
             // A Lead that asked for the dialog gets selection and focus back.
@@ -3055,6 +3113,8 @@ impl Shika {
             row: 0,
             edit: None,
         });
+        self.key_recording = false;
+        self.key_note = None;
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -3319,6 +3379,7 @@ impl Shika {
             column: self.column,
             changes: self.changes.width,
             agents: self.agents.clone(),
+            keys: self.keys.clone(),
         };
         if let Err(e) = self.core.save_settings(&settings) {
             self.message(e.to_string());
@@ -3526,6 +3587,12 @@ impl Shika {
             cx.notify();
             return;
         }
+        if self.recording_shortcut() {
+            self.capture_shortcut(stroke, cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if stroke.modifiers.platform
             || stroke.modifiers.control
             || stroke.modifiers.alt
@@ -3556,6 +3623,12 @@ impl Shika {
                 }
                 if !editing && section == SettingsSection::Agents {
                     self.on_agents_key(at, key, window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                if !editing && section == SettingsSection::Keyboard {
+                    self.on_keyboard_key(at, key, window, cx);
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -3749,6 +3822,8 @@ impl Shika {
     /// the row on screen. The rows are the children of the scrolling list.
     fn select_setting(&mut self, to: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_setting_edit(window, cx);
+        self.key_recording = false;
+        self.key_note = None;
         if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
             *row = to;
             self.settings_scroll.scroll_to_item(to);
@@ -3764,6 +3839,8 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         self.commit_setting_edit(window, cx);
+        self.key_recording = false;
+        self.key_note = None;
         if let Some(Overlay::Settings {
             section: at,
             row,
@@ -3819,6 +3896,115 @@ impl Shika {
             "h" | "left" => self.set_agent_row(row, false, cx),
             "l" | "right" => self.set_agent_row(row, true, cx),
             "enter" | "escape" => self.cancel_overlay(window, cx),
+            _ => {}
+        }
+    }
+    fn recording_shortcut(&self) -> bool {
+        self.key_recording
+            && matches!(
+                self.overlay,
+                Some(Overlay::Settings {
+                    section: SettingsSection::Keyboard,
+                    ..
+                })
+            )
+    }
+    fn begin_key_recording(&mut self, row: usize, cx: &mut Context<Self>) {
+        if !matches!(
+            self.overlay,
+            Some(Overlay::Settings {
+                section: SettingsSection::Keyboard,
+                ..
+            })
+        ) {
+            return;
+        }
+        if let Some(Overlay::Settings { row: at, .. }) = &mut self.overlay {
+            *at = row;
+            self.settings_scroll.scroll_to_item(row);
+        }
+        self.key_recording = true;
+        self.key_note = None;
+        cx.notify();
+    }
+    fn clear_shortcut(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(command) = shortcuts::COMMANDS.get(row) else {
+            return;
+        };
+        match shortcuts::assign(&self.keys, command.id, None) {
+            Ok(next) => {
+                self.keys = next;
+                self.key_note = None;
+                self.save_settings();
+                install_keys(cx, &self.keys);
+                cx.notify();
+            }
+            Err(text) => {
+                self.key_note = Some(text);
+                cx.notify();
+            }
+        }
+    }
+    fn capture_shortcut(&mut self, stroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let plain = !stroke.modifiers.platform
+            && !stroke.modifiers.control
+            && !stroke.modifiers.alt
+            && !stroke.modifiers.shift;
+        if plain && stroke.key == "escape" {
+            self.key_recording = false;
+            self.key_note = None;
+            return;
+        }
+        let Some(command) = self
+            .keyboard_row()
+            .and_then(|row| shortcuts::COMMANDS.get(row))
+        else {
+            self.key_recording = false;
+            return;
+        };
+        let id = command.id;
+        match shortcuts::chord_from_keystroke(stroke) {
+            Ok(chord) => match shortcuts::assign(&self.keys, id, Some(chord)) {
+                Ok(next) => {
+                    self.keys = next;
+                    self.key_recording = false;
+                    self.key_note = None;
+                    self.save_settings();
+                    install_keys(cx, &self.keys);
+                }
+                Err(text) => self.key_note = Some(text),
+            },
+            Err(text) => self.key_note = Some(text),
+        }
+    }
+    fn keyboard_row(&self) -> Option<usize> {
+        match self.overlay {
+            Some(Overlay::Settings {
+                section: SettingsSection::Keyboard,
+                row,
+                ..
+            }) => Some(row),
+            _ => None,
+        }
+    }
+    fn on_keyboard_key(
+        &mut self,
+        row: usize,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = shortcuts::COMMANDS.len();
+        match key {
+            "j" | "down" | "tab" if count > 0 => {
+                self.select_setting((row + 1) % count, window, cx);
+            }
+            "k" | "up" if count > 0 => {
+                self.select_setting((row + count - 1) % count, window, cx);
+            }
+            "enter" => self.begin_key_recording(row, cx),
+            "backspace" | "delete" => self.clear_shortcut(row, cx),
+            "escape" => self.cancel_overlay(window, cx),
             _ => {}
         }
     }
@@ -5546,6 +5732,19 @@ impl Shika {
         row: usize,
         editing: bool,
     ) -> &'static [(&'static str, &'static str)] {
+        if section == SettingsSection::Keyboard {
+            return if self.key_recording {
+                &[("esc", "cancel")]
+            } else {
+                &[
+                    ("j k", "choose"),
+                    ("\u{21a9}", "set"),
+                    ("\u{232b}", "clear"),
+                    ("[ ]", "section"),
+                    ("esc", "done"),
+                ]
+            };
+        }
         if section == SettingsSection::Agents {
             return if self.catalog.is_none() {
                 &[("[ ]", "section"), ("esc", "done")]
@@ -5740,6 +5939,63 @@ impl Shika {
                     ),
             )
     }
+    /// One shortcut: its name, and the chord or "none". Enter or a click on
+    /// the chord records the next Command shortcut.
+    fn shortcut_row(
+        &self,
+        index: usize,
+        command: &shortcuts::Command,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let selected = matches!(
+            &self.overlay,
+            Some(Overlay::Settings {
+                section: SettingsSection::Keyboard,
+                row,
+                ..
+            }) if *row == index
+        );
+        let recording = selected && self.key_recording;
+        let label = command.label;
+        let chord = shortcuts::bound_label(&self.keys, command.id);
+        let value = if recording {
+            div()
+                .flex_none()
+                .text_size(px(12.))
+                .text_color(chrome.ink_2)
+                .child("Press a shortcut")
+                .into_any_element()
+        } else if let Some(chord) = chord {
+            kbd(chord, chrome.sunken, chrome.ink_2).into_any_element()
+        } else {
+            div()
+                .flex_none()
+                .text_color(chrome.ink_4)
+                .child("none")
+                .into_any_element()
+        };
+        list_row(selected, chrome)
+            .id(SharedString::from(format!("shortcut-{}", command.id)))
+            .gap(px(12.))
+            .justify_between()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_setting(index, window, cx);
+            }))
+            .child(label)
+            .child(
+                div()
+                    .id(SharedString::from(format!("shortcut-{}-chord", command.id)))
+                    .flex_none()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.begin_key_recording(index, cx);
+                    }))
+                    .child(value),
+            )
+    }
     fn settings_panel(
         &self,
         section: SettingsSection,
@@ -5849,6 +6105,11 @@ impl Shika {
                     );
                 }
             }
+            SettingsSection::Keyboard => {
+                for (index, command) in shortcuts::COMMANDS.iter().enumerate() {
+                    rows = rows.child(self.shortcut_row(index, command, chrome, cx));
+                }
+            }
         }
         dialog_shell(SETTINGS_WIDTH, panel_h, chrome)
             .h(panel_h)
@@ -5875,6 +6136,20 @@ impl Shika {
                     .gap_x(px(12.))
                     .gap_y(px(6.))
                     .px(px(10.))
+                    .when_some(
+                        (section == SettingsSection::Keyboard)
+                            .then(|| self.key_note.clone())
+                            .flatten(),
+                        |row, note| {
+                            row.child(
+                                div()
+                                    .text_size(px(12.))
+                                    .line_height(px(16.))
+                                    .text_color(chrome.ink_1)
+                                    .child(note),
+                            )
+                        },
+                    )
                     .children(keys.iter().map(|(key, label)| hint(key, label, chrome))),
             )
             .child(dialog_buttons().child(self.cancel_button("Done", chrome, cx)))
@@ -7257,6 +7532,9 @@ impl Render for Shika {
             .on_action(cx.listener(|this, select: &SelectTerminal, window, cx| {
                 this.select_tab(select.0, window, cx);
             }))
+            .on_action(cx.listener(|this, select: &SelectAgent, window, cx| {
+                this.select_agent(select.0, window, cx);
+            }))
             .on_action(
                 cx.listener(|this, _: &NextAgent, window, cx| this.move_agent(1, window, cx)),
             )
@@ -7323,6 +7601,96 @@ fn sample_update_notice() -> updates::UpdateCard {
         offer: Some(updates::Offer::Download),
     }
 }
+
+/// Bind the terminal, the fixed app shortcuts, and the user's overrides, then
+/// refresh the menus so they show the chords that are actually bound.
+fn install_keys(cx: &mut App, keys: &KeyOverrides) {
+    cx.clear_key_bindings();
+    shika_terminal::init(cx);
+    let mut bindings = vec![
+        gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
+        gpui::KeyBinding::new("cmd-l", NewLead, Some("Shika")),
+        gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
+        gpui::KeyBinding::new("cmd-shift-p", CreatePr, Some("Shika")),
+        gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
+        gpui::KeyBinding::new("cmd-shift-w", CloseTask, Some("Shika")),
+        gpui::KeyBinding::new("cmd-shift-r", RenameTask, Some("Shika")),
+        gpui::KeyBinding::new("ctrl-tab", NextTerminal, Some("Shika")),
+        gpui::KeyBinding::new("ctrl-shift-tab", PreviousTerminal, Some("Shika")),
+        gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
+        gpui::KeyBinding::new("cmd-[", PreviousAgent, Some("Shika")),
+        gpui::KeyBinding::new("cmd-b", ToggleColumn, Some("Shika")),
+        gpui::KeyBinding::new("cmd-q", Quit, None),
+        gpui::KeyBinding::new("cmd-,", OpenSettings, None),
+        gpui::KeyBinding::new("cmd-h", Hide, None),
+        gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
+    ];
+    for binding in shortcuts::bindings(keys) {
+        let Some(chord) = binding.chord.as_deref() else {
+            continue;
+        };
+        if binding.id == "toggleChanges" {
+            bindings.push(gpui::KeyBinding::new(chord, ToggleChanges, Some("Shika")));
+        } else if let Some(index) = shortcuts::agent_slot(binding.id) {
+            bindings.push(gpui::KeyBinding::new(
+                chord,
+                SelectAgent(index),
+                Some("Shika"),
+            ));
+        } else if let Some(index) = shortcuts::tab_slot(binding.id) {
+            bindings.push(gpui::KeyBinding::new(
+                chord,
+                SelectTerminal(index),
+                Some("Shika"),
+            ));
+        }
+    }
+    cx.bind_keys(bindings);
+    install_menus(cx);
+}
+
+fn install_menus(cx: &mut App) {
+    let mut app_menu = Vec::new();
+    if cx.has_global::<updates::Updater>() {
+        app_menu.push(gpui::MenuItem::action(
+            "Check for updates...",
+            CheckForUpdates,
+        ));
+    }
+    app_menu.extend([
+        gpui::MenuItem::action("Settings...", OpenSettings),
+        gpui::MenuItem::separator(),
+        gpui::MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
+        gpui::MenuItem::separator(),
+        gpui::MenuItem::action("Hide Shika", Hide),
+        gpui::MenuItem::action("Hide others", HideOthers),
+        gpui::MenuItem::action("Show all", ShowAll),
+        gpui::MenuItem::separator(),
+        gpui::MenuItem::action("Quit Shika", Quit),
+    ]);
+    cx.set_menus([
+        gpui::Menu::new("Shika").items(app_menu),
+        gpui::Menu::new("Agent").items([
+            gpui::MenuItem::action("New agent", NewAgent),
+            gpui::MenuItem::action("New Lead…", NewLead),
+            gpui::MenuItem::action("New terminal tab", NewTerminal),
+            gpui::MenuItem::action("Create PR", CreatePr),
+            gpui::MenuItem::action("Close terminal tab", CloseTerminal),
+            gpui::MenuItem::action("Rename task…", RenameTask),
+            gpui::MenuItem::action("Close task", CloseTask),
+            gpui::MenuItem::action("Next terminal tab", NextTerminal),
+            gpui::MenuItem::action("Previous terminal tab", PreviousTerminal),
+            gpui::MenuItem::separator(),
+            gpui::MenuItem::action("Next agent", NextAgent),
+            gpui::MenuItem::action("Previous agent", PreviousAgent),
+        ]),
+        gpui::Menu::new("View").items([
+            gpui::MenuItem::action("Hide or show agent column", ToggleColumn),
+            gpui::MenuItem::action("Hide or show changes", ToggleChanges),
+        ]),
+    ]);
+}
+
 fn main() -> anyhow::Result<()> {
     // `shika help`, `shika new`, and the rest run in a Lead's terminal as this
     // same binary. They only talk to the socket: no GPUI, settings, or data.
@@ -7370,36 +7738,6 @@ fn main() -> anyhow::Result<()> {
         if let Err(error) = cx.text_system().add_fonts(fonts) {
             eprintln!("JetBrains Mono: {error}");
         }
-        shika_terminal::init(cx);
-        let mut bindings = vec![
-            gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
-            gpui::KeyBinding::new("cmd-l", NewLead, Some("Shika")),
-            gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
-            gpui::KeyBinding::new("cmd-shift-p", CreatePr, Some("Shika")),
-            gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
-            gpui::KeyBinding::new("cmd-shift-w", CloseTask, Some("Shika")),
-            gpui::KeyBinding::new("cmd-shift-r", RenameTask, Some("Shika")),
-            gpui::KeyBinding::new("ctrl-tab", NextTerminal, Some("Shika")),
-            gpui::KeyBinding::new("ctrl-shift-tab", PreviousTerminal, Some("Shika")),
-            gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
-            gpui::KeyBinding::new("cmd-[", PreviousAgent, Some("Shika")),
-            gpui::KeyBinding::new("cmd-b", ToggleColumn, Some("Shika")),
-            gpui::KeyBinding::new("cmd-alt-b", ToggleChanges, Some("Shika")),
-            gpui::KeyBinding::new("cmd-q", Quit, None),
-            gpui::KeyBinding::new("cmd-,", OpenSettings, None),
-            gpui::KeyBinding::new("cmd-h", Hide, None),
-            gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
-        ];
-        // Cmd+1 is the pinned agent. Later numbers follow the shell tabs in order.
-        for index in 0..9 {
-            let key = format!("cmd-{}", index + 1);
-            bindings.push(gpui::KeyBinding::new(
-                &key,
-                SelectTerminal(index),
-                Some("Shika"),
-            ));
-        }
-        cx.bind_keys(bindings);
         let quitting_core = core.clone();
         cx.on_app_quit(move |_| {
             quitting_core.cancel_preparations();
@@ -7411,47 +7749,11 @@ fn main() -> anyhow::Result<()> {
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         // Only a release bundle has Sparkle, so only it offers the check.
-        let mut app_menu = Vec::new();
         if let Some(updater) = updates::Updater::start() {
             cx.set_global(updater);
             cx.on_action(|_: &CheckForUpdates, cx| cx.global::<updates::Updater>().check());
-            app_menu.push(gpui::MenuItem::action(
-                "Check for updates...",
-                CheckForUpdates,
-            ));
         }
-        app_menu.extend([
-            gpui::MenuItem::action("Settings...", OpenSettings),
-            gpui::MenuItem::separator(),
-            gpui::MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
-            gpui::MenuItem::separator(),
-            gpui::MenuItem::action("Hide Shika", Hide),
-            gpui::MenuItem::action("Hide others", HideOthers),
-            gpui::MenuItem::action("Show all", ShowAll),
-            gpui::MenuItem::separator(),
-            gpui::MenuItem::action("Quit Shika", Quit),
-        ]);
-        cx.set_menus([
-            gpui::Menu::new("Shika").items(app_menu),
-            gpui::Menu::new("Agent").items([
-                gpui::MenuItem::action("New agent", NewAgent),
-                gpui::MenuItem::action("New Lead…", NewLead),
-                gpui::MenuItem::action("New terminal tab", NewTerminal),
-                gpui::MenuItem::action("Create PR", CreatePr),
-                gpui::MenuItem::action("Close terminal tab", CloseTerminal),
-                gpui::MenuItem::action("Rename task…", RenameTask),
-                gpui::MenuItem::action("Close task", CloseTask),
-                gpui::MenuItem::action("Next terminal tab", NextTerminal),
-                gpui::MenuItem::action("Previous terminal tab", PreviousTerminal),
-                gpui::MenuItem::separator(),
-                gpui::MenuItem::action("Next agent", NextAgent),
-                gpui::MenuItem::action("Previous agent", PreviousAgent),
-            ]),
-            gpui::Menu::new("View").items([
-                gpui::MenuItem::action("Hide or show agent column", ToggleColumn),
-                gpui::MenuItem::action("Hide or show changes", ToggleChanges),
-            ]),
-        ]);
+        install_keys(cx, &KeyOverrides::default());
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -7625,6 +7927,23 @@ mod host_tests {
             adjacent_agent(&rows, Some(&Selection::Card(9)), -1),
             Some(0)
         );
+    }
+
+    #[test]
+    fn numbered_agents_follow_column_order_and_stop_when_the_card_is_missing() {
+        let rows = vec![
+            Selection::Project("a".into()),
+            Selection::Card(2),
+            Selection::Card(0),
+            Selection::Project("b".into()),
+            Selection::Card(1),
+        ];
+        assert_eq!(nth_card(&rows, 0), Some(2));
+        assert_eq!(nth_card(&rows, 1), Some(0));
+        assert_eq!(nth_card(&rows, 2), Some(1));
+        assert_eq!(nth_card(&rows, 3), None);
+        assert_eq!(nth_card(&rows, 8), None);
+        assert_eq!(nth_card(&[], 0), None);
     }
 
     #[test]

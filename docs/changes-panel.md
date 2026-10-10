@@ -8,7 +8,7 @@ Start here before changing the panel. This document records the product decision
 
 The author's loop after a turn: the card turns Ready, open a shell tab, type `lazygit`, read a few hunks, quit lazygit, close the tab. It works, but it is five steps to look at something Shika already knows how to compute: the card's diff stat compares the same tree against the same base.
 
-The panel opens from Cmd+Option+B, the toggle button, or the View menu. It answers "what did the agent touch, and does it look right?", not "let me work on this code". So it is read only:
+The panel opens from its shortcut (Cmd+Option+B until Settings changes it), the toggle button, or the View menu. It answers "what did the agent touch, and does it look right?", not "let me work on this code". So it is read only:
 
 - No editing, staging, unstaging, reverting, or committing. Create PR stays the only git write path in Shika, and the shell stays the place for hands-on git.
 - Nothing in the panel writes to the repository, the index, or the worktree, or takes `index.lock`. Git runs with `GIT_OPTIONAL_LOCKS=0`, like the diff stat.
@@ -50,7 +50,7 @@ The goal is snappy, light, and reliable. Closed, it costs nothing. Open, it stay
 
 | Control | Result |
 | --- | --- |
-| Cmd+Option+B, the toggle button, View menu "Hide or show changes" | Open the panel and focus it, or close it. Does nothing while a dialog or picker is open or the app is busy |
+| The shortcut (Cmd+Option+B by default), the toggle button, View menu "Hide or show changes" | Open the panel and focus it, or close it. Does nothing while a dialog or picker is open or the app is busy. Settings, Keyboard, can replace the chord, and the previous chord stops working |
 | Click a card, including its diff stat | Select that card and focus its terminal. The panel stays as it is |
 | Escape in the panel | Close it and restore the focus saved when it opened |
 | Click in the terminal | Focus the terminal; the panel stays open |
