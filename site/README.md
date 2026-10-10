@@ -1,4 +1,4 @@
-# Shika landing page
+# Shika website
 
 Static site with no build step. Page assets and fonts are local. The interactive prototype's generated runtime loads React 18.3.1, React DOM 18.3.1, and Babel Standalone 7.29.0 from unpkg, so the demo needs network access.
 
@@ -12,12 +12,13 @@ Serve over HTTP: the runtime fetches its own page. No real agents or Git command
 
 ## Files
 
+- `guide/`: the public how-to (`index.html`) and the story (`story.html`). `/guide/story` rewrites to the story page via `_redirects`. Update these when user-visible behavior changes. Contributor contracts stay in `docs/`.
 - `index.html`, `styles.css`, `main.js`: landing page. Light and dark share one set of tokens in `styles.css`; the system appearance decides until the nav toggle saves a choice (`localStorage` key `shika-theme`). The embedded prototype follows the page theme and loads with `?glass=off`, so it has no desktop wallpaper.
 - `field.js`: the paintings, dithered in one ink. Each `canvas.field` redraws `data-src` with Atkinson dithering in `--field-ink` at `--field-alpha`, so the art stays behind the copy. `data-mode="scene"` is the hero landscape: its ground line stands on the demo's top edge (`data-anchor`, `data-ground`), so the deer peeks over the app window, and it thins out around the copy (`data-clear`). `data-mode="frame"` covers its canvas (the closing section). With a mouse, moving the pointer turns the dither back into the painting in color along its path, which fades over a few seconds. Each develops once from the bottom up; under reduced motion there is no animation and no trail. Attributes are documented at the top of the file.
 - `demo/`: interactive prototype derived from the archived `design/Shika v3.dc.html`. It offers Claude Code, Codex, Cursor CLI, and Pi, with a pinned agent tab and independent task-owned shell tabs. `support.js` is the retained generated runtime; app behavior lives in the inline component in `demo/index.html`, and overrides live in `demo/styles.css`. There is no runtime generator source in this repository.
 - `img/`: generated paintings: `forest-center.webp` (hero landscape) and `forest-frame-2.webp` (closing section, paper cut out so it works on light and dark); logo, app icon, favicons, the native sample screenshot used as the loading poster, and `og.png` (2800x1760 native sample screenshot for link previews).
 - `fonts/`: Geist and JetBrains Mono, both under the SIL Open Font License.
-- `_redirects`: sends `/appcast.xml`, the app's Sparkle feed, to the latest GitHub release's `appcast.xml`. Workers parses it and does not serve it. Every shipped build has the feed URL baked in, so keep the path; see `docs/updates.md`.
+- `_redirects`: sends `/appcast.xml`, the app's Sparkle feed, to the latest GitHub release's `appcast.xml`. Workers parses it and does not serve it. Every shipped build has the feed URL baked in, so keep the path; see `docs/updates.md`. It also rewrites `/guide/story` to `guide/story.html`.
 - `licenses/`, `notices.html`: website attribution. See the root `THIRD_PARTY_NOTICES.md` for the full inventory.
 
 ## Checking the prototype
@@ -38,7 +39,7 @@ Cloudflare Workers Builds settings (Worker > Settings > Build):
 - Deploy command: `npx wrangler@4.147.0 deploy`.
 - Preview command: `npx wrangler@4.147.0 preview`.
 - Keep non-production branch builds enabled for PR previews.
-- Build watch paths: include `site/*` and `wrangler.jsonc`; remove the default `*` include. Leave excludes empty. This skips desktop-only changes, including those in `crates/`.
+- Build watch paths: include `site/**` and `wrangler.jsonc`; remove the default `*` include. Leave excludes empty. `site/**` covers the guide under `site/guide/`. This skips desktop-only changes, including those in `crates/`.
 
 From the repository root, validate without uploading:
 
