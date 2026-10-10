@@ -53,6 +53,23 @@ The remaining checks below require real macOS input and/or live tasks; injected 
 
 Designed 2026-10-08; see [docs/changes-panel.md](docs/changes-panel.md). Use a built `.app`, an isolated `--data-dir`, and a disposable repository with a local bare remote.
 
+### File cards, 2026-10-10
+
+Automated validation: 448 workspace tests passed (one existing ignored test), formatting, strict Clippy, debug bundle build, and strict signature verification passed. New tests cover card row ordering/bottoms for binary/capped/mode-only files, range-based folding, visible file/cap navigation, fold scroll anchoring, stable path/status identity on refresh, safe filename/directory/rename labels, and a 50,000-line index. Header inks meet 4.5:1 on the opaque header wash across the complete catalog and the existing synthetic themes/glass/Reduce transparency matrix.
+
+A scratch copy outside the repository, with GPUI test-support, hard-coded disposable Core data and a unique bundle id, rendered synthetic diffs without PTYs or Git reads. These are injected/native-render checks, not macOS input or provider acceptance:
+
+- PASS (injected): filename and directory header clicks fold/unfold; panel focus stays in place. Applying a same-task result preserves the current fold. `l`/`h` move code, `]` moves to a visible file header, and `g` returns to the top.
+- PASS (frames): quiet file outlines, two-row filename/counts and directory/status hierarchy, rename paths, binary/cap/mode-only rows, no hunk metadata or added/removed signs, and pinned number gutters in Shika Light, Shika Dark, Rosé Pine, 60% terminal glass, 320px width, and terminal fonts 8/32. Sampled 60% glass pixels: header/tints alpha 255, context/body/bottom/gutters alpha 153, with no second card fill.
+- PASS (index benchmark): identical 25-file / 50,000-line synthetic diffs, 15 debug runs per version on Apple silicon: median full-index build 14.30ms before, 14.42ms after. A separate range-fold check took about 20µs and produced 50 spans, not 50,000 elements. The native 50,000-line list was scrolled and captured at several positions, but capture time includes GPU readback and is not frame-rate evidence.
+- [ ] Real mouse/trackpad input, momentum, scrolling frame times alongside a streaming CLI, and the inherited refresh/focus/Close checks below on the new presentation.
+- [ ] Click/fold while a Git refresh or cap expansion is actually in flight; changing cards/closing clears folds, with no stale fold applied to another task.
+- [ ] At the bottom of large files, outlines/corners and pinned gutters stay correct under rapid scroll, resize, and repeated folds; caps still expand by click/`o`, and folded cap rows are skipped.
+
+### Original presentation, 2026-10-08 (historical evidence)
+
+The signs, status letters, full-path headers, and hunk labels in the original frame checks below have been replaced by file cards. Those older visual checks do not validate the new presentation.
+
 Exercised 2026-10-08 on a debug bundle with a disposable repository, a local bare remote, and an isolated `--data-dir`, with real Claude Code tasks that were never sent a prompt (they sat at the folder trust prompt, so no card turned Ready). The session had no Accessibility or Screen Recording permission, so input and screenshots came from a scratch copy of the app built outside the repository with GPUI's `test-support` feature: a hook fed keystrokes, clicks, drags, scroll wheel events, and window resizes through `Window::dispatch_keystroke` and `Window::dispatch_event` (the app's real keybindings, key contexts, focus, and hit testing, but not macOS's own event translation), and saved frames with `Window::render_to_image`. The worktree's code is unchanged by that hook. The change set had a commit with a rename plus edit, uncommitted edits, a CRLF file, a mode change, a 3,000-line rewrite, 20 committed and 10 untracked 1,800-line files (past the total cap), an untracked binary, and an untracked file with a 20,000-character line, tabs, escape and bell characters, a mid-line `\r`, CJK, emoji, and a bidi override.
 
 - PASS (injected): Cmd+Option+B opens the panel focused from the cards and from a terminal, and closes it from the panel and from the cards. Pressed while the terminal has focus and the panel is open, it closes the panel and focus stays in the terminal. Escape from the panel restored the cards, or the agent terminal, whichever opened it. Clicking the toggle button in the terminal header and in the panel's title row opens and closes it, at the same place; the closed-state tooltip reads "Show changes ⌥⌘B" and the button sits 8 after Close task.

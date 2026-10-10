@@ -8,8 +8,9 @@
 //! for is still the one shown. Closed, the panel holds nothing and runs
 //! nothing.
 //!
-//! The list is a `uniform_list`: every row is one terminal row high, so a
-//! 50,000-line diff costs about as much per frame as a 50-line one. Rows hold
+//! The list is a `uniform_list`: every row is one terminal row high (at
+//! least 21px for header labels), so a 50,000-line diff costs about as much
+//! per frame as a 50-line one. File cards are painted as row slices. Rows hold
 //! indices into the diff, not text; a row's text is cut to the columns on
 //! screen and made safe (tabs expanded, control characters drawn as
 //! symbols) as it is painted. Long lines do not wrap. One horizontal offset,
@@ -22,10 +23,10 @@
 use crate::appearance::{Chrome, DiffColors, with_alpha};
 use crate::{BAR_HEIGHT, KeyTip, MIN_TERMINAL_WIDTH, MONO, Shika, TAB_HEIGHT, UI_FONT, kbd, model};
 use gpui::{
-    AnyElement, AppContext, Context, FocusHandle, Focusable, FontWeight, HighlightStyle,
-    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render,
-    Rgba, ScrollWheelEvent, StatefulInteractiveElement, Styled, StyledText,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder, px,
+    AnyElement, AppContext, Context, FocusHandle, Focusable, FontWeight, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render, Rgba, ScrollWheelEvent,
+    StatefulInteractiveElement, Styled, UniformListScrollHandle, WeakEntity, Window, div,
+    prelude::FluentBuilder, px,
 };
 use shika_core::{Changes, Collapse, DiffStat, FileDiff, FileStatus, LineKind, SessionDiff};
 use std::{
@@ -47,16 +48,14 @@ const STEP_COLUMNS: usize = 8;
 const READING_AFTER: Duration = Duration::from_millis(500);
 /// The line number gutter is at least this many cells wide.
 const MIN_NUMBER_COLUMNS: usize = 4;
-/// Content inset on both sides of the list.
-const INSET: f32 = 20.;
+/// Card inset on both sides of the list, and content inset inside a card.
+const INSET: f32 = 12.;
 /// The list starts this far under the title row...
-const LIST_TOP: f32 = 8.;
+const LIST_TOP: f32 = 12.;
 /// ...and ends this far after the last row, the terminal's bottom pad.
 const LIST_BOTTOM: f32 = 28.;
 /// The title row's hints show only when the panel is at least this wide.
 const HINTS_FIT: f32 = 420.;
-/// A hunk header is cut to this many columns before it is truncated to fit.
-const HEADER_COLUMNS: usize = 512;
 /// Row height as a multiple of the font size, the terminal's own.
 const LINE_HEIGHT: f32 = 1.52;
 
@@ -106,10 +105,11 @@ pub enum Row {
     /// The empty row before every file header but the first.
     Spacer,
     File(u32),
-    Hunk {
-        file: u32,
-        hunk: u32,
-    },
+    FileMeta(u32),
+    /// Quiet separation between hunks, with no Git metadata.
+    HunkGap(u32),
+    /// The rounded bottom of a file card.
+    End(u32),
     Line {
         file: u32,
         hunk: u32,
@@ -178,6 +178,7 @@ impl DiffView {
             }
             headers.push(rows.len());
             rows.push(Row::File(at));
+            rows.push(Row::FileMeta(at));
             if file.binary {
                 rows.push(Row::Binary(at));
             } else if file.collapsed.is_some() {
@@ -185,10 +186,9 @@ impl DiffView {
                 rows.push(Row::Collapsed(at));
             } else {
                 for (h, hunk) in file.hunks.iter().enumerate() {
-                    rows.push(Row::Hunk {
-                        file: at,
-                        hunk: h as u32,
-                    });
+                    if h > 0 {
+                        rows.push(Row::HunkGap(at));
+                    }
                     for (l, line) in hunk.lines.iter().enumerate() {
                         widest_number = widest_number.max(line.old.unwrap_or(0));
                         widest_number = widest_number.max(line.new.unwrap_or(0));
@@ -203,6 +203,7 @@ impl DiffView {
                     rows.push(Row::Cut(at));
                 }
             }
+            rows.push(Row::End(at));
         }
         let columns = widths.iter().copied().max().unwrap_or(0);
         Self {
@@ -221,8 +222,14 @@ impl DiffView {
     pub fn file_of(&self, row: usize) -> Option<usize> {
         match self.rows.get(row)? {
             Row::Spacer => None,
-            Row::File(f) | Row::Binary(f) | Row::Collapsed(f) | Row::Cut(f) => Some(*f as usize),
-            Row::Hunk { file, .. } | Row::Line { file, .. } => Some(*file as usize),
+            Row::File(f)
+            | Row::FileMeta(f)
+            | Row::HunkGap(f)
+            | Row::End(f)
+            | Row::Binary(f)
+            | Row::Collapsed(f)
+            | Row::Cut(f) => Some(*f as usize),
+            Row::Line { file, .. } => Some(*file as usize),
         }
     }
 }
@@ -240,6 +247,87 @@ fn file_columns(file: &FileDiff) -> usize {
         .map(|line| columns(&line.text))
         .max()
         .unwrap_or(0)
+}
+
+/// Visible ranges into the unchanged full index. Folding costs O(files),
+/// not O(lines), and never clones code or remeasures it on the UI thread.
+#[derive(Clone, Debug, Default)]
+struct VisibleRows {
+    spans: Vec<(usize, Range<usize>)>,
+    len: usize,
+    headers: Vec<usize>,
+    collapsed: Vec<usize>,
+    folded: HashSet<usize>,
+}
+
+impl VisibleRows {
+    fn new(view: &DiffView, folded: &HashSet<(String, FileStatus)>) -> Self {
+        let mut visible = Self::default();
+        for (f, file) in view.files.iter().enumerate() {
+            let start = view.headers[f];
+            let end = view
+                .headers
+                .get(f + 1)
+                .map_or(view.rows.len(), |next| next - 1);
+            if f > 0 {
+                visible.push(start - 1..start);
+            }
+            visible.headers.push(visible.len);
+            if folded.contains(&(file.path.clone(), file.status)) {
+                visible.folded.insert(f);
+                visible.push(start..start + 2);
+                visible.push(end - 1..end);
+            } else {
+                if file.collapsed.is_some() {
+                    visible.collapsed.push(visible.len + 2);
+                }
+                visible.push(start..end);
+            }
+        }
+        visible
+    }
+
+    fn push(&mut self, rows: Range<usize>) {
+        self.spans.push((self.len, rows.clone()));
+        self.len += rows.len();
+    }
+
+    fn raw(&self, row: usize) -> Option<usize> {
+        if row >= self.len {
+            return None;
+        }
+        let at = self.spans.partition_point(|(start, _)| *start <= row) - 1;
+        let (start, range) = &self.spans[at];
+        Some(range.start + row - start)
+    }
+
+    fn position(&self, raw: usize) -> Option<usize> {
+        let at = self.spans.partition_point(|(_, range)| range.end <= raw);
+        let (start, range) = self.spans.get(at)?;
+        range.contains(&raw).then(|| start + raw - range.start)
+    }
+}
+
+/// Keep the top visible row in place across a fold. If it was inside the
+/// newly folded body, fall back to that file's header instead.
+fn folded_top(
+    old: &VisibleRows,
+    new: &VisibleRows,
+    view: &DiffView,
+    top: f32,
+    row: f32,
+    viewport: f32,
+) -> f32 {
+    let raw = old.raw((top / row).floor().max(0.) as usize);
+    let position = raw.and_then(|raw| new.position(raw));
+    let header = raw
+        .and_then(|raw| view.file_of(raw))
+        .and_then(|f| new.headers.get(f).copied());
+    let next = position.map_or_else(
+        || header.unwrap_or(0) as f32 * row,
+        |at| at as f32 * row + top % row,
+    );
+    next.clamp(0., (new.len as f32 * row - viewport).max(0.))
 }
 
 /// A character as the panel paints it. Control characters become their
@@ -429,6 +517,17 @@ pub fn file_label(file: &FileDiff) -> (String, Option<Range<usize>>) {
     }
 }
 
+/// Keep the basename prominent; renames retain both complete paths below it.
+fn card_labels(file: &FileDiff) -> (String, String) {
+    let (directory, name) = file.path.rsplit_once('/').unwrap_or(("", &file.path));
+    let directory = if file.old_path.is_some() {
+        file_label(file).0
+    } else {
+        safe_label(directory)
+    };
+    (safe_label(name), directory)
+}
+
 /// The widths on screen of the agent column and the panel, from their
 /// saved widths (`None` when hidden or closed). The terminal keeps
 /// `min_terminal`: the panel gives way first, beside the column's saved
@@ -598,6 +697,9 @@ pub struct Panel {
     shift: f32,
     /// The most `shift` can be at the last paint.
     max_shift: f32,
+    /// Files folded by the author, kept across a refresh by path/status.
+    folded: HashSet<(String, FileStatus)>,
+    visible: Arc<VisibleRows>,
     /// Files expanded on this card, kept across a refresh by path.
     expanded: HashSet<(String, FileStatus)>,
     /// Files with an expand in flight, by index in the shown view.
@@ -623,6 +725,8 @@ impl Panel {
             scroll: UniformListScrollHandle::new(),
             shift: 0.,
             max_shift: 0.,
+            folded: HashSet::new(),
+            visible: Arc::new(VisibleRows::default()),
             expanded: HashSet::new(),
             expanding: HashSet::new(),
             metrics: None,
@@ -655,8 +759,15 @@ impl Panel {
         };
         self.scroll = UniformListScrollHandle::new();
         self.shift = 0.;
+        self.folded.clear();
+        self.visible = Arc::new(VisibleRows::default());
         self.expanded.clear();
         self.expanding.clear();
+    }
+
+    fn set_view(&mut self, view: DiffView) {
+        self.visible = Arc::new(VisibleRows::new(&view, &self.folded));
+        self.content = Content::Ready(Arc::new(view));
     }
 
     fn top_and_viewport(&self) -> (f32, f32) {
@@ -680,11 +791,15 @@ struct RowPaint {
     /// Line columns painted per row, enough to fill the text area.
     count: usize,
     dim: Rgba,
-    white: Rgba,
     text: Rgba,
     faint: Rgba,
     line: Rgba,
     hover: Rgba,
+    header: Rgba,
+    header_dim: Rgba,
+    header_white: Rgba,
+    header_added: Rgba,
+    header_removed: Rgba,
     added: DiffColors,
     removed: DiffColors,
     shika: WeakEntity<Shika>,
@@ -702,107 +817,162 @@ impl RowPaint {
             .overflow_hidden()
     }
 
-    fn render(&self, view: &DiffView, ix: usize) -> AnyElement {
+    fn render(&self, view: &DiffView, ix: usize, folded: bool) -> AnyElement {
         let Some(row) = view.rows.get(ix) else {
             return self.base().into_any_element();
         };
-        match *row {
-            Row::Spacer => self.base().into_any_element(),
-            Row::File(f) => self.file_header(&view.files[f as usize], f > 0),
-            Row::Hunk { file, hunk } => {
-                let header = &view.files[file as usize].hunks[hunk as usize].header;
-                self.base()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(self.dim)
-                            .child(visible_text(header, 0, HEADER_COLUMNS)),
-                    )
-                    .into_any_element()
-            }
+        let content = match *row {
+            Row::Spacer | Row::End(_) => self.base().into_any_element(),
+            Row::File(f) => self.file_header(&view.files[f as usize], f as usize, folded, false),
+            Row::FileMeta(f) => self.file_header(&view.files[f as usize], f as usize, folded, true),
+            Row::HunkGap(_) => self
+                .base()
+                .border_t_1()
+                .border_color(self.line)
+                .into_any_element(),
             Row::Line { file, hunk, line } => self.line(
                 &view.files[file as usize].hunks[hunk as usize].lines[line as usize],
                 view.number_columns,
             ),
             Row::Binary(_) => self
                 .base()
+                .text_size(px(11.5))
                 .text_color(self.dim)
                 .child("Binary file")
                 .into_any_element(),
             Row::Collapsed(f) => self.collapsed(ix, f as usize, &view.files[f as usize]),
             Row::Cut(f) => self
                 .base()
+                .text_size(px(11.5))
                 .text_color(self.dim)
                 .child(format!(
                     "{} not shown",
                     lines_label(view.files[f as usize].hidden_lines)
                 ))
                 .into_any_element(),
+        };
+        if matches!(row, Row::Spacer) {
+            return content;
         }
+        // Each visible row paints a slice of the card. No per-file entity,
+        // nested list, shadow, or offscreen code is laid out.
+        div()
+            .h(self.row)
+            .w_full()
+            .px(px(INSET))
+            .child(
+                div()
+                    .h_full()
+                    .w_full()
+                    .overflow_hidden()
+                    .border_l_1()
+                    .border_r_1()
+                    .border_color(self.line)
+                    .when(matches!(row, Row::File(_)), |d| {
+                        d.border_t_1().rounded_tl(px(10.)).rounded_tr(px(10.))
+                    })
+                    .when(matches!(row, Row::End(_)), |d| {
+                        d.border_b_1().rounded_bl(px(10.)).rounded_br(px(10.))
+                    })
+                    .when(
+                        matches!(row, Row::File(_) | Row::FileMeta(_))
+                            || (folded && matches!(row, Row::End(_))),
+                        |d| d.bg(self.header),
+                    )
+                    .when(matches!(row, Row::FileMeta(_)) && !folded, |d| {
+                        d.border_b_1()
+                    })
+                    .child(content),
+            )
+            .into_any_element()
     }
 
-    /// A file header. Every one but the first has a rule along its top; the
-    /// first sits right under the title row's line.
-    fn file_header(&self, file: &FileDiff, rule: bool) -> AnyElement {
-        let (label, arrow) = file_label(file);
-        let mut path = StyledText::new(label);
-        if let Some(arrow) = arrow {
-            path = path.with_highlights([(
-                arrow,
-                HighlightStyle {
-                    color: Some(self.dim.into()),
-                    ..Default::default()
+    /// Two uniform-height header rows: filename/counts, then directory/status.
+    fn file_header(&self, file: &FileDiff, f: usize, folded: bool, metadata: bool) -> AnyElement {
+        let shika = self.shika.clone();
+        let identity = (file.path.clone(), file.status);
+        let hover = self.hover;
+        let (name, directory) = card_labels(file);
+        let status = match file.status {
+            FileStatus::Added => "Added",
+            FileStatus::Modified => "Modified",
+            FileStatus::Deleted => "Deleted",
+            FileStatus::Renamed => "Renamed",
+            FileStatus::Untracked => "Untracked",
+        };
+        let header = self
+            .base()
+            .id((
+                if metadata {
+                    "changes-file-meta"
+                } else {
+                    "changes-file"
                 },
-            )]);
-        }
-        self.base()
-            .relative()
-            .gap(self.cell)
-            .when(rule, |d| {
-                d.child(
+                f,
+            ))
+            .gap(px(8.))
+            .cursor_pointer()
+            .font_family(MONO)
+            .line_height(px(16.))
+            .when(!metadata, |d| d.rounded_tl(px(10.)).rounded_tr(px(10.)))
+            .hover(move |style| style.bg(hover))
+            .on_click(move |_, _, cx| {
+                let _ = shika.update(cx, |this, cx| {
+                    this.toggle_changes_file(identity.clone(), cx)
+                });
+            });
+        if metadata {
+            return header
+                .text_size(px(10.5))
+                .text_color(self.header_dim)
+                .child(div().flex_none().w(px(10.)))
+                .child(
                     div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .h(px(1.))
-                        .bg(self.line),
+                        .flex_1()
+                        .min_w_0()
+                        .text_ellipsis_start()
+                        .overflow_hidden()
+                        .child(directory),
                 )
-            })
+                .child(div().flex_none().font_family(UI_FONT).child(status))
+                .into_any_element();
+        }
+        header
+            .text_size(px(12.5))
+            .text_color(self.header_white)
             .child(
                 div()
                     .flex_none()
-                    .text_color(self.dim)
-                    .child(file.status.letter().to_string()),
+                    .w(px(10.))
+                    .font_family(UI_FONT)
+                    .text_color(self.header_dim)
+                    .child(if folded { "›" } else { "⌄" }),
             )
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis_start()
-                    .text_color(self.white)
-                    .child(path),
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(name),
             )
             .child(
                 div()
                     .flex_none()
                     .flex()
-                    .gap(self.cell)
+                    .gap(px(8.))
+                    .text_size(px(11.5))
                     .when(file.insertions > 0, |d| {
                         d.child(
                             div()
-                                .text_color(self.added.text)
+                                .text_color(self.header_added)
                                 .child(format!("+{}", file.insertions)),
                         )
                     })
                     .when(file.deletions > 0, |d| {
                         d.child(
                             div()
-                                .text_color(self.removed.text)
+                                .text_color(self.header_removed)
                                 .child(format!("\u{2212}{}", file.deletions)),
                         )
                     }),
@@ -813,7 +983,7 @@ impl RowPaint {
     fn line(&self, line: &shika_core::DiffLine, number_columns: usize) -> AnyElement {
         let gutter = div()
             .flex_none()
-            .w(self.cell * (number_columns + 3) as f32)
+            .w(self.cell * (number_columns + 1) as f32)
             .overflow_hidden();
         if line.kind == LineKind::NoNewline {
             return self
@@ -822,22 +992,14 @@ impl RowPaint {
                 .child(div().text_color(self.dim).child(safe_label(&line.text)))
                 .into_any_element();
         }
-        let (colors, sign, number) = match line.kind {
-            LineKind::Added => (Some(self.added), '+', line.new),
-            LineKind::Removed => (Some(self.removed), '-', line.old),
-            _ => (None, ' ', line.new),
+        let (colors, number) = match line.kind {
+            LineKind::Added => (Some(self.added), line.new),
+            LineKind::Removed => (Some(self.removed), line.old),
+            _ => (None, line.new),
         };
         let color = colors.map_or(self.text, |colors| colors.text);
         let number = number.map(|n| n.to_string()).unwrap_or_default();
-        let numbers = format!("{number:>number_columns$} {sign} ");
-        let sign_at = number_columns + 1..number_columns + 2;
-        let numbers = StyledText::new(numbers).with_highlights([(
-            sign_at,
-            HighlightStyle {
-                color: Some(color.into()),
-                ..Default::default()
-            },
-        )]);
+        let numbers = format!("{number:>number_columns$} ");
         self.base()
             .when_some(colors, |d, colors| d.bg(colors.tint))
             .child(gutter.text_color(self.dim).child(numbers))
@@ -868,7 +1030,15 @@ impl RowPaint {
             .on_click(move |_, _, cx| {
                 let _ = shika.update(cx, |this, cx| this.expand_changes_file(f, cx));
             })
-            .child(div().flex_none().text_color(self.dim).child(text))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.5))
+                    .text_color(self.dim)
+                    .child(text),
+            )
             .child(
                 div()
                     .flex_none()
@@ -980,15 +1150,54 @@ impl Shika {
                 if this.changes.generation != generation || !this.changes.shows(&session) {
                     return;
                 }
-                this.changes.content = match result {
-                    Ok(view) => Content::Ready(Arc::new(view)),
-                    Err(line) => Content::Failed(line),
-                };
+                match result {
+                    Ok(view) => this.changes.set_view(view),
+                    Err(line) => this.changes.content = Content::Failed(line),
+                }
                 this.changes.expanding.clear();
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Fold a file without Git reads or rebuilding the full line index.
+    fn toggle_changes_file(&mut self, identity: (String, FileStatus), cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() || !self.changes.open {
+            return;
+        }
+        let Some(view) = self.changes.view().cloned() else {
+            return;
+        };
+        if !view
+            .files
+            .iter()
+            .any(|file| file.path == identity.0 && file.status == identity.1)
+        {
+            return;
+        }
+        if !self.changes.folded.remove(&identity) {
+            self.changes.folded.insert(identity);
+        }
+        let visible = VisibleRows::new(&view, &self.changes.folded);
+        if let Some(metrics) = self.changes.metrics {
+            let (top, viewport) = self.changes.top_and_viewport();
+            let next = folded_top(
+                &self.changes.visible,
+                &visible,
+                &view,
+                top,
+                f32::from(metrics.row),
+                viewport,
+            );
+            let state = self.changes.scroll.0.borrow();
+            let offset = state.base_handle.offset();
+            state
+                .base_handle
+                .set_offset(gpui::point(offset.x, px(-next)));
+        }
+        self.changes.visible = Arc::new(visible);
+        cx.notify();
     }
 
     /// Expand a collapsed file in place, through `Core::session_file_diff`.
@@ -1029,7 +1238,7 @@ impl Shika {
                 match result {
                     Ok(Some(expanded)) => match current {
                         Some(current) if Arc::ptr_eq(&current, &base) => {
-                            this.changes.content = Content::Ready(Arc::new(expanded));
+                            this.changes.set_view(expanded);
                         }
                         // A refresh landed meanwhile. Expand the same file
                         // in the new rows if it is still collapsed there.
@@ -1193,7 +1402,7 @@ impl Shika {
     }
 
     fn scroll_changes(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
-        let (Some(view), Some(metrics)) = (self.changes.view(), self.changes.metrics) else {
+        let (Some(_), Some(metrics)) = (self.changes.view(), self.changes.metrics) else {
             return;
         };
         let (top, viewport) = self.changes.top_and_viewport();
@@ -1201,9 +1410,9 @@ impl Shika {
             scroll,
             top,
             f32::from(metrics.row),
-            view.rows.len(),
+            self.changes.visible.len,
             viewport,
-            &view.headers,
+            &self.changes.visible.headers,
         );
         let state = self.changes.scroll.0.borrow();
         let offset = state.base_handle.offset();
@@ -1229,8 +1438,14 @@ impl Shika {
             return;
         };
         let (top, viewport) = self.changes.top_and_viewport();
-        let found = first_in_view(&view.collapsed, top, f32::from(metrics.row), viewport)
-            .and_then(|row| view.file_of(row));
+        let found = first_in_view(
+            &self.changes.visible.collapsed,
+            top,
+            f32::from(metrics.row),
+            viewport,
+        )
+        .and_then(|row| self.changes.visible.raw(row))
+        .and_then(|row| view.file_of(row));
         if let Some(file) = found {
             self.expand_changes_file(file, cx);
         }
@@ -1269,7 +1484,7 @@ impl Shika {
         let metrics = Metrics {
             points,
             font_size,
-            row: (font_size * LINE_HEIGHT).round(),
+            row: (font_size * LINE_HEIGHT).round().max(px(21.)),
             cell,
         };
         self.changes.metrics = Some(metrics);
@@ -1518,7 +1733,8 @@ impl Shika {
     ) -> AnyElement {
         let cell = f32::from(metrics.cell).max(1.);
         // Room for line text: the panel less both insets and the gutter.
-        let text_width = f32::from(width) - 2. * INSET - cell * (view.number_columns + 3) as f32;
+        let text_width =
+            f32::from(width) - 4. * INSET - 2. - cell * (view.number_columns + 1) as f32;
         let text_columns = (text_width / cell).floor().max(1.) as usize;
         self.changes.max_shift = view.columns.saturating_sub(text_columns) as f32 * cell;
         self.changes.shift = self.changes.shift.clamp(0., self.changes.max_shift);
@@ -1530,19 +1746,31 @@ impl Shika {
             offset: px(self.changes.shift - start as f32 * cell),
             count: text_columns + 2,
             dim: chrome.term_dim,
-            white: chrome.term_white,
             text: chrome.term_text,
             faint: chrome.term_faint,
             line: chrome.term_line,
             hover: chrome.term_hover,
+            header: chrome.diff_file_header(),
+            header_dim: chrome.diff_file_header_text(chrome.term_dim),
+            header_white: chrome.diff_file_header_text(chrome.term_white),
+            header_added: chrome.diff_file_header_text(chrome.diff_added.text),
+            header_removed: chrome.diff_file_header_text(chrome.diff_removed.text),
             added: chrome.diff_added,
             removed: chrome.diff_removed,
             shika: cx.entity().downgrade(),
         };
         let row = metrics.row;
-        let count = view.rows.len();
-        let mut list = gpui::uniform_list("changes-rows", count, move |range, _, _| {
-            range.map(|ix| paint.render(&view, ix)).collect::<Vec<_>>()
+        let visible = self.changes.visible.clone();
+        let mut list = gpui::uniform_list("changes-rows", visible.len, move |range, _, _| {
+            range
+                .filter_map(|ix| visible.raw(ix))
+                .map(|ix| {
+                    let is_folded = view
+                        .file_of(ix)
+                        .is_some_and(|f| visible.folded.contains(&f));
+                    paint.render(&view, ix, is_folded)
+                })
+                .collect::<Vec<_>>()
         })
         .track_scroll(&self.changes.scroll)
         .flex_1()
@@ -1683,7 +1911,7 @@ mod tests {
             view.rows,
             vec![
                 Row::File(0),
-                Row::Hunk { file: 0, hunk: 0 },
+                Row::FileMeta(0),
                 Row::Line {
                     file: 0,
                     hunk: 0,
@@ -1699,7 +1927,7 @@ mod tests {
                     hunk: 0,
                     line: 2
                 },
-                Row::Hunk { file: 0, hunk: 1 },
+                Row::HunkGap(0),
                 Row::Line {
                     file: 0,
                     hunk: 1,
@@ -1715,24 +1943,31 @@ mod tests {
                     hunk: 1,
                     line: 2
                 },
+                Row::End(0),
                 Row::Spacer,
                 Row::File(1),
+                Row::FileMeta(1),
                 Row::Binary(1),
+                Row::End(1),
                 Row::Spacer,
                 Row::File(2),
+                Row::FileMeta(2),
                 Row::Collapsed(2),
+                Row::End(2),
                 Row::Spacer,
                 Row::File(3),
+                Row::FileMeta(3),
+                Row::End(3),
             ]
         );
-        assert_eq!(view.headers, vec![0, 10, 13, 16]);
-        assert_eq!(view.collapsed, vec![14]);
+        assert_eq!(view.headers, vec![0, 11, 16, 21]);
+        assert_eq!(view.collapsed, vec![18]);
         // 12345 is five digits; the gutter is never under four.
         assert_eq!(view.number_columns, 5);
         // "\tnew": the tab reaches column 4, then three letters.
         assert_eq!(view.columns, 8);
-        assert_eq!(view.file_of(14), Some(2));
-        assert_eq!(view.file_of(12), None);
+        assert_eq!(view.file_of(18), Some(2));
+        assert_eq!(view.file_of(15), None);
         assert_eq!(DiffView::new(SessionDiff::default()).rows, vec![]);
         assert_eq!(DiffView::new(SessionDiff::default()).number_columns, 4);
     }
@@ -1755,10 +1990,10 @@ mod tests {
         };
         let expanded = view.with_file(2, full);
         assert_eq!(
-            expanded.rows[13..],
+            expanded.rows[16..],
             [
                 Row::File(2),
-                Row::Hunk { file: 2, hunk: 0 },
+                Row::FileMeta(2),
                 Row::Line {
                     file: 2,
                     hunk: 0,
@@ -1770,17 +2005,151 @@ mod tests {
                     line: 1
                 },
                 Row::Cut(2),
+                Row::End(2),
                 Row::Spacer,
                 Row::File(3),
+                Row::FileMeta(3),
+                Row::End(3),
             ]
         );
         assert!(expanded.collapsed.is_empty());
-        assert_eq!(expanded.headers, vec![0, 10, 13, 19]);
+        assert_eq!(expanded.headers, vec![0, 11, 16, 23]);
         assert_eq!(expanded.columns, 30);
         assert_eq!(expanded.stat, view.stat);
         assert!(Arc::ptr_eq(&expanded.files[0], &view.files[0]));
         // Out of range changes nothing.
         assert_eq!(view.with_file(9, FileDiff::default()).rows, view.rows);
+    }
+
+    #[test]
+    fn folding_uses_file_ranges_and_keeps_navigation_and_caps() {
+        let view = DiffView::new(sample());
+        let open = VisibleRows::new(&view, &HashSet::new());
+        assert_eq!(open.len, view.rows.len());
+        assert_eq!(open.headers, view.headers);
+        assert_eq!(open.collapsed, view.collapsed);
+        for row in 0..open.len {
+            assert_eq!(open.raw(row), Some(row));
+            assert_eq!(open.position(row), Some(row));
+        }
+        let folded = HashSet::from([
+            ("src/a.rs".into(), FileStatus::Modified),
+            ("big.txt".into(), FileStatus::Modified),
+        ]);
+        let closed = VisibleRows::new(&view, &folded);
+        assert_eq!(closed.headers, [0, 4, 9, 13]);
+        assert!(closed.collapsed.is_empty());
+        assert_eq!(closed.len, 16);
+        assert_eq!(closed.raw(2), Some(9)); // Rounded bottom, no code.
+        assert_eq!(closed.position(3), None);
+        assert_eq!(closed.raw(closed.len), None);
+        for row in 0..closed.len {
+            assert_eq!(closed.position(closed.raw(row).unwrap()), Some(row));
+        }
+        assert_eq!(VisibleRows::new(&view, &HashSet::new()).collapsed, [18]);
+        assert_eq!(VisibleRows::new(&DiffView::default(), &folded).raw(0), None);
+    }
+
+    #[test]
+    fn folding_preserves_the_top_row_or_returns_to_its_header() {
+        let view = DiffView::new(sample());
+        let open = VisibleRows::new(&view, &HashSet::new());
+        let closed = VisibleRows::new(
+            &view,
+            &HashSet::from([("src/a.rs".into(), FileStatus::Modified)]),
+        );
+        // A later file remains at the same offset inside its row.
+        assert_eq!(
+            folded_top(&open, &closed, &view, 11. * 21. + 3., 21., 42.),
+            4. * 21. + 3.
+        );
+        // Code hidden by the fold falls back to the folded header.
+        assert_eq!(folded_top(&open, &closed, &view, 3. * 21., 21., 42.), 0.);
+        assert_eq!(
+            folded_top(&closed, &open, &view, 4. * 21. + 3., 21., 42.),
+            11. * 21. + 3.
+        );
+        assert_eq!(folded_top(&open, &closed, &view, 0., 21., 1000.), 0.);
+    }
+
+    #[test]
+    fn folding_survives_refresh_by_path_and_status_not_index() {
+        let folded = HashSet::from([("src/a.rs".into(), FileStatus::Modified)]);
+        let mut diff = sample();
+        diff.files.swap(0, 1);
+        let view = DiffView::new(diff);
+        let visible = VisibleRows::new(&view, &folded);
+        assert!(visible.folded.contains(&1));
+        assert!(!visible.folded.contains(&0));
+        let mut diff = sample();
+        diff.files[0].status = FileStatus::Deleted;
+        assert!(
+            VisibleRows::new(&DiffView::new(diff), &folded)
+                .folded
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn file_cards_keep_names_directories_and_rename_paths_safe() {
+        assert_eq!(
+            card_labels(&file("src/a.rs", vec![])),
+            ("a.rs".into(), "src".into())
+        );
+        assert_eq!(
+            card_labels(&file("README.md", vec![])),
+            ("README.md".into(), "".into())
+        );
+        let renamed = FileDiff {
+            path: "new/b.rs".into(),
+            old_path: Some("old/a.rs".into()),
+            status: FileStatus::Renamed,
+            ..Default::default()
+        };
+        assert_eq!(
+            card_labels(&renamed),
+            ("b.rs".into(), "old/a.rs → new/b.rs".into())
+        );
+        assert_eq!(
+            card_labels(&file("src/evil\u{202e}.rs", vec![])).0,
+            "evil�.rs"
+        );
+    }
+
+    #[test]
+    fn fifty_thousand_lines_keep_folding_and_paint_mapping_small() {
+        let mut diff = SessionDiff::default();
+        for f in 0..25 {
+            diff.files.push(file(
+                &format!("src/{f}.rs"),
+                vec![Hunk {
+                    header: "@@ -0,0 +1,2000 @@".into(),
+                    lines: (1..=2000)
+                        .map(|n| line(LineKind::Added, None, Some(n), "let width = bounds.width;"))
+                        .collect(),
+                }],
+            ));
+        }
+        let started = Instant::now();
+        let view = DiffView::new(diff);
+        let indexed = started.elapsed();
+        let folded = HashSet::from([("src/0.rs".into(), FileStatus::Modified)]);
+        let started = Instant::now();
+        let visible = VisibleRows::new(&view, &folded);
+        let folded_time = started.elapsed();
+        assert_eq!(visible.spans.len(), 50); // Two spans for each boundary, not each line.
+        assert_eq!(visible.len, view.rows.len() - 2000);
+        assert_eq!(view.files[0].hunks[0].lines.len(), 2000);
+        let first = visible.headers[12];
+        assert_eq!(
+            (first..first + 40).filter_map(|i| visible.raw(i)).count(),
+            40
+        );
+        eprintln!(
+            "50,000-line index: {indexed:?}; fold ranges: {folded_time:?}; rows={}, spans={}",
+            view.rows.len(),
+            visible.spans.len()
+        );
     }
 
     #[test]

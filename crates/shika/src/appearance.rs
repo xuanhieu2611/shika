@@ -213,6 +213,24 @@ pub struct Chrome {
 }
 
 impl Chrome {
+    /// File-card header wash, composed once into an opaque fill. Using a
+    /// translucent wash over the frosted list would add a second alpha layer.
+    pub fn diff_file_header(&self) -> Rgba {
+        with_alpha(
+            mix(self.term_surface, self.term_hover, self.term_hover.a),
+            1.,
+        )
+    }
+
+    pub fn diff_file_header_text(&self, color: Rgba) -> Rgba {
+        legible(
+            color,
+            self.diff_file_header(),
+            self.term_white,
+            TEXT_CONTRAST,
+        )
+    }
+
     pub fn status(&self, status: Status) -> StatusColors {
         match status {
             Status::Ready => self.ready,
@@ -1344,6 +1362,20 @@ mod tests {
                     assert_eq!(colors.tint.a, 1.0, "{}", theme.id);
                     let ratio = contrast(colors.text, colors.tint);
                     assert!(ratio >= TEXT_CONTRAST, "{}: {ratio}", theme.id);
+                }
+                let header = chrome.diff_file_header();
+                assert_eq!(header.a, 1.0, "{}", theme.id);
+                for ink in [
+                    chrome.term_dim,
+                    chrome.term_white,
+                    chrome.diff_added.text,
+                    chrome.diff_removed.text,
+                ] {
+                    assert!(
+                        contrast(chrome.diff_file_header_text(ink), header) >= TEXT_CONTRAST,
+                        "{}",
+                        theme.id
+                    );
                 }
                 assert_eq!(
                     chrome.term_text,

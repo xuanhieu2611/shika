@@ -24,20 +24,24 @@ The goal is snappy, light, and reliable. Closed, it costs nothing. Open, it stay
 ╭────────────╮                                     │
 │ Claude Code│ +                  [Close task ⌘⇧W] │ Changes  2 files +64 −3   r refresh  esc close  [▯▯]
 ╯            ╰──────────────────────────────────── │ ─────────────────────────────────────────────────────
- worktree path                         focus hint  │ M src/layout.rs                              +60 −3
-                                                   │ @@ -12,7 +12,9 @@ fn resize
- (terminal)                                        │   12   let width = bounds.width;
-                                                   │   13 - let rows = height / line;
-                                                   │   13 + let rows = (height / line).floor();
-                                                   │
-                                                   │ A docs/resize.md                                  +4
+ worktree path                         focus hint  │ ╭─────────────────────────────────────────────────╮
+                                                   │ │ ⌄ layout.rs                              +60 −3 │
+ (terminal)                                        │ │   src                                  Modified │
+                                                   │ │   12  let width = bounds.width;                 │
+                                                   │ │   13  let rows = height / line;       (red tint) │
+                                                   │ │   13  let rows = (height / line).floor(); (green)│
+                                                   │ ╰─────────────────────────────────────────────────╯
+                                                   │ ╭─────────────────────────────────────────────────╮
+                                                   │ │ ⌄ resize.md                                  +4 │
+                                                   │ │   docs                                    Added │
 ```
 
 - It shows the selected card's task changes, compared exactly as the card's diff stat is: the worktree against the merge base with the task's recorded base ref, falling back the same way (the default branch, then HEAD). That covers the agent's commits, uncommitted edits, and untracked files that are not ignored.
 - It reads only the task's worktree. A worktree whose `.git` file is missing or broken shows "Could not read changes", and the card hides its diff stat; git is never allowed to walk up to the main checkout around `.worktrees/` and show that instead (see [traps](#implementation-traps)).
 - Untracked files show as all added. Renames are detected and shown as `old → new`. Deleted files show their deletions. Binary files are listed as "Binary file" with no lines. Mode-only changes show their header alone.
 - The panel follows the selected card. Card navigation keeps working while it is open.
-- Every file is listed in git's order in one scrolling list: a file header, then its hunks. There is no file tree.
+- Every file is listed in git's order in one scrolling list, framed as a quiet file card. Its two-row header separates basename/counts from directory/status; code keeps line numbers and diff colors, without `+`/`-` prefixes or hunk metadata. Hunks have a quiet spacer, not a label. There is no file tree.
+- Clicking either header row folds or unfolds the file without a Git read. Folding is distinct from the safety caps below: an author-folded file keeps its already-read code in memory. Folds survive same-task refresh by path/status, but clear on card change or panel close. All files initially open, except code hidden by the existing caps.
 - A big file comes collapsed (see [caps](#performance-budget-and-caps)), and so does every file after the task's total budget runs out; the collapsed row names which cap applied. A click or `o` expands it either way.
 - Line text is drawn safely: tabs expand to 4-column stops counted from the start of the line, the `\r` that ends a CRLF line is dropped, other control characters show as their Unicode control pictures (`␛`, `␍`), and C1 controls and bidirectional overrides show as `�`, so text cannot reorder itself. Columns are display width (`unicode-width`, per character, as a terminal counts): CJK and most emoji take two, combining marks and other zero-width characters none and stay with the character before them. A wide character is never split: when the left edge cuts one, its visible half is a blank cell, and one that starts in the last column is kept whole for the text area to clip. An emoji sequence joined with U+200D counts each emoji, as in the terminal, so the text after one sits a little left of its columns.
 - Open state is memory only. Every launch starts closed. Only the width is saved.
@@ -51,6 +55,7 @@ The goal is snappy, light, and reliable. Closed, it costs nothing. Open, it stay
 | Escape in the panel | Close it and restore the focus saved when it opened |
 | Click in the terminal | Focus the terminal; the panel stays open |
 | Click in the panel | Focus the panel |
+| Click either row of a file header | Fold or unfold that file, with no Git read |
 | Ctrl+Q in the panel | Return to the cards; the panel stays open |
 | `j` / `k`, Down / Up | Scroll one row |
 | `d` / `u` | Scroll half a page |
@@ -107,7 +112,8 @@ Open, per fetch:
 
 - One `git rev-parse --show-toplevel` that proves the worktree is its own checkout, the base lookup, one `git diff --no-color --no-ext-diff --find-renames -U3 <merge base> --`, and one `git ls-files --others --exclude-standard -z`, all read only with `GIT_OPTIONAL_LOCKS=0` and `GIT_CEILING_DIRECTORIES`, on the background executor. Untracked files are read from disk there too, without following symlinks.
 - Git's output is read once into memory and parsed into owned rows. Nothing is streamed.
-- The UI flattens the result into one row index (spacer, file header, hunk header, line, collapsed row) once per result. Painting then costs only the visible rows: the list is virtualized at a uniform row height, so a 50,000-line diff shapes about as much text per frame as a 50-line one.
+- The UI flattens the result into one row index (spacer, filename, metadata, hunk gap, line, cap row, rounded bottom) once per result on the background executor. Painting then costs only visible rows: the uniform list remains virtualized, so a 50,000-line diff shapes about as much text per frame as a 50-line one. File outlines are painted as visible row slices, not per-file entities or nested lists.
+- `VisibleRows` maps a small set of file ranges into that unchanged full index. Folding rebuilds those ranges in O(files), not O(lines), on the UI thread, with no code cloning, measuring, parsing, or Git. Binary search maps each visible row back to its full-index row. File navigation and cap expansion use the visible header/cap positions; hidden cap rows are not expanded by `o`. Folding preserves the top visible row, or returns to its header if that row became hidden.
 
 Caps, so a huge diff stays cheap:
 
@@ -137,7 +143,8 @@ Search by symbol rather than line number. App symbols are in `crates/shika/src/c
 | Settings | `crates/shika-core/src/settings.rs`: `Changes`, `changes_or_default` | `changes.width`, 320 to 900, default 480, an invalid field read as the default; no open state |
 | Toggle and focus | `ToggleChanges` (action, binding, and View menu item in `main.rs`); `Shika::toggle_changes`, `open_changes`, `close_changes`, `restore_changes_focus`, `Panel::return_focus`; `move_agent` in `main.rs` keeps panel focus | Open/close, saved focus, busy/overlay guards |
 | Layout | `pane_widths`, `drag_width`, `Shika::drag_changes`, `changes_handle`, `ChangesDrag`; `Shika::pane_widths`, `column_width`, `drag_column`, `MIN_TERMINAL_WIDTH` in `main.rs` | Yield order: panel, then column, then terminal; widths saved when a drag ends (`tick`) |
-| Panel view | `Panel`, `Shika::changes_panel`, `changes_list`, `changes_toggle`, `changes_key`, `RowPaint`, `CHANGES_ICON`; `DiffView`, `Row` | Title row, toggle, rows, horizontal offset, empty states, keys |
+| Panel view | `Panel`, `Shika::changes_panel`, `changes_list`, `changes_toggle`, `changes_key`, `RowPaint`, `CHANGES_ICON`; `DiffView`, `Row` | Title row, toggle, card slices, horizontal offset, empty states, keys |
+| File folding | `VisibleRows`, `Panel::set_view`, `Shika::toggle_changes_file`, `folded_top`, `card_labels`; `Chrome::diff_file_header` in `appearance.rs` | O(files) range mapping, stable fold identities, scroll anchoring, filename/directory labels, opaque header wash |
 | Refresh | `Shika::sync_changes` (runs each paint, acts only on a new target), `fetch_changes`, `Panel::generation`, `Panel::shows`; the Ready hook beside `fetch_diff_stat` in `tick` | Fetch on open, card change, Ready, and `r`; drop stale results |
 | Labels | `crates/shika/src/model.rs`: `diff_stat_label` | The `2 files +64 −3` text shared by the card and the title row |
 | Diff colors | `crates/shika/src/appearance.rs`: `diff_colors`, `Chrome::diff_added`, `diff_removed`, `term_text` | ANSI green/red text and opaque tints per theme and glass |
@@ -152,7 +159,9 @@ Keep the core types free of GPUI and the UI free of git. The panel must not shel
 - **Horizontal scroll in a virtualized list.** Rows share one horizontal offset applied to line text only; the gutter and headers do not move. The pinned GPUI's `uniform_list` can scroll sideways (`ListHorizontalSizingBehavior::Unconstrained`), but it moves whole rows, gutter included, and needs every row measured at the widest line. So the list scrolls only vertically, and the panel keeps its own offset in pixels (`Panel::shift`, at most `max_shift`, the widest line less the text area). Each line row paints only the columns on screen (`visible_text` from `shift / cell`), shifted left by the part of a cell, so a 20,000-column line costs what fits in the panel and trackpad scrolling stays smooth. `h`/`l` move 8 columns; a sideways wheel delta moves `shift` in the list's `on_scroll_wheel`, and `restrict_scroll_to_axis` keeps that delta from scrolling the list down. The widest line is measured once per result, per file, off the UI thread.
 - **Static list padding.** The list sits 8 under the title row and 28 above the bottom as margins, not as `uniform_list` padding: the pinned `uniform_list` leaves rows unpainted in its bottom padding while scrolled. Rows clip at those margins, like the terminal's own pad.
 - **Re-entrancy.** `sync_changes` runs in `Shika::render`, so it only compares the target and starts work; it must never update another entity or notify synchronously.
-- **Uniform rows.** Every row is one terminal row high. A taller file header or a wrapped line breaks the uniform list and its cheap scrolling.
+- **Uniform rows.** Every row is one terminal row high, with a 21px minimum for stable header labels. The two-row file header and rounded bottom are separate uniform entries; never turn a file into a tall entity or nest another list. A wrapped line breaks the uniform list and its cheap scrolling.
+- **File cards and glass.** Body slices paint borders only; no card background is layered over the translucent list. Headers use one opaque, theme-derived wash (`Chrome::diff_file_header`), and diff tints remain opaque. Slices carry the left/right outline even when a file's header is offscreen; top and bottom corners belong only to their respective rows.
+- **Fold mapping.** Keep full rows and code immutable on a fold. Map visible file ranges instead, and use visible header/cap indices for keys. Refresh and cap-expansion results rebuild that mapping using the current folds, not a stale snapshot from when their background read started.
 - **Ready refresh.** Hook the existing Ready moment; do not add a second status watcher. The card's `diff` stat and the panel can briefly disagree while one fetch is in flight.
 - **Focus.** Plain panel keys belong to the panel's key context. Escape closes the panel only while the panel has focus; never make Escape an app-wide key.
 - **Resizes.** Opening the panel or dragging its edge resizes the PTY, as the column does. A resize must not start a turn or reset the timer; if a TUI redraw shows up as Working, look at agent activity, not the panel.
@@ -220,7 +229,7 @@ When extending the panel:
 - Never watch or poll. New refresh moments are explicit events, like Ready or `r`. A file watcher or timer needs an explicit author decision.
 - No syntax highlighting without an explicit author decision. Grammars are most of the weight in other diff viewers, and the panel's goal is to stay light.
 - No file tree, history, or commit browser, and no second terminal in the panel.
-- Keep the caps and the virtualized, uniform-height list. Measure a 50,000-line diff before and after any change to rows or parsing.
+- Keep the caps and the virtualized, uniform-height list. File-card outlines must remain visible row slices, never a nested list or one element per whole file. Measure a 50,000-line diff before and after any change to rows or parsing.
 - Keep git in core, behind `read_only_git` and `GIT_OPTIONAL_LOCKS=0`, with the same base as the diff stat.
 - Use the design tokens in `design/DESIGN.md`. The diff green and red stay inside the panel's rows.
 - Guard every entry point, including the menu and the toggle, against overlays and busy state. A card click, including its diff stat, selects the card and focuses its terminal; it is not an entry point for the panel.
