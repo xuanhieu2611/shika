@@ -775,6 +775,7 @@ mod tests {
                 preset_id: "pi".into(),
                 preset_name: "Pi".into(),
                 title: "Add useful feature".into(),
+                manual_title: false,
                 branch: "feat/task".into(),
                 repo,
                 worktree,
@@ -816,6 +817,44 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn manual_task_name_seeds_future_commit_and_pr_defaults_only() {
+        let mut f = Fixture::new();
+        f.edit();
+        let store = crate::session::SessionStore::new();
+        store.insert(f.session.clone());
+        let old_preview = f.preview();
+        f.session = store
+            .set_title(&f.session.id, "My chosen task name")
+            .unwrap();
+        let preview = f.preview();
+        assert_eq!(old_preview.title, "Add useful feature");
+        assert_eq!(preview.title, "My chosen task name");
+        assert_eq!(preview.branch, old_preview.branch);
+        assert_eq!(preview.tree, old_preview.tree);
+        assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+        publish(
+            &f.git,
+            &f.gh,
+            "/usr/bin:/bin",
+            &f.session,
+            &preview,
+            "dev",
+            &preview.title,
+        )
+        .unwrap();
+        assert_eq!(f.git(&["log", "-1", "--format=%s"]), "My chosen task name");
+        let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
+        assert!(calls.contains("--head feat/task --base dev --title My chosen task name --fill"));
+        f.session = store.set_title(&f.session.id, "Later name").unwrap();
+        assert_eq!(f.git(&["log", "-1", "--format=%s"]), "My chosen task name");
+        assert_eq!(f.git(&["branch", "--show-current"]), "feat/task");
+        assert_eq!(
+            std::fs::read_to_string(f.root.join("calls")).unwrap(),
+            calls
+        );
     }
 
     #[test]

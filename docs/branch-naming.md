@@ -4,6 +4,8 @@ How Shika names the git branch and the card for a new task, why it works this wa
 
 Added 2026-10-05. This file holds the naming rules and explains them.
 
+For manual **Rename task**, see [task-names.md](task-names.md): it changes the card and future Create PR defaults, not Git. A manual name overrides automatic display titles; the branch-naming flow below continues independently.
+
 ## What the user sees
 
 1. **New** creates `<repo>/.worktrees/shika-draft-<id>` on branch `shika-draft-<id>` and starts the CLI there.
@@ -93,7 +95,8 @@ Both renames go through `rename_task_branch`, which adds the prefix, picks a fre
 - **Prefix** (`normalize_prefix`): keeps ASCII letters, digits, `.`, `_`, `-`, and `/`; drops empty path parts, leading `.` or `-`, trailing `.` and `.lock`, and collapses `..`. A non-empty prefix that does not end in `-` or `_` gets a `/`, so `dev` and `dev/` both give `dev/`. If git still refuses `prefix + slug` (`git check-ref-format --branch`), the prefix is dropped for that name. Unreadable settings also mean no prefix.
 - **Collisions** (`rename_branch`): if `refs/heads/<name>` or any `refs/remotes/*/<name>` exists, try `<name>-2`, `<name>-3`, and so on. Asking for the name the branch already has is a no-op.
 - **Never renamed**: a branch that is on a remote (`is_published`: it has an upstream, or a remote-tracking branch has its name, as after `git push origin HEAD` without `-u`); a worktree whose HEAD is not the task branch (the user switched branches). In both cases the card still takes the CLI title.
-- **Once**: after a CLI title is applied, later titles and prompts change nothing.
+- **Once**: after a CLI title is applied, later automatic titles and prompts change nothing. Manual Rename task can still update the display name.
+- **Manual override**: `Session::manual_title` prevents both prompt and CLI-title updates from replacing the display name. It does not suppress branch naming or set `cli_titled`. Both automatic store updates check the override under the metadata lock, and UI background completions reread the current session to reject stale title snapshots. See [task-names.md](task-names.md).
 
 ## Where the CLIs keep their titles
 

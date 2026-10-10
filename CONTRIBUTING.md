@@ -15,6 +15,7 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 | Worktree setup, local files, approval, cancellation, or retry | [Worktree preparation](docs/worktree-preparation.md), especially its [contributor guide](docs/worktree-preparation.md#contributor-guide) |
 | Command shortcuts, focus restoration, or selected-row scrolling | [Keyboard flow](docs/keyboard-flow.md) |
 | The read-only diff beside the terminal, its refresh, caps, or width | [Changes panel](docs/changes-panel.md) |
+| Manual task names and their effects on Git/publishing | [Manual task names](docs/task-names.md) |
 | Task titles and branch names from CLI metadata | [Branch naming](docs/branch-naming.md) |
 | Close after the user switched branches | [Branch-switch close](docs/branch-switch-close.md) |
 | Sparkle updates, the release feed, or signing keys | [Software updates](docs/updates.md) |

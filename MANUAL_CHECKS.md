@@ -2,11 +2,28 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Manual task names
+
+See [docs/task-names.md](docs/task-names.md) for the public FAQ and contributor contract. Workspace tests passed (375 passed, one existing ignored); formatting, strict Clippy, and dependency-notice regeneration passed.
+
+A scratch copy outside the repository, built as an ad hoc signed `.app` with GPUI/platform `test-support`, used an isolated data directory, a disposable repository, and fake Pi binaries (no provider/model calls). Events were injected through GPUI, not macOS Accessibility; text-composition ranges were exercised through `EntityInputHandler`. Production code contains no test hook. A repeated scratch-bundle launch also spawned a second instance without isolation arguments and added only temporary project/journal entries to normal app metadata; those exact entries were removed, preserving real entries and worktrees. The final successful run used a unique bundle identifier and hard-coded disposable Core data in the scratch harness. Do not rely only on launch arguments for a destructive test hook.
+
+- PASS (injected): right-click an unselected live card, then click Rename task or press Enter, opened that card's preselected full name without changing selection. Escape restored the original terminal focus. Cmd+Shift+R opened Rename for the selected card.
+- PASS (injected): Cmd+N and Cmd+Shift+W did nothing during editing. Blank names were refused; Cmd+V pasted a Unicode/emoji name, and Enter trimmed/applied it to both the card and core session without a CLI submission or journal change. Native marked-text replacement/selection used the correct relative UTF-16 range.
+- PASS (injected): a notification click during Rename changed selection but kept the editor focused; applying still renamed the original target and restored the newly selected, visible terminal rather than the hidden opener.
+- PASS (frames): menu and Rename dialog in Shika Light, Shika Dark, Catppuccin Frappé, and 60% sidebar opacity, including solid popup, selected name, field outline, and existing dialog tokens.
+- [ ] Real mouse/key macOS translation, Agent-menu dispatch, and a real input-method candidate window; Enter/Escape during composition must not submit/cancel the dialog.
+- [ ] Mouse caret placement and drag selection, long-name horizontal scrolling, Option word navigation, copy/cut, combining marks, and validation over 80 characters in the GUI (grapheme/range/validation arithmetic is unit tested).
+- [ ] Ready/Working/Asking tasks: renaming leaves elapsed time, activity, seen state, PTYs, and unsent drafts alone; future activity and failed-check notifications and Close show the new name.
+- [ ] Rename before the first prompt and while CLI-title discovery is in flight: display name stays manual while automatic branch naming proceeds independently. Published branches, switched HEAD, and Close safety remain unchanged (core behavior is covered by tests).
+- [ ] Future Create PR previews prefill the new name; existing commits/PRs are unchanged. Preview/publish defaults and historical commit preservation are covered with real Git and fake gh.
+- [ ] Setup-running/failed Rename is disabled; disappearing target or lost opening focus falls back safely. Relaunch restores no sessions or manual names.
+
 ## Card context menu
 
 See [docs/keyboard-flow.md](docs/keyboard-flow.md#card-context-menu). Use disposable repositories and an isolated `--data-dir`.
 
-Validation: workspace tests passed (369 passed, one existing ignored), formatting and strict Clippy passed. A scratch copy outside the repository, built as an ad hoc signed `.app` with GPUI/platform `test-support` and an isolated data directory, injected events through `Window::dispatch_event` / `dispatch_keystroke` and captured `render_to_image` frames. The two cards were synthetic setup-failed cards: no worktrees or live PTYs were created. The production source has no test hook.
+Initial Close-only menu validation (before Rename task was added): workspace tests passed (369 passed, one existing ignored), formatting and strict Clippy passed. A scratch copy outside the repository, built as an ad hoc signed `.app` with GPUI/platform `test-support` and an isolated data directory, injected events through `Window::dispatch_event` / `dispatch_keystroke` and captured `render_to_image` frames. The two cards were synthetic setup-failed cards: no worktrees or live PTYs were created. The production source has no test hook.
 
 - PASS (injected): right-click and Control-click the unselected card opened Close task without changing selection. Escape and an outside click dismissed and restored the previously selected terminal's focus. The outside click did not activate the underlying header control.
 - PASS (injected): plain `j` and Cmd+N neither changed selection nor opened another overlay; no input was queued to the previously focused terminal. Click, Enter, and Cmd+Shift+W removed only the clicked failed card, keeping the other card.

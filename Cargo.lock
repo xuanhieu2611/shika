@@ -4893,6 +4893,7 @@ dependencies = [
  "raw-window-handle",
  "shika-core",
  "shika-terminal",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

@@ -62,6 +62,8 @@ pub enum Error {
     #[error("Could not remove the worktree.{}", detail(.0))]
     WorktreeHasChanges(Option<String>),
 
+    #[error("{0}")]
+    InvalidTaskTitle(String),
     #[error("Could not rename the branch.{}", detail(.0))]
     RenameBranch(Option<String>),
     #[error("Could not publish PR: {0}")]

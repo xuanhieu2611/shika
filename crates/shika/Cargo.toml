@@ -14,6 +14,8 @@ shika-terminal = { path = "../shika-terminal" }
 # Display width for cutting diff lines to the columns on screen. The same
 # version alacritty_terminal uses.
 unicode-width = "0.2.2"
+# Native task-name editing moves and deletes whole graphemes.
+unicode-segmentation = "1.13.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"

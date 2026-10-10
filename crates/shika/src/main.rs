@@ -4,6 +4,7 @@ mod changes;
 mod checks;
 mod lifecycle;
 mod model;
+mod name_input;
 mod notifications;
 mod updates;
 
@@ -47,6 +48,7 @@ gpui::actions!(
         CreatePr,
         CloseTerminal,
         CloseTask,
+        RenameTask,
         NextTerminal,
         PreviousTerminal,
         NextAgent,
@@ -367,9 +369,15 @@ enum CloseCheck {
 
 /// A context menu stays bound to the clicked card, not the current selection
 /// or a vector index that asynchronous setup cleanup could invalidate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CardMenuAction {
+    Rename,
+    Close,
+}
 struct CardMenu {
     target: gpui::EntityId,
     position: gpui::Point<Pixels>,
+    action: CardMenuAction,
 }
 impl CardMenu {
     fn target_index(&self, mut ids: impl Iterator<Item = gpui::EntityId>) -> Option<usize> {
@@ -379,6 +387,11 @@ impl CardMenu {
 
 enum Overlay {
     CardMenu(CardMenu),
+    Rename {
+        target: gpui::EntityId,
+        input: Entity<name_input::NameInput>,
+        error: Option<String>,
+    },
     Publish {
         preview: PublishPreview,
         title: String,
@@ -688,7 +701,25 @@ impl Shika {
             .overlay_return_focus
             .take()
             .unwrap_or_else(|| self.focus.clone());
-        window.focus(&focus, cx);
+        let cards = focus == self.focus;
+        let changes = self.changes.open && focus == self.changes.focus;
+        let selected_terminal = self
+            .selected_card()
+            .map(|index| self.cards[index].active_pane().view.focus_handle(cx));
+        if cards || changes || selected_terminal.as_ref() == Some(&focus) {
+            window.focus(&focus, cx);
+        } else if self.cards.iter().any(|card| {
+            std::iter::once(&card.agent)
+                .chain(card.shells.iter())
+                .any(|pane| pane.view.focus_handle(cx) == focus)
+        }) && !self.busy
+        {
+            // A notification may have selected another task while editing.
+            // Never restore focus to the old task's now-hidden terminal.
+            self.focus_terminal(window, cx);
+        } else {
+            window.focus(&self.focus, cx);
+        }
     }
     fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
@@ -1469,7 +1500,11 @@ impl Shika {
                 continue;
             }
             if let Some(title) = state.title.take() {
-                if !card.session.as_ref().is_some_and(|s| s.cli_titled) {
+                if !card
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.cli_titled || s.manual_title)
+                {
                     card.title = model::card_title(&title);
                 }
                 card.named = true;
@@ -1587,7 +1622,7 @@ impl Shika {
                     match result {
                         Ok(Some(mut session)) => {
                             if let Some(current) = this.core.session(&session.id) {
-                                session.branch = current.branch;
+                                session = current;
                             }
                             card.title = model::card_title(&session.title);
                             card.named = true;
@@ -1625,7 +1660,7 @@ impl Shika {
                     match result {
                         Ok(mut session) => {
                             if let Some(current) = this.core.session(&session.id) {
-                                session.branch = current.branch;
+                                session = current;
                             }
                             // A CLI title applied meanwhile is newer.
                             if let Some(card) = this.cards.iter_mut().find(|c| {
@@ -1654,10 +1689,12 @@ impl Shika {
                 window.activate_window();
                 // A notification means this agent needs typing. Card focus
                 // would make the next letter move the list.
-                if self.busy {
-                    window.focus(&self.focus, cx);
-                } else {
-                    self.focus_terminal(window, cx);
+                if self.overlay.is_none() {
+                    if self.busy {
+                        window.focus(&self.focus, cx);
+                    } else {
+                        self.focus_terminal(window, cx);
+                    }
                 }
                 changed = true;
             }
@@ -2156,9 +2193,97 @@ impl Shika {
         self.overlay = Some(Overlay::CardMenu(CardMenu {
             target: card.agent.view.entity_id(),
             position,
+            action: if card.session.is_some() {
+                CardMenuAction::Rename
+            } else {
+                CardMenuAction::Close
+            },
         }));
         // Do not select the card or enter its terminal just to open a menu.
         window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn activate_card_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match &self.overlay {
+            Some(Overlay::CardMenu(menu)) if menu.action == CardMenuAction::Rename => {
+                self.rename_task(window, cx)
+            }
+            Some(Overlay::CardMenu(_)) => self.close_from_card_menu(window, cx),
+            _ => {}
+        }
+    }
+
+    fn rename_task(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let index = match &self.overlay {
+            Some(Overlay::CardMenu(menu)) => {
+                menu.target_index(self.cards.iter().map(|card| card.agent.view.entity_id()))
+            }
+            None => self.selected_card(),
+            _ => return,
+        };
+        let Some(card) = index.and_then(|index| self.cards.get(index)) else {
+            return;
+        };
+        let Some(session) = &card.session else {
+            return;
+        };
+        let target = card.agent.view.entity_id();
+        let title = session.title.clone();
+        if self.overlay.is_none() {
+            self.overlay_return_focus = window.focused(cx);
+        }
+        let chrome = self.chrome(window);
+        let input = cx.new(|cx| name_input::NameInput::new(title, chrome, cx));
+        window.focus(&input.focus_handle(cx), cx);
+        self.overlay = Some(Overlay::Rename {
+            target,
+            input,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    fn apply_task_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(Overlay::Rename { target, input, .. }) = &self.overlay else {
+            return;
+        };
+        if input.read(cx).composing() {
+            return;
+        }
+        let title = input.read(cx).value().to_string();
+        let Some(index) = self
+            .cards
+            .iter()
+            .position(|card| card.agent.view.entity_id() == *target)
+        else {
+            self.cancel_overlay(window, cx);
+            return;
+        };
+        let Some(session) = &self.cards[index].session else {
+            self.cancel_overlay(window, cx);
+            return;
+        };
+        match self.core.session_set_title(&session.id, &title) {
+            Ok(session) => {
+                self.cards[index].title = session.title.clone();
+                self.cards[index].named = true;
+                self.cards[index].session = Some(session);
+                self.overlay = None;
+                self.restore_overlay_focus(window, cx);
+            }
+            Err(error) => {
+                if let Some(Overlay::Rename { error: shown, .. }) = &mut self.overlay {
+                    *shown = Some(error.to_string());
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -2681,11 +2806,45 @@ impl Shika {
             cx.quit();
             return;
         }
+        if let Some(Overlay::Rename { input, .. }) = &self.overlay {
+            // The native text input owns typing, selection, clipboard, and IME.
+            if !input.read(cx).composing()
+                && !stroke.modifiers.platform
+                && !stroke.modifiers.control
+                && !stroke.modifiers.alt
+            {
+                match stroke.key.as_str() {
+                    "enter" => self.apply_task_name(window, cx),
+                    "escape" => self.cancel_overlay(window, cx),
+                    _ => return,
+                }
+                cx.stop_propagation();
+            }
+            return;
+        }
         // Menu typing belongs to the app, never to the previously focused PTY.
         if matches!(self.overlay, Some(Overlay::CardMenu(_))) {
             if !stroke.modifiers.platform && !stroke.modifiers.control && !stroke.modifiers.alt {
                 match stroke.key.as_str() {
-                    "enter" => self.close_from_card_menu(window, cx),
+                    "enter" => self.activate_card_menu(window, cx),
+                    "j" | "k" | "down" | "up" | "tab" => {
+                        let can_rename = if let Some(Overlay::CardMenu(menu)) = &self.overlay {
+                            menu.target_index(
+                                self.cards.iter().map(|card| card.agent.view.entity_id()),
+                            )
+                            .is_some_and(|index| self.cards[index].session.is_some())
+                        } else {
+                            false
+                        };
+                        if can_rename && let Some(Overlay::CardMenu(menu)) = &mut self.overlay {
+                            menu.action = if menu.action == CardMenuAction::Rename {
+                                CardMenuAction::Close
+                            } else {
+                                CardMenuAction::Rename
+                            };
+                            cx.notify();
+                        }
+                    }
                     "escape" => self.cancel_overlay(window, cx),
                     _ => {}
                 }
@@ -2983,6 +3142,7 @@ impl Shika {
                 Some(Overlay::Base { .. })
                 | Some(Overlay::Publish { .. })
                 | Some(Overlay::CardMenu(_))
+                | Some(Overlay::Rename { .. })
                 | None => {}
             }
             if let Some(project) = moved_to {
@@ -4565,15 +4725,54 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let hover = chrome.row_selected;
+        let can_rename = menu
+            .target_index(self.cards.iter().map(|card| card.agent.view.entity_id()))
+            .is_some_and(|index| self.cards[index].session.is_some());
         let panel = dialog_shell(400., window.viewport_size().height, chrome)
             .w_auto()
             .p(px(8.))
             .occlude()
             .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
             .child(
-                list_row(false, chrome)
+                list_row(menu.action == CardMenuAction::Rename && can_rename, chrome)
+                    .id("card-menu-rename")
+                    .gap(px(20.))
+                    .justify_between()
+                    .text_color(if can_rename {
+                        chrome.ink_1
+                    } else {
+                        chrome.ink_4
+                    })
+                    .when(can_rename, |row| {
+                        row.cursor_pointer().hover(move |style| style.bg(hover))
+                    })
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        if *hovered
+                            && can_rename
+                            && let Some(Overlay::CardMenu(menu)) = &mut this.overlay
+                        {
+                            menu.action = CardMenuAction::Rename;
+                            cx.notify();
+                        }
+                    }))
+                    .child("Rename task…")
+                    .child(kbd("\u{2318}\u{21e7}R", chrome.sunken, chrome.ink_3))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.rename_task(window, cx);
+                    })),
+            )
+            .child(
+                list_row(menu.action == CardMenuAction::Close, chrome)
                     .id("card-menu-close")
                     .gap(px(20.))
+                    .justify_between()
+                    .on_hover(cx.listener(|this, hovered, _, cx| {
+                        if *hovered && let Some(Overlay::CardMenu(menu)) = &mut this.overlay {
+                            menu.action = CardMenuAction::Close;
+                            cx.notify();
+                        }
+                    }))
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
                     .child("Close task")
@@ -4620,6 +4819,18 @@ impl Shika {
         let max_h = (height - top - px(24.)).max(px(120.));
         let panel = match overlay {
             Overlay::CardMenu(_) => unreachable!("card menus render at the pointer"),
+            Overlay::Rename { input, error, .. } => {
+                input.update(cx, |input, _| input.set_chrome(*chrome));
+                dialog(chrome, max_h)
+                    .child(dialog_title(div()).child("Rename task"))
+                    .child(dialog_text(chrome).child("Changes the task name and future Create PR defaults. The branch and worktree stay unchanged."))
+                    .child(input.clone())
+                    .when_some(error.as_ref(), |panel, error| panel.child(dialog_text(chrome).child(error.clone())))
+                    .child(dialog_buttons()
+                        .child(self.cancel_button("Cancel", chrome, cx))
+                        .child(primary_button("rename-task", "Rename task", "↵", chrome)
+                            .on_click(cx.listener(|this, _, window, cx| this.apply_task_name(window, cx)))))
+            }
             Overlay::Publish {
                 preview,
                 title,
@@ -5847,6 +6058,7 @@ impl Render for Shika {
                     this.close_tab(this.cards[i].active_tab, window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &RenameTask, window, cx| this.rename_task(window, cx)))
             .on_action(cx.listener(|this, _: &CloseTask, window, cx| {
                 if matches!(this.overlay, Some(Overlay::CardMenu(_))) {
                     this.close_from_card_menu(window, cx);
@@ -5951,6 +6163,7 @@ fn main() -> anyhow::Result<()> {
             gpui::KeyBinding::new("cmd-shift-p", CreatePr, Some("Shika")),
             gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-shift-w", CloseTask, Some("Shika")),
+            gpui::KeyBinding::new("cmd-shift-r", RenameTask, Some("Shika")),
             gpui::KeyBinding::new("ctrl-tab", NextTerminal, Some("Shika")),
             gpui::KeyBinding::new("ctrl-shift-tab", PreviousTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-]", NextAgent, Some("Shika")),
@@ -6010,6 +6223,7 @@ fn main() -> anyhow::Result<()> {
                 gpui::MenuItem::action("New terminal tab", NewTerminal),
                 gpui::MenuItem::action("Create PR", CreatePr),
                 gpui::MenuItem::action("Close terminal tab", CloseTerminal),
+                gpui::MenuItem::action("Rename task…", RenameTask),
                 gpui::MenuItem::action("Close task", CloseTask),
                 gpui::MenuItem::action("Next terminal tab", NextTerminal),
                 gpui::MenuItem::action("Previous terminal tab", PreviousTerminal),
@@ -6080,6 +6294,7 @@ mod host_tests {
         let menu = CardMenu {
             target: clicked,
             position: gpui::point(px(100.), px(200.)),
+            action: CardMenuAction::Close,
         };
         assert_eq!(
             menu.target_index([first, clicked, third].into_iter()),

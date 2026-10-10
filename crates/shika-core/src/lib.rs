@@ -78,7 +78,7 @@ pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::{ChecksState, PrChecks, PublishPreview, PublishedPr};
-pub use session::{DiffStat, Session, SessionGitState};
+pub use session::{DiffStat, Session, SessionGitState, task_title};
 pub use settings::{
     Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, Settings,
     ThemeMode, ThemeSettings, Translucency,
@@ -612,6 +612,7 @@ impl Core {
                 project_id: project.id.clone(),
                 preset_id: preset.id,
                 title: format!("New {}", preset.name),
+                manual_title: false,
                 preset_name: preset.name,
                 branch: draft.branch.clone(),
                 repo: project.path.clone(),
@@ -712,6 +713,13 @@ impl Core {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
         let env = self.path_env();
         worktree::is_dirty(&self.git()?, env.path(), &session.worktree)
+    }
+
+    /// Set a manual display name without touching Git, PTYs, CLI files, or the
+    /// journal. Future publish previews use it; automatic branch naming stays
+    /// independent. A short metadata-only call, safe on the UI thread.
+    pub fn session_set_title(&self, id: &str, title: &str) -> Result<Session> {
+        self.sessions.set_title(id, title)
     }
 
     /// First submitted prompt names the task and branch, until the CLI's own
@@ -1965,6 +1973,55 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let line = serde_json::json!({ "type": "ai-title", "aiTitle": title });
         fs::write(dir.join("session.jsonl"), format!("{line}\n")).unwrap();
+    }
+
+    #[test]
+    fn manual_task_names_leave_git_and_ownership_unchanged() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let mut core = core_with_fake_cli(&scratch);
+        let home = scratch.path.join("home");
+        core.cli_home = Some(CliHome::at(home.clone()));
+        let project = core.add_project(&repo).unwrap().project;
+        let original = create_fake_session(&core, &project.id);
+        let journal = core.worktree_journal().unwrap();
+        let head = git(&original.worktree, &["rev-parse", "HEAD"]);
+        let index = git(&original.worktree, &["write-tree"]);
+        let mut expected = original.clone();
+        expected.title = "My display name".into();
+        expected.manual_title = true;
+        // Name mutation must not wait for a Git operation or run any Git command.
+        let guard = core.operations.lock().unwrap();
+        assert_eq!(
+            core.session_set_title(&original.id, " My display name ")
+                .unwrap(),
+            expected
+        );
+        drop(guard);
+        assert_eq!(core.worktree_journal().unwrap(), journal);
+        assert_eq!(git(&original.worktree, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git(&original.worktree, &["write-tree"]), index);
+        assert_eq!(
+            git(&original.worktree, &["branch", "--show-current"]).trim(),
+            original.branch
+        );
+        let prompted = core
+            .session_rename_from_prompt(&original.id, "First prompt")
+            .unwrap();
+        assert_eq!(prompted.title, "My display name");
+        assert_eq!(prompted.branch, "first-prompt");
+        write_claude_title(&home, &original.worktree, "CLI summary");
+        let titled = core.session_apply_cli_title(&original.id).unwrap().unwrap();
+        assert_eq!(titled.title, "My display name");
+        assert_eq!(titled.branch, "cli-summary");
+        assert!(titled.cli_titled);
+        let before = core.worktree_journal().unwrap();
+        core.session_set_title(&original.id, "Revised name")
+            .unwrap();
+        assert_eq!(core.session(&original.id).unwrap().branch, "cli-summary");
+        assert_eq!(core.worktree_journal().unwrap(), before);
+        assert_eq!(core.session_apply_cli_title(&original.id).unwrap(), None);
+        core.session_discard(&original.id).unwrap();
     }
 
     #[test]
