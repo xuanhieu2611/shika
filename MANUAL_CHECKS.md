@@ -90,6 +90,14 @@ Exercised with the local recipe in `docs/updates.md`: bundle id `com.hieule.shik
 - [ ] `cargo run` and a `bundle-app.sh` bundle show no "Check for updates..." item.
 - [ ] The first real release after 0.3.0 reaches an installed 0.3.0 through `https://useshika.com/appcast.xml`.
 
+The standard Sparkle windows are no longer shown. The corner card still needs a release-build pass:
+
+- [ ] Second launch shows "Check for updates automatically?" in the terminal's bottom-right, in Shika's dialog colors, in light and dark. Check automatically and Not now both dismiss it. No Sparkle sheet appears.
+- [ ] Check for updates shows "Checking for updates..." and then the toast "No newer version found." when the feed has nothing newer.
+- [ ] A newer feed shows "Shika {version} is available" in the terminal's bottom-right, with Ignore and Download. Ignore dismisses it. Download shows progress there, then "Restart to update" centered in the window, with Later and Restart. Clicks outside that card still reach the app.
+- [ ] Restart quits, replaces the app, and reopens with projects intact. Later dismisses the card and installs on the next quit. Check for updates brings the restart card back before that quit.
+- [ ] The card does not take focus: typing and Escape still go to the terminal. A dialog covers it until the dialog closes.
+
 ## Themes, 2026-10-07
 
 Automated validation: workspace tests, formatting, and strict Clippy passed, and a debug bundle was built. Tests cover `theme` defaults, unknown and wrong-side ids, mode stepping, a byte-identical Shika chrome and palette snapshot across solid, glass, and Reduce transparency, and, for every catalog theme plus synthetic dark, light, and low-contrast themes, 4.5:1 secondary and status text on the column, the active tab matching the terminal, the shared column background, and solid popups. The bundle was opened with a disposable `--data-dir` and a forced mode opposite macOS's; it started and was quit. No screenshots or input were taken, so nothing below is established.

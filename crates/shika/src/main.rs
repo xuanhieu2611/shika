@@ -561,6 +561,11 @@ struct Shika {
     last_revealed_selection: Option<Selection>,
     busy: bool,
     toast: Option<(String, Instant)>,
+    /// The corner update notice. A release build sets it from Sparkle.
+    /// `--preview-update` paints a sample so the layout can be seen locally.
+    update_notice: Option<updates::UpdateCard>,
+    /// Clicks on the sample card only change the picture.
+    preview_update: bool,
     leftovers: Vec<JournalEntry>,
     leftover_selected: usize,
     clock: Instant,
@@ -615,6 +620,7 @@ impl Shika {
         core: Arc<Core>,
         settings: shika_core::Result<Settings>,
         diagnostics: Option<PathBuf>,
+        preview_update: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -679,6 +685,8 @@ impl Shika {
             } else {
                 Some((load_errors.join("; "), Instant::now()))
             },
+            update_notice: preview_update.then(sample_update_notice),
+            preview_update,
             leftovers,
             leftover_selected: 0,
             clock: Instant::now(),
@@ -757,6 +765,66 @@ impl Shika {
     }
     fn message(&mut self, text: String) {
         self.toast = Some((text, Instant::now()));
+    }
+    /// Sparkle posts on the main thread. The corner card reads the queue here,
+    /// and again immediately after a click.
+    fn drain_update_notice(&mut self, cx: &App) -> bool {
+        if !cx.has_global::<updates::Updater>() {
+            return false;
+        }
+        let mut changed = false;
+        for event in cx.global::<updates::Updater>().poll() {
+            changed = true;
+            match event {
+                updates::UpdateEvent::Show(card) => self.update_notice = Some(card),
+                updates::UpdateEvent::Clear => self.update_notice = None,
+                updates::UpdateEvent::Toast(text) => self.message(text),
+            }
+        }
+        changed
+    }
+    fn answer_update(&mut self, action: updates::CardAction, cx: &mut Context<Self>) {
+        if self.preview_update {
+            self.advance_update_preview(action);
+            cx.notify();
+            return;
+        }
+        let open = match (&action, &self.update_notice) {
+            (
+                updates::CardAction::Primary,
+                Some(updates::UpdateCard::Available {
+                    offer: Some(updates::Offer::Open(url)),
+                    ..
+                }),
+            ) => Some(url.clone()),
+            _ => None,
+        };
+        if let Some(url) = open {
+            cx.open_url(&url);
+        }
+        if cx.has_global::<updates::Updater>() {
+            cx.global::<updates::Updater>().respond(action);
+        }
+        self.drain_update_notice(cx);
+        cx.notify();
+    }
+    /// The sample card. Download shows the restart card. Every other button closes it.
+    fn advance_update_preview(&mut self, action: updates::CardAction) {
+        self.update_notice = match (&self.update_notice, action) {
+            (
+                Some(updates::UpdateCard::Available {
+                    offer: Some(updates::Offer::Download),
+                    version,
+                    ..
+                }),
+                updates::CardAction::Primary,
+            ) => Some(updates::UpdateCard::Ready {
+                version: version.clone(),
+            }),
+            (Some(updates::UpdateCard::Available { .. }), updates::CardAction::Secondary)
+            | (Some(updates::UpdateCard::Ready { .. }), _) => None,
+            (other, _) => other.clone(),
+        };
     }
     fn selected_card(&self) -> Option<usize> {
         match self.selection {
@@ -1762,7 +1830,7 @@ impl Shika {
             cx.notify();
         }
         let now = Instant::now();
-        let mut changed = false;
+        let mut changed = self.drain_update_notice(cx);
         // The Lead's shika commands run here, with the rest of the state.
         self.drain_control(window, cx);
         // Reconcile agent/shell branch renames independently of the one-shot
@@ -5328,7 +5396,66 @@ impl Shika {
                     ),
             );
         }
+        if let Some(card) = &self.update_notice
+            && !card.centered()
+        {
+            right = right.child(
+                div()
+                    .absolute()
+                    .bottom(px(22.))
+                    .right(px(20.))
+                    .child(self.update_notice_panel(card, chrome, window, cx)),
+            );
+        }
         right
+    }
+
+    /// The update card. It does not take focus, so typing and Escape stay in
+    /// the terminal. 320 is the column's minimum, with the card's own padding.
+    fn update_notice_panel(
+        &self,
+        card: &updates::UpdateCard,
+        chrome: &Chrome,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let notice = card.view();
+        let max_h = (window.viewport_size().height - px(44.)).max(px(120.));
+        let mut panel = panel_shell("update-notice", 320., max_h, chrome)
+            .occlude()
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .pt(px(12.))
+            .px(px(14.))
+            .pb(px(11.))
+            .gap(px(6.))
+            .child(dialog_title(div()).child(notice.title))
+            .child(dialog_text(chrome).child(notice.body));
+        if notice.secondary.is_some() || notice.primary.is_some() {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .flex_wrap()
+                    .when_some(notice.secondary, |row, label| {
+                        row.child(
+                            notice_secondary("update-secondary", label, chrome).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.answer_update(updates::CardAction::Secondary, cx)
+                                }),
+                            ),
+                        )
+                    })
+                    .when_some(notice.primary, |row, label| {
+                        row.child(notice_primary("update-primary", label, chrome).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.answer_update(updates::CardAction::Primary, cx)
+                            }),
+                        ))
+                    }),
+            );
+        }
+        panel
     }
 
     /// A pointer-anchored menu with a transparent, click-consuming backdrop.
@@ -6806,6 +6933,42 @@ fn dialog_button(
         )
 }
 
+/// A notice button with no key. The update card does not take focus.
+fn notice_secondary(
+    id: &'static str,
+    label: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    secondary_button(id, chrome)
+        .px(px(12.))
+        .py(px(6.))
+        .child(label)
+}
+
+/// The ink-filled notice button, with the primary button's padding and no key.
+fn notice_primary(
+    id: &'static str,
+    label: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    let hover = chrome.primary_hover;
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .rounded(px(7.))
+        .px(px(12.))
+        .py(px(7.))
+        .bg(chrome.primary_bg)
+        .text_color(chrome.primary_fg)
+        .text_size(px(12.5))
+        .line_height(px(16.))
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .child(label)
+}
+
 /// The ink-filled primary action of a dialog.
 fn primary_button(
     id: impl Into<gpui::ElementId>,
@@ -6919,10 +7082,19 @@ fn list_row(selected: bool, chrome: &Chrome) -> gpui::Div {
         .when(selected, |d| d.bg(chrome.row_selected))
 }
 
-/// The floating surface shared by the picker and every dialog.
+/// The floating surface shared by the picker, every dialog, and the update notice.
 fn dialog_shell(width: f32, max_h: Pixels, chrome: &Chrome) -> gpui::Stateful<gpui::Div> {
+    panel_shell("overlay-panel", width, max_h, chrome)
+}
+
+fn panel_shell(
+    id: &'static str,
+    width: f32,
+    max_h: Pixels,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
     div()
-        .id("overlay-panel")
+        .id(id)
         .w(px(width))
         .max_h(max_h)
         .overflow_y_scroll()
@@ -7087,10 +7259,30 @@ impl Render for Shika {
                 let left = window.viewport_size().width - width;
                 self.changes_handle(left, &chrome, cx)
             }));
+        if let Some(card) = &self.update_notice
+            && card.centered()
+        {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(self.update_notice_panel(card, &chrome, window, cx)),
+            );
+        }
         if let Some(overlay) = &self.overlay {
             root = root.child(self.overlay_view(overlay, &chrome, home.as_deref(), window, cx));
         }
         root
+    }
+}
+fn sample_update_notice() -> updates::UpdateCard {
+    updates::UpdateCard::Available {
+        version: "0.6.0".into(),
+        body: updates::available_body("", false, Some(&updates::Offer::Download)),
+        offer: Some(updates::Offer::Download),
     }
 }
 fn main() -> anyhow::Result<()> {
@@ -7106,9 +7298,11 @@ fn main() -> anyhow::Result<()> {
     }
     let mut data = None;
     let mut diagnostics = None;
+    let mut preview_update = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--preview-update" => preview_update = true,
             "--data-dir" => {
                 data = Some(PathBuf::from(
                     args.next()
@@ -7226,7 +7420,12 @@ fn main() -> anyhow::Result<()> {
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(1400.), px(880.)), cx);
+        let mut bounds = Bounds::centered(None, size(px(1400.), px(880.)), cx);
+        // The sample sits beside a normal window instead of covering it.
+        if preview_update {
+            bounds.origin.x += px(48.);
+            bounds.origin.y += px(36.);
+        }
         let settings = core.settings();
         let start = settings.as_ref().map(|s| s.appearance).unwrap_or_default();
         // Before the window opens, so it starts in the forced appearance.
@@ -7236,7 +7435,11 @@ fn main() -> anyhow::Result<()> {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Shika".into()),
+                        title: Some(if preview_update {
+                            "Shika preview".into()
+                        } else {
+                            "Shika".into()
+                        }),
                         appears_transparent: true,
                         // Centers the traffic lights in the 48px top row.
                         traffic_light_position: Some(gpui::point(
@@ -7253,7 +7456,9 @@ fn main() -> anyhow::Result<()> {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let app = cx.new(|cx| Shika::new(core, settings, diagnostics, window, cx));
+                    let app = cx.new(|cx| {
+                        Shika::new(core, settings, diagnostics, preview_update, window, cx)
+                    });
                     window.focus(&app.focus_handle(cx), cx);
                     app
                 },
