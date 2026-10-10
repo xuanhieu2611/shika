@@ -479,6 +479,23 @@ enum Overlay {
         highlight: Option<usize>,
     },
 }
+impl Overlay {
+    /// How a refusal names this overlay to a Lead.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::CardMenu(_) => "a card menu",
+            Self::Rename { .. } => "the Rename task dialog",
+            Self::Publish { .. } => "the Create PR dialog",
+            Self::Picker { .. } => "the New picker",
+            Self::Close { .. } | Self::SwitchedClose { .. } => "the Close task dialog",
+            Self::Preparation { .. } => "the setup approval dialog",
+            Self::Leftovers | Self::RemoveLeftover(_) => "the leftovers list",
+            Self::RemoveProject(_) => "the Remove project dialog",
+            Self::Settings { .. } => "Settings",
+            Self::Base { .. } => "the Base branch dialog",
+        }
+    }
+}
 struct Shika {
     core: Arc<Core>,
     projects: Vec<Project>,
@@ -537,6 +554,9 @@ struct Shika {
     changes: changes::Panel,
     /// The Lead's control socket, or why there is none.
     control: Option<control::Server>,
+    /// The Create PR or Close dialog a Lead's `shika pr` or `shika close` is
+    /// waiting on. See `control::LeadDialog`.
+    lead_dialog: Option<control::LeadDialog>,
     control_error: Option<String>,
 }
 impl Shika {
@@ -628,6 +648,7 @@ impl Shika {
             bases: HashMap::new(),
             changes,
             control,
+            lead_dialog: None,
             control_error,
         };
         cx.spawn_in(window, async move |this, cx| {
@@ -2330,6 +2351,18 @@ impl Shika {
         })
         .detach();
     }
+    /// Why Create PR is unavailable for the card at `index`. The shortcut and
+    /// a Lead's `shika pr` both ask this, so they never disagree.
+    fn publish_blocker(&self, index: usize) -> Option<&'static str> {
+        let card = &self.cards[index];
+        if card.lead.is_some() {
+            Some("The Lead has no branch, so there is nothing to publish.")
+        } else if card.creating || card.running() {
+            Some("Wait for the agent to finish before publishing.")
+        } else {
+            None
+        }
+    }
     fn create_pr(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;
@@ -2337,21 +2370,17 @@ impl Shika {
         let Some(index) = self.selected_card() else {
             return;
         };
+        if let Some(why) = self.publish_blocker(index) {
+            self.message(why.into());
+            cx.notify();
+            return;
+        }
         let card = &self.cards[index];
-        if card.lead.is_some() {
-            self.message("The Lead has no branch, so there is nothing to publish.".into());
-            cx.notify();
-            return;
-        }
-        if card.creating || card.running() {
-            self.message("Wait for the agent to finish before publishing.".into());
-            cx.notify();
-            return;
-        }
         let Some(session) = &card.session else {
             return;
         };
         let id = session.id.clone();
+        let session_id = id.clone();
         let core = self.core.clone();
         self.overlay_return_focus = window.focused(cx);
         self.busy = true;
@@ -2380,9 +2409,11 @@ impl Shika {
                     }
                     Err(e) => {
                         this.overlay_return_focus = None;
+                        this.lead_dialog_failed(&session_id, e.to_string());
                         this.message(e.to_string());
                     }
                 }
+                this.settle_lead_dialog(window, cx);
                 cx.notify();
             });
         })
@@ -2433,6 +2464,7 @@ impl Shika {
                     Ok(published) => {
                         this.overlay = None;
                         this.restore_overlay_focus(window, cx);
+                        this.lead_dialog_succeeded(&session_id, published.url.clone());
                         if let Some(card) = this.cards.iter_mut().find(|c| {
                             c.session.as_ref().is_some_and(|s| s.id == session_id)
                         }) {
@@ -2442,11 +2474,13 @@ impl Shika {
                         cx.open_url(&published.url);
                     }
                     Err(e) => {
+                        this.lead_dialog_failed(&session_id, control::publish_failure(&e.to_string()));
                         if let Some(Overlay::Publish { error, .. }) = &mut this.overlay {
                             *error = Some(format!("{e} Completed commits and pushes were kept. Cancel and reopen Create PR to retry."));
                         }
                     }
                 }
+                this.settle_lead_dialog(window, cx);
                 cx.notify();
             });
         }).detach();
@@ -2610,6 +2644,7 @@ impl Shika {
             return;
         };
         let id = session.id.clone();
+        let task_id = id.clone();
         let working = self.cards[index].running();
         let core = self.core.clone();
         self.overlay_return_focus = window.focused(cx);
@@ -2645,9 +2680,11 @@ impl Shika {
                     Ok(_) => this.finish_close(index, 0, window, cx),
                     Err(e) => {
                         this.overlay_return_focus = None;
+                        this.lead_dialog_failed(&task_id, e.to_string());
                         this.message(e.to_string());
                     }
                 };
+                this.settle_lead_dialog(window, cx);
                 cx.notify();
             });
         })
@@ -2667,6 +2704,7 @@ impl Shika {
             return;
         };
         let id = session.id.clone();
+        let task_id = id.clone();
         // Use the same check before showing choices and before removing the
         // task. Redraw bytes and draft typing are never active-turn evidence.
         let working = self.cards[index].running();
@@ -2695,6 +2733,7 @@ impl Shika {
                 this.busy = false;
                 match result {
                     Ok(()) => {
+                        this.lead_dialog_succeeded(&task_id, control::close_outcome(action).into());
                         this.cards.remove(index);
                         this.overlay = None;
                         this.overlay_return_focus = None;
@@ -2707,8 +2746,12 @@ impl Shika {
                         };
                         window.focus(&this.focus, cx);
                     }
-                    Err(e) => this.message(e.to_string()),
+                    Err(e) => {
+                        this.lead_dialog_failed(&task_id, e.to_string());
+                        this.message(e.to_string());
+                    }
                 };
+                this.settle_lead_dialog(window, cx);
                 cx.notify();
             });
         })
@@ -2721,8 +2764,11 @@ impl Shika {
         self.commit_setting_edit(window, cx);
         let shell = match &self.overlay {
             // The Lead has no shell to commit in.
+            // A Lead that asked for the dialog gets selection and focus back.
             Some(Overlay::Close { index, state })
-                if (state.dirty || state.unpushed) && self.cards[*index].lead.is_none() =>
+                if (state.dirty || state.unpushed)
+                    && self.cards[*index].lead.is_none()
+                    && !self.lead_dialog_is_for(*index) =>
             {
                 Some(*index)
             }
@@ -2742,6 +2788,7 @@ impl Shika {
         } else {
             self.restore_overlay_focus(window, cx);
         }
+        self.settle_lead_dialog(window, cx);
         cx.notify();
     }
     fn remove_project(&mut self, id: String, cx: &mut Context<Self>) {

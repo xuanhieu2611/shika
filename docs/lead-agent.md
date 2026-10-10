@@ -1,6 +1,6 @@
 # Lead agent
 
-Status: implemented: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, and `key`, the doorbell that wakes an idle Lead, and the Lead card and picker. `pr` and `close` are not built yet; the sections that describe them are the contract for the next phase. GUI acceptance is pending (see [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#lead-agent-spike)). This guide records the decision and the contract the implementation keeps. Update it with the code.
+Status: implemented: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, and `close`, the doorbell that wakes an idle Lead, and the Lead card and picker. GUI acceptance of `pr` and `close` is pending (see [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#lead-agent-spike)). This guide records the decision and the contract the implementation keeps. Update it with the code.
 
 Reference material lives beside it: [shika-cli.md](shika-cli.md) is the command reference (syntax, exact output, exit codes, `wait` rules, protocol, security model, debugging, and how to add a command), and [crates/shika-core/README.md](../crates/shika-core/README.md) maps the crate that holds the shared protocol and the Lead session code. This guide keeps the why; those hold the details.
 
@@ -32,8 +32,9 @@ Shika's version differs from those on purpose:
 - **Workers.** `shika new` does exactly what New does: a fresh `shika-draft-<id>` worktree from the project's base (or `--base`), preparation and its approval, the preset's launch flags, branch naming from the prompt and then the CLI title. The worker card appears in the project like any other, marked as started by the Lead. Notifications, status, timers, the Changes panel, Create PR, and Close behave as they do today.
 - **Authority stays with the author.**
   - The Lead cannot merge, push, or commit through Shika. Workers are CLIs and may commit in their own worktree, as they can today; the guide asks them not to push.
-  - `shika pr` opens the existing Create PR confirmation for the author. Nothing is published without that confirmation.
-  - `shika close` closes a task only when Close would not need to ask (clean, nothing unpublished, not working). Otherwise it opens the normal close dialog for the author.
+  - `shika pr` selects the worker's card and opens the existing Create PR confirmation for the author, exactly as Cmd+Shift+P does, and blocks until they confirm or cancel. Nothing is published without that confirmation.
+  - `shika close` closes a task directly only when Close would not need to ask (clean, nothing unpublished, not working or blocked). Otherwise it opens the normal close dialog for the author and prints what they chose. Shika never chooses for the author.
+  - Both are refused while another dialog is open or another Lead dialog is pending, and work only on workers this Lead started. When the dialog ends, selection and focus return to the Lead.
   - The author can still do everything by hand on any card.
 - **Questions.** When a worker shows Asking, the author sees the usual notification and can answer in that terminal. The Lead sees the same state through `shika wait` or the doorbell, reads the dialog with `shika read`, and may answer: a folder trust or first-run dialog for the worker's own Shika worktree with `shika key`, a real question its instructions answer with `shika send`. Anything else, and anything destructive or outside the worker's worktree, goes to the author, naming the task.
 - **Finishing.** The Lead is woken when workers settle, checks each with `shika diff` before it reports, and does not edit files itself.
@@ -53,10 +54,10 @@ The app binary doubles as the client. When its first argument is a command word 
 | `shika diff <task> [--stat]` | The task's changes, computed exactly as the Changes panel and diff stat are, as unified diff text. |
 | `shika send <task> [--no-enter] <text...>` | Types `text` into the worker's agent terminal as a bracketed paste, then Enter as a separate delayed write. With Enter it starts a turn like a typed line. |
 | `shika key <task> <key>...` | Presses named keys in order (`enter`, `escape`, arrows, `tab`, `space`, `backspace`, `a`-`z`, `0`-`9`), for answering dialogs. |
-| `shika pr <task>` | Selects the card and opens Create PR. Blocks until the author confirms or cancels, then prints the PR URL or `cancelled`. |
-| `shika close <task>` | Closes the task when Close would not ask; otherwise opens the close dialog and prints the outcome. |
+| `shika pr <task>` | Selects the card and opens Create PR. Blocks until the author confirms or cancels, then prints the PR URL, `refused: The author cancelled.` (exit 1), or the error (exit 2). Refused while the task is Working, Asking, or Exited. |
+| `shika close <task>` | Closes the task when Close would not ask (prints `closed`); otherwise opens the close dialog, blocks, and prints what the author chose or that they cancelled. |
 
-Everything above exists except `pr` and `close`, which are the contract for the next phase. Each task line ends with `path=`, the worker's worktree, which the Lead may read and must not edit.
+Each task line ends with `path=`, the worker's worktree, which the Lead may read and must not edit.
 
 The prompt is passed to the worker CLI as its positional prompt. All four CLIs accept one (`claude [prompt]`, `codex [PROMPT]`, `agent [prompt...]`, `pi [messages...]`, checked from `--help` on 2026-10-09). Because nobody types it, Shika treats it as the first submission (see Positional prompts below): the card is named from its first line, the branch is renamed once through the existing first-prompt path, and the CLI's own title renames it later as usual.
 
@@ -80,6 +81,7 @@ The prompt is passed to the worker CLI as its positional prompt. All four CLIs a
 | Server: accept loop, one thread per connection, handoff to the UI thread | `shika/src/control.rs` (`Server`, `serve`, `Incoming`) |
 | Command handling and `wait` | `shika/src/control.rs`: `Shika::drain_control`, `handle_control`, `control_new`, `resolve_waiters`; pure parts `Ledger`, `Observed`, `resolve` |
 | Lead card state | `Card::lead` (`LeadState`: token, `Ledger`, waiters, `Doorbell`), `Card::started_by`, `Card::launch` (`Launch::{Task, Worker, Lead}`) |
+| `pr` and `close`: refusals, pending dialog, outcome to reply, focus return | `shika/src/control.rs`: `Shika::control_dialog`, `dialog_refusal`, `settle_lead_dialog`, `LeadDialog`, `dialog_reply`; hooks in `create_pr`, `publish_pr`, `close`, `finish_close`, `cancel_overlay` (`main.rs`); `Shika::publish_blocker` is shared with Cmd+Shift+P |
 | Doorbell, send and key typing, guards | `shika/src/control.rs`: `Doorbell`, `Gate`, `Shika::ring_doorbells`, `Shika::type_into`, `input_refusal`; `HostState::capture_typed`, `has_draft` in `main.rs` |
 | Terminal text for `read`; diff text for `diff` | `Terminal::text_with_history` (`shika-terminal`); `shika_core::render_unified` (`shika-core/src/diff.rs`) |
 | Launch prompt as the first submission | `HostState::seed_launch_prompt`, `Activity::hold_for_launch`; see [agent-activity.md](agent-activity.md#launch-prompts-and-turns) |
@@ -99,6 +101,8 @@ The prompt is passed to the worker CLI as its positional prompt. All four CLIs a
 **Doorbell, as built.** A Lead that ends its turn cannot see workers finish (the 2026-10-09 test: the Lead's `wait` had returned two Asking events, it ended its turn, and nothing told it when the workers finished). Each tick, `Shika::ring_doorbells` asks `Doorbell::due` for settlements (Ready, Asking, Exited) of the Lead's workers that no `wait` has reported and that were not rung before, keyed like `wait`'s ledger by (task, status, turn). It rings after a 1.5 second batch window, and only while `Gate` is open: no pending or in-delivery `wait`, the Lead card Ready or Waiting with no unprocessed submission, no unsent typed text in the Lead's terminal, no author typing for 3 seconds, and a live PTY. If any fails it rings later, when they clear. The line is `[shika] Workers changed: <id> "<title>" is ready; ... Run shika wait.`, submitted by `Shika::type_into`: a bracketed paste, then Enter as a separate write 150 ms later, because Codex's paste-burst handling reads an Enter inside a paste as a newline. It goes through the same typed-input capture as a keystroke (`HostState::capture_typed`), so the Lead's turn machinery treats it as a submission and the card shows Working. The writes do not stamp `last_typed`, so Shika never counts its own bell as the author typing. A bell does not mark a settlement reported; the Lead's `wait` does. The doorbell is on for every Lead and has no setting. Details and delivery failure rules: [shika-cli.md](shika-cli.md#the-doorbell).
 
 **`send` and `key`, as built.** `Shika::control_input` checks ownership and `input_refusal`, then `type_into` writes the steps (`paste_steps`, or `key_steps` through `shika_terminal::input::encode_key` for the terminal's mode). Their writes bypass `last_typed` but a `send` with Enter goes through the typed capture, so it is a submission; `--no-enter` and keys do not. If the author types between a paste and its Enter, the Enter is dropped.
+
+**`pr` and `close`, as built.** Both reuse the author's flows and add only a waiting reply. `Shika::control_dialog` runs the refusal checks (`dialog_refusal`: pending Lead dialog, any overlay or busy flag, ownership, setup, and for `pr` the status and `Shika::publish_blocker`, the same function `create_pr` uses), stores one `LeadDialog` in `Shika::lead_dialog`, selects the card, and calls `create_pr` or `close`. The flows report into it (`lead_dialog_succeeded`, `lead_dialog_failed`), and `Shika::settle_lead_dialog` answers once the dialog is gone and nothing is running. It runs after each flow step and on every tick, so a card, project, or Lead that disappears still answers; an app quit drops the channel and the connection thread answers. A failure leaves the dialog open for a retry and is sent only if the author then gives up; success wins. Cancelling a Close dialog does not send the author to the worker's shell when a Lead asked. Focus: selection goes to the Lead card and its terminal is focused (`focus_terminal`), because the author was talking to the Lead. Reply mapping and exit codes: [shika-cli.md](shika-cli.md#shika-pr-task).
 
 **Limit.** `MAX_WORKERS` (4) counts cards started by the Lead that are not exited, discarded, or failed, including finished ones the author has not closed.
 
@@ -123,13 +127,13 @@ The prompt is passed to the worker CLI as its positional prompt. All four CLIs a
 - Durable Lead memory or a project notes file shared between workers.
 - Schedules, triggers from CI or issues, and cloud execution.
 - A Lead across projects, or a Lead starting a Lead.
-- Granting the Lead permission to publish or close without the author's confirmation.
+- Granting the Lead permission to publish or close without the author's confirmation. `pr` and `close` always ask.
 
 ## Rollout
 
 1. **Spike.** Socket, token, `help`, `tasks`, `new`, `wait`, `status`, and a minimal Lead card. Acceptance: a Claude Code Lead starts two Codex workers on a disposable repository and reports when both are Ready, with no keystrokes from the author after the goal.
 2. **Read and steer.** `read`, `diff`, `send`, `key`, and the doorbell. Built.
-3. **Finish.** `pr` and `close` through the existing dialogs. The Lead card and picker UI per DESIGN.md.
+3. **Finish.** `pr` and `close` through the existing dialogs, and the Lead card and picker UI per DESIGN.md. Built; GUI acceptance pending.
 4. Record GUI acceptance in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md), then update [AGENTS.md](../AGENTS.md) and the docs index.
 
 Test against disposable repositories and `--data-dir`, never normal app data. Launch from a built `.app` with `open` to test CLI discovery and session titles.

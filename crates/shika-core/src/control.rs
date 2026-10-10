@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped when a request or reply changes shape. The server refuses a request
 /// with another version, so a stale `shika` never misreads a newer app.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The longest request line the server reads. A longer one is rejected.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -48,7 +48,7 @@ const MAX_SOCKET_PATH: usize = 103;
 pub const CLI_IDS: [&str; 4] = ["claude", "codex", "cursor", "pi"];
 
 /// Usage text for argument errors.
-pub const USAGE: &str = "usage: shika [--json] <command>\n  help\n  tasks\n  new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>\n  status <task>\n  wait [<task>...] [--timeout <seconds>]\n  read <task> [--lines <n>]\n  diff <task> [--stat]\n  send <task> [--no-enter] <text...>\n  key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)";
+pub const USAGE: &str = "usage: shika [--json] <command>\n  help\n  tasks\n  new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>\n  status <task>\n  wait [<task>...] [--timeout <seconds>]\n  read <task> [--lines <n>]\n  diff <task> [--stat]\n  send <task> [--no-enter] <text...>\n  key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)\n  pr <task>\n  close <task>";
 
 /// Why a control call failed. The client prints it and exits with status 2.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -148,6 +148,12 @@ pub enum Command {
     /// Press `keys` (names from [`KEY_NAMES`] or one of a-z, 0-9) in order in
     /// a worker's agent terminal. Only a worker this Lead started.
     Key { task: String, keys: Vec<String> },
+    /// Open the Create PR confirmation for a worker this Lead started, and
+    /// block until the author decides. The reply is the PR URL.
+    Pr { task: String },
+    /// Close a worker this Lead started: at once when Close needs no
+    /// confirmation, otherwise through the close dialog. Blocks until done.
+    Close { task: String },
 }
 
 /// The named keys `shika key` accepts besides single letters and digits.
@@ -374,7 +380,17 @@ pub fn render_text(reply: &Reply) -> String {
 pub fn is_command(word: &str) -> bool {
     matches!(
         word,
-        "help" | "tasks" | "new" | "status" | "wait" | "read" | "diff" | "send" | "key"
+        "help"
+            | "tasks"
+            | "new"
+            | "status"
+            | "wait"
+            | "read"
+            | "diff"
+            | "send"
+            | "key"
+            | "pr"
+            | "close"
     )
 }
 
@@ -484,6 +500,23 @@ pub fn parse_args(args: &[String]) -> Result<(Command, bool), String> {
         "diff" => parse_diff(rest, &mut json)?,
         "send" => parse_send(rest, &mut json)?,
         "key" => parse_key(rest, &mut json)?,
+        "pr" | "close" => {
+            let mut tasks = Vec::new();
+            for arg in rest {
+                if arg == "--json" {
+                    json = true;
+                } else if arg.starts_with('-') {
+                    return Err(usage_error(&format!("Unknown option {arg}.")));
+                } else {
+                    tasks.push(arg.clone());
+                }
+            }
+            match <[String; 1]>::try_from(tasks) {
+                Ok([task]) if word == "pr" => Command::Pr { task },
+                Ok([task]) => Command::Close { task },
+                Err(_) => return Err(usage_error(&format!("{word} takes exactly one task."))),
+            }
+        }
         other => return Err(usage_error(&format!("Unknown command {other}."))),
     };
     Ok((command, json))
@@ -661,8 +694,8 @@ fn io_error(err: &std::io::Error) -> ControlError {
 }
 
 /// Client side: connect to `socket`, send one request line, read one reply
-/// line. Blocking; `wait` blocks here for up to its timeout and `new` until
-/// the launch finishes.
+/// line. Blocking; `wait` blocks here for up to its timeout, `new` until the
+/// launch finishes, and `pr` and `close` until the author decides.
 pub fn send(socket: &Path, request: &Request) -> Result<Reply> {
     let mut stream = UnixStream::connect(socket).map_err(|err| {
         ControlError::Connect(format!(
@@ -675,12 +708,15 @@ pub fn send(socket: &Path, request: &Request) -> Result<Reply> {
     // project's `timeout-seconds`, and a client that gave up early would
     // leave the worker running with no one told its id. The server always
     // answers a live app (the launch result, or an error), and a quitting
-    // app closes the socket, which ends the read with EOF.
+    // app closes the socket, which ends the read with EOF. `pr` and `close`
+    // wait for the author at a confirmation dialog and are unbounded for the
+    // same reason: the server answers on confirm, cancel, or any way the
+    // dialog goes away.
     let patience = match &request.command {
         Command::Wait { timeout_secs, .. } => {
             Some(Duration::from_secs(timeout_secs.saturating_add(30)))
         }
-        Command::New { .. } => None,
+        Command::New { .. } | Command::Pr { .. } | Command::Close { .. } => None,
         _ => Some(Duration::from_secs(60)),
     };
     stream
@@ -881,6 +917,8 @@ mod tests {
                 task: "a".into(),
                 keys: vec!["down".into(), "enter".into()],
             },
+            Command::Pr { task: "a".into() },
+            Command::Close { task: "a".into() },
         ];
         for command in commands {
             let request = Request::new("tok", command);
@@ -925,7 +963,7 @@ mod tests {
         }
         assert_eq!(
             serde_json::to_string(&Request::new("t", Command::Tasks)).unwrap(),
-            r#"{"version":2,"token":"t","command":{"type":"tasks"}}"#
+            r#"{"version":3,"token":"t","command":{"type":"tasks"}}"#
         );
     }
 
@@ -1045,6 +1083,15 @@ mod tests {
                 },
                 false
             )
+        );
+        assert_eq!(ok("pr abc"), (Command::Pr { task: "abc".into() }, false));
+        assert_eq!(
+            ok("--json close abc"),
+            (Command::Close { task: "abc".into() }, true)
+        );
+        assert_eq!(
+            ok("pr abc --json"),
+            (Command::Pr { task: "abc".into() }, true)
         );
         assert_eq!(
             ok("wait"),
@@ -1188,6 +1235,12 @@ mod tests {
             "key a f13",
             "key a enter --nope",
             "key a ab",
+            "pr",
+            "pr a b",
+            "pr --nope",
+            "close",
+            "close a b",
+            "close a --nope",
         ] {
             let err = parse_args(&args(words)).unwrap_err();
             assert!(err.contains("usage: shika"), "{words:?}: {err}");
@@ -1201,7 +1254,7 @@ mod tests {
     #[test]
     fn command_words_decide_client_mode() {
         for word in [
-            "help", "tasks", "new", "status", "wait", "read", "diff", "send", "key",
+            "help", "tasks", "new", "status", "wait", "read", "diff", "send", "key", "pr", "close",
         ] {
             assert!(is_command(word));
         }

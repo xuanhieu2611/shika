@@ -188,12 +188,12 @@ Both read only the task worktree. `worktree::read_only_git` sets `GIT_OPTIONAL_L
 `shika_core::control` is the one public module. It defines everything the `shika` command and the app server share, and nothing about the server's state. In short:
 
 - One Unix-socket connection carries one JSON request line and one JSON reply line.
-- A request is `{ version, token, command }`. Commands: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`. Replies: `help`, `tasks`, `started`, `status`, `waited`, `text`, `done`, `refused`, `error`. `TaskInfo` carries the worker's worktree `path`.
-- `PROTOCOL_VERSION` (currently 2) must match, or the server refuses. The request line is capped at `MAX_REQUEST_BYTES` (1 MiB).
+- A request is `{ version, token, command }`. Commands: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, `close`. Replies: `help`, `tasks`, `started`, `status`, `waited`, `text`, `done` (also the PR URL and `closed ...`), `refused`, `error`. `TaskInfo` carries the worker's worktree `path`.
+- `PROTOCOL_VERSION` (currently 3) must match, or the server refuses. The request line is capped at `MAX_REQUEST_BYTES` (1 MiB).
 - `ControlDir::create` makes the per-run `0700` directory holding `sock` and `bin/shika`, a symlink to the running executable.
 - `parse_args` and `render_text` are the client's front and back end; `--json` prints the reply as serialized. An unknown command word is a usage error (exit 2). `is_client_invocation(args, lead_env)` decides client or app: with `SHIKA_SOCKET` or `SHIKA_TOKEN` set it is always the client, otherwise only a command word is.
 - `key_name` normalizes and validates `shika key` names (`KEY_NAMES`, `MAX_KEYS`); `MAX_READ_LINES` bounds `read --lines`. The app turns names into bytes with `shika_terminal::input`; core stays free of terminal types.
-- `send` has no read timeout for `new` (preparation can take `timeout-seconds`; the server always answers or closes the socket), `timeout_secs + 30` for `wait`, 60 seconds otherwise.
+- `send` has no read timeout for `new` (preparation can take `timeout-seconds`; the server always answers or closes the socket) or for `pr` and `close` (they wait for the author), `timeout_secs + 30` for `wait`, 60 seconds otherwise.
 
 The command reference, wire examples, `wait` semantics, security model, debugging, and the checklist for adding a command are in [docs/shika-cli.md](../../docs/shika-cli.md). The product decision is in [docs/lead-agent.md](../../docs/lead-agent.md). The server is `crates/shika/src/control.rs`.
 

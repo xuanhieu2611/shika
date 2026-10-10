@@ -13,7 +13,7 @@
 //! Lead is idle and its author is not typing, Shika submits one `[shika]` line
 //! into the Lead's terminal. `send` and `key` use the same typing path
 //! ([`Shika::type_into`]) with the guard in [`input_refusal`].
-use crate::{Card, HostState, Launch, Shika, lock, model::Status};
+use crate::{Card, HostState, Launch, Overlay, Selection, Shika, lock, model::Status};
 use gpui::{Context, Window};
 use shika_core::LaunchOptions;
 use shika_core::control::{
@@ -659,6 +659,107 @@ pub fn failure_reply(error: &shika_core::Error) -> Reply {
     }
 }
 
+/// Which confirmation a Lead asked the author for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogKind {
+    /// Create PR, from `shika pr`.
+    Pr,
+    /// The close dialog, or a direct close, from `shika close`.
+    Close,
+}
+
+/// The one `pr` or `close` waiting on the author. Shika holds at most one,
+/// because both flows open a dialog and only one overlay exists at a time.
+/// It outlives the dialog just long enough to answer the client and give the
+/// selection and focus back to the Lead.
+pub struct LeadDialog {
+    kind: DialogKind,
+    /// Session id of the Lead that asked.
+    lead_id: String,
+    /// Session id of the worker the dialog is about.
+    task: String,
+    reply: Sender<Reply>,
+    /// Set when the flow succeeded: the PR URL, or what Close did.
+    outcome: Option<String>,
+    /// The last failure the flow reported. The dialog stays open for a retry,
+    /// so it is only sent if the author then gives up.
+    error: Option<String>,
+}
+
+/// Why a Lead's dialog cannot open right now, from the state of Shika alone.
+/// `open` names an overlay already on screen. None when it may go ahead.
+pub fn dialog_gate_refusal(pending: bool, busy: bool, open: Option<&str>) -> Option<String> {
+    if pending {
+        return Some(
+            "Another dialog from this Lead is already waiting for the author. Try again after they answer it."
+                .into(),
+        );
+    }
+    if let Some(open) = open {
+        return Some(format!(
+            "Shika has {open} open. The author has to finish or dismiss it first; try again later."
+        ));
+    }
+    busy.then(|| "Shika is busy with another operation. Try again in a moment.".into())
+}
+
+/// `pr` needs a task that has finished a turn: the same condition as Create PR
+/// ([`crate::Shika::publish_blocker`]) plus the states a Lead can see.
+pub fn pr_status_refusal(task: &str, status: TaskStatus) -> Option<String> {
+    match status {
+        TaskStatus::Working | TaskStatus::Starting => Some(format!(
+            "{task} is still working. Run shika wait, then try again."
+        )),
+        TaskStatus::Asking => Some(format!(
+            "{task} is waiting on a question or permission. Answer it first."
+        )),
+        TaskStatus::Exited => Some(format!("{task} has exited, so it cannot be published.")),
+        TaskStatus::Waiting | TaskStatus::Ready => None,
+    }
+}
+
+/// What a finished `close` reports for the close action the author chose
+/// (the numbers `finish_close` takes).
+pub fn close_outcome(action: u8) -> &'static str {
+    match action {
+        1 => "closed (the author discarded the worktree and branch)",
+        2 => "closed (the author pushed the branch first)",
+        3 => "closed (the author used branch-switch recovery; both local branches were kept)",
+        _ => "closed",
+    }
+}
+
+/// A publish failure as the Lead reads it. The dialog adds how to retry.
+pub fn publish_failure(error: &str) -> String {
+    format!("{error} Completed commits and pushes were kept.")
+}
+
+/// The reply for a dialog that ended. Success wins, then the last failure the
+/// flow reported, then the reasons the dialog could not finish, and last the
+/// author cancelling it.
+pub fn dialog_reply(
+    outcome: Option<String>,
+    error: Option<String>,
+    lead_open: bool,
+    task_open: bool,
+) -> Reply {
+    if let Some(message) = outcome {
+        Reply::Done { message }
+    } else if let Some(message) = error {
+        Reply::Error { message }
+    } else if !lead_open {
+        Reply::Error {
+            message: "The Lead was closed before the author answered.".into(),
+        }
+    } else if !task_open {
+        Reply::Error {
+            message: "The task is no longer in Shika.".into(),
+        }
+    } else {
+        refused("The author cancelled.")
+    }
+}
+
 impl Card {
     /// The state the Lead sees. A prompt that was just handed to the CLI
     /// counts as Working before the tick consumes it, so a `wait` right after
@@ -737,6 +838,7 @@ impl Shika {
         while let Some(incoming) = self.control.as_ref().and_then(Server::next) {
             self.handle_control(incoming, window, cx);
         }
+        self.settle_lead_dialog(window, cx);
         let now = Instant::now();
         self.resolve_waiters(now);
         self.ring_doorbells(now, window, cx);
@@ -845,6 +947,22 @@ impl Shika {
                 );
                 return;
             }
+            Command::Pr { task } => {
+                self.control_dialog(DialogKind::Pr, &lead_id, &project, task, reply, window, cx);
+                return;
+            }
+            Command::Close { task } => {
+                self.control_dialog(
+                    DialogKind::Close,
+                    &lead_id,
+                    &project,
+                    task,
+                    reply,
+                    window,
+                    cx,
+                );
+                return;
+            }
             Command::Wait {
                 tasks,
                 timeout_secs,
@@ -870,6 +988,185 @@ impl Shika {
             }
         };
         let _ = reply.send(answer);
+    }
+
+    /// `shika pr` and `shika close`: select the worker's card and run the
+    /// ordinary Create PR or Close flow, which asks the author. The reply is
+    /// sent by [`Self::settle_lead_dialog`] when the dialog ends.
+    #[allow(clippy::too_many_arguments)]
+    fn control_dialog(
+        &mut self,
+        kind: DialogKind,
+        lead_id: &str,
+        project: &str,
+        task: String,
+        reply: Sender<Reply>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(reason) = self.dialog_refusal(kind, lead_id, project, &task) {
+            let _ = reply.send(refused(reason));
+            return;
+        }
+        let Some(index) = self
+            .cards
+            .iter()
+            .position(|card| card.session.as_ref().is_some_and(|s| s.id == task))
+        else {
+            let _ = reply.send(refused(format!("No task {task} in this project.")));
+            return;
+        };
+        self.lead_dialog = Some(LeadDialog {
+            kind,
+            lead_id: lead_id.to_string(),
+            task,
+            reply,
+            outcome: None,
+            error: None,
+        });
+        self.selection = Some(Selection::Card(index));
+        match kind {
+            DialogKind::Pr => self.create_pr(window, cx),
+            DialogKind::Close => self.close(window, cx),
+        }
+        // The flows start with `busy` set. If neither that nor a dialog
+        // appeared, nothing will ever answer, so answer now.
+        if !self.busy
+            && self.overlay.is_none()
+            && let Some(dialog) = self.lead_dialog.take()
+        {
+            let _ = dialog
+                .reply
+                .send(refused("Shika could not open the dialog. Try again."));
+        }
+        cx.notify();
+    }
+
+    /// The refusal for a `pr` or `close`, or None when it may proceed.
+    fn dialog_refusal(
+        &self,
+        kind: DialogKind,
+        lead_id: &str,
+        project: &str,
+        task: &str,
+    ) -> Option<String> {
+        if let Some(reason) = dialog_gate_refusal(
+            self.lead_dialog.is_some(),
+            self.busy,
+            self.overlay.as_ref().map(Overlay::name),
+        ) {
+            return Some(reason);
+        }
+        let Some(card) = self.project_card(project, task) else {
+            return Some(format!("No task {task} in this project."));
+        };
+        if card.started_by.as_deref() != Some(lead_id) {
+            let verb = match kind {
+                DialogKind::Pr => "publish",
+                DialogKind::Close => "close",
+            };
+            return Some(format!(
+                "{task} was not started by this Lead, so it cannot {verb} it."
+            ));
+        }
+        if card.creating || card.launch_error.is_some() {
+            return Some(format!("{task} is still being set up."));
+        }
+        if kind == DialogKind::Close {
+            return None;
+        }
+        pr_status_refusal(task, card.control_status()).or_else(|| {
+            let index = self.cards.iter().position(|c| std::ptr::eq(c, card))?;
+            self.publish_blocker(index).map(str::to_string)
+        })
+    }
+
+    /// Whether the dialog `kind` for `task` is on screen.
+    fn lead_dialog_open(&self, kind: DialogKind, task: &str) -> bool {
+        let card_is = |index: &usize| {
+            self.cards
+                .get(*index)
+                .and_then(|card| card.session.as_ref())
+                .is_some_and(|s| s.id == task)
+        };
+        match (&self.overlay, kind) {
+            (Some(Overlay::Publish { preview, .. }), DialogKind::Pr) => preview.session_id == task,
+            (
+                Some(Overlay::Close { index, .. } | Overlay::SwitchedClose { index, .. }),
+                DialogKind::Close,
+            ) => card_is(index),
+            _ => false,
+        }
+    }
+
+    /// Records that the pending dialog for `task` succeeded.
+    pub(crate) fn lead_dialog_succeeded(&mut self, task: &str, outcome: String) {
+        if let Some(dialog) = self.lead_dialog.as_mut().filter(|d| d.task == task) {
+            dialog.outcome = Some(outcome);
+        }
+    }
+
+    /// Records the latest failure of the pending dialog for `task`.
+    pub(crate) fn lead_dialog_failed(&mut self, task: &str, error: String) {
+        if let Some(dialog) = self.lead_dialog.as_mut().filter(|d| d.task == task) {
+            dialog.error = Some(error);
+        }
+    }
+
+    /// Whether the pending Lead dialog is about the card at `index`.
+    pub(crate) fn lead_dialog_is_for(&self, index: usize) -> bool {
+        self.lead_dialog.as_ref().is_some_and(|dialog| {
+            self.cards
+                .get(index)
+                .and_then(|card| card.session.as_ref())
+                .is_some_and(|s| s.id == dialog.task)
+        })
+    }
+
+    /// Answers the waiting `pr` or `close` once its dialog is gone and no
+    /// flow is still running, then gives the selection and focus back to the
+    /// Lead, since the author was talking to it. Called from every place a
+    /// dialog can end and from the tick, so a dialog that goes away any other
+    /// way (the card or project removed) never leaves the client hanging. If
+    /// the Lead itself is gone the client is answered at once and any dialog
+    /// stays open for the author.
+    pub(crate) fn settle_lead_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = &self.lead_dialog else {
+            return;
+        };
+        let lead = self.cards.iter().position(|card| {
+            card.lead.is_some()
+                && card
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.id == dialog.lead_id)
+        });
+        let task_open = self
+            .cards
+            .iter()
+            .any(|card| card.session.as_ref().is_some_and(|s| s.id == dialog.task));
+        let running = self.lead_dialog_open(dialog.kind, &dialog.task)
+            || (self.busy && self.overlay.is_none());
+        if running && lead.is_some() && task_open {
+            return;
+        }
+        let Some(dialog) = self.lead_dialog.take() else {
+            return;
+        };
+        let _ = dialog.reply.send(dialog_reply(
+            dialog.outcome,
+            dialog.error,
+            lead.is_some(),
+            task_open,
+        ));
+        if let Some(lead) = lead
+            && self.overlay.is_none()
+        {
+            self.selection = Some(Selection::Card(lead));
+            self.overlay_return_focus = None;
+            self.focus_terminal(window, cx);
+        }
+        cx.notify();
     }
 
     /// The task card with session id `task` in `project`.
@@ -1345,7 +1642,7 @@ impl HostState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shika_core::control::{PROTOCOL_VERSION, Request, send};
+    use shika_core::control::{PROTOCOL_VERSION, Request, render_text, send};
     use std::sync::Mutex;
 
     fn task(id: &str, status: TaskStatus) -> TaskInfo {
@@ -1614,6 +1911,126 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1500));
         go.send(()).unwrap();
         assert!(!outcome.recv_timeout(Duration::from_secs(5)).unwrap());
+    }
+
+    #[test]
+    fn dialogs_open_only_when_nothing_else_is_pending_or_open() {
+        assert_eq!(dialog_gate_refusal(false, false, None), None);
+        let pending = dialog_gate_refusal(true, false, Some("Settings")).unwrap();
+        assert!(
+            pending.contains("Another dialog from this Lead"),
+            "{pending}"
+        );
+        let open = dialog_gate_refusal(false, false, Some("Settings")).unwrap();
+        assert!(
+            open.contains("Settings open") && open.contains("try again later"),
+            "{open}"
+        );
+        let busy = dialog_gate_refusal(false, true, None).unwrap();
+        assert!(busy.contains("busy"), "{busy}");
+    }
+
+    #[test]
+    fn pr_needs_a_task_that_finished_a_turn() {
+        for status in [
+            TaskStatus::Working,
+            TaskStatus::Starting,
+            TaskStatus::Asking,
+            TaskStatus::Exited,
+        ] {
+            let reason = pr_status_refusal("a", status).expect("refused");
+            assert!(reason.starts_with("a "), "{reason}");
+        }
+        assert_eq!(pr_status_refusal("a", TaskStatus::Ready), None);
+        assert_eq!(pr_status_refusal("a", TaskStatus::Waiting), None);
+    }
+
+    #[test]
+    fn dialog_outcomes_map_to_replies_and_exit_codes() {
+        let url = "https://github.com/o/r/pull/7".to_string();
+        let done = dialog_reply(Some(url.clone()), None, true, true);
+        assert_eq!(
+            done,
+            Reply::Done {
+                message: url.clone()
+            }
+        );
+        assert_eq!(done.exit_code(), 0);
+        // Success wins over a failure the author then retried past.
+        assert_eq!(
+            dialog_reply(Some(url.clone()), Some("x".into()), true, true),
+            done
+        );
+        // A failure the author gave up on is an error with its text.
+        let failed = dialog_reply(None, Some(publish_failure("gh failed.")), true, true);
+        assert_eq!(failed.exit_code(), 2);
+        assert!(
+            matches!(&failed, Reply::Error { message } if message == "gh failed. Completed commits and pushes were kept.")
+        );
+        // Cancelling is a refusal with a fixed reason.
+        let cancelled = dialog_reply(None, None, true, true);
+        assert_eq!(cancelled, refused("The author cancelled."));
+        assert_eq!(cancelled.exit_code(), 1);
+        // The dialog went away under it.
+        assert_eq!(dialog_reply(None, None, false, true).exit_code(), 2);
+        assert_eq!(dialog_reply(None, None, true, false).exit_code(), 2);
+        // Success is still success if the Lead closed afterwards.
+        assert_eq!(
+            dialog_reply(Some("closed".into()), None, false, false).exit_code(),
+            0
+        );
+    }
+
+    #[test]
+    fn close_outcomes_say_what_the_author_chose() {
+        assert_eq!(close_outcome(0), "closed");
+        for action in 1..=3 {
+            assert!(close_outcome(action).starts_with("closed ("), "{action}");
+        }
+        assert_ne!(close_outcome(1), close_outcome(2));
+        assert_ne!(close_outcome(2), close_outcome(3));
+    }
+
+    #[test]
+    fn a_pr_or_close_waits_for_the_author_and_always_gets_an_answer() {
+        let server = Server::start().expect("control server");
+        let socket = server.socket();
+        answer_with(server, |incoming| {
+            // The stand-in UI thread: the author decides a moment later.
+            std::thread::sleep(Duration::from_millis(600));
+            let reply = match incoming.command {
+                Command::Pr { task } if task == "ship" => Reply::Done {
+                    message: "https://github.com/o/r/pull/7".into(),
+                },
+                Command::Pr { .. } => refused("The author cancelled."),
+                Command::Close { task } if task == "gone" => {
+                    // The card vanished: the pending reply is dropped.
+                    drop(incoming.reply);
+                    return;
+                }
+                Command::Close { .. } => Reply::Done {
+                    message: "closed".into(),
+                },
+                _ => Reply::Help { text: "hi".into() },
+            };
+            let _ = incoming.reply.send(reply);
+        });
+        let ask = |command| send(&socket, &Request::new("t", command)).unwrap();
+        let shipped = ask(Command::Pr {
+            task: "ship".into(),
+        });
+        assert_eq!(render_text(&shipped), "https://github.com/o/r/pull/7");
+        let cancelled = ask(Command::Pr { task: "no".into() });
+        assert_eq!(cancelled.exit_code(), 1);
+        assert_eq!(render_text(&cancelled), "refused: The author cancelled.");
+        assert_eq!(
+            render_text(&ask(Command::Close { task: "a".into() })),
+            "closed"
+        );
+        let dropped = ask(Command::Close {
+            task: "gone".into(),
+        });
+        assert_eq!(dropped.exit_code(), 2);
     }
 
     #[test]

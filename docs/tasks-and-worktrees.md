@@ -73,6 +73,7 @@ Close task is available from the terminal header, the Agent menu, Cmd+Shift+W, o
   - **Discard changes** (`d`): stop every task PTY, `git worktree remove --force`, then `git branch -D`. Uncommitted files and unpushed commits are gone.
   - **Push changes** (`p`), only when the tree is clean and there is something to push: `git push -u origin HEAD`, then remove the card and the worktree and keep the local branch. A failed push keeps the card and shows the error.
   - **Escape** cancels. With a dirty tree it focuses the task's shell, opening one if needed, so the user can commit and close again.
+- **A Lead can ask.** `shika close <task>` on a worker it started runs this same flow: closed at once where Close would not ask, otherwise this dialog for the author, with the Lead's command blocking on their choice ([shika-cli.md](shika-cli.md#shika-close-task)). Cancelling then returns focus to the Lead instead of opening the shell.
 - **Close never commits.** The only path that commits for the user is the confirmed Create PR flow in [publishing.md](publishing.md).
 - **Branch identity.** Discard and Push act only on the task's own branch. External renames are followed as described in [branch-naming.md](branch-naming.md#external-branch-renames). After a real branch switch, Close offers the separate recovery in [branch-switch-close.md](branch-switch-close.md).
 
