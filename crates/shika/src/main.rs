@@ -10,6 +10,7 @@ mod name_input;
 mod notifications;
 mod shortcuts;
 mod updates;
+mod worktree_setup;
 
 use appearance::{Chrome, with_alpha};
 use gpui::{
@@ -463,13 +464,15 @@ enum SettingsSection {
     Appearance,
     Keyboard,
     Agents,
+    Projects,
 }
 
 impl SettingsSection {
-    const ALL: [SettingsSection; 3] = [
+    const ALL: [SettingsSection; 4] = [
         SettingsSection::Appearance,
         SettingsSection::Keyboard,
         SettingsSection::Agents,
+        SettingsSection::Projects,
     ];
 
     /// One section up (`-1`) or down (`1`), wrapping.
@@ -487,11 +490,13 @@ impl SettingsSection {
             Self::Appearance => "Appearance",
             Self::Keyboard => "Keyboard",
             Self::Agents => "Agents",
+            Self::Projects => "Projects",
         }
     }
 }
 
 enum Overlay {
+    WorktreeSetup(Box<worktree_setup::Editor>),
     CardMenu(CardMenu),
     Rename {
         target: gpui::EntityId,
@@ -529,7 +534,7 @@ enum Overlay {
     Leftovers,
     RemoveLeftover(usize),
     RemoveProject(String),
-    /// `section` is Appearance, Keyboard, or Agents. `row` is the selected row
+    /// `section` is Appearance, Keyboard, Agents, or Projects. `row` is the selected row
     /// in that section: an appearance `*_ROW`, a keyboard command, or a preset
     /// index. `edit` holds digits typed into the selected number, or the
     /// prefix being typed, not yet applied.
@@ -555,6 +560,7 @@ impl Overlay {
     /// How a refusal names this overlay to a Lead.
     fn name(&self) -> &'static str {
         match self {
+            Self::WorktreeSetup(_) => "the Worktree setup dialog",
             Self::CardMenu(_) => "a card menu",
             Self::Rename { .. } => "the Rename task dialog",
             Self::Publish { .. } => "the Create PR dialog",
@@ -1181,22 +1187,39 @@ impl Shika {
         self.busy = true;
         let core = self.core.clone();
         let lookup = project.clone();
+        let first_attempt = retry.is_none();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let config = core.project_preparation(&lookup)?;
+                    let mut config = core.project_preparation(&lookup)?;
+                    let onboarding = if first_attempt
+                        && config.is_none()
+                        && core.preparation_onboarding_pending(&lookup)?
+                    {
+                        let draft = core.project_preparation_draft(&lookup)?;
+                        config = draft.existing.clone();
+                        if config.is_none() { Some(draft) } else { None }
+                    } else {
+                        None
+                    };
                     let approved = match &config {
                         Some(config) => core.preparation_approved(&lookup, config)?,
                         None => true,
                     };
-                    Ok::<_, shika_core::Error>((config, approved))
+                    Ok::<_, shika_core::Error>((config, approved, onboarding))
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok((Some(config), false)) => {
+                    Ok((_, _, Some(draft))) => {
+                        if this.overlay_return_focus.is_none() {
+                            this.overlay_return_focus = window.focused(cx);
+                        }
+                        this.show_preparation_onboarding(project, preset, draft, window, cx);
+                    }
+                    Ok((Some(config), false, None)) => {
                         if this.overlay_return_focus.is_none() {
                             this.overlay_return_focus = window.focused(cx);
                         }
@@ -1208,7 +1231,7 @@ impl Shika {
                         });
                         window.focus(&this.focus, cx);
                     }
-                    Ok((config, _)) => this.begin_launch(
+                    Ok((config, _, None)) => this.begin_launch(
                         project,
                         preset,
                         config.is_some(),
@@ -2989,7 +3012,16 @@ impl Shika {
         .detach();
     }
     fn cancel_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy && matches!(self.overlay, Some(Overlay::Publish { .. })) {
+        if self.busy
+            && matches!(
+                self.overlay,
+                Some(Overlay::Publish { .. } | Overlay::WorktreeSetup(_))
+            )
+        {
+            return;
+        }
+        if matches!(self.overlay, Some(Overlay::WorktreeSetup(_))) {
+            self.finish_worktree_setup(window, cx);
             return;
         }
         self.commit_setting_edit(window, cx);
@@ -3391,6 +3423,10 @@ impl Shika {
             cx.quit();
             return;
         }
+        if matches!(self.overlay, Some(Overlay::WorktreeSetup(_))) {
+            self.worktree_setup_key(event, window, cx);
+            return;
+        }
         if let Some(Overlay::Rename { input, .. }) = &self.overlay {
             // The native text input owns typing, selection, clipboard, and IME.
             if !input.read(cx).composing()
@@ -3627,6 +3663,12 @@ impl Shika {
                     cx.notify();
                     return;
                 }
+                if !editing && section == SettingsSection::Projects {
+                    self.on_projects_key(at, key, window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
                 if !editing && section == SettingsSection::Keyboard {
                     self.on_keyboard_key(at, key, window, cx);
                     cx.stop_propagation();
@@ -3762,7 +3804,8 @@ impl Shika {
                     }
                 }
                 // Typed into above, before the modifier check.
-                Some(Overlay::Base { .. })
+                Some(Overlay::WorktreeSetup(_))
+                | Some(Overlay::Base { .. })
                 | Some(Overlay::Publish { .. })
                 | Some(Overlay::CardMenu(_))
                 | Some(Overlay::Rename { .. })
@@ -3838,6 +3881,9 @@ impl Shika {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.busy {
+            return;
+        }
         self.commit_setting_edit(window, cx);
         self.key_recording = false;
         self.key_note = None;
@@ -5745,6 +5791,14 @@ impl Shika {
                 ]
             };
         }
+        if section == SettingsSection::Projects {
+            return &[
+                ("j k", "project"),
+                ("↵", "setup"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ];
+        }
         if section == SettingsSection::Agents {
             return if self.catalog.is_none() {
                 &[("[ ]", "section"), ("esc", "done")]
@@ -6105,6 +6159,58 @@ impl Shika {
                     );
                 }
             }
+            SettingsSection::Projects => {
+                if self.projects.is_empty() {
+                    rows = rows.child(
+                        dialog_text(chrome).child("Add a project to configure worktree setup."),
+                    );
+                }
+                for (index, project) in self.projects.iter().enumerate() {
+                    let id = project.id.clone();
+                    rows = rows.child(
+                        list_row(row == index, chrome)
+                            .id(SharedString::from(format!("project-setting-{id}")))
+                            .flex_col()
+                            .items_start()
+                            .gap(px(4.))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_worktree_setup(id.clone(), window, cx)
+                            }))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .flex_1()
+                                            .truncate()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(project.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_color(chrome.ink_3)
+                                            .child("Worktree setup…"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .truncate()
+                                    .font_family(MONO)
+                                    .text_size(px(11.))
+                                    .text_color(chrome.ink_3)
+                                    .child(model::tilde(&project.path, home)),
+                            ),
+                    );
+                }
+            }
             SettingsSection::Keyboard => {
                 for (index, command) in shortcuts::COMMANDS.iter().enumerate() {
                     rows = rows.child(self.shortcut_row(index, command, chrome, cx));
@@ -6176,6 +6282,9 @@ impl Shika {
         let max_h = (height - top - px(24.)).max(px(120.));
         let panel = match overlay {
             Overlay::CardMenu(_) => unreachable!("card menus render at the pointer"),
+            Overlay::WorktreeSetup(editor) => {
+                self.worktree_setup_view(editor, chrome, max_h, window, cx)
+            }
             Overlay::Rename { input, error, .. } => {
                 input.update(cx, |input, _| input.set_chrome(*chrome));
                 dialog(chrome, max_h)
@@ -7821,6 +7930,15 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+
+    #[test]
+    fn settings_projects_is_a_separate_section_and_navigation_wraps() {
+        assert!(SettingsSection::ALL.len() == 4);
+        assert!(SettingsSection::Agents.step(1) == SettingsSection::Projects);
+        assert!(SettingsSection::Projects.step(1) == SettingsSection::Appearance);
+        assert!(SettingsSection::Appearance.step(-1) == SettingsSection::Projects);
+        assert!(SettingsSection::Projects.label() == "Projects");
+    }
 
     #[test]
     fn every_sparkle_pixel_lights_once_per_cycle() {

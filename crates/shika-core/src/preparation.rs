@@ -11,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -37,6 +37,15 @@ pub struct PreparationConfig {
     pub timeout_seconds: u64,
 }
 
+/// Unsaved Settings/first-New draft. Suggestions never become launch setup
+/// until the author explicitly saves this configuration.
+#[derive(Debug, Clone)]
+pub struct PreparationDraft {
+    pub existing: Option<PreparationConfig>,
+    pub config: PreparationConfig,
+    pub note: String,
+}
+
 fn default_timeout() -> u64 {
     600
 }
@@ -56,8 +65,12 @@ impl PreparationConfig {
                 return Err(failed("Setup commands must be nonempty and contain no NUL"));
             }
         }
+        let mut paths = std::collections::HashSet::new();
         for path in &self.copy_files {
             validate_path(Path::new(path))?;
+            if !paths.insert(Path::new(path)) {
+                return Err(failed(format!("Duplicate copy-files path: {path}")));
+            }
         }
         Ok(())
     }
@@ -162,7 +175,11 @@ impl Drop for PreparationSlot<'_> {
 
 pub(crate) fn load(repo: &Path) -> Result<Option<PreparationConfig>> {
     let root = directory(repo).map_err(|e| failed(format!("Could not read project: {e}")))?;
-    let file = match relative_file(&root, Path::new(CONFIG_PATH), libc::O_RDONLY, 0) {
+    load_at(&root, Path::new(CONFIG_PATH))
+}
+
+fn load_at(root: &File, path: &Path) -> Result<Option<PreparationConfig>> {
+    let file = match relative_file(root, path, libc::O_RDONLY, 0) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(failed(format!("Could not read {CONFIG_PATH}: {e}"))),
@@ -181,6 +198,287 @@ pub(crate) fn load(repo: &Path) -> Result<Option<PreparationConfig>> {
         .map_err(|e| failed(format!("Invalid {CONFIG_PATH}: {e}")))?;
     config.validate()?;
     Ok(Some(config))
+}
+
+/// Read-only and bounded for Settings or eligible first-New review. Existing
+/// configuration wins; detection never saves, approves, or starts preparation.
+/// Fixed commands, never repository scripts; ignored dotenv contents are not read.
+pub(crate) fn draft(repo: &Path, git: &Path, path_env: &str) -> Result<PreparationDraft> {
+    if let Some(existing) = load(repo)? {
+        return Ok(PreparationDraft {
+            config: existing.clone(),
+            existing: Some(existing),
+            note: "Saved configuration. Disable setup removes this file for future agents.".into(),
+        });
+    }
+    let root = directory(repo).map_err(io_failure)?;
+    let mut config = PreparationConfig {
+        commands: vec![],
+        copy_files: vec![],
+        timeout_seconds: default_timeout(),
+    };
+    for name in [".env", ".env.local"] {
+        if matches!(optional_regular(&root, name), Ok(Some(_)))
+            && git_cmd(git, path_env, repo)
+                .env("GIT_OPTIONAL_LOCKS", "0")
+                .args(["check-ignore", "--quiet", "--", name])
+                .output()
+                .map_err(io_failure)?
+                .status
+                .success()
+        {
+            config.copy_files.push(name.into());
+        }
+    }
+    let (command, installer_note) = suggest_installer(&root);
+    if let Some(command) = command {
+        config.commands.push(command.into());
+    }
+    let found = !config.copy_files.is_empty() || !config.commands.is_empty();
+    let mut note = if found {
+        "Suggested from this checkout, not saved. Review before saving.".to_string()
+    } else {
+        "Not configured. No safe defaults found; add what this project needs.".to_string()
+    };
+    if let Some(detail) = installer_note {
+        note.push(' ');
+        note.push_str(detail);
+    }
+    Ok(PreparationDraft {
+        existing: None,
+        config,
+        note,
+    })
+}
+
+fn optional_regular(root: &File, name: &str) -> io::Result<Option<File>> {
+    let file = match relative_file(root, Path::new(name), libc::O_RDONLY, 0) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    Ok(Some(file))
+}
+
+fn suggest_installer(root: &File) -> (Option<&'static str>, Option<&'static str>) {
+    let unsafe_metadata = (
+        None,
+        Some("Package metadata could not be read safely. Add setup commands manually."),
+    );
+    let Some(file) = (match optional_regular(root, "package.json") {
+        Ok(file) => file,
+        Err(_) => return unsafe_metadata,
+    }) else {
+        return (None, None);
+    };
+    let mut bytes = Vec::new();
+    if file.take(CONFIG_LIMIT + 1).read_to_end(&mut bytes).is_err()
+        || bytes.len() as u64 > CONFIG_LIMIT
+    {
+        return unsafe_metadata;
+    }
+    let package = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(package) if package.is_object() => package,
+        _ => return unsafe_metadata,
+    };
+    let mut locks = std::collections::HashSet::new();
+    for (name, manager) in [
+        ("package-lock.json", "npm"),
+        ("npm-shrinkwrap.json", "npm"),
+        ("pnpm-lock.yaml", "pnpm"),
+        ("yarn.lock", "yarn"),
+        ("bun.lock", "bun"),
+        ("bun.lockb", "bun"),
+    ] {
+        match optional_regular(root, name) {
+            Ok(Some(_)) => {
+                locks.insert(manager);
+            }
+            Ok(None) => {}
+            Err(_) => return unsafe_metadata,
+        }
+    }
+    let ambiguous = (
+        None,
+        Some("Package-manager metadata conflicts. Add setup commands manually."),
+    );
+    if locks.len() > 1 {
+        return ambiguous;
+    }
+    let locked = locks.iter().copied().next();
+    let declared = match package.get("packageManager") {
+        Some(value) => match value
+            .as_str()
+            .map(|name| name.split('@').next().unwrap_or(""))
+        {
+            Some("npm") => Some("npm"),
+            Some("pnpm") => Some("pnpm"),
+            _ => {
+                return (
+                    None,
+                    Some("This package manager has no suggested installer. Add commands manually."),
+                );
+            }
+        },
+        None => None,
+    };
+    if declared.is_some() && locked.is_some() && declared != locked {
+        return ambiguous;
+    }
+    match (declared.or(locked), locked.is_some()) {
+        (Some("npm"), true) => (Some("npm ci"), None),
+        (Some("pnpm"), true) => (Some("pnpm install --frozen-lockfile"), None),
+        (Some("npm"), false) => (
+            Some("npm install"),
+            Some("No lockfile found. Installation may create one."),
+        ),
+        (Some("pnpm"), false) => (
+            Some("pnpm install"),
+            Some("No lockfile found. Installation may create one."),
+        ),
+        _ => (
+            None,
+            Some("No npm or pnpm installer detected. Add setup commands manually."),
+        ),
+    }
+}
+
+/// Validate an explicit edit outside the operation lock. Checks metadata and
+/// Git ignore rules, never secret contents or user setup commands.
+pub(crate) fn validate_edit(
+    repo: &Path,
+    config: Option<&PreparationConfig>,
+    git: &Path,
+    path_env: &str,
+) -> Result<Option<Vec<u8>>> {
+    let bytes = if let Some(config) = config {
+        config.validate()?;
+        let bytes = serde_json::to_vec_pretty(config).map_err(|e| failed(e.to_string()))?;
+        if bytes.len() as u64 + 1 > CONFIG_LIMIT {
+            return Err(failed("Configuration exceeds 64 KiB"));
+        }
+        // Check paths and ignored status without reading secret contents.
+        let root = directory(repo).map_err(io_failure)?;
+        for path in &config.copy_files {
+            let file = relative_file(&root, Path::new(path), libc::O_RDONLY, 0)
+                .map_err(|e| failed(format!("Could not copy {path}: {e}")))?;
+            if !file.metadata().map_err(io_failure)?.is_file() {
+                return Err(failed(format!("{path} must be a regular file")));
+            }
+            if !git_cmd(git, path_env, repo)
+                .args(["check-ignore", "--quiet", "--", path])
+                .output()
+                .map_err(io_failure)?
+                .status
+                .success()
+            {
+                return Err(failed(format!(
+                    "{path} must be ignored by Git; tracked files are never copied"
+                )));
+            }
+        }
+        Some(bytes)
+    } else {
+        None
+    };
+    Ok(bytes)
+}
+
+/// Commit a validated explicit edit atomically. No execution or consent
+/// changes. A stale editor must reload instead of replacing changed config.
+pub(crate) fn save(
+    repo: &Path,
+    expected: Option<&PreparationConfig>,
+    bytes: Option<Vec<u8>>,
+) -> Result<()> {
+    let root = directory(repo).map_err(io_failure)?;
+    if load_at(&root, Path::new(CONFIG_PATH))?.as_ref() != expected {
+        return Err(failed(
+            "Worktree configuration changed. Cancel and reopen setup before saving.",
+        ));
+    }
+    if bytes.is_none() && expected.is_none() {
+        return Ok(());
+    }
+    let dir_name = CString::new(".shika").unwrap();
+    if bytes.is_some() {
+        // SAFETY: creates a directory under the opened project, never a link.
+        let result = unsafe { libc::mkdirat(root.as_raw_fd(), dir_name.as_ptr(), 0o700) };
+        if result != 0 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
+            return Err(io_failure(io::Error::last_os_error()));
+        }
+    }
+    let dir = relative_file(
+        &root,
+        Path::new(".shika"),
+        libc::O_RDONLY | libc::O_DIRECTORY,
+        0,
+    )
+    .map_err(io_failure)?;
+    let name = CString::new("worktrees.json").unwrap();
+    if load_at(&dir, Path::new("worktrees.json"))?.as_ref() != expected {
+        return Err(failed(
+            "Worktree configuration changed. Cancel and reopen setup before saving.",
+        ));
+    }
+    let Some(mut bytes) = bytes else {
+        // SAFETY: unlinks only the config entry in the opened directory.
+        if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+            return Err(io_failure(io::Error::last_os_error()));
+        }
+        return Ok(());
+    };
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    let temporary = format!(
+        ".worktrees-{}-{}.tmp",
+        std::process::id(),
+        SERIAL.fetch_add(1, Ordering::Relaxed)
+    );
+    let temp_name = CString::new(temporary.as_str()).unwrap();
+    let mut file = relative_file(
+        &dir,
+        Path::new(&temporary),
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+        0o600,
+    )
+    .map_err(io_failure)?;
+    bytes.push(b'\n');
+    let result = (|| {
+        file.write_all(&bytes).map_err(io_failure)?;
+        file.sync_all().map_err(io_failure)?;
+        if load_at(&dir, Path::new("worktrees.json"))?.as_ref() != expected {
+            return Err(failed(
+                "Worktree configuration changed. Cancel and reopen setup before saving.",
+            ));
+        }
+        // SAFETY: atomic replacement within the opened directory; no following
+        // of a destination link and no partial JSON visible to launches.
+        if unsafe {
+            libc::renameat(
+                dir.as_raw_fd(),
+                temp_name.as_ptr(),
+                dir.as_raw_fd(),
+                name.as_ptr(),
+            )
+        } != 0
+        {
+            return Err(io_failure(io::Error::last_os_error()));
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        // SAFETY: cleans up only the temporary entry created above.
+        unsafe {
+            libc::unlinkat(dir.as_raw_fd(), temp_name.as_ptr(), 0);
+        }
+    }
+    result
 }
 
 pub(crate) fn prepare(

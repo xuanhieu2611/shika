@@ -8,7 +8,8 @@
 //! [`Core`] is `Send + Sync`; share it as `Arc<Core>`. Its methods fall into
 //! two groups.
 //!
-//! - **Blocking.** [`Core::add_project`], [`Core::create_session`],
+//! - **Blocking.** [`Core::add_project`], [`Core::project_preparation_draft`],
+//!   [`Core::save_project_preparation`], [`Core::create_session`],
 //!   [`Core::create_session_with_preparation`], [`Core::create_lead`],
 //!   [`Core::open_shell`], [`Core::session_dirty`], [`Core::session_git_state`],
 //!   [`Core::session_diff_stat`], [`Core::session_diff`], [`Core::session_file_diff`],
@@ -77,7 +78,7 @@ pub use diff::{
 };
 pub use error::{Error, Result};
 pub use path_env::{LoginShellError, PathEnv};
-pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
+pub use preparation::{PreparationConfig, PreparationControl, PreparationDraft, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::{ChecksState, PrChecks, PublishPreview, PublishedPr};
@@ -286,6 +287,90 @@ impl Core {
     /// missing file is the existing launch path, not inferred preparation.
     pub fn project_preparation(&self, id: &str) -> Result<Option<PreparationConfig>> {
         preparation::load(&self.projects.get(id)?.path)
+    }
+
+    /// Unsaved draft for Settings or first-New onboarding. Existing config
+    /// wins; suggestions never become launch behavior without an explicit save.
+    pub fn project_preparation_draft(&self, id: &str) -> Result<PreparationDraft> {
+        preparation::draft(
+            &self.projects.get(id)?.path,
+            &self.git()?,
+            self.path_env().path(),
+        )
+    }
+
+    /// Local onboarding state only, never a substitute for parsed-config consent.
+    pub fn preparation_onboarding_pending(&self, id: &str) -> Result<bool> {
+        Ok(self.projects.get(id)?.preparation_onboarding_pending())
+    }
+
+    /// Explicitly continue without preparation. Refuse a config that appeared
+    /// since preview; remember the choice locally without writing the repo.
+    pub fn skip_preparation_onboarding(&self, id: &str) -> Result<()> {
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        let project = self.projects.get(id)?;
+        if preparation::load(&project.path)?.is_some() {
+            return Err(Error::Preparation(
+                "Worktree configuration changed. Cancel and start New again to review it.".into(),
+            ));
+        }
+        self.projects.review_preparation(id)
+    }
+
+    /// Explicit save plus consent for the exact displayed configuration. No
+    /// worktree or command is started here; the normal launch fences still apply.
+    pub fn save_and_approve_project_preparation(
+        &self,
+        id: &str,
+        expected: Option<&PreparationConfig>,
+        config: &PreparationConfig,
+    ) -> Result<()> {
+        self.save_preparation_edit(id, expected, Some(config), true)
+    }
+
+    /// Explicit repository configuration edit, not execution approval. None
+    /// disables preparation without changing running sessions or local consent.
+    pub fn save_project_preparation(
+        &self,
+        id: &str,
+        expected: Option<&PreparationConfig>,
+        config: Option<&PreparationConfig>,
+    ) -> Result<()> {
+        self.save_preparation_edit(id, expected, config, false)
+    }
+
+    fn save_preparation_edit(
+        &self,
+        id: &str,
+        expected: Option<&PreparationConfig>,
+        config: Option<&PreparationConfig>,
+        approve: bool,
+    ) -> Result<()> {
+        let project = self.projects.get(id)?;
+        let bytes = preparation::validate_edit(
+            &project.path,
+            config,
+            &self.git()?,
+            self.path_env().path(),
+        )?;
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        // Project removal or an external path edit may have won during validation.
+        if self.projects.get(id)?.path != project.path {
+            return Err(Error::Preparation(
+                "Project changed. Cancel and reopen setup before saving.".into(),
+            ));
+        }
+        preparation::save(&project.path, expected, bytes)?;
+        if let (true, Some(config)) = (approve, config) {
+            // Reread the committed config before storing consent, just like the
+            // ordinary approval dialog. A later change is fenced at launch.
+            if preparation::load(&project.path)?.as_ref() != Some(config) {
+                return Err(Error::PreparationNeedsApproval);
+            }
+            self.projects.approve_preparation(id, config.clone()).map_err(|e| Error::Preparation(format!("Setup was saved, but local approval could not be saved: {e}. Cancel and start New again to review.")))
+        } else {
+            self.projects.review_preparation(id)
+        }
     }
 
     pub fn preparation_approved(&self, id: &str, config: &PreparationConfig) -> Result<bool> {
@@ -1686,6 +1771,7 @@ mod tests {
                 path: PathBuf::from("/Users/x/code/sample-project"),
                 base_branch: None,
                 approved_preparation: None,
+                worktree_setup_reviewed: false,
             }]
         );
         assert_eq!(

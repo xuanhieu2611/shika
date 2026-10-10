@@ -13,7 +13,7 @@ These guides explain why features exist, how they are implemented, and where to 
 | [Terminal tabs](terminal-tabs.md) | Task-local agent/shell tabs, PTY ownership, startup, selection, close, and hidden terminals |
 | [Changes panel](changes-panel.md) | The read-only diff beside the terminal: decision, refresh without watching, caps and performance, width beside the column, debugging, and guardrails |
 | [Keyboard flow](keyboard-flow.md) | Native shortcuts, terminal/card focus, overlay restoration, and selection scrolling |
-| [Worktree preparation](worktree-preparation.md) | Setup approval, copy/setup commands, cancellation, retry, and failure cleanup |
+| [Worktree preparation](worktree-preparation.md) | Feature evolution and decisions, per-project first-New onboarding, Settings editor, suggestions, consent/state routing, copy/setup lifecycle, debugging, and contribution guardrails |
 | [Confirmed PR publishing](publishing.md) | Decision rationale, recorded-base targeting, approved-tree checks, commit/push/gh lifecycle, debugging, retries, and contribution guardrails |
 | [PR checks on the card](pr-checks.md) | The read-only CI mark after Create PR, its polling schedule, head matching, classification, notifications, and debugging |
 | [Manual task names](task-names.md) | Rename task, display-name versus branch identity, commit/PR defaults, automatic-title priority, and the public FAQ |

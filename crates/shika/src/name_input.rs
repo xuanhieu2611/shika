@@ -1,5 +1,6 @@
-//! Native single-line task-name input. Follows the pinned GPUI input example's
-//! EntityInputHandler contract, not Zed's editor or terminal crates.
+//! Native single-line input for task names and worktree setup fields. Follows
+//! the pinned GPUI input example's EntityInputHandler contract, not Zed's editor
+//! or terminal crates.
 use super::{Chrome, text_field};
 use gpui::{
     App, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle, Focusable, IntoElement,
@@ -318,6 +319,7 @@ impl Render for NameInput {
             self.focus.is_focused(window),
             &self.chrome,
         )
+        .w_full()
         .track_focus(&self.focus)
         .line_height(px(16.))
         .on_key_down(cx.listener(Self::key))
