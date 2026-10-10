@@ -4,12 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Using Shika</title>
-<meta name="description" content="How to use Shika: start an agent in its own worktree, move between tasks, review the diff, open a pull request, and close without losing work.">
+<meta name="description" content="How to use Shika: start an agent in its own worktree, hand a project to a Lead, review the diff, open a pull request, and close without losing work.">
 <link rel="canonical" href="https://useshika.com/guide/">
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Shika">
 <meta property="og:title" content="Using Shika">
-<meta property="og:description" content="The first session, then the behavior that is easy to miss. Worktrees, Close, Create PR, and the keyboard.">
+<meta property="og:description" content="The first session, then the behavior that is easy to miss. Worktrees, a Lead, Close, Create PR, and the keyboard.">
 <meta property="og:url" content="https://useshika.com/guide/">
 <meta property="og:image" content="https://useshika.com/img/og.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -74,6 +74,7 @@
       <a href="#first-session">First session</a>
       <a href="#work">Where the work lives</a>
       <a href="#working">While an agent works</a>
+      <a href="#lead">A Lead</a>
       <a href="#ship">Review and ship</a>
       <a href="#close">Close and quit</a>
       <a href="#keyboard">Keyboard</a>
@@ -97,7 +98,7 @@
             <span class="step-mark"><kbd>⌘N</kbd></span>
             <div>
               <h3>Start an agent</h3>
-              <p>Pick Claude Code, Codex, Cursor CLI, or Pi. Shika creates a branch and a worktree, then starts that CLI inside it. The picker footer names the base branch this task will start from.</p>
+              <p>Pick Claude Code, Codex, Cursor CLI, or Pi. The list is the CLIs on your login-shell PATH that are turned on in Settings. When none are, Enter opens Settings on Agents. Shika creates a branch and a worktree, then starts that CLI inside it. The picker footer names the base branch this task will start from.</p>
             </div>
           </li>
           <li>
@@ -137,7 +138,7 @@
           </li>
         </ol>
         <aside class="note">
-          <p>The presets start Claude Code, Codex, and Cursor CLI with approval bypassed, and Pi with <code>--approve</code>. Agents can run commands with your user account's access. A worktree separates Git edits. Files, credentials, and the network stay reachable. Run agents in a project you trust. Shika asks separately before it runs worktree setup commands.</p>
+          <p>The presets start Claude Code, Codex, and Cursor CLI with approval bypassed, and Pi with <code>--approve</code>. Agents can run commands with your user account's access. A worktree separates Git edits. Files, credentials, and the network stay reachable. Run agents in a project you trust. Shika asks separately before it runs worktree setup commands. Codex trusts the new worktree for that session. Claude Code may still ask once, the first time it sees that worktree.</p>
         </aside>
       </section>
 
@@ -154,7 +155,7 @@
         <p>The mark at the right of a card's first line is the status. The words are not written on the card.</p>
         <ul class="signals">
           <li>
-            <span class="mark"><span class="pixels" aria-hidden="true"><i></i><i></i><i></i></span></span>
+            <span class="mark"><span class="spark" aria-hidden="true"><i style="--d:.16s"></i><i style="--d:1.12s"></i><i style="--d:.72s"></i><i class="on" style="--d:1.6s"></i><i style="--d:.64s"></i><i style="--d:.56s"></i><i class="on" style="--d:1.52s"></i><i style="--d:.32s"></i><i style="--d:1.2s"></i><i style="--d:.24s"></i><i style="--d:.08s"></i><i style="--d:1.04s"></i><i class="on" style="--d:1.92s"></i><i style="--d:.8s"></i><i class="on" style="--d:1.76s"></i><i class="on" style="--d:1.68s"></i><i style="--d:.48s"></i><i class="on" style="--d:1.44s"></i><i style="--d:.4s"></i><i class="on" style="--d:1.36s"></i><i style="--d:1.28s"></i><i style="--d:.88s"></i><i class="on" style="--d:1.84s"></i><i style="--d:.96s"></i><i style="--d:0s"></i></span></span>
             <span><strong>Working.</strong> The agent has the turn. A time on the card is how long that turn has run.</span>
           </li>
           <li>
@@ -167,16 +168,27 @@
           </li>
           <li>
             <span class="mark"><span class="dot ready" aria-hidden="true"></span></span>
-            <span><strong>Ready.</strong> The turn finished. When there are changes, the card adds a diff stat such as <code>2 files +64 −3</code>.</span>
+            <span><strong>Ready.</strong> The turn finished. The green dot stays until that terminal has focus, or the card stays selected for a second. Moving past it with <kbd>j</kbd> leaves the dot up. When there are changes, the card adds a diff stat such as <code>2 files +64 −3</code>.</span>
           </li>
         </ul>
         <p>One terminal is on screen. The others keep running, including while you look at another card, so a busy CLI does not stall. The agent is the first tab. <kbd>⌘1</kbd> through <kbd>⌘9</kbd> jump to a tab, and <kbd>⌃Tab</kbd> cycles them.</p>
         <p>Drop a file on the terminal to paste its path. Claude Code and Cursor turn an image path into an attachment. Control-click or Command-click a link in the terminal to open it.</p>
       </section>
 
+      <section class="guide-section" id="lead">
+        <h2>A Lead for the project</h2>
+        <p><kbd>⌘L</kbd>, or New Lead in the Agent menu, starts one Lead for the selected project. If that project already has one, <kbd>⌘L</kbd> opens it. The Lead is one of the same CLIs, in its own terminal. You talk to it. It can start up to four ordinary tasks and check on them.</p>
+        <p>The Lead card is first in its project. The second line reads the CLI, then "Project lead". It has no branch, so it has no diff stat, no Create PR, and no shell tabs. Changes says the Lead does not change files. Its checkout is detached, under <code>.worktrees/shika-lead-&lt;id&gt;</code>, and worktree setup does not run for it. Closing it removes that checkout after the usual dirty check. The tasks it started stay, as ordinary cards.</p>
+        <p>A task it starts is marked "from Lead". It is a normal card: its own worktree, branch, status, notification, Changes, and Create PR. Starting one leaves your selection where it was. You can open that card, type into it, and close it yourself. The worker is asked to run <code>shika report</code> when it finishes or gets blocked, and the Lead reads that summary.</p>
+        <p>In the Lead's terminal, <code>shika help</code> lists the commands. It can start a task, wait, read a worker's terminal, look at a diff, and type a reply. Create PR and Close open the same dialogs you get from the keyboard, and Shika waits until you confirm or cancel. The keys then return to the Lead. A close that would throw work away asks you first.</p>
+        <p>The Lead types into a worker that is Waiting, Ready, or Asking. Escape still reaches a worker that is Working. After its CLI has exited, or when you have left a line unsent, that terminal stays yours. When workers it started settle, and the Lead is Ready or Waiting, with no unsent line and a few seconds since you last typed, Shika pastes one line telling it to run <code>shika wait</code>. That line counts as a submission, so the Lead shows Working. If worktree preparation still needs approval, start a task yourself and approve it first. The Lead starts tasks after that approval is saved.</p>
+      </section>
+
       <section class="guide-section" id="ship">
         <h2>Review and ship</h2>
-        <p>Click the diff stat, or press <kbd>⌘⌥B</kbd>, to open Changes on the right. It starts closed. The panel is a read-only diff of this worktree against the base the task started from, including commits and uncommitted files that are not ignored. With the panel focused, <kbd>j</kbd> and <kbd>k</kbd> scroll, and <kbd>r</kbd> refreshes. Escape closes it and puts focus back. Nothing in the panel stages, edits, or reverts.</p>
+        <p><kbd>⌘⌥B</kbd>, the changes icon at the end of the terminal header, or View &gt; Hide or show changes opens Changes on the right and focuses it. It starts closed. Clicking a card, including the diff stat, selects that card and focuses its terminal. The panel stays as it is.</p>
+        <p>The panel is a read-only diff of this worktree against the base the task started from, including commits and uncommitted files that are not ignored. Each file is a card: the name and the counts, then the directory and the status. Click either of those rows to fold the file. A fold stays when you refresh the same task, and clears when you change cards or close the panel. A very large file starts collapsed, labeled Large diff hidden, Large file hidden, or Diff hidden. Click that row to expand it. The code keeps line numbers and diff colors.</p>
+        <p>With the panel focused, <kbd>j</kbd> and <kbd>k</kbd> scroll a line, <kbd>d</kbd> and <kbd>u</kbd> half a page, and Space a page. <kbd>g</kbd> and <kbd>G</kbd> jump to the top and bottom. <kbd>]</kbd> and <kbd>[</kbd> move between files. <kbd>h</kbd> and <kbd>l</kbd> scroll a long line sideways. <kbd>o</kbd> expands the first collapsed file on screen. <kbd>r</kbd> refreshes. Escape closes the panel and puts focus back. Nothing in the panel stages, edits, or reverts.</p>
         <p>Create PR is <kbd>⌘⇧P</kbd>. It is also in the terminal's metadata row and the Agent menu. You see every non-ignored change and a title you can edit. Confirm, and Shika stages, commits if something is still uncommitted, pushes, and opens a pull request with <code>gh</code>. The pull request targets the base the task started from. If that base is gone, Shika asks you to pick one. It never merges or force-pushes. An open pull request for the branch is reused. You need the GitHub CLI, signed in. Shika waits while the agent is working or asking. If a later step fails, the work stays so you can run it again.</p>
         <p>Afterward the card shows that pull request's number, and whether its checks are running, passing, or failing.</p>
         <p>You can commit and push yourself in a shell tab. That push leaves the card open. You close the card.</p>
@@ -187,7 +199,7 @@
 
       <section class="guide-section" id="close">
         <h2>Close and quit</h2>
-        <p><kbd>⌘⇧W</kbd> closes the selected task, from the cards or the terminal. Right-click a card and choose Close task to close that one, even when another card is selected.</p>
+        <p><kbd>⌘⇧W</kbd> closes the selected task, from the cards or the terminal. Right-click a card and choose Close task to close that one, even when another card is selected. While Close removes the worktree, the card reads Closing and the terminal fades behind it. If Close fails, the card and the terminal come back.</p>
         <p>Close asks before it throws away uncommitted work or commits that are not on the base. When the tree is clean and those commits are unpushed, it can push them. Close never commits. A clean task that is already published closes without a question.</p>
         <p>Quit ends the live sessions. Projects remain. Worktrees remain on disk, and the next launch lists leftovers so you can remove them when you choose.</p>
         <p>If you switched branches inside the worktree, and both the recorded branch and the current one are clean and already published, Close can remove the worktree and leave both local branches. Dirty work, unpublished commits, a missing ref, or a detached HEAD stay in place.</p>
@@ -195,13 +207,14 @@
 
       <section class="guide-section" id="keyboard">
         <h2>Keyboard</h2>
-        <p>These do nothing while a dialog or the picker is open. Typing in the terminal, a text field, or the close dialog does not run the card keys.</p>
+        <p>These do nothing while a dialog or the picker is open. Typing in the terminal, a text field, or the close dialog does not run the card keys. The chords below are the defaults. Settings can replace Hide or show changes and the numbered jumps, and it can add a jump to a card by its place in the column. Every other shortcut stays fixed.</p>
         <h3 id="keys-projects">Projects and tasks</h3>
         <table class="keys" aria-labelledby="keys-projects">
           <tbody>
             <tr><th scope="row"><kbd>a</kbd></th><td>Add a project</td></tr>
             <tr><th scope="row"><kbd>b</kbd></th><td>Base branch for the selected project</td></tr>
             <tr><th scope="row"><kbd>⌘N</kbd></th><td>New agent in the selected project</td></tr>
+            <tr><th scope="row"><kbd>⌘L</kbd></th><td>New Lead for the selected project, or open the one it already has</td></tr>
             <tr><th scope="row"><kbd>j</kbd> <kbd>k</kbd></th><td>Move between cards, once the cards have focus. Arrow keys do this too.</td></tr>
             <tr><th scope="row"><kbd>↵</kbd></th><td>Focus the terminal</td></tr>
             <tr><th scope="row"><kbd>⌃Q</kbd></th><td>Return to the cards</td></tr>
@@ -217,13 +230,13 @@
             <tr><th scope="row"><kbd>⌘T</kbd></th><td>New shell tab in this worktree</td></tr>
             <tr><th scope="row"><kbd>⌘W</kbd></th><td>Close the selected shell. The agent stays.</td></tr>
             <tr><th scope="row"><kbd>⌃Tab</kbd></th><td>Cycle tabs. Shift goes backward.</td></tr>
-            <tr><th scope="row"><kbd>⌘1</kbd> <kbd>⌘9</kbd></th><td>Jump to a tab, ⌘1 through ⌘9. ⌘1 is the agent.</td></tr>
+            <tr><th scope="row"><kbd>⌘1</kbd> <kbd>⌘9</kbd></th><td>Jump to a tab. ⌘1 is the agent.</td></tr>
           </tbody>
         </table>
         <h3 id="keys-ship">Review</h3>
         <table class="keys" aria-labelledby="keys-ship">
           <tbody>
-            <tr><th scope="row"><kbd>⌘⌥B</kbd></th><td>Show or hide Changes</td></tr>
+            <tr><th scope="row"><kbd>⌘⌥B</kbd></th><td>Show or hide Changes. Settings can change this chord.</td></tr>
             <tr><th scope="row"><kbd>r</kbd></th><td>Refresh Changes, while that panel has focus</td></tr>
             <tr><th scope="row"><kbd>⌘⇧P</kbd></th><td>Create PR</td></tr>
             <tr><th scope="row"><kbd>⌘,</kbd></th><td>Settings</td></tr>
@@ -248,7 +261,14 @@
 
       <section class="guide-section" id="settings">
         <h2>Settings</h2>
-        <p><kbd>⌘,</kbd>, the gear, or the Shika menu. Theme follows the system, or you can force light or dark. Opacity, blur, and whether the frost covers the sidebar alone or the terminal too. Terminal font size. A branch prefix for names Shika generates. Whether a notification plays the system alert sound. The banner still posts when the sound is off. Changes apply and save at once.</p>
+        <p><kbd>⌘,</kbd>, the gear, or the Shika menu. <kbd>[</kbd> and <kbd>]</kbd>, or a click, move among Appearance, Keyboard, and Agents. <kbd>j</kbd> and <kbd>k</kbd> move inside the current section. Changes apply and save at once.</p>
+        <h3>Appearance</h3>
+        <p>Theme follows the system, or you can force light or dark, and pick which theme each side uses. Opacity, blur, and whether the frost covers the sidebar alone or the terminal too. Terminal font size. A branch prefix for names Shika generates. Whether a notification plays the system alert sound. The banner still posts when the sound is off.</p>
+        <h3>Keyboard</h3>
+        <p>You can change Hide or show changes, Go to agent 1 through 9, and Go to tab 1 through 9. Hide or show changes starts as <kbd>⌘⌥B</kbd>. Go to tab starts as <kbd>⌘1</kbd> through <kbd>⌘9</kbd>, and <kbd>⌘1</kbd> is the agent tab. Go to agent starts with no shortcut. Agent N is the Nth card in the column, skipping project headers, and a missing card does nothing.</p>
+        <p>Press Enter, or click the chord, then press the new shortcut. It includes the Command key. Delete clears that row. Escape cancels the recording. A chord already used by another row here moves to the row you are setting. A chord that belongs to a fixed shortcut, such as New agent, is refused.</p>
+        <h3>Agents</h3>
+        <p>Each CLI shows its name, the binary path or "not found on PATH", and Off or On. <kbd>h</kbd> turns the selected one off and <kbd>l</kbd> turns it on. Off stays off after the binary appears. A CLI you have never set is on, so a later install shows up in New until you turn it off. New lists only CLIs that are on your login-shell PATH and turned on. When that list is empty, Enter in the picker opens this section.</p>
         <p>The signed app checks for updates and shows a small notice in the corner: download it, or ignore it until the next check. When the download is ready, a card in the center asks you to restart now, or the next time Shika quits. Check for updates in the Shika menu brings that notice back. A copy you build yourself has no updater.</p>
         <p>If a step you needed is missing from this guide, <a href="https://github.com/xuanhieu2611/shika/issues">open an issue</a>. That is how a new section starts.</p>
       </section>
