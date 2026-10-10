@@ -81,7 +81,9 @@ pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::{ChecksState, PrChecks, PublishPreview, PublishedPr};
-pub use session::{DiffStat, LaunchOptions, LeadEnv, Session, SessionGitState, task_title};
+pub use session::{
+    DiffStat, LaunchOptions, LeadEnv, Session, SessionGitState, WorkerEnv, task_title,
+};
 pub use settings::{
     Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, Settings,
     ThemeMode, ThemeSettings, Translucency,
@@ -602,13 +604,22 @@ impl Core {
             let activity = (preset.id == "pi")
                 .then(activity::ActivityBridge::install)
                 .flatten();
+            // Only a Lead-started worker's agent gets the control variables;
+            // its shell tabs never do.
+            let (search_path, control_vars) = match &options.control {
+                Some(control) => (
+                    session::control_path(&control.bin_dir, env.path()),
+                    session::control_env(&control.socket, &control.token),
+                ),
+                None => (env.path().to_string(), Vec::new()),
+            };
             let mut request = SpawnRequest {
                 program,
                 args: agents::launch_flags(&preset, &draft.path),
                 cwd: draft.path.clone(),
-                path: env.path().to_string(),
+                path: search_path,
                 size,
-                env: Vec::new(),
+                env: control_vars,
             };
             if let Some(activity) = &activity {
                 activity.wire(&mut request);
@@ -790,24 +801,14 @@ impl Core {
             let activity = (preset.id == "pi")
                 .then(activity::ActivityBridge::install)
                 .flatten();
-            let search_path = if env.path().is_empty() {
-                lead_env.bin_dir.to_string_lossy().into_owned()
-            } else {
-                format!("{}:{}", lead_env.bin_dir.display(), env.path())
-            };
+            let search_path = session::control_path(&lead_env.bin_dir, env.path());
             let mut request = SpawnRequest {
                 program,
                 args: agents::launch_flags(&preset, &path),
                 cwd: path.clone(),
                 path: search_path,
                 size,
-                env: vec![
-                    (
-                        "SHIKA_SOCKET".into(),
-                        lead_env.socket.to_string_lossy().into_owned(),
-                    ),
-                    ("SHIKA_TOKEN".into(), lead_env.token.clone()),
-                ],
+                env: session::control_env(&lead_env.socket, &lead_env.token),
             };
             if let Some(activity) = &activity {
                 activity.wire(&mut request);
@@ -3512,6 +3513,79 @@ mod tests {
         }
         assert_eq!(core.worktree_journal().unwrap(), journal);
         assert_eq!(core.sessions().len(), 2);
+    }
+
+    #[test]
+    fn only_a_lead_started_workers_agent_gets_the_control_env() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_reporting_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (lead, _) = create_lead(&core, &scratch, &project.id);
+        let control = scratch.path.join("control");
+
+        let (sink, rx) = channel_sink();
+        let worker = core
+            .create_session(
+                &project.id,
+                "claude",
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions {
+                    prompt: Some("Fix the login bug".into()),
+                    started_by: Some(lead.id.clone()),
+                    control: Some(WorkerEnv {
+                        socket: control.join("sock"),
+                        token: "worker-token".into(),
+                        bin_dir: control.join("bin"),
+                    }),
+                    ..LaunchOptions::default()
+                },
+            )
+            .unwrap();
+        let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+        assert!(report.contains("token:worker-token"), "{report}");
+        assert!(
+            report.contains(&format!("sock:{}", control.join("sock").display())),
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("path:{}:", control.join("bin").display())),
+            "{report}"
+        );
+        assert!(!report.contains("lead-token"), "{report}");
+
+        // Its shell tab is spawned with no control variables on purpose, so
+        // the PTY layer scrubs whatever the app itself inherited.
+        let env = core.path_env();
+        let shell = session::shell_request(
+            &path_env::user_shell(),
+            &worker.worktree,
+            env.path(),
+            PtySize::default(),
+        );
+        assert!(shell.env.is_empty());
+        assert!(!shell.path.contains("control/bin"));
+
+        // A card the author creates gets none, even with a Lead around.
+        let (sink, rx) = channel_sink();
+        core.create_session(
+            &project.id,
+            "claude",
+            PtySize::new(30, 90),
+            sink,
+            LaunchOptions {
+                prompt: Some("Author task".into()),
+                ..LaunchOptions::default()
+            },
+        )
+        .unwrap();
+        let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+        assert!(
+            report.contains("sock:\r\n") && report.contains("token:\r\n"),
+            "{report}"
+        );
+        assert!(!report.contains("control/bin"), "{report}");
     }
 
     #[test]

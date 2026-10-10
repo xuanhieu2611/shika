@@ -111,11 +111,12 @@ The first prompt line names the branch (`session_rename_from_prompt`), and a sec
 
 ### Launch options and the positional prompt
 
-`LaunchOptions { prompt, started_by, base }`, with `Default` meaning the plain New flow.
+`LaunchOptions { prompt, started_by, base, control }`, with `Default` meaning the plain New flow.
 
 - `prompt` is passed to the CLI as its single positional argument after the preset's flags. All four CLIs accept one. `session::check_prompt` refuses a prompt that is empty or whitespace, starts with `-` (the CLI would read a flag), or contains a NUL byte, with `Error::InvalidPrompt`, before anything is created. Core does not rename the branch from the prompt; the caller does that, because no typed submission exists for the app to observe.
 - `started_by` records the owning Lead's session id. Core stores it and does not enforce limits; the 4-worker limit lives in the app's control server.
 - `base` is the per-launch base described above.
+- `control: Option<WorkerEnv>` is set only for a worker a Lead starts. `WorkerEnv { socket, token, bin_dir }` gives that worker's **agent PTY** (never its shell tabs) `SHIKA_SOCKET`, its own `SHIKA_TOKEN`, and `bin_dir` first on `PATH`, so it can run `shika report`. The app maps the token to the worker and accepts only `report` and `help` from it. `None`, as for every card the author creates, means no `SHIKA_*` variables.
 
 ### Lead sessions
 
@@ -150,10 +151,10 @@ One terminal view per live PTY belongs to the app, not core. See [terminal-tabs.
 
 `pty::configure_child` builds every child's environment:
 
-- `PATH` is the login-shell `PATH` (for a Lead, with the control `bin/` directory first).
+- `PATH` is the login-shell `PATH` (for a Lead and a Lead-started worker's agent, with the control `bin/` directory first).
 - `PWD` is the worktree, so a login shell reports it.
 - `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, and `GIT_OBJECT_DIRECTORY` (`worktree::GIT_REDIRECTS`) are removed so git cannot follow another checkout.
-- `SHIKA_SOCKET` and `SHIKA_TOKEN` (`pty::CONTROL_VARS`) are removed, then set from `SpawnRequest::env` only when the request carries them. Only `create_lead` does. A worker, a shell tab, and a Shika started from inside a Lead terminal all end up without them, so a worker can never start workers.
+- `SHIKA_SOCKET` and `SHIKA_TOKEN` (`pty::CONTROL_VARS`) are removed, then set from `SpawnRequest::env` only when the request carries them. Only `create_lead` and a Lead-started worker's agent (`LaunchOptions::control`) do. An author-created card, every shell tab, and a Shika started from inside a Lead terminal end up without them. A worker's own token is report-only in the app, so a worker still cannot start workers.
 
 `PathEnv::capture` runs the user's login shell once, from a short `PATH` with a cleared environment (Nix's `__NIX_DARWIN_SET_ENVIRONMENT_DONE` otherwise stops the shell from rebuilding `PATH`), and resolves each preset binary. A GUI app does not see Homebrew, nvm, or `~/.local/bin`, so everything that spawns a process uses this `PATH`, never the app's own.
 
@@ -188,8 +189,8 @@ Both read only the task worktree. `worktree::read_only_git` sets `GIT_OPTIONAL_L
 `shika_core::control` is the one public module. It defines everything the `shika` command and the app server share, and nothing about the server's state. In short:
 
 - One Unix-socket connection carries one JSON request line and one JSON reply line.
-- A request is `{ version, token, command }`. Commands: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, `close`. Replies: `help`, `tasks`, `started`, `status`, `waited`, `text`, `done` (also the PR URL and `closed ...`), `refused`, `error`. `TaskInfo` carries the worker's worktree `path`.
-- `PROTOCOL_VERSION` (currently 3) must match, or the server refuses. The request line is capped at `MAX_REQUEST_BYTES` (1 MiB).
+- A request is `{ version, token, command }`. Commands: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, `close`, and the worker-only `report` (`clean_report`, `MAX_REPORT_BYTES`, `WORKER_HELP`). Replies: `help`, `tasks`, `started`, `status`, `waited`, `text`, `done` (also the PR URL and `closed ...`), `refused`, `error`. `TaskInfo` carries the worker's worktree `path` and its latest `report` from the current turn.
+- `PROTOCOL_VERSION` (currently 4) must match, or the server refuses. The request line is capped at `MAX_REQUEST_BYTES` (1 MiB).
 - `ControlDir::create` makes the per-run `0700` directory holding `sock` and `bin/shika`, a symlink to the running executable.
 - `parse_args` and `render_text` are the client's front and back end; `--json` prints the reply as serialized. An unknown command word is a usage error (exit 2). `is_client_invocation(args, lead_env)` decides client or app: with `SHIKA_SOCKET` or `SHIKA_TOKEN` set it is always the client, otherwise only a command word is.
 - `key_name` normalizes and validates `shika key` names (`KEY_NAMES`, `MAX_KEYS`); `MAX_READ_LINES` bounds `read --lines`. The app turns names into bytes with `shika_terminal::input`; core stays free of terminal types.
@@ -236,7 +237,7 @@ Tests never touch real app data or the user's repositories:
 - A bare remote is `git init --bare` in the scratch directory, added as `origin` and pushed to. The base-branch, fetch, push, publish, and close tests use it, including a remote that rejects pushes to exercise real push errors.
 - The agent CLI is a shell script (`fake_cli`, or `REPORTING_CLI`, which prints the last argument and the `SHIKA_*` and `PATH` it was given). `Core::open_with` takes a `PathEnv` built by the test-only `PathEnv::from_lookup`, so no login shell runs and no real CLI is needed.
 - `pty::tests` provides `channel_sink`, `collect_until`, and `collect_to_exit` for reading what a child printed.
-- The Lead tests in `lib.rs` start with `a_lead_`, `workers_get_`, and `closing_a_lead_`; the control protocol tests are in `control.rs`.
+- The Lead tests in `lib.rs` start with `a_lead_`, `workers_get_`, `only_a_lead_started_workers_agent_`, and `closing_a_lead_`; the control protocol tests are in `control.rs`.
 
 The preparation integration tests (`preparation_tests.rs`) have a known collision when run in parallel: their fixture names its root from the PID and a timestamp, and equal timestamps can share a directory. If you see `AlreadyExists` from `Fixture::new`, rerun serially with `cargo test -p shika-core preparation -- --test-threads=1`, and keep the parallel run in PR validation. This is documented, with the diagnosis, in [worktree-preparation.md](../../docs/worktree-preparation.md); a serial pass is not evidence that it is fixed.
 

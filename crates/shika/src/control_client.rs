@@ -11,7 +11,7 @@ pub fn run(args: &[String]) -> i32 {
         std::env::var_os("SHIKA_SOCKET"),
         std::env::var("SHIKA_TOKEN").ok(),
     ) else {
-        eprintln!("shika commands run inside a Shika Lead terminal.");
+        eprintln!("shika commands run inside a Shika Lead or Lead-started worker terminal.");
         return 2;
     };
     let (command, json) = match control::parse_args(args) {

@@ -36,6 +36,7 @@ These hold for every feature. A change to one is a decision for the maintainer, 
 - **The real terminal is the interface.** The user reads and answers the agent in the CLI's own UI. Shika does not draw a transcript or replace a CLI's question widgets.
 - **No approval prompts from Shika.** Each CLI starts in its automatic approval mode, using flags checked against its `--help` (see [AGENTS.md](AGENTS.md#clis-and-launch-arguments)).
 - **One fresh worktree per task.** Tasks in a repository are independent. Shika does not reuse worktrees or merge between agents.
+- **The Lead is a manager, not a micromanager.** The author is the CEO, the Lead briefs workers and reads their own reports, and quality rests on the repository's CI and the author's testing. See [Lead agent](docs/lead-agent.md#the-lead-is-a-manager).
 - **The user owns git.** Shika never commits or pushes on its own. A push does not close a task, and Close asks before anything is lost. Create PR commits only after an explicit confirmation.
 - **Grouped by project, one terminal on screen.** Projects and their task cards in one column, and the selected task's terminal beside it. On request, a read-only Changes panel shows that task's diff right of the terminal. It is for reading what an agent changed, not a second terminal or an editor.
 - **Keyboard first.** Every workflow works without the mouse, and typing in a terminal never triggers app keys.

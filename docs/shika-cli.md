@@ -1,23 +1,23 @@
 # The `shika` command
 
-Reference for the command a Lead agent runs: what each subcommand does, the wire protocol under it, the security model, how to debug it, and how to add a command. The product decision and design rationale are in [lead-agent.md](lead-agent.md); read that first for why it exists. The shared protocol code is documented in [crates/shika-core/README.md](../crates/shika-core/README.md).
+Reference for the command a Lead agent runs (and the one command, `report`, its workers run): what each subcommand does, the wire protocol under it, the security model, how to debug it, and how to add a command. The product decision and design rationale are in [lead-agent.md](lead-agent.md); read that first for why it exists. The shared protocol code is documented in [crates/shika-core/README.md](../crates/shika-core/README.md).
 
 Contents: [What it is](#what-it-is) - [Commands](#commands) - [Output and exit codes](#output-and-exit-codes) - [Scope and security](#scope-and-security) - [wait in detail](#wait-in-detail) - [The doorbell](#the-doorbell) - [Protocol](#protocol) - [Debugging](#debugging) - [Adding a command](#adding-a-command) - [Code map](#code-map)
 
-Status: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, and `close` are implemented, plus the doorbell that wakes an idle Lead. GUI acceptance of `pr` and `close` is pending (see [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#lead-agent-spike)).
+Status: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, and `close` are implemented, plus the doorbell that wakes an idle Lead and `report`, the one command a Lead-started worker can run. GUI acceptance of `pr` and `close` is pending (see [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#lead-agent-spike)).
 
 ## What it is
 
 `shika` is a small client for a local Unix socket that the running Shika app serves. A Lead (an ordinary agent CLI in its own terminal) runs it as a shell command to list tasks, start worker cards, wait for them, read their terminals and diffs, and answer their questions. Every supported CLI can run a shell command, so no per-CLI configuration is injected and no MCP server exists.
 
-**There is no separate binary.** The app binary is the client. At the top of `main`, before GPUI, settings, or app data are touched, it checks `shika_core::control::is_client_invocation` on its arguments and on whether `SHIKA_SOCKET` or `SHIKA_TOKEN` is set. Inside a Lead terminal (either variable set) it is always the client, whatever the arguments, so a bare or mistyped `shika` prints the usage and exits 2 and never starts a second app on the real data. Elsewhere it is the client only for a command word (`help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, `close`), optionally after a leading `--json`; `--data-dir`, `--diagnostics-file`, and Finder or `open` launches start the app. When it is the client, `control_client::run` talks to the socket and the process exits with its status.
+**There is no separate binary.** The app binary is the client. At the top of `main`, before GPUI, settings, or app data are touched, it checks `shika_core::control::is_client_invocation` on its arguments and on whether `SHIKA_SOCKET` or `SHIKA_TOKEN` is set. Inside a Lead terminal (either variable set) it is always the client, whatever the arguments, so a bare or mistyped `shika` prints the usage and exits 2 and never starts a second app on the real data. Elsewhere it is the client only for a command word (`help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, `close`, `report`), optionally after a leading `--json`; `--data-dir`, `--diagnostics-file`, and Finder or `open` launches start the app. When it is the client, `control_client::run` talks to the socket and the process exits with its status.
 
-**Where it works.** Only in a Lead's terminal tree. Two environment variables make it work, and only a Lead PTY has them:
+**Where it works.** Only in the agent terminal of a Lead, or of a worker that Lead started. Two environment variables make it work:
 
 - `SHIKA_SOCKET`: absolute path of the socket.
-- `SHIKA_TOKEN`: 32 hex characters, the Lead's credential.
+- `SHIKA_TOKEN`: 32 hex characters, the credential. A Lead's token runs the Lead commands; a worker's own token runs only `report` and `help` (see [`shika report`](#shika-report-text)).
 
-Run anywhere else, it prints `shika commands run inside a Shika Lead terminal.` to stderr and exits 2. Workers and shell tabs have both variables removed, so they get the same message.
+Run anywhere else, it prints `shika commands run inside a Shika Lead or Lead-started worker terminal.` to stderr and exits 2. Cards the author creates, and every shell tab (a Lead-started worker's too), have both variables removed, so they get the same message.
 
 **How `shika` gets on the Lead's `PATH`.** At startup the app creates a per-run control directory (`shika_core::control::ControlDir`):
 
@@ -27,7 +27,7 @@ Run anywhere else, it prints `shika commands run inside a Shika Lead terminal.` 
   bin/shika                          symlink to the running executable
 ```
 
-`<tmp>` is the canonicalized temp directory (on macOS, under `/private/var/folders/...`). The Lead's `PATH` is `<that>/bin:` followed by the login-shell `PATH`. Consequences:
+`<tmp>` is the canonicalized temp directory (on macOS, under `/private/var/folders/...`). The Lead's `PATH`, and the agent PTY's of each worker it starts, is `<that>/bin:` followed by the login-shell `PATH`. Consequences:
 
 - `shika` is always the same build as the app that started the Lead, whether it came from `cargo run` or a `.app` bundle.
 - The bundle's `Contents/MacOS` is deliberately not put on `PATH`. The bundle binary is `Shika`; a `shika` name in the same directory would collide with it on a case-insensitive volume (macOS defaults to one). The separate `bin/` directory holds only the symlink.
@@ -66,6 +66,14 @@ JSON:
 
 ```json
 {"type":"tasks","tasks":[{"id":"18f3a9c2b7d4e601","title":"Fix login redirect","cli":"codex","status":"working","elapsed_secs":192,"branch":"fix-login-redirect","diff_stat":{"files":2,"added":64,"removed":3},"pr":null,"started_by_lead":true,"path":"/repo/.worktrees/fix-login-redirect"}]}
+```
+
+`report` is the worker's latest report from its current turn (`null` when it has not reported). In text, it prints on indented lines under the task line:
+
+```text
+18f3a9c2b7e0aa12 ready "Fix login redirect" cli=codex branch=fix-login-redirect diff=2 files +64 -3 pr=#42 by-lead
+  report:
+    Fixed the redirect loop; added a regression test. cargo test: 31 passed. Commit 3f2a9c1.
 ```
 
 Absent values are `null`. An empty project is `{"type":"tasks","tasks":[]}`.
@@ -282,6 +290,34 @@ closed
 
 Refusals are those of `pr` without the status checks: unknown task, not started by this Lead (`... so it cannot close it.`), still being set up, another overlay open, busy, or another Lead dialog pending. The Lead itself, the author's cards, and other projects' cards are never closable this way. Closing a worker frees one of the 4 worker slots. As for `pr`, selection and focus return to the Lead afterwards (a cancelled Close does not take the author to the worker's shell, as it does when they cancel it themselves), and the client has no read timeout.
 
+### `shika report <text...>`
+
+Worker only. A worker started by a Lead says what it did: what changed, the tests it ran and their result, its commit. The text is stored as the worker's latest report and shows to the Lead under the worker's task line in `tasks`, `status`, and `wait`.
+
+```text
+$ shika report "Added slugify to textkit with 4 tests; cargo test: 31 passed. Commit 3f2a9c1."
+reported
+```
+
+Rules (`worker_command`, `clean_report`):
+
+- The text is trimmed; tabs become spaces; control characters other than line breaks are dropped. Empty after that: `refused: The report is empty.` More than 4096 bytes (`MAX_REPORT_BYTES`): `refused: The report is N bytes; the most is 4096. Shorten it.`
+- The report is tagged with the worker's current turn (`Activity::turn_started`) and replaces the earlier one. `TaskInfo::report` holds it only while that turn is current: a new turn (a typed line, or a `send` with Enter) starts with none.
+- It changes no status and ends no turn. `wait`, the doorbell, and settlement still come from activity. The doorbell line only marks the task `(reported)`; it never carries the text.
+- Memory only, and it dies with the card.
+
+Parsing (`parse_report`): flags first (`--json`); the first plain word starts the text; `--` also starts it, for text beginning with a dash. The words are joined with single spaces.
+
+A worker's token may run only `report` and `help`. `help` prints three lines (`WORKER_HELP`). Every other command gets `refused: Workers can only run shika report.` A Lead token running `report` gets `refused: Only workers can run shika report.`
+
+**The footer.** `shika new` appends this to the Lead's prompt, after a blank line (`worker_prompt`, `WORKER_FOOTER`); `send` never does:
+
+```text
+When you finish or get blocked, run: shika report "<what you changed, the tests you ran and their result, your commit>". Do not push.
+```
+
+Branch and card naming read the first nonblank prompt line, which is still the Lead's. The combined prompt does not start with `-`, so it passes the positional-prompt rules unchanged.
+
 ### How `pr` and `close` resolve
 
 Both go through `Shika::control_dialog`. After the refusal checks it stores a `LeadDialog` (kind, Lead id, task id, the reply channel, the outcome and last error) in `Shika::lead_dialog`, selects the card, and calls `create_pr` or `close`. The flows record what happens: `lead_dialog_succeeded` (publish success, `finish_close` success with `close_outcome`) and `lead_dialog_failed` (preview, publish, or close failure). `Shika::settle_lead_dialog` answers once the dialog is no longer on screen and no flow is still running. It runs after every place a dialog can end (the flows, `cancel_overlay`) and on every tick, so a dialog that disappears another way (the card or project removed) still answers: `dialog_reply` gives the outcome if there is one, else the last error, else `The Lead was closed before the author answered.` or `The task is no longer in Shika.`, else `The author cancelled.` If the app quits, the reply channel drops and the client gets `Shika stopped handling this command.` If the Lead card goes away first, the client is answered at once and any dialog stays open for the author.
@@ -315,6 +351,7 @@ usage: shika [--json] <command>
   key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)
   pr <task>
   close <task>
+  report <text...>   (workers only)
 ```
 
 ## Scope and security
@@ -324,9 +361,10 @@ The design goal is a local helper that can drive one project's workers and canno
 - **The token is the credential.** `new_token` reads 128 bits from `/dev/urandom` and panics rather than returning something guessable. Each Lead gets its own token, which lives only in the Lead card (`Card::lead`, `LeadState::token`) and in the Lead's environment. There is no token table: the app finds the Lead by comparing the request's token with its cards, so the token dies when the card does (Close, project removal, quit). An unknown token is refused: `This Lead is not running in Shika (unknown or expired token). Start a Lead from Shika.`
 - **The token exists before the session does**, so a very early `shika` call can arrive while the Lead card has no session yet. That is refused with `The Lead is still starting.`; retry.
 - **The socket directory is the access control.** The control directory is created `0700`, so only the same macOS user can reach the socket. The socket file itself has the default mode. Anyone who is the same user could read the token from the Lead's environment anyway; the token separates Leads and workers from one another, not users from themselves.
-- **Workers cannot start workers.** `pty::CONTROL_VARS` (`SHIKA_SOCKET`, `SHIKA_TOKEN`) are removed from every PTY's environment and set again only from the explicit request of `create_lead`. Workers and shell tabs therefore have neither, and the tree is one level deep.
+- **Workers cannot start workers.** `pty::CONTROL_VARS` (`SHIKA_SOCKET`, `SHIKA_TOKEN`) are removed from every PTY's environment and set again only from the explicit request of `create_lead`, or of a Lead-started worker's agent (`LaunchOptions::control`). Shell tabs and the author's cards therefore have neither.
+- **Worker tokens are report-only.** Each worker a Lead starts gets its own token in `SHIKA_TOKEN` on its agent PTY (`Card::worker_token`; not a table, so it dies with the card). The token names the worker, so a worker can report only for itself. `handle_control` routes it to `handle_worker`, which allows `report` and `help` and refuses everything else. A worker still cannot start, read, steer, publish, or close anything, and cannot see another task. What it gains is one bounded write: a 4 KB string, shown to its Lead as the worker's own words and never typed into any terminal.
 - **Project scope.** A Lead sees and affects only cards with its own project id. `new` starts workers only in that project.
-- **Ownership.** `tasks` and `status` work on every task in the project, whoever started it. `read` and `diff` are reads and work on every task in the project. `wait`, `send`, `key`, `pr`, and `close` work only on tasks this Lead started. The author's own cards stay the author's. `send` and `key` write only to a task's agent terminal, never to a shell tab, and never to a draft the author left.
+- **Ownership.** `tasks` and `status` (with the worker's report) work on every task in the project, whoever started it. `read` and `diff` are reads and work on every task in the project. `wait`, `send`, `key`, `pr`, and `close` work only on tasks this Lead started. The author's own cards stay the author's. `send` and `key` write only to a task's agent terminal, never to a shell tab, and never to a draft the author left.
 - **The 4-worker limit** (`MAX_WORKERS`). A card counts when it was started by this Lead and is not the Lead itself, not marked for discard, has no launch error, and its CLI has not exited (`Card::is_live_worker_of`). It counts while it is still being created (no session yet), while working, and after it finishes until the author closes it or its CLI exits. The check runs on the app thread twice: before the approval check and again immediately before the card is added, so parallel `new` calls cannot overshoot. Ask the author to close finished tasks to free slots.
 - **No authority beyond starting and watching.** The Lead cannot merge, push, commit, or publish through Shika. `pr` and `close` only open the existing Create PR and Close flows and wait for the author, who alone confirms. Nothing in this protocol can bypass that confirmation, and neither command has a flag to skip it. Close without a question happens only where the author's own Close would not ask.
 - **Resource limits.** One request line at most 1 MiB (`MAX_REQUEST_BYTES`). At most 32 simultaneous connections (`MAX_CONNECTIONS`); the next gets an `error` reply `Shika is serving too many commands at once.` The server gives a client 5 seconds to send its request and 10 seconds to accept the reply.
@@ -398,17 +436,17 @@ A bell does not mark the settlement reported. The Lead's next `shika wait` retur
 **Request.**
 
 ```json
-{"version":3,"token":"0123456789abcdef0123456789abcdef","command":{"type":"new","cli":"codex","base":"dev","prompt":"Fix it"}}
+{"version":4,"token":"0123456789abcdef0123456789abcdef","command":{"type":"new","cli":"codex","base":"dev","prompt":"Fix it"}}
 ```
 
-`command` is internally tagged by `type` (snake_case): `{"type":"help"}`, `{"type":"tasks"}`, `{"type":"new","cli":"...","base":null|"...","prompt":"..."}`, `{"type":"status","task":"..."}`, `{"type":"wait","tasks":[...],"timeout_secs":30}`, `{"type":"read","task":"...","lines":0}`, `{"type":"diff","task":"...","stat":false}`, `{"type":"send","task":"...","text":"...","enter":true}`, `{"type":"key","task":"...","keys":["down","enter"]}`, `{"type":"pr","task":"..."}`, `{"type":"close","task":"..."}`.
+`command` is internally tagged by `type` (snake_case): `{"type":"help"}`, `{"type":"tasks"}`, `{"type":"new","cli":"...","base":null|"...","prompt":"..."}`, `{"type":"status","task":"..."}`, `{"type":"wait","tasks":[...],"timeout_secs":30}`, `{"type":"read","task":"...","lines":0}`, `{"type":"diff","task":"...","stat":false}`, `{"type":"send","task":"...","text":"...","enter":true}`, `{"type":"key","task":"...","keys":["down","enter"]}`, `{"type":"pr","task":"..."}`, `{"type":"close","task":"..."}`, `{"type":"report","text":"..."}`.
 
-**Reply.** One of the objects below, tagged by `type`: `help` (`text`), `tasks` (`tasks`), `started` (`task`), `status` (`task`), `waited` (`events`, `still_working`, `timed_out`), `text` (`text`; `read` and `diff`), `done` (`message`; `send`, `key`, `pr`, and `close`), `refused` (`reason`), `error` (`message`). Examples are under [Commands](#commands). `TaskInfo` fields: `id`, `title`, `cli`, `status`, `elapsed_secs`, `branch`, `diff_stat`, `pr`, `started_by_lead`, `path`.
+**Reply.** One of the objects below, tagged by `type`: `help` (`text`), `tasks` (`tasks`), `started` (`task`), `status` (`task`), `waited` (`events`, `still_working`, `timed_out`), `text` (`text`; `read` and `diff`), `done` (`message`; `send`, `key`, `pr`, and `close`), `refused` (`reason`), `error` (`message`). Examples are under [Commands](#commands). `TaskInfo` fields: `id`, `title`, `cli`, `status`, `elapsed_secs`, `branch`, `diff_stat`, `pr`, `started_by_lead`, `path`, `report`.
 
-**Versioning.** `PROTOCOL_VERSION` is currently `3` (2 added `read`, `diff`, `send`, `key`, the `text` and `done` replies, and `TaskInfo::path`; 3 added `pr` and `close`). The server compares it for equality before looking at the command, and a mismatch is a refusal rather than a parse failure:
+**Versioning.** `PROTOCOL_VERSION` is currently `4` (2 added `read`, `diff`, `send`, `key`, the `text` and `done` replies, and `TaskInfo::path`; 3 added `pr` and `close`; 4 added `report`, worker tokens, and `TaskInfo::report`). The server compares it for equality before looking at the command, and a mismatch is a refusal rather than a parse failure:
 
 ```json
-{"type":"refused","reason":"This shika speaks protocol 9 but the running Shika app speaks 3. Restart the Lead from the app."}
+{"type":"refused","reason":"This shika speaks protocol 9 but the running Shika app speaks 4. Restart the Lead from the app."}
 ```
 
 Both sides are normally the same binary (the symlink), so a mismatch happens when the app is replaced while a Lead is running.
@@ -458,7 +496,10 @@ A `wait` request over `nc` blocks until the reply, up to the server timeout, lik
 
 | What you see | Meaning and fix |
 | --- | --- |
-| `shika commands run inside a Shika Lead terminal.` (stderr, exit 2) | `SHIKA_SOCKET` or `SHIKA_TOKEN` is missing. You are not in a Lead terminal, or you are in a worker or a shell tab. |
+| `shika commands run inside a Shika Lead or Lead-started worker terminal.` (stderr, exit 2) | `SHIKA_SOCKET` or `SHIKA_TOKEN` is missing. You are not in a Lead or Lead-started worker agent terminal: you are in a shell tab, or a card the author created. |
+| `refused: Workers can only run shika report.` | A worker ran a Lead command. |
+| `refused: Only workers can run shika report.` | A Lead ran `report`. |
+| `refused: The report is empty.` / `The report is N bytes; the most is 4096. ...` | The text was empty after cleaning, or too long. Shorten it. |
 | `Could not reach Shika at <path> (No such file or directory / Connection refused). Is the app running, and was this Lead started by it?` | The app quit or crashed, so the socket is gone or dead, or the environment is stale (a shell kept from a previous run). Restart the Lead from the app. |
 | `refused: This Lead is not running in Shika (unknown or expired token). ...` | The Lead card was closed or its project removed, or the app restarted. Start a new Lead. |
 | `refused: The Lead is still starting.` | The Lead's first command ran before the app registered its session. Retry. |
@@ -523,6 +564,7 @@ Guardrails (from [lead-agent.md](lead-agent.md)):
 | Doorbell and typing: `Doorbell`, `Gate`, `doorbell_line`, `Shika::ring_doorbells`, `Shika::type_into`, `Step`, `paste_steps`, `key_steps`, `key_bytes`, `input_refusal`, `HostState::inject` | `crates/shika/src/control.rs`; `HostState::capture_typed`, `has_draft` in `crates/shika/src/main.rs` |
 | Terminal text with scrollback | `Terminal::text_with_history` in `crates/shika-terminal/src/terminal.rs` |
 | Diff text | `shika_core::render_unified`, `RENDER_CAP_BYTES` in `crates/shika-core/src/diff.rs` |
+| Worker tokens and reports: `worker_command`, `Shika::handle_worker`, `WorkerReport`, `worker_prompt`, `WORKER_FOOTER`; `clean_report`, `WORKER_HELP`, `MAX_REPORT_BYTES` (core) | `crates/shika/src/control.rs`; `Card::worker_token`, `Card::report` in `crates/shika/src/main.rs`; `WorkerEnv` and `LaunchOptions::control` in `crates/shika-core/src/session.rs` |
 | Lead card state | `Card::lead` (`LeadState`: token, ledger, waiters), `Card::started_by`, `Card::launch` (`Launch::{Task, Worker, Lead}`) in `crates/shika/src/main.rs` |
 | Lead session, detached worktree, PTY environment, `LeadEnv`, `LaunchOptions` | `Core::create_lead`, `Core::create_session_with_preparation`, `pty::CONTROL_VARS`, `crates/shika-core/src/session.rs` |
 | Guide text | `crates/shika/src/lead_guide.md` |

@@ -15,11 +15,11 @@
 //! ([`Shika::type_into`]) with the guard in [`input_refusal`].
 use crate::{Card, HostState, Launch, Overlay, Selection, Shika, lock, model::Status};
 use gpui::{Context, Window};
-use shika_core::LaunchOptions;
 use shika_core::control::{
     Command, ControlDir, ControlError, MAX_READ_LINES, Reply, TaskDiffStat, TaskInfo, TaskStatus,
-    WaitEvent, read_request, write_reply,
+    WORKER_HELP, WaitEvent, clean_report, read_request, write_reply,
 };
+use shika_core::{LaunchOptions, WorkerEnv};
 use shika_terminal::Modes;
 use shika_terminal::input::{Key, KeyMods, encode_key, encode_paste};
 use std::collections::HashMap;
@@ -45,6 +45,17 @@ const ENTER_DELAY: Duration = Duration::from_millis(150);
 
 /// Pause between the keys of one `shika key`, so a TUI sees them one by one.
 const KEY_DELAY: Duration = Duration::from_millis(40);
+
+/// Appended to the prompt of every worker a Lead starts with `shika new`,
+/// after a blank line. Not added by `send`.
+pub const WORKER_FOOTER: &str = "When you finish or get blocked, run: shika report \"<what you changed, the tests you ran and their result, your commit>\". Do not push.";
+
+/// The prompt a Lead-started worker receives: the Lead's text, then the
+/// report instruction. The first line, which names the card and branch, is
+/// still the Lead's.
+pub fn worker_prompt(prompt: &str) -> String {
+    format!("{}\n\n{WORKER_FOOTER}", prompt.trim_end())
+}
 
 /// What `shika help` prints.
 const LEAD_GUIDE: &str = include_str!("lead_guide.md");
@@ -213,6 +224,36 @@ fn serve(stream: UnixStream, requests: &Sender<Incoming>) {
     }
 }
 
+/// A worker's latest `shika report`, tagged with the turn it was made in. A
+/// new turn leaves it behind: the Lead sees only the current turn's report.
+pub struct WorkerReport {
+    pub text: String,
+    pub turn: Option<Instant>,
+}
+
+/// The reply to a worker's command, and the report it stores. A worker may
+/// run `report` and `help`; every other command is refused.
+pub fn worker_command(command: Command, turn: Option<Instant>) -> (Reply, Option<WorkerReport>) {
+    match command {
+        Command::Help => (
+            Reply::Help {
+                text: WORKER_HELP.to_string(),
+            },
+            None,
+        ),
+        Command::Report { text } => match clean_report(&text) {
+            Ok(text) => (
+                Reply::Done {
+                    message: "reported".into(),
+                },
+                Some(WorkerReport { text, turn }),
+            ),
+            Err(reason) => (refused(reason), None),
+        },
+        _ => (refused("Workers can only run shika report."), None),
+    }
+}
+
 /// Everything the Lead's card keeps for the control socket.
 pub struct LeadState {
     pub token: String,
@@ -370,7 +411,16 @@ pub fn doorbell_line(tasks: &[&TaskInfo]) -> String {
                 TaskStatus::Asking => "is asking",
                 _ => "is ready",
             };
-            format!("{} \"{}\" {what}", task.id, title.replace('"', "'"))
+            let reported = if task.report.is_some() {
+                " (reported)"
+            } else {
+                ""
+            };
+            format!(
+                "{} \"{}\" {what}{reported}",
+                task.id,
+                title.replace('"', "'")
+            )
         })
         .collect();
     format!(
@@ -812,6 +862,11 @@ impl Card {
             pr: self.pr.as_ref().map(|watch| watch.number),
             started_by_lead: self.started_by.as_deref() == Some(lead_id),
             path: session.worktree.display().to_string(),
+            report: self
+                .report
+                .as_ref()
+                .filter(|report| report.turn == self.activity.turn_started)
+                .map(|report| report.text.clone()),
         })
     }
 
@@ -858,6 +913,14 @@ impl Shika {
             reply,
             delivered,
         } = incoming;
+        if self
+            .cards
+            .iter()
+            .any(|card| card.worker_token.as_deref() == Some(token.as_str()))
+        {
+            let _ = reply.send(self.handle_worker(&token, command));
+            return;
+        }
         let Some(lead) = self
             .cards
             .iter()
@@ -877,6 +940,7 @@ impl Shika {
             Command::Help => Reply::Help {
                 text: LEAD_GUIDE.to_string(),
             },
+            Command::Report { .. } => refused("Only workers can run shika report."),
             Command::Tasks => Reply::Tasks {
                 tasks: self
                     .project_tasks(&project)
@@ -988,6 +1052,24 @@ impl Shika {
             }
         };
         let _ = reply.send(answer);
+    }
+
+    /// A command from a worker's token: `report` and `help`, nothing else.
+    /// The token names the worker, so a worker can only ever report for
+    /// itself.
+    fn handle_worker(&mut self, token: &str, command: Command) -> Reply {
+        let Some(card) = self
+            .cards
+            .iter_mut()
+            .find(|card| card.worker_token.as_deref() == Some(token))
+        else {
+            return refused("This worker is no longer in Shika.");
+        };
+        let (reply, report) = worker_command(command, card.activity.turn_started);
+        if report.is_some() {
+            card.report = report;
+        }
+        reply
     }
 
     /// `shika pr` and `shika close`: select the worker's card and run the
@@ -1546,10 +1628,19 @@ impl Shika {
                         ));
                     }
                     Ok((config, _)) => {
+                        let Some(server) = &this.control else {
+                            let _ = reply.send(refused("Shika's control socket is not running."));
+                            return;
+                        };
                         let options = LaunchOptions {
-                            prompt: Some(prompt),
+                            prompt: Some(worker_prompt(&prompt)),
                             started_by: Some(lead_id),
                             base,
+                            control: Some(WorkerEnv {
+                                socket: server.socket(),
+                                token: shika_core::control::new_token(),
+                                bin_dir: server.bin_dir(),
+                            }),
                         };
                         this.begin_launch(
                             project,
@@ -1657,6 +1748,7 @@ mod tests {
             pr: None,
             started_by_lead: true,
             path: String::new(),
+            report: None,
         }
     }
 
@@ -2213,6 +2305,108 @@ mod tests {
             "[shika] Workers changed: 18d0b57 \"Add slugify to textkit wi...\" is ready; 18d0b58 \"Add 'word_count'\" is asking; 18d0b59 \"18d0b59\" has exited. Run shika wait."
         );
         assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn the_doorbell_marks_reported_tasks() {
+        let mut done = task("18d0b57", TaskStatus::Ready);
+        done.report = Some("Done. cargo test passes.".into());
+        let silent = task("18d0b58", TaskStatus::Ready);
+        let line = doorbell_line(&[&done, &silent]);
+        assert_eq!(
+            line,
+            "[shika] Workers changed: 18d0b57 \"18d0b57\" is ready (reported); 18d0b58 \"18d0b58\" is ready. Run shika wait."
+        );
+        assert!(!line.contains("Done."), "the bell never carries the report");
+    }
+
+    #[test]
+    fn a_worker_may_only_report_or_ask_for_help() {
+        let turn = Some(Instant::now());
+        let (reply, stored) = worker_command(
+            Command::Report {
+                text: "  Added the form.\x07 Tests pass. ".into(),
+            },
+            turn,
+        );
+        assert_eq!(
+            reply,
+            Reply::Done {
+                message: "reported".into()
+            }
+        );
+        let stored = stored.expect("stored");
+        assert_eq!(stored.text, "Added the form. Tests pass.");
+        assert_eq!(stored.turn, turn);
+
+        let (reply, stored) = worker_command(
+            Command::Report {
+                text: "x".repeat(shika_core::control::MAX_REPORT_BYTES + 1),
+            },
+            turn,
+        );
+        assert_eq!(reply.exit_code(), 1);
+        assert!(stored.is_none());
+
+        let (reply, _) = worker_command(Command::Help, None);
+        assert!(matches!(reply, Reply::Help { text } if text.lines().count() == 3));
+
+        for command in [
+            Command::Tasks,
+            Command::Status { task: "a".into() },
+            Command::New {
+                cli: "claude".into(),
+                base: None,
+                prompt: "x".into(),
+            },
+            Command::Wait {
+                tasks: vec![],
+                timeout_secs: 1,
+            },
+            Command::Read {
+                task: "a".into(),
+                lines: 0,
+            },
+            Command::Diff {
+                task: "a".into(),
+                stat: false,
+            },
+            Command::Send {
+                task: "a".into(),
+                text: "x".into(),
+                enter: true,
+            },
+            Command::Key {
+                task: "a".into(),
+                keys: vec!["enter".into()],
+            },
+            Command::Pr { task: "a".into() },
+            Command::Close { task: "a".into() },
+        ] {
+            let (reply, stored) = worker_command(command, turn);
+            assert_eq!(
+                reply,
+                refused("Workers can only run shika report."),
+                "a worker ran a Lead command"
+            );
+            assert!(stored.is_none());
+        }
+    }
+
+    #[test]
+    fn the_worker_footer_follows_the_prompt_and_leaves_its_first_line_alone() {
+        let prompt = worker_prompt("Fix the login bug\n\nScope: auth only.\n");
+        assert_eq!(
+            prompt,
+            format!("Fix the login bug\n\nScope: auth only.\n\n{WORKER_FOOTER}")
+        );
+        assert!(WORKER_FOOTER.contains("shika report") && WORKER_FOOTER.contains("Do not push"));
+        assert_eq!(
+            crate::model::prompt_title(&prompt).as_deref(),
+            Some("Fix the login bug")
+        );
+        // Still a valid positional prompt: it does not start with a dash.
+        assert!(!worker_prompt("ok").starts_with('-'));
     }
 
     #[test]

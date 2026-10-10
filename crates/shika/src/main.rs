@@ -349,6 +349,11 @@ struct Card {
     started_by: Option<String>,
     /// The control socket state, on the project's Lead card only.
     lead: Option<control::LeadState>,
+    /// The `SHIKA_TOKEN` of a Lead-started worker's agent PTY. It may run
+    /// only `shika report`, and dies with the card.
+    worker_token: Option<String>,
+    /// The worker's latest `shika report`. Memory only.
+    report: Option<control::WorkerReport>,
     /// A failed launch nobody asked for (a worker): removed by the tick once
     /// no dialog depends on card positions.
     discard: bool,
@@ -1186,6 +1191,10 @@ impl Shika {
             self.remove_card(i);
         }
         let author = retried || !matches!(launch, Launch::Worker(_));
+        let worker_token = match &launch {
+            Launch::Worker(options) => options.control.as_ref().map(|c| c.token.clone()),
+            _ => None,
+        };
         let (started_by, lead) = match &launch {
             Launch::Worker(options) => (options.started_by.clone(), None),
             Launch::Lead(env) => (None, Some(control::LeadState::new(env.token.clone()))),
@@ -1260,6 +1269,8 @@ impl Shika {
             launch: launch.clone(),
             started_by,
             lead,
+            worker_token,
+            report: None,
             discard: false,
             launch_control: Some(control.clone()),
             launch_error: None,

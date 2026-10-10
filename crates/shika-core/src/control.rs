@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped when a request or reply changes shape. The server refuses a request
 /// with another version, so a stale `shika` never misreads a newer app.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The longest request line the server reads. A longer one is rejected.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -44,11 +44,15 @@ pub const MAX_KEYS: usize = 32;
 /// macOS allows 104 bytes in `sockaddr_un.sun_path`, including the NUL.
 const MAX_SOCKET_PATH: usize = 103;
 
+/// The longest `shika report` the server keeps, in bytes.
+pub const MAX_REPORT_BYTES: usize = 4096;
+
 /// The CLI ids `shika new --cli` accepts, the same as the preset ids.
 pub const CLI_IDS: [&str; 4] = ["claude", "codex", "cursor", "pi"];
 
 /// Usage text for argument errors.
-pub const USAGE: &str = "usage: shika [--json] <command>\n  help\n  tasks\n  new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>\n  status <task>\n  wait [<task>...] [--timeout <seconds>]\n  read <task> [--lines <n>]\n  diff <task> [--stat]\n  send <task> [--no-enter] <text...>\n  key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)\n  pr <task>\n  close <task>";
+pub const USAGE: &str = "usage: shika [--json] <command>\n  help\n  tasks\n  new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>\n  status <task>\n  wait [<task>...] [--timeout <seconds>]\n  read <task> [--lines <n>]\n  diff <task> [--stat]\n  send <task> [--no-enter] <text...>\n  key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)\n  pr <task>\n  close <task>
+  report <text...>   (workers only)";
 
 /// Why a control call failed. The client prints it and exits with status 2.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -154,6 +158,9 @@ pub enum Command {
     /// Close a worker this Lead started: at once when Close needs no
     /// confirmation, otherwise through the close dialog. Blocks until done.
     Close { task: String },
+    /// A worker's own account of its turn. Only a worker's token may send
+    /// it, and only it may send anything else than `Help`.
+    Report { text: String },
 }
 
 /// The named keys `shika key` accepts besides single letters and digits.
@@ -234,6 +241,9 @@ pub struct TaskInfo {
     pub started_by_lead: bool,
     /// The task's worktree, absolute. The Lead may read files there.
     pub path: String,
+    /// The worker's latest `shika report` from its current turn. None when
+    /// it has not reported in this turn.
+    pub report: Option<String>,
 }
 
 /// A task that needs the Lead; `task.status` says why.
@@ -328,15 +338,58 @@ fn task_line(task: &TaskInfo) -> String {
     line
 }
 
+/// The task line, then its report (if any) on indented lines.
+fn task_text(task: &TaskInfo) -> String {
+    let mut text = task_line(task);
+    if let Some(report) = &task.report {
+        text.push_str("\n  report:");
+        for line in report.lines() {
+            text.push_str("\n    ");
+            text.push_str(line.trim_end());
+        }
+    }
+    text
+}
+
+/// What a worker may run: `report` and a short `help`.
+pub const WORKER_HELP: &str = "You are a worker started by a Lead in Shika. The only command you can run is:\n  shika report <text...>   say what you changed, the tests you ran and their result, and your commit.\nRun it when you finish or get blocked. Do not push.";
+
+/// Cleans a report for storage: control characters other than line breaks
+/// are dropped, the text is trimmed, and a tab is a space. An empty report or
+/// one over [`MAX_REPORT_BYTES`] is refused with the reason.
+pub fn clean_report(text: &str) -> std::result::Result<String, String> {
+    let cleaned: String = text
+        .replace("\r\n", "\n")
+        .chars()
+        .filter_map(|ch| match ch {
+            '\n' => Some('\n'),
+            '\t' => Some(' '),
+            ch if ch.is_control() => None,
+            ch => Some(ch),
+        })
+        .collect();
+    let cleaned = cleaned.trim().to_string();
+    if cleaned.is_empty() {
+        return Err("The report is empty.".into());
+    }
+    if cleaned.len() > MAX_REPORT_BYTES {
+        return Err(format!(
+            "The report is {} bytes; the most is {MAX_REPORT_BYTES}. Shorten it.",
+            cleaned.len()
+        ));
+    }
+    Ok(cleaned)
+}
+
 /// Plain, compact text for the model: one line per task. `--json` output is
 /// just `serde_json` of the [`Reply`].
 pub fn render_text(reply: &Reply) -> String {
     match reply {
         Reply::Help { text } => text.trim_end().to_string(),
         Reply::Tasks { tasks } if tasks.is_empty() => "No tasks.".to_string(),
-        Reply::Tasks { tasks } => tasks.iter().map(task_line).collect::<Vec<_>>().join("\n"),
-        Reply::Started { task } => format!("started {}", task_line(task)),
-        Reply::Status { task } => task_line(task),
+        Reply::Tasks { tasks } => tasks.iter().map(task_text).collect::<Vec<_>>().join("\n"),
+        Reply::Started { task } => format!("started {}", task_text(task)),
+        Reply::Status { task } => task_text(task),
         Reply::Text { text } => text.trim_end().to_string(),
         Reply::Done { message } => message.clone(),
         Reply::Waited {
@@ -356,7 +409,7 @@ pub fn render_text(reply: &Reply) -> String {
                 lines.push(format!(
                     "{}: {}",
                     event.task.status.as_str(),
-                    task_line(&event.task)
+                    task_text(&event.task)
                 ));
             }
             if !still_working.is_empty() {
@@ -391,6 +444,7 @@ pub fn is_command(word: &str) -> bool {
             | "key"
             | "pr"
             | "close"
+            | "report"
     )
 }
 
@@ -500,6 +554,7 @@ pub fn parse_args(args: &[String]) -> Result<(Command, bool), String> {
         "diff" => parse_diff(rest, &mut json)?,
         "send" => parse_send(rest, &mut json)?,
         "key" => parse_key(rest, &mut json)?,
+        "report" => parse_report(rest, &mut json)?,
         "pr" | "close" => {
             let mut tasks = Vec::new();
             for arg in rest {
@@ -656,6 +711,31 @@ fn parse_send(args: &[String], json: &mut bool) -> Result<Command, String> {
         return Err(usage_error("send needs text."));
     }
     Ok(Command::Send { task, text, enter })
+}
+
+/// `report <text...>`: flags come first and the first plain word starts the
+/// text. `--` also starts it, for a report that begins with a dash.
+fn parse_report(args: &[String], json: &mut bool) -> Result<Command, String> {
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        match arg.as_str() {
+            "--json" => *json = true,
+            "--" => {
+                index += 1;
+                break;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage_error(&format!("Unknown option {other}.")));
+            }
+            _ => break,
+        }
+        index += 1;
+    }
+    let text = args[index.min(args.len())..].join(" ");
+    if text.trim().is_empty() {
+        return Err(usage_error("report needs text."));
+    }
+    Ok(Command::Report { text })
 }
 
 fn parse_key(args: &[String], json: &mut bool) -> Result<Command, String> {
@@ -882,6 +962,7 @@ mod tests {
             pr: Some(12),
             started_by_lead: true,
             path: "/repo/.worktrees/fix-login".into(),
+            report: None,
         }
     }
 
@@ -919,6 +1000,9 @@ mod tests {
             },
             Command::Pr { task: "a".into() },
             Command::Close { task: "a".into() },
+            Command::Report {
+                text: "Fixed it.\n\"tests\" pass".into(),
+            },
         ];
         for command in commands {
             let request = Request::new("tok", command);
@@ -963,8 +1047,70 @@ mod tests {
         }
         assert_eq!(
             serde_json::to_string(&Request::new("t", Command::Tasks)).unwrap(),
-            r#"{"version":3,"token":"t","command":{"type":"tasks"}}"#
+            r#"{"version":4,"token":"t","command":{"type":"tasks"}}"#
         );
+    }
+
+    #[test]
+    fn a_report_is_parsed_and_shown_under_its_task() {
+        let parse = |words: &str| parse_args(&args(words));
+        assert_eq!(
+            parse("report Fixed it, tests pass"),
+            Ok((
+                Command::Report {
+                    text: "Fixed it, tests pass".into()
+                },
+                false
+            ))
+        );
+        assert_eq!(
+            parse("--json report -- -x broke"),
+            Ok((
+                Command::Report {
+                    text: "-x broke".into()
+                },
+                true
+            ))
+        );
+        assert!(parse("report").unwrap_err().contains("report needs text"));
+        assert!(
+            parse("report --bogus x")
+                .unwrap_err()
+                .contains("Unknown option")
+        );
+        assert!(is_command("report"));
+
+        let mut reported = task("a1", TaskStatus::Ready);
+        reported.report = Some("Added the form.\nTests: cargo test, 12 passed.".into());
+        let text = render_text(&Reply::Waited {
+            events: vec![WaitEvent { task: reported }],
+            still_working: vec![],
+            timed_out: false,
+        });
+        assert!(
+            text.ends_with("path=/repo/.worktrees/fix-login\n  report:\n    Added the form.\n    Tests: cargo test, 12 passed."),
+            "{text}"
+        );
+        // No report, no extra lines.
+        assert!(
+            !render_text(&Reply::Status {
+                task: task("a1", TaskStatus::Ready)
+            })
+            .contains("report")
+        );
+    }
+
+    #[test]
+    fn reports_are_cleaned_and_bounded() {
+        assert_eq!(
+            clean_report("  done\tnow\x1b[31m\r\nline two\u{7} \n"),
+            Ok("done now[31m\nline two".to_string())
+        );
+        assert!(clean_report(" \n\x07 ").is_err());
+        let long = "x".repeat(MAX_REPORT_BYTES);
+        assert_eq!(clean_report(&long).unwrap().len(), MAX_REPORT_BYTES);
+        let err = clean_report(&format!("{long}x")).unwrap_err();
+        assert!(err.contains("4096"), "{err}");
     }
 
     #[test]
@@ -1343,6 +1489,7 @@ mod tests {
                 pr: None,
                 started_by_lead: false,
                 path: String::new(),
+                report: None,
             }
         }
         let reply = send(

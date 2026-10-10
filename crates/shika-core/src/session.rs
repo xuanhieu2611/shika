@@ -56,6 +56,41 @@ pub struct LaunchOptions {
     /// only. It must exist locally or on origin (fetched when new there);
     /// otherwise the launch fails and the project's saved base is untouched.
     pub base: Option<String>,
+    /// Gives the worker's agent PTY (never its shell tabs) the control
+    /// socket, so it can run `shika report`. None for a card the author
+    /// creates, which gets no `SHIKA_*` variables.
+    pub control: Option<WorkerEnv>,
+}
+
+/// The control access of a Lead-started worker's agent CLI: the same socket
+/// and command directory as its Lead, but its own token, which the app maps
+/// to the worker and accepts only for `report`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerEnv {
+    /// Exported to the worker as `SHIKA_SOCKET`.
+    pub socket: PathBuf,
+    /// Exported to the worker as `SHIKA_TOKEN`.
+    pub token: String,
+    /// Prepended to the worker's `PATH`; holds the `shika` command.
+    pub bin_dir: PathBuf,
+}
+
+/// The control variables a PTY is spawned with on purpose. Every other PTY
+/// has them scrubbed (see `pty.rs`).
+pub(crate) fn control_env(socket: &Path, token: &str) -> Vec<(String, String)> {
+    vec![
+        ("SHIKA_SOCKET".into(), socket.to_string_lossy().into_owned()),
+        ("SHIKA_TOKEN".into(), token.to_string()),
+    ]
+}
+
+/// `path` with the `shika` command directory first.
+pub(crate) fn control_path(bin_dir: &Path, path: &str) -> String {
+    if path.is_empty() {
+        bin_dir.to_string_lossy().into_owned()
+    } else {
+        format!("{}:{path}", bin_dir.display())
+    }
 }
 
 /// What a Lead is launched with.
