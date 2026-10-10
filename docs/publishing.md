@@ -231,6 +231,7 @@ Do not attach tokens, credential-bearing remote URLs, private file contents, or 
 | Symptom | Inspect first |
 | --- | --- |
 | Create PR does nothing | `create_pr` busy/overlay guard, selection/session availability, setup, and `Card::running`; binding/action registration if only the shortcut fails. |
+| `unknown flag: --repo` as soon as Create PR opens | Preview's auth check is `gh repo view HOST/OWNER/REPO --json nameWithOwner`. `repo view` takes the repository as an argument and rejects `--repo` (gh 2.102.0). `pr list`, `pr create`, and `pr view` still use `--repo`. |
 | It works in a terminal but not from the Dock | `Core::path_env`, `PathEnv::resolve("gh")`, and the login-shell PATH. A shell's `which gh` alone does not prove GUI discovery. |
 | Target is blank or seems wrong | The task's `Session::base_ref`, `base_name`, and GitHub branch list. Do not “fix” it by reading current project settings or `origin/HEAD`. |
 | The files list is empty despite a substantial PR | Files are compared with task HEAD, not the base. Inspect commits separately; this can be expected. |
