@@ -671,6 +671,12 @@ pub struct Activity {
     last_evidence: Option<Instant>,
     submitted: bool,
     confirmed: bool,
+    /// The next submission is a CLI launch prompt, not a typed line.
+    launch_pending: bool,
+    /// The current turn began from a launch prompt. Until work is seen, the
+    /// CLI is still booting, so boot output and an idle editor are not
+    /// evidence that the prompt was answered.
+    launch_turn: bool,
     idle_since: Option<Instant>,
     idle_observations: u8,
     notified: bool,
@@ -688,11 +694,23 @@ impl Activity {
             last_evidence: None,
             submitted: false,
             confirmed: false,
+            launch_pending: false,
+            launch_turn: false,
             idle_since: None,
             idle_observations: 0,
             notified: false,
             exited: false,
         }
+    }
+
+    /// Marks the next submission as the prompt the CLI was launched with
+    /// (`shika new`, or a Lead's first prompt). Nobody typed it, so the CLI's
+    /// banner and idle editor while it boots look like output followed by
+    /// idle. Such a turn finishes only after work was seen, or after the same
+    /// startup grace a typed submission has. Call it right before the
+    /// `advance` that consumes that submission.
+    pub fn hold_for_launch(&mut self) {
+        self.launch_pending = true;
     }
 
     /// `submission` is the latest actual submitted prompt (not typing or every
@@ -760,6 +778,7 @@ impl Activity {
             self.last_evidence = Some(start);
             self.submitted = submission.is_some();
             self.confirmed = false;
+            self.launch_turn = std::mem::take(&mut self.launch_pending) && submission.is_some();
             self.notified = false;
             self.reset_idle();
         }
@@ -801,9 +820,10 @@ impl Activity {
             Signal::Idle => {
                 let first = *self.idle_since.get_or_insert(now);
                 self.idle_observations = self.idle_observations.saturating_add(1);
+                let booting = self.launch_turn && !self.confirmed;
                 let eligible = authoritative
                     || self.confirmed
-                    || self.last_output.is_some()
+                    || (self.last_output.is_some() && !booting)
                     || now.saturating_duration_since(start) >= SUBMISSION_GRACE;
                 if eligible
                     && self.idle_observations >= 2
@@ -817,11 +837,13 @@ impl Activity {
                 // An unreadable permission overlay is not evidence that it was
                 // answered. Preserve Asking until visible resume, idle or exit.
                 if self.status != Status::Asking {
+                    let booting = self.launch_turn && !self.confirmed;
                     let quiet = self.last_output.is_some()
+                        && !booting
                         && now.saturating_duration_since(self.last_evidence.unwrap_or(start))
                             >= QUIET;
                     let grace = self.submitted
-                        && self.last_output.is_none()
+                        && (self.last_output.is_none() || booting)
                         && now.saturating_duration_since(self.last_evidence.unwrap_or(start))
                             >= SUBMISSION_GRACE;
                     if quiet || grace {
@@ -1317,6 +1339,114 @@ mod tests {
             Transition::default()
         );
         assert_eq!(a.status, Status::Ready);
+    }
+
+    #[test]
+    fn a_launch_prompt_starts_a_turn_that_boot_output_cannot_finish() {
+        let t = Instant::now();
+        let mut a = Activity::new(t);
+        a.hold_for_launch();
+        let start = a.advance(Signal::Unknown, Some(t), None, t, false);
+        assert!(start.changed && !start.ready);
+        assert_eq!((a.status, a.turn_started), (Status::Working, Some(t)));
+        // The banner draws, then the CLI sits at an idle editor before it
+        // takes the prompt. A typed submission would finish here.
+        for ms in [300, 600, 1100, 2000, 5000] {
+            let step = a.advance(Signal::Idle, Some(t), Some(at(t, 200)), at(t, ms), false);
+            assert!(!step.ready && !step.notify, "{ms}");
+        }
+        for ms in [6000, 7500] {
+            let step = a.advance(Signal::Unknown, Some(t), Some(at(t, 200)), at(t, ms), false);
+            assert!(!step.ready, "{ms}");
+        }
+        // Real work confirms the turn; from then on it ends like any other.
+        a.advance(
+            Signal::Working,
+            Some(t),
+            Some(at(t, 8000)),
+            at(t, 8000),
+            false,
+        );
+        assert_eq!(a.status, Status::Working);
+        a.advance(Signal::Idle, Some(t), Some(at(t, 9000)), at(t, 9000), false);
+        let done = a.advance(Signal::Idle, Some(t), Some(at(t, 9000)), at(t, 9600), false);
+        assert_eq!(
+            done,
+            Transition {
+                changed: true,
+                notify: true,
+                ready: true
+            }
+        );
+        assert_eq!(a.turn_started, Some(t));
+    }
+
+    #[test]
+    fn a_launch_prompt_turn_still_ends_by_grace_if_work_is_never_recognized() {
+        let t = Instant::now();
+        let mut a = Activity::new(t);
+        a.hold_for_launch();
+        a.advance(Signal::Unknown, Some(t), None, t, false);
+        a.advance(
+            Signal::Unknown,
+            Some(t),
+            Some(at(t, 100)),
+            at(t, 100),
+            false,
+        );
+        assert!(
+            !a.advance(Signal::Unknown, Some(t), None, at(t, 7999), false)
+                .ready
+        );
+        assert!(
+            a.advance(Signal::Unknown, Some(t), None, at(t, 8100), false)
+                .ready
+        );
+        // A launch turn also ends at an idle editor once the grace passed.
+        let mut a = Activity::new(t);
+        a.hold_for_launch();
+        a.advance(Signal::Idle, Some(t), Some(at(t, 50)), t, false);
+        assert!(
+            !a.advance(Signal::Idle, Some(t), None, at(t, 7900), false)
+                .ready
+        );
+        assert!(
+            a.advance(Signal::Idle, Some(t), None, at(t, 8000), false)
+                .ready
+        );
+    }
+
+    #[test]
+    fn a_launch_prompt_does_not_change_later_typed_turns() {
+        let t = Instant::now();
+        let mut a = Activity::new(t);
+        a.hold_for_launch();
+        a.advance(Signal::Working, Some(t), None, t, false);
+        a.advance(Signal::Idle, None, None, at(t, 1000), false);
+        assert!(
+            a.advance(Signal::Idle, None, None, at(t, 1500), false)
+                .ready
+        );
+        // A typed submission afterwards is an ordinary candidate turn.
+        let typed = at(t, 3000);
+        a.advance(Signal::Idle, Some(typed), Some(at(t, 3100)), typed, false);
+        a.advance(
+            Signal::Idle,
+            Some(typed),
+            Some(at(t, 3100)),
+            at(t, 3200),
+            false,
+        );
+        assert!(
+            a.advance(
+                Signal::Idle,
+                Some(typed),
+                Some(at(t, 3100)),
+                at(t, 3700),
+                false
+            )
+            .ready
+        );
     }
 
     #[test]

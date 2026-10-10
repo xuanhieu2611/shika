@@ -1002,6 +1002,162 @@ fn unquote(value: &[u8]) -> Option<(Vec<u8>, &[u8])> {
     }
 }
 
+/// The most `shika diff` text a Lead gets. Past it the text ends with a note.
+pub const RENDER_CAP_BYTES: usize = 200 * 1024;
+
+/// A file's name in the rendered text: `old -> new` for a rename.
+fn rendered_name(file: &FileDiff) -> String {
+    match &file.old_path {
+        Some(old) => format!("{old} -> {}", file.path),
+        None => file.path.clone(),
+    }
+}
+
+/// Output under a byte cap, filled a line at a time.
+struct Capped {
+    text: String,
+    cap: usize,
+    full: bool,
+}
+
+impl Capped {
+    /// Adds `line` unless it would pass the cap. Once one line did not fit,
+    /// nothing more is added.
+    fn push(&mut self, line: &str) -> bool {
+        if self.full || self.text.len() + line.len() + 1 > self.cap {
+            self.full = true;
+            return false;
+        }
+        self.text.push_str(line);
+        self.text.push('\n');
+        true
+    }
+}
+
+/// A task's change as plain text for the Lead, from the same [`SessionDiff`]
+/// the Changes panel shows. With `stat_only` one line per file and a total;
+/// otherwise unified diff text under a header per file (`diff M path (+3 -1)`;
+/// a rename reads `old -> new`; an untracked file is shown as added; a binary
+/// file is noted, with no body). A file the panel shows collapsed is noted
+/// with its size, not expanded. Output stops at a whole line once it would
+/// pass `cap` bytes, and ends with a note naming `worktree` so the reader can
+/// open the rest. Pure: no git, no files.
+pub fn render_unified(diff: &SessionDiff, stat_only: bool, worktree: &Path, cap: usize) -> String {
+    if diff.files.is_empty() {
+        return "No changes.".to_string();
+    }
+    let total = format!(
+        "{} {} +{} -{}",
+        diff.stat.files,
+        if diff.stat.files == 1 {
+            "file"
+        } else {
+            "files"
+        },
+        diff.stat.insertions,
+        diff.stat.deletions
+    );
+    let mut out = Capped {
+        text: String::new(),
+        cap,
+        full: false,
+    };
+    let mut shown = 0;
+    for file in &diff.files {
+        let name = rendered_name(file);
+        let untracked = if file.status == FileStatus::Untracked {
+            " untracked"
+        } else {
+            ""
+        };
+        let counts = if file.binary {
+            "binary".to_string()
+        } else {
+            format!("+{} -{}", file.insertions, file.deletions)
+        };
+        if stat_only {
+            if !out.push(&format!(
+                "{} {name} {counts}{untracked}",
+                file.status.letter()
+            )) {
+                break;
+            }
+            shown += 1;
+            continue;
+        }
+        let mut fits = out.push(&format!(
+            "diff {} {name} ({counts}){untracked}",
+            file.status.letter()
+        ));
+        if fits && let Some(mode) = &file.mode_change {
+            fits = out.push(&format!("mode {} -> {}", mode.old, mode.new));
+        }
+        if fits && file.binary {
+            fits = out.push("Binary file, not shown.");
+        }
+        if fits && !file.binary && !file.hunks.is_empty() {
+            let old = match file.status {
+                FileStatus::Added | FileStatus::Untracked => "/dev/null".to_string(),
+                _ => format!("a/{}", file.old_path.as_deref().unwrap_or(&file.path)),
+            };
+            let new = match file.status {
+                FileStatus::Deleted => "/dev/null".to_string(),
+                _ => format!("b/{}", file.path),
+            };
+            fits = out.push(&format!("--- {old}")) && out.push(&format!("+++ {new}"));
+        }
+        if fits {
+            'hunks: for hunk in &file.hunks {
+                if !out.push(&hunk.header) {
+                    fits = false;
+                    break;
+                }
+                for line in &hunk.lines {
+                    let prefix = match line.kind {
+                        LineKind::Context => " ",
+                        LineKind::Added => "+",
+                        LineKind::Removed => "-",
+                        LineKind::NoNewline => "",
+                    };
+                    if !out.push(&format!("{prefix}{}", line.text.trim_end_matches('\r'))) {
+                        fits = false;
+                        break 'hunks;
+                    }
+                }
+            }
+        }
+        if fits && let Some(reason) = file.collapsed {
+            let why = match reason {
+                Collapse::Lines => "it changes more than 2000 lines".to_string(),
+                Collapse::Size(bytes) => format!("its patch is {bytes} bytes"),
+                Collapse::Budget => "the task's diff is too large to show in full".to_string(),
+            };
+            fits = out.push(&format!(
+                "[{} changed lines not shown: {why}. Read {name} in the worktree.]",
+                file.insertions + file.deletions
+            ));
+        }
+        if !fits {
+            break;
+        }
+        shown += 1;
+    }
+    let mut text = out.text;
+    if out.full {
+        let _ = std::fmt::Write::write_fmt(
+            &mut text,
+            format_args!(
+                "[truncated at {} KB after {shown} of {} files. Read the rest in the worktree: {}]\n",
+                cap / 1024,
+                diff.files.len(),
+                worktree.display()
+            ),
+        );
+    }
+    let _ = std::fmt::Write::write_fmt(&mut text, format_args!("{total}"));
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1179,5 +1335,128 @@ diff --git a/b b/b\n--- a/b\n+++ b/b\n@@ -1 +1 @@\n-x\n+y\n"
         assert_eq!(read_line(&mut input, &mut line, 3).unwrap(), Some(2));
         assert_eq!(line, b"xy");
         assert_eq!(read_line(&mut input, &mut line, 3).unwrap(), None);
+    }
+
+    fn text_file(path: &str, status: FileStatus, added: usize, removed: usize) -> FileDiff {
+        let mut lines = Vec::new();
+        for i in 0..removed {
+            lines.push(DiffLine {
+                kind: LineKind::Removed,
+                old: Some(i as u32 + 1),
+                new: None,
+                text: format!("old {i}"),
+            });
+        }
+        for i in 0..added {
+            lines.push(DiffLine {
+                kind: LineKind::Added,
+                old: None,
+                new: Some(i as u32 + 1),
+                text: format!("new {i}\r"),
+            });
+        }
+        FileDiff {
+            path: path.into(),
+            status,
+            insertions: added,
+            deletions: removed,
+            hunks: vec![Hunk {
+                header: "@@ -1 +1 @@".into(),
+                lines,
+            }],
+            ..FileDiff::default()
+        }
+    }
+
+    fn session(files: Vec<FileDiff>) -> SessionDiff {
+        let stat = DiffStat {
+            files: files.len(),
+            insertions: files.iter().map(|f| f.insertions).sum(),
+            deletions: files.iter().map(|f| f.deletions).sum(),
+        };
+        SessionDiff { files, stat }
+    }
+
+    #[test]
+    fn rendering_shows_headers_renames_binary_untracked_and_totals() {
+        let mut renamed = text_file("src/new.rs", FileStatus::Renamed, 1, 1);
+        renamed.old_path = Some("src/old.rs".into());
+        let mut binary = text_file("logo.png", FileStatus::Modified, 0, 0);
+        binary.binary = true;
+        binary.hunks.clear();
+        let mut mode = text_file("run.sh", FileStatus::Modified, 0, 0);
+        mode.hunks.clear();
+        mode.mode_change = Some(ModeChange {
+            old: "100644".into(),
+            new: "100755".into(),
+        });
+        let diff = session(vec![
+            text_file("a.rs", FileStatus::Modified, 1, 1),
+            renamed,
+            binary,
+            mode,
+            text_file("notes.md", FileStatus::Untracked, 2, 0),
+            text_file("gone.rs", FileStatus::Deleted, 0, 1),
+        ]);
+        let text = render_unified(&diff, false, Path::new("/w"), RENDER_CAP_BYTES);
+        assert!(text.starts_with(
+            "diff M a.rs (+1 -1)\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old 0\n+new 0\n"
+        ));
+        assert!(text.contains(
+            "diff R src/old.rs -> src/new.rs (+1 -1)\n--- a/src/old.rs\n+++ b/src/new.rs\n"
+        ));
+        assert!(text.contains("diff M logo.png (binary)\nBinary file, not shown.\n"));
+        assert!(text.contains("diff M run.sh (+0 -0)\nmode 100644 -> 100755\n"));
+        assert!(
+            text.contains("diff U notes.md (+2 -0) untracked\n--- /dev/null\n+++ b/notes.md\n")
+        );
+        assert!(text.contains("--- a/gone.rs\n+++ /dev/null\n"));
+        // A CRLF line ends without the stray carriage return.
+        assert!(!text.contains('\r'));
+        assert!(text.ends_with("6 files +4 -3"), "{text}");
+
+        let stat = render_unified(&diff, true, Path::new("/w"), RENDER_CAP_BYTES);
+        assert_eq!(
+            stat,
+            "M a.rs +1 -1\nR src/old.rs -> src/new.rs +1 -1\nM logo.png binary\nM run.sh +0 -0\nU notes.md +2 -0 untracked\nD gone.rs +0 -1\n6 files +4 -3"
+        );
+        assert_eq!(
+            render_unified(&SessionDiff::default(), false, Path::new("/w"), 100),
+            "No changes."
+        );
+    }
+
+    #[test]
+    fn rendering_notes_collapsed_files() {
+        let mut big = text_file("big.rs", FileStatus::Modified, 3000, 0);
+        big.hunks.clear();
+        big.collapsed = Some(Collapse::Lines);
+        let text = render_unified(
+            &session(vec![big]),
+            false,
+            Path::new("/w"),
+            RENDER_CAP_BYTES,
+        );
+        assert!(text.contains("[3000 changed lines not shown: it changes more than 2000 lines. Read big.rs in the worktree.]"), "{text}");
+    }
+
+    #[test]
+    fn rendering_stops_at_the_cap_with_a_note_naming_the_worktree() {
+        let files: Vec<FileDiff> = (0..20)
+            .map(|i| text_file(&format!("f{i}.rs"), FileStatus::Modified, 50, 0))
+            .collect();
+        let diff = session(files);
+        let cap = 2048;
+        let text = render_unified(&diff, false, Path::new("/repo/.worktrees/t"), cap);
+        let (body, note) = text.split_once("[truncated").unwrap();
+        assert!(body.len() <= cap, "{}", body.len());
+        assert!(note.contains("of 20 files"), "{note}");
+        assert!(note.contains("/repo/.worktrees/t"), "{note}");
+        assert!(text.ends_with("20 files +1000 -0"));
+        // Cut at a line, never inside one.
+        assert!(body.ends_with('\n'));
+        // Under the cap, nothing is cut.
+        let whole = render_unified(&diff, false, Path::new("/w"), RENDER_CAP_BYTES);
+        assert!(!whole.contains("[truncated"));
     }
 }

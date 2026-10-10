@@ -267,12 +267,23 @@ impl Engine {
     /// Grid lines 0..screen_lines are live rows; display_offset affects only
     /// the viewport. Reading them directly leaves all terminal state alone.
     pub fn live_text_lines(&self) -> Vec<String> {
+        self.text_lines_from(0)
+    }
+
+    /// The live screen preceded by up to `history` lines of scrollback, oldest
+    /// first, as text. Reads the grid directly, so the viewport, selection,
+    /// and cursor stay as they are. The alternate screen has no history.
+    pub fn text_with_history(&self, history: usize) -> Vec<String> {
+        self.text_lines_from(history.min(self.term.grid().history_size()))
+    }
+
+    fn text_lines_from(&self, history: usize) -> Vec<String> {
         let grid = self.term.grid();
         let rows = grid.screen_lines();
         let cols = grid.columns();
-        let mut lines = Vec::with_capacity(rows);
-        for row in 0..rows {
-            let source = &grid[GridLine(row as i32)];
+        let mut lines = Vec::with_capacity(rows + history);
+        for row in -(history as i32)..rows as i32 {
+            let source = &grid[GridLine(row)];
             let mut text = String::with_capacity(cols);
             for col in 0..cols {
                 let cell = &source[Column(col)];
@@ -778,6 +789,24 @@ mod tests {
         assert_eq!(e.snapshot(), before);
         assert_eq!(e.selection_text(), selected);
         assert!(e.events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn text_with_history_prepends_scrollback_without_moving_the_view() {
+        let mut e = engine(3, 10);
+        for i in 0..10 {
+            feed(&mut e, &format!("line{i}\r\n"));
+        }
+        e.scroll(2);
+        let before = e.snapshot();
+        assert_eq!(e.text_with_history(0), e.live_text_lines());
+        assert_eq!(
+            e.text_with_history(2),
+            vec!["line6", "line7", "line8", "line9", ""]
+        );
+        // More than exists returns all of it.
+        assert_eq!(e.text_with_history(500).len(), 8 + 3);
+        assert_eq!(e.snapshot(), before);
     }
 
     #[test]

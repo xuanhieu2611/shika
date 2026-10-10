@@ -231,6 +231,13 @@ impl Terminal {
         self.shared.engine.lock().live_text_lines()
     }
 
+    /// The live screen with up to `history` lines of scrollback above it, one
+    /// string per row, oldest first. Like [`Terminal::live_text_lines`], it
+    /// leaves the viewport, selection, and cursor alone.
+    pub fn text_with_history(&self, history: usize) -> Vec<String> {
+        self.shared.engine.lock().text_with_history(history)
+    }
+
     /// The title the program set with OSC 0 or 2, if any.
     pub fn title(&self) -> Option<String> {
         lock(&self.shared.title).clone()

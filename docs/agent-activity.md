@@ -143,6 +143,26 @@ Draft typing is not included in that geometry exclusion window. Excluding the ed
 
 This comparison is bounded to the live screen and remains heuristic. Unknown layouts, unusually formatted overlays, and genuine output coinciding with a geometry redraw can still be ambiguous.
 
+### Launch prompts and turns
+
+A CLI can be started with its prompt as an argument (`shika new` for a Lead's worker, and the Lead's own first prompt; see [lead-agent.md](lead-agent.md)). Nobody types that prompt, and "bytes alone cannot start one", so without a submission the card would stay Waiting and never notify. Two pieces fix it, both on the existing machinery:
+
+1. **The prompt is the first submission.** When the session exists, `HostState::seed_launch_prompt` sets what a typed first line sets: `submission` and `last_submission` are bumped, the card name is the prompt's first nonblank line (the Lead keeps its title), and the naming capture is finished so a line typed later neither renames the card nor the branch. The tick then consumes it exactly as it consumes a typed one: `Lifecycle::submitted` fences the previous (startup) report, the candidate turn and `turn_started` begin, the notification budget resets, the CLI title watch starts (not for a Lead), and `Card::running` protects Close before the tick runs. `Card::control_status` also reports Working in that gap so a `wait` right after `new` is not told there is nothing to wait for.
+2. **The turn is marked as booting.** The tick calls `Activity::hold_for_launch` right before the `advance` that consumes the seeded submission. For that turn only, until a strong Working or Blocked observation, the CLI's banner is not "output" for the idle rule and the quiet rule: an idle editor or an unreadable screen ends the turn only through the eight-second startup grace (measured from the last output), or an authoritative report. Without this, a CLI that draws its banner and an idle editor for more than half a second before it starts on the prompt would turn Ready, notify, and then resume Working on the same turn with no second notification.
+
+Provider paths: Pi's startup Idle report (sequence 1) is ignored while its first turn is pending, so Pi's `agent_start` and `agent_settled` reports drive the launch turn like a typed one; Claude Code, Codex, and Cursor use live-screen chrome, so they depend on their Working chrome appearing within the grace. The tests are `a_launch_prompt_*` in `activity::tests` and `host_tests` (`a_launch_prompt_counts_as_the_first_submission_and_names_the_task_once`, `a_launch_prompt_turn_runs_the_same_steps_as_a_typed_one`, which walks the tick's steps including Pi's reports). Real-CLI behavior is a manual check in `MANUAL_CHECKS.md`.
+
+### Lead typing: the doorbell, `send`, and `key`
+
+A Lead can type into terminals (see [lead-agent.md](lead-agent.md)). Those writes follow the input rules above instead of adding a second path:
+
+- **Not the author.** They go through `HostState::inject`, which writes to the PTY without setting `last_typed`. The guards that ask "did the author type?" (the doorbell's 3 second quiet, `send`'s draft check, the dropped Enter) therefore see only the author.
+- **A submission when it ends in Enter.** A pasted line and its Enter pass through `HostState::capture_typed`, the same function `Host::write` uses for typed bytes, so `submission` and `last_submission` change exactly as for a typed line: the tick starts a candidate turn, the timer and notification budget apply, `Lifecycle::submitted` fences the old report. This is how the Lead card shows Working after a doorbell, and a worker after `shika send`. A `--no-enter` paste and `shika key` presses are not captured: a key is not a prompt, and a dialog answer is seen through the live screen as before.
+- **Paste, then Enter.** The text is a bracketed paste and the Enter is a separate write 150 ms later, because some TUIs (Codex's paste-burst handling) read an Enter inside a paste burst as a newline and never submit.
+- **A draft is typed text not yet submitted.** `HostState::has_draft` is true while the submission capture holds text on its line, or after a history recall (Up) until Enter or clear. A CLI's grey suggestion is not typed, so it does not count. The doorbell and `send`/`key` refuse while the draft exists.
+
+Tests: `a_pasted_line_and_its_separate_enter_are_one_submission`, `injected_steps_are_refused_after_the_author_types_or_the_cli_exits`, and the doorbell tests in `shika/src/control.rs`.
+
 ### Turn clock, attention, and Close
 
 Keep these identities separate:
@@ -201,6 +221,7 @@ Search by symbol rather than historical line numbers:
 | [`shika/src/activity.rs`](../crates/shika/src/activity.rs) | `detect`, `working_row`, `transcript_signature`, `OutputEvidence`, `Activity`, `Transition`: original screen rules, evidence, clock, debounce, notification budget |
 | [`shika/src/lifecycle.rs`](../crates/shika/src/lifecycle.rs) | `Lifecycle::submitted`, `observe`: report fencing, precedence, and recovery |
 | [`shika/src/main.rs`](../crates/shika/src/main.rs) | `Host::write`, `HostState::note_lifecycle`, `Card::running`, `tick`, `card_view`: input, sampling, background polling, attention, rendering, and Close wiring |
+| [`shika/src/control.rs`](../crates/shika/src/control.rs) | `HostState::seed_launch_prompt`, `Card::control_status`: launch prompts as the first submission, and the status the Lead sees; `HostState::inject`, `Doorbell`, `Shika::type_into`: the Lead's typing |
 | [`shika/src/model.rs`](../crates/shika/src/model.rs) | `PromptCapture`, `Status`, `activity_requires_confirmation`, `ECHO`, `QUIET`: input parser, state vocabulary, safe-close predicate |
 | [`shika-core/src/activity.rs`](../crates/shika-core/src/activity.rs) | `ActivityBridge`, `read_report`, `activity_sink`: optional launch wiring, validation, and cleanup |
 | [`shika-core/src/pi-activity.ts`](../crates/shika-core/src/pi-activity.ts) | Pi event/version handling and atomic metadata writer |

@@ -83,6 +83,9 @@ pub enum Target {
     SetupFailed,
     /// A live task, by session id.
     Session(String),
+    /// The project's Lead, which works in a detached worktree and has no
+    /// task changes to show.
+    Lead,
 }
 
 /// The shown task's diff, as far as it has been read.
@@ -539,6 +542,7 @@ pub fn panel_body<'a>(target: Option<&Target>, content: &'a Content, now: Instan
         (None | Some(Target::NoAgent), _) => Body::Message("No agent selected"),
         (Some(Target::Preparing), _) => Body::Message("Preparing worktree"),
         (Some(Target::SetupFailed), _) => Body::Message("Setup failed"),
+        (Some(Target::Lead), _) => Body::Message("The Lead does not change files"),
         (Some(Target::Session(_)), Content::Reading { since }) => {
             if now.saturating_duration_since(*since) >= READING_AFTER {
                 Body::Message("Reading changes")
@@ -890,6 +894,9 @@ impl Shika {
         };
         if card.creating {
             return Target::Preparing;
+        }
+        if card.lead.is_some() {
+            return Target::Lead;
         }
         match &card.session {
             Some(session) => Target::Session(session.id.clone()),
