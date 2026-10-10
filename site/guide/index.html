@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Using Shika</title>
+<meta name="description" content="How to use Shika: start an agent in its own worktree, move between tasks, review the diff, open a pull request, and close without losing work.">
+<link rel="canonical" href="https://useshika.com/guide/">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Shika">
+<meta property="og:title" content="Using Shika">
+<meta property="og:description" content="The first session, then the behavior that is easy to miss. Worktrees, Close, Create PR, and the keyboard.">
+<meta property="og:url" content="https://useshika.com/guide/">
+<meta property="og:image" content="https://useshika.com/img/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Using Shika">
+<meta name="twitter:description" content="The first session, then the behavior that is easy to miss.">
+<meta name="twitter:image" content="https://useshika.com/img/og.png">
+<link rel="icon" type="image/png" sizes="32x32" href="../img/favicon-32.png">
+<link rel="icon" type="image/png" sizes="64x64" href="../img/favicon-64.png">
+<link rel="apple-touch-icon" href="../img/apple-touch-icon.png">
+<link rel="preload" href="../fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="../fonts/JetBrainsMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<script>
+  (function () {
+    var d = document.documentElement, t = null;
+    d.classList.add('js');
+    try { t = localStorage.getItem('shika-theme'); } catch (e) {}
+    if (t === 'light' || t === 'dark') d.dataset.theme = t;
+    else t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    d.dataset.resolvedTheme = t;
+  })();
+</script>
+<link rel="stylesheet" href="../styles.css">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4 -4.3 -2.5 -6 -3m12 5v-3.5c0 -1 .1 -1.4 -.5 -2c2.8 -.3 5.5 -1.4 5.5 -6a4.6 4.6 0 0 0 -1.3 -3.2a4.2 4.2 0 0 0 -.1 -3.2s-1.1 -.3 -3.5 1.3a12.3 12.3 0 0 0 -6.2 0c-2.4 -1.6 -3.5 -1.3 -3.5 -1.3a4.2 4.2 0 0 0 -.1 3.2a4.6 4.6 0 0 0 -1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6 .6 -.6 1.2 -.5 2v3.5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12l5 5l10 -10"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M7 7m0 2.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667z"/><path d="M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z"/></symbol>
+</svg>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div id="top" aria-hidden="true"></div>
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="../" aria-label="Shika home"><img src="../img/logo-256.png" alt="" width="36" height="36">Shika</a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="../#how">How it works</a>
+      <a href="../#features">Features</a>
+      <a href="./" aria-current="page">Guide</a>
+      <a href="../#faq">FAQ</a>
+    </nav>
+    <div class="nav-end">
+      <button class="icon-btn" type="button" id="theme-toggle" aria-label="Switch to light theme"><svg class="icon i-sun"><use href="#i-sun"/></svg><svg class="icon i-moon"><use href="#i-moon"/></svg></button>
+      <a class="icon-btn nav-gh" href="https://github.com/xuanhieu2611/shika" aria-label="Shika on GitHub"><svg class="icon"><use href="#i-github"/></svg></a>
+      <a class="btn btn-primary btn-sm" href="../#install">Download</a>
+    </div>
+  </div>
+</header>
+<main id="main">
+  <header class="guide-hero">
+    <canvas class="field" data-mode="frame" data-clear=".guide-intro" data-src="../img/forest-frame-2.webp" aria-hidden="true"></canvas>
+    <div class="wrap guide-intro">
+      <p class="eyebrow">Guide</p>
+      <h1>Using Shika</h1>
+      <p class="lede">The first session, then the behavior that is easy to miss. When a feature needs more than the window can show, it gets a section here. <a class="link" href="story.html">The story of the app</a> is its own page.</p>
+    </div>
+  </header>
+  <div class="wrap guide-layout">
+    <nav class="guide-toc" aria-label="Guide">
+      <a href="#first-session">First session</a>
+      <a href="#work">Where the work lives</a>
+      <a href="#working">While an agent works</a>
+      <a href="#ship">Review and ship</a>
+      <a href="#close">Close and quit</a>
+      <a href="#keyboard">Keyboard</a>
+      <a href="#prepare">Prepare a worktree</a>
+      <a href="#settings">Settings</a>
+      <a class="toc-else" href="story.html">The story</a>
+    </nav>
+    <div class="guide-body">
+      <section class="guide-section" id="first-session">
+        <h2>First session</h2>
+        <p>Add a repo, start one agent, and leave it working while you look at another. The <a href="../">homepage prototype</a> uses sample data if you want to press the keys before you install.</p>
+        <ol class="steps">
+          <li>
+            <span class="step-mark"><kbd>a</kbd></span>
+            <div>
+              <h3>Add a project</h3>
+              <p>Pick a Git repository. A nested folder becomes the repo root. The column lists every project you add, and projects stay after you quit.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-mark"><kbd>⌘N</kbd></span>
+            <div>
+              <h3>Start an agent</h3>
+              <p>Pick Claude Code, Codex, Cursor CLI, or Pi. Shika creates a branch and a worktree, then starts that CLI inside it. The picker footer names the base branch this task will start from.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-mark"><kbd>↵</kbd></span>
+            <div>
+              <h3>Write the prompt</h3>
+              <p>With the cards focused, Enter moves the keys into the terminal. The first line of the prompt names the branch. About a second later, the CLI's own session title can rename that branch once. Pi does this only when a title was set. A branch already on a remote keeps its name.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-mark"><kbd>⌘]</kbd><kbd>⌘[</kbd></span>
+            <div>
+              <h3>Move to another task</h3>
+              <p>These work while you are typing in the terminal. <kbd>⌃Q</kbd> returns to the cards, and then <kbd>j</kbd> and <kbd>k</kbd>, or the arrow keys, move through every card. Keys you type in the terminal stay with the CLI.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-mark"><span class="dot ready" aria-hidden="true"></span></span>
+            <div>
+              <h3>Come back when it's ready</h3>
+              <p>A notification is titled with the project and the task. Click it to land on that card. Shika posts one per turn, the first time the agent asks or finishes.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-mark"><kbd>⌘T</kbd></span>
+            <div>
+              <h3>Review in a shell</h3>
+              <p>The shell opens in that task's worktree. <code>git status</code> there is this task, not the main checkout. <kbd>⌘W</kbd> closes the shell and leaves the agent running.</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-mark"><kbd>⌘⇧P</kbd></span>
+            <div>
+              <h3>Open the pull request</h3>
+              <p>Create PR shows the changes and a title you can edit, then commits, pushes, and opens the pull request. <kbd>⌘⇧W</kbd> is Close, and it never commits. Both are below.</p>
+            </div>
+          </li>
+        </ol>
+        <aside class="note">
+          <p>The presets start Claude Code, Codex, and Cursor CLI with approval bypassed, and Pi with <code>--approve</code>. Agents can run commands with your user account's access. A worktree separates Git edits. Files, credentials, and the network stay reachable. Run agents in a project you trust. Shika asks separately before it runs worktree setup commands.</p>
+        </aside>
+      </section>
+
+      <section class="guide-section" id="work">
+        <h2>Where the work lives</h2>
+        <p>Each task is its own worktree under <code>.worktrees/</code> in the repository. Agents can edit the same repo at the same time, and the main checkout stays as you left it. Shika lists <code>.worktrees/</code> in the repository's <code>.git/info/exclude</code>, so <code>git status</code> on the main checkout skips it. Your <code>.gitignore</code> stays as it is.</p>
+        <p>The folder keeps the draft name it was created with. The branch starts as that name too. The first prompt renames the branch, and the CLI's session title can rename it once more. A prefix from Settings, if you set one, is added to those generated names.</p>
+        <p>New starts from the project's base branch. Shika uses <code>origin/&lt;base&gt;</code> when that ref exists, otherwise the local branch. With no base set, it uses <code>origin/HEAD</code>, then <code>main</code>, then <code>master</code>, then whatever the main checkout has checked out. Press <kbd>b</kbd>, or click the branch after the project path, to change it for the next task. A card keeps the base it started from. If that branch cannot be found, New stops and names it.</p>
+        <p>A new worktree has no upstream. Nothing is on the remote until you push.</p>
+      </section>
+
+      <section class="guide-section" id="working">
+        <h2>While an agent works</h2>
+        <p>The mark at the right of a card's first line is the status. The words are not written on the card.</p>
+        <ul class="signals">
+          <li>
+            <span class="mark"><span class="pixels" aria-hidden="true"><i></i><i></i><i></i></span></span>
+            <span><strong>Working.</strong> The agent has the turn. A time on the card is how long that turn has run.</span>
+          </li>
+          <li>
+            <span class="mark"><span class="dot waiting" aria-hidden="true"></span></span>
+            <span><strong>Waiting.</strong> The session is up, and the first prompt has not been sent.</span>
+          </li>
+          <li>
+            <span class="mark"><span class="dot asking" aria-hidden="true"></span></span>
+            <span><strong>Asking.</strong> The agent is blocked on a question or a permission the screen shows. A plain question at the end of a reply can show as ready instead, so read the terminal when the card turns green.</span>
+          </li>
+          <li>
+            <span class="mark"><span class="dot ready" aria-hidden="true"></span></span>
+            <span><strong>Ready.</strong> The turn finished. When there are changes, the card adds a diff stat such as <code>2 files +64 −3</code>.</span>
+          </li>
+        </ul>
+        <p>One terminal is on screen. The others keep running, including while you look at another card, so a busy CLI does not stall. The agent is the first tab. <kbd>⌘1</kbd> through <kbd>⌘9</kbd> jump to a tab, and <kbd>⌃Tab</kbd> cycles them.</p>
+        <p>Drop a file on the terminal to paste its path. Claude Code and Cursor turn an image path into an attachment. Control-click or Command-click a link in the terminal to open it.</p>
+      </section>
+
+      <section class="guide-section" id="ship">
+        <h2>Review and ship</h2>
+        <p>Click the diff stat, or press <kbd>⌘⌥B</kbd>, to open Changes on the right. It starts closed. The panel is a read-only diff of this worktree against the base the task started from, including commits and uncommitted files that are not ignored. With the panel focused, <kbd>j</kbd> and <kbd>k</kbd> scroll, and <kbd>r</kbd> refreshes. Escape closes it and puts focus back. Nothing in the panel stages, edits, or reverts.</p>
+        <p>Create PR is <kbd>⌘⇧P</kbd>. It is also in the terminal's metadata row and the Agent menu. You see every non-ignored change and a title you can edit. Confirm, and Shika stages, commits if something is still uncommitted, pushes, and opens a pull request with <code>gh</code>. The pull request targets the base the task started from. If that base is gone, Shika asks you to pick one. It never merges or force-pushes. An open pull request for the branch is reused. You need the GitHub CLI, signed in. Shika waits while the agent is working or asking. If a later step fails, the work stays so you can run it again.</p>
+        <p>Afterward the card shows that pull request's number, and whether its checks are running, passing, or failing.</p>
+        <p>You can commit and push yourself in a shell tab. That push leaves the card open. You close the card.</p>
+        <h3>Rename the task</h3>
+        <p>Right-click a card and choose Rename task, or press <kbd>⌘⇧R</kbd>. The new name is what the card shows, what later notifications use, and what the next Create PR title starts as. The Git branch, the worktree folder, existing commits, and an existing pull request keep their names. A name you set stays put when a later prompt or CLI title arrives. That prompt or title can still name the branch.</p>
+        <p>The name lasts for this session. Quit does not bring live sessions back, so the card name goes with them. The branch and the worktree stay on disk.</p>
+      </section>
+
+      <section class="guide-section" id="close">
+        <h2>Close and quit</h2>
+        <p><kbd>⌘⇧W</kbd> closes the selected task, from the cards or the terminal. Right-click a card and choose Close task to close that one, even when another card is selected.</p>
+        <p>Close asks before it throws away uncommitted work or commits that are not on the base. When the tree is clean and those commits are unpushed, it can push them. Close never commits. A clean task that is already published closes without a question.</p>
+        <p>Quit ends the live sessions. Projects remain. Worktrees remain on disk, and the next launch lists leftovers so you can remove them when you choose.</p>
+        <p>If you switched branches inside the worktree, and both the recorded branch and the current one are clean and already published, Close can remove the worktree and leave both local branches. Dirty work, unpublished commits, a missing ref, or a detached HEAD stay in place.</p>
+      </section>
+
+      <section class="guide-section" id="keyboard">
+        <h2>Keyboard</h2>
+        <p>These do nothing while a dialog or the picker is open. Typing in the terminal, a text field, or the close dialog does not run the card keys.</p>
+        <h3 id="keys-projects">Projects and tasks</h3>
+        <table class="keys" aria-labelledby="keys-projects">
+          <tbody>
+            <tr><th scope="row"><kbd>a</kbd></th><td>Add a project</td></tr>
+            <tr><th scope="row"><kbd>b</kbd></th><td>Base branch for the selected project</td></tr>
+            <tr><th scope="row"><kbd>⌘N</kbd></th><td>New agent in the selected project</td></tr>
+            <tr><th scope="row"><kbd>j</kbd> <kbd>k</kbd></th><td>Move between cards, once the cards have focus. Arrow keys do this too.</td></tr>
+            <tr><th scope="row"><kbd>↵</kbd></th><td>Focus the terminal</td></tr>
+            <tr><th scope="row"><kbd>⌃Q</kbd></th><td>Return to the cards</td></tr>
+            <tr><th scope="row"><kbd>⌘]</kbd> <kbd>⌘[</kbd></th><td>Next or previous agent, including from the terminal</td></tr>
+            <tr><th scope="row"><kbd>⌘⇧R</kbd></th><td>Rename the task. The branch stays.</td></tr>
+            <tr><th scope="row"><kbd>⌘⇧W</kbd></th><td>Close the task</td></tr>
+            <tr><th scope="row"><kbd>⌘B</kbd></th><td>Hide or show the column</td></tr>
+          </tbody>
+        </table>
+        <h3 id="keys-terminal">Terminal</h3>
+        <table class="keys" aria-labelledby="keys-terminal">
+          <tbody>
+            <tr><th scope="row"><kbd>⌘T</kbd></th><td>New shell tab in this worktree</td></tr>
+            <tr><th scope="row"><kbd>⌘W</kbd></th><td>Close the selected shell. The agent stays.</td></tr>
+            <tr><th scope="row"><kbd>⌃Tab</kbd></th><td>Cycle tabs. Shift goes backward.</td></tr>
+            <tr><th scope="row"><kbd>⌘1</kbd> <kbd>⌘9</kbd></th><td>Jump to a tab, ⌘1 through ⌘9. ⌘1 is the agent.</td></tr>
+          </tbody>
+        </table>
+        <h3 id="keys-ship">Review</h3>
+        <table class="keys" aria-labelledby="keys-ship">
+          <tbody>
+            <tr><th scope="row"><kbd>⌘⌥B</kbd></th><td>Show or hide Changes</td></tr>
+            <tr><th scope="row"><kbd>r</kbd></th><td>Refresh Changes, while that panel has focus</td></tr>
+            <tr><th scope="row"><kbd>⌘⇧P</kbd></th><td>Create PR</td></tr>
+            <tr><th scope="row"><kbd>⌘,</kbd></th><td>Settings</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="guide-section" id="prepare">
+        <h2>Prepare a worktree</h2>
+        <p>Optional. To install dependencies or copy local files before the CLI starts, add <code>.shika/worktrees.json</code> to the project's main checkout. Use that project's own commands.</p>
+        <div class="code">
+          <div class="code-bar"><span>.shika/worktrees.json</span><button class="copy" type="button" aria-label="Copy worktree preparation"><svg class="icon i-copy"><use href="#i-copy"/></svg><svg class="icon i-check"><use href="#i-check"/></svg><span class="copy-label">Copy</span></button></div>
+<pre>{
+  "copy-files": [".env.local"],
+  "setup-worktree": ["npm ci"],
+  "timeout-seconds": 600
+}</pre>
+        </div>
+        <p>Shika asks the first time, and again when the parsed file changes. Copy and setup finish before the CLI starts. Their output is in the task's terminal, and you can cancel. Copied files have to already be ignored by Git on the main checkout and on the task's base. The commands run as you, with your account's access, and they need to finish rather than stay running in the background. The timeout is 600 seconds unless the file sets another.</p>
+        <p>If setup fails before the worktree has changed, Shika removes it. If the worktree may have changed, it stays for you to clean up.</p>
+      </section>
+
+      <section class="guide-section" id="settings">
+        <h2>Settings</h2>
+        <p><kbd>⌘,</kbd>, the gear, or the Shika menu. Theme follows the system, or you can force light or dark. Opacity, blur, and whether the frost covers the sidebar alone or the terminal too. Terminal font size. A branch prefix for names Shika generates. Whether a notification plays the system alert sound. The banner still posts when the sound is off. Changes apply and save at once.</p>
+        <p>The signed app checks for updates from Shika, then Check for updates. A copy you build yourself has no updater.</p>
+        <p>If a step you needed is missing from this guide, <a href="https://github.com/xuanhieu2611/shika/issues">open an issue</a>. That is how a new section starts.</p>
+      </section>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="../"><img src="../img/logo-256.png" alt="" width="28" height="28" loading="lazy">Shika</a>
+    <nav aria-label="Footer">
+      <a href="https://github.com/xuanhieu2611/shika">GitHub</a>
+      <a href="./" aria-current="page">Guide</a>
+      <a href="https://github.com/xuanhieu2611/shika/issues">Issues</a>
+      <a href="https://github.com/xuanhieu2611/shika/blob/main/CONTRIBUTING.md">Contributing</a>
+      <a href="https://github.com/xuanhieu2611/shika/blob/main/LICENSE">MIT license</a>
+      <a href="../notices.html">Third-party notices</a>
+    </nav>
+    <span>Made by <a href="https://github.com/xuanhieu2611">Hieu Le</a></span>
+  </div>
+</footer>
+<script src="../field.js" defer></script>
+<script src="../main.js" defer></script>
+</body>
+</html>

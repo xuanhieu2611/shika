@@ -10,7 +10,7 @@ Shika handles the worktrees, branches, and terminals. Every task isolated. Every
 
 [![Download for Mac](https://img.shields.io/badge/Download_for_Mac-Shika.dmg-4d6745?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg)
 
-[Website and interactive demo](https://useshika.com) · [Releases](https://github.com/xuanhieu2611/shika/releases) · [Contributing](CONTRIBUTING.md)
+[Website and interactive demo](https://useshika.com) · [Guide](https://useshika.com/guide/) · [Releases](https://github.com/xuanhieu2611/shika/releases) · [Contributing](CONTRIBUTING.md)
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-555?logo=apple&logoColor=white) ![Apple silicon](https://img.shields.io/badge/Apple_silicon-arm64-555) ![Rust on GPUI](https://img.shields.io/badge/Rust-GPUI-555?logo=rust&logoColor=white) [![MIT license](https://img.shields.io/badge/license-MIT-555)](LICENSE)
 
