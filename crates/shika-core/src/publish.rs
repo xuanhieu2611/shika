@@ -389,19 +389,14 @@ pub(crate) fn preview(
     let dir = &session.worktree;
     ensure_not_integrating(git_bin, env, dir)?;
     let (origin, repository) = origin(git_bin, env, dir)?;
-    // This proves gh is installed/authenticated and origin is a supported repo.
+    // Proves gh is installed, authenticated, and origin is a supported repo.
+    // `repo view` takes the repository as an argument. It does not accept
+    // `--repo` (confirmed on gh 2.102.0); that flag is only on other commands.
     gh(
         gh_bin,
         env,
         dir,
-        &[
-            "repo",
-            "view",
-            "--repo",
-            &repository,
-            "--json",
-            "nameWithOwner",
-        ],
+        &["repo", "view", &repository, "--json", "nameWithOwner"],
     )?;
     let host = repository.split('/').next().unwrap();
     let repo = repository.split_once('/').unwrap().1;
@@ -868,6 +863,9 @@ mod tests {
         std::fs::write(f.session.worktree.join("new file"), "new\n").unwrap();
         let before = f.git(&["write-tree"]);
         let p = f.preview();
+        let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
+        assert!(calls.contains("repo view github.com/test/repo --json nameWithOwner"));
+        assert!(!calls.contains("repo view --repo"));
         assert_eq!(p.target.as_deref(), Some("dev"));
         assert_eq!(p.files, [".gitignore", "new file", "tracked"]);
         assert_eq!(f.git(&["write-tree"]), before);
