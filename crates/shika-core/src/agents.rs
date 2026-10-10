@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::path_env::{LoginShellError, PathEnv};
 
@@ -10,7 +10,9 @@ struct PresetSpec {
 }
 
 // Flags checked from each binary's --help. Claude Code and Cursor CLI on
-// 2026-10-03. Codex CLI 0.160.0 and Pi 1.0.0 on 2026-10-05.
+// 2026-10-03. Codex CLI 0.160.0 and Pi 1.0.0 on 2026-10-05. The Codex
+// folder-trust override in `launch_flags` was verified in a real pty on
+// 2026-10-09 with Codex CLI 0.161.0 (docs/tasks-and-worktrees.md).
 const PRESETS: &[PresetSpec] = &[
     PresetSpec {
         id: "claude",
@@ -73,6 +75,53 @@ impl CliCatalog {
 /// Binary names the login-shell PATH must resolve at startup.
 pub fn binaries() -> Vec<&'static str> {
     PRESETS.iter().map(|preset| preset.binary).collect()
+}
+
+/// The arguments a launch in `worktree` gets: the preset's flags plus any
+/// that depend on the worktree path. Codex shows a blocking "Trust this
+/// folder?" dialog in every fresh worktree; `-c` with an inline `projects`
+/// table marks only that worktree trusted for this process, with no write to
+/// `~/.codex/config.toml`. The dotted form `projects."<path>".trust_level`
+/// is not honored by 0.161.0, so the inline table is required. The prompt is
+/// appended later, so it stays the last argument.
+pub(crate) fn launch_flags(preset: &CliPreset, worktree: &Path) -> Vec<String> {
+    let mut args = preset.args.clone();
+    if preset.id == "codex" {
+        args.push("-c".to_string());
+        args.push(codex_trust_override(worktree));
+    }
+    args
+}
+
+/// `projects={"<path>"={trust_level="trusted"}}`, the path as a TOML basic
+/// string. Codex compares the key with its working directory as the OS
+/// reports it, so a symlinked path is resolved first.
+fn codex_trust_override(worktree: &Path) -> String {
+    let path = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    format!(
+        "projects={{{}={{trust_level=\"trusted\"}}}}",
+        toml_basic_string(&path.to_string_lossy())
+    )
+}
+
+fn toml_basic_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Agents New can start, in preset order: the binary is on PATH, and the
@@ -158,6 +207,55 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["claude", "codex"]
         );
+    }
+
+    fn preset(id: &str) -> CliPreset {
+        let env = PathEnv::from_lookup(String::new(), None, &[]);
+        presets_from(&env)
+            .into_iter()
+            .find(|preset| preset.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn only_codex_gets_a_worktree_trust_override() {
+        let path = Path::new("/no/such/repo/.worktrees/shika-draft-1");
+        assert_eq!(
+            launch_flags(&preset("codex"), path),
+            [
+                "--dangerously-bypass-approvals-and-sandbox",
+                "-c",
+                r#"projects={"/no/such/repo/.worktrees/shika-draft-1"={trust_level="trusted"}}"#,
+            ]
+        );
+        for id in ["claude", "cursor", "pi"] {
+            let preset = preset(id);
+            assert_eq!(launch_flags(&preset, path), preset.args, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_trust_path_is_a_toml_basic_string() {
+        let path = Path::new("/no/such/we ird.d\"q\\b\tx/.worktrees/w");
+        assert_eq!(
+            codex_trust_override(path),
+            r#"projects={"/no/such/we ird.d\"q\\b\tx/.worktrees/w"={trust_level="trusted"}}"#
+        );
+        assert_eq!(toml_basic_string("a\u{1}b"), "\"a\\u0001b\"");
+    }
+
+    #[test]
+    fn a_symlinked_worktree_is_resolved_before_trusting_it() {
+        let dir = std::env::temp_dir().join(format!("shika-trust-{}", std::process::id()));
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let expected = std::fs::canonicalize(&real).unwrap();
+        let arg = codex_trust_override(&link);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(arg.contains(&*expected.to_string_lossy()), "{arg}");
+        assert!(!arg.contains("link"), "{arg}");
     }
 
     #[test]

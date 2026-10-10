@@ -783,6 +783,8 @@ mod tests {
                 pty: crate::PtyId(1),
                 shell_ptys: vec![],
                 cli_titled: true,
+                lead: false,
+                started_by: None,
             };
             Self {
                 root,

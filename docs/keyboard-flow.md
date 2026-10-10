@@ -28,10 +28,11 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+B` | Hide or show the agent column | Unchanged; with the column hidden, `j`/`k` from cards still change the agent on screen |
 | `Cmd+Option+B` | Open or close the read-only Changes panel | Opening focuses the panel; closing from the panel restores the focus saved when it opened; closing from elsewhere moves no focus |
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
+| `Cmd+L` | Start the selected project's Lead (Agent > New Lead…), or show it when the project already has one | Picker in Lead mode (same keys as New; Tab changes project); the Lead card is selected and its terminal focused. When one exists, its terminal is focused at once. See [lead-agent.md](lead-agent.md) |
 
 Next/previous agent skips project headers, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
 
-These actions do nothing while the app is busy or any overlay is open. `Cmd+N` uses the first project when nothing is selected and opens Add project when there are no projects.
+These actions do nothing while the app is busy or any overlay is open. A Lead has no shell tabs or Create PR: `Cmd+T` and `Cmd+Shift+P` show a short message on its card. Workers started by a Lead (`shika new`) never take selection or focus from the author. `Cmd+N` uses the first project when nothing is selected and opens Add project when there are no projects.
 
 ## Settings sections
 

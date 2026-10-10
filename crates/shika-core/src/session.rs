@@ -33,6 +33,107 @@ pub struct Session {
     pub shell_ptys: Vec<PtyId>,
     /// Whether the CLI's own session title has named the card and branch.
     pub cli_titled: bool,
+    /// This session is its project's Lead: it runs in a detached worktree and
+    /// has an empty `branch`. The app must not rename, publish, diff, or open
+    /// shells for it. Memory only.
+    pub lead: bool,
+    /// The Lead session id that started this worker. None for a card the
+    /// author created. Memory only.
+    pub started_by: Option<String>,
+}
+
+/// Options for starting a worker session. `Default` is the plain New flow.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaunchOptions {
+    /// Passed to the CLI as its single positional argument, after the
+    /// preset's flags. Core does not name the branch from it; the caller runs
+    /// `Core::session_rename_from_prompt` after launch, because no typed
+    /// submission exists to observe. Refused when empty or starting with `-`.
+    pub prompt: Option<String>,
+    /// The Lead session id to record as this worker's owner.
+    pub started_by: Option<String>,
+    /// Start from this branch instead of the project's base, for this task
+    /// only. It must exist locally or on origin (fetched when new there);
+    /// otherwise the launch fails and the project's saved base is untouched.
+    pub base: Option<String>,
+    /// Gives the worker's agent PTY (never its shell tabs) the control
+    /// socket, so it can run `shika report`. None for a card the author
+    /// creates, which gets no `SHIKA_*` variables.
+    pub control: Option<WorkerEnv>,
+}
+
+/// The control access of a Lead-started worker's agent CLI: the same socket
+/// and command directory as its Lead, but its own token, which the app maps
+/// to the worker and accepts only for `report`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerEnv {
+    /// Exported to the worker as `SHIKA_SOCKET`.
+    pub socket: PathBuf,
+    /// Exported to the worker as `SHIKA_TOKEN`.
+    pub token: String,
+    /// Prepended to the worker's `PATH`; holds the `shika` command.
+    pub bin_dir: PathBuf,
+}
+
+/// The control variables a PTY is spawned with on purpose. Every other PTY
+/// has them scrubbed (see `pty.rs`).
+pub(crate) fn control_env(socket: &Path, token: &str) -> Vec<(String, String)> {
+    vec![
+        ("SHIKA_SOCKET".into(), socket.to_string_lossy().into_owned()),
+        ("SHIKA_TOKEN".into(), token.to_string()),
+    ]
+}
+
+/// `path` with the `shika` command directory first.
+pub(crate) fn control_path(bin_dir: &Path, path: &str) -> String {
+    if path.is_empty() {
+        bin_dir.to_string_lossy().into_owned()
+    } else {
+        format!("{}:{path}", bin_dir.display())
+    }
+}
+
+/// What a Lead is launched with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeadEnv {
+    /// Exported to the Lead as `SHIKA_SOCKET`.
+    pub socket: PathBuf,
+    /// Exported to the Lead as `SHIKA_TOKEN`.
+    pub token: String,
+    /// Prepended to the Lead's `PATH`; holds the `shika` command.
+    pub bin_dir: PathBuf,
+    /// The Lead's positional prompt, validated like [`LaunchOptions::prompt`].
+    pub prompt: String,
+}
+
+/// Launch arguments: the preset's flags, then the prompt as the last,
+/// positional argument. Every supported CLI accepts one (`claude [prompt]`,
+/// `codex [PROMPT]`, `agent [prompt...]`, `pi [messages...]`, checked from
+/// `--help` on 2026-10-09). A prompt that is empty, starts with `-`, or holds
+/// a NUL byte is refused, so it can never be read as a flag.
+pub(crate) fn launch_args(mut args: Vec<String>, prompt: Option<&str>) -> Result<Vec<String>> {
+    if let Some(prompt) = prompt {
+        check_prompt(prompt)?;
+        args.push(prompt.to_string());
+    }
+    Ok(args)
+}
+
+pub(crate) fn check_prompt(prompt: &str) -> Result<()> {
+    if prompt.trim().is_empty() {
+        return Err(Error::InvalidPrompt("The prompt is empty.".into()));
+    }
+    if prompt.starts_with('-') {
+        return Err(Error::InvalidPrompt(
+            "The prompt cannot start with \"-\"; the CLI would read it as a flag.".into(),
+        ));
+    }
+    if prompt.contains('\0') {
+        return Err(Error::InvalidPrompt(
+            "The prompt contains a NUL byte.".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Git facts for the close dialog. `agent_working` comes from the UI's
@@ -325,6 +426,8 @@ mod tests {
             pty,
             shell_ptys: Vec::new(),
             cli_titled: false,
+            lead: false,
+            started_by: None,
         }
     }
 
@@ -468,6 +571,25 @@ mod tests {
         drop(store);
         assert!(!directory.exists());
         assert_eq!(quit.read(), None);
+    }
+
+    #[test]
+    fn the_prompt_is_the_last_positional_argument() {
+        let preset = vec!["--yolo".to_string(), "--trust".to_string()];
+        assert_eq!(launch_args(preset.clone(), None).unwrap(), preset);
+        assert_eq!(
+            launch_args(preset.clone(), Some("fix the bug\nsecond line")).unwrap(),
+            ["--yolo", "--trust", "fix the bug\nsecond line"]
+        );
+        for bad in ["", "   \n", "-p fix", "--version", "a\0b"] {
+            assert!(
+                matches!(
+                    launch_args(preset.clone(), Some(bad)),
+                    Err(Error::InvalidPrompt(_))
+                ),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

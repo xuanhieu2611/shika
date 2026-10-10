@@ -63,6 +63,8 @@ The dialog displays:
 - A title initially copied from the task title, including a manual [Rename task](task-names.md) name, used for both a new commit and a new PR. Renaming alone creates no commit and rewrites no existing commit or PR; the editable title here still requires confirmation.
 - An editable target field with matching existing GitHub branches.
 
+A Lead can open this dialog with `shika pr <task>` for a worker it started (see [shika-cli.md](shika-cli.md#shika-pr-task)). It goes through `create_pr` and the same `publish_blocker` check, shows the same dialog, and never confirms it; the Lead's command blocks until the author confirms or cancels, then focus returns to the Lead.
+
 Tab switches fields; clicking selects a field or branch. Enter or **Commit, push, create PR** confirms. Escape or Cancel restores the previous focus before publishing begins. While publishing, the action reads **Publishing...** and dismissal is blocked.
 
 **The file list is the proposed new commit, not the entire PR diff.** Already-committed changes are not listed there. A clean worktree can still publish existing commits without creating another commit. Selective staging is not preserved as a publishing boundary: confirmation approves `git add -A` for the task root. Use the shell for partial commits.

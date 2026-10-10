@@ -12,6 +12,10 @@ use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, native_pty_sys
 use crate::error::{Error, Result};
 use crate::worktree::GIT_REDIRECTS;
 
+/// Variables that give a process the Lead's control socket. Scrubbed from
+/// every PTY unless the spawn request sets them on purpose.
+pub(crate) const CONTROL_VARS: [&str; 2] = ["SHIKA_SOCKET", "SHIKA_TOKEN"];
+
 const READ_CHUNK: usize = 64 * 1024;
 
 /// One live PTY. Ids are never reused within a run.
@@ -233,6 +237,12 @@ fn configure_child(cmd: &mut CommandBuilder, request: &SpawnRequest) {
     // The app process is standing somewhere else. Point PWD at the worktree
     // so a login shell reports that directory instead of the parent's.
     cmd.env("PWD", request.cwd.as_os_str());
+    // Only a Lead is handed the control socket and token, and only through
+    // `request.env`. Clear any copy inherited from the app, then apply the
+    // explicit values, so a worker or shell can never start workers.
+    for key in CONTROL_VARS {
+        cmd.env_remove(key);
+    }
     for (key, value) in &request.env {
         cmd.env(key, value);
     }
@@ -397,6 +407,42 @@ pub(crate) mod tests {
             Some(OsStr::new("/repo/.worktrees/task"))
         );
         assert_eq!(cmd.get_env("PATH"), Some(OsStr::new("/usr/bin:/bin")));
+    }
+
+    #[test]
+    fn control_variables_are_scrubbed_unless_the_request_sets_them() {
+        let request = |env: Vec<(String, String)>| SpawnRequest {
+            program: PathBuf::from("/bin/zsh"),
+            args: vec![],
+            cwd: PathBuf::from("/repo/.worktrees/task"),
+            path: "/usr/bin:/bin".into(),
+            size: PtySize::default(),
+            env,
+        };
+        let inherited = || {
+            let mut cmd = CommandBuilder::new("/bin/zsh");
+            cmd.env("SHIKA_SOCKET", "/tmp/inherited");
+            cmd.env("SHIKA_TOKEN", "inherited");
+            cmd
+        };
+        let mut worker = inherited();
+        configure_child(&mut worker, &request(Vec::new()));
+        for key in CONTROL_VARS {
+            assert!(worker.get_env(key).is_none(), "{key} reached a worker");
+        }
+        let mut lead = inherited();
+        configure_child(
+            &mut lead,
+            &request(vec![
+                ("SHIKA_SOCKET".into(), "/tmp/lead/sock".into()),
+                ("SHIKA_TOKEN".into(), "lead-token".into()),
+            ]),
+        );
+        assert_eq!(
+            lead.get_env("SHIKA_SOCKET"),
+            Some(OsStr::new("/tmp/lead/sock"))
+        );
+        assert_eq!(lead.get_env("SHIKA_TOKEN"), Some(OsStr::new("lead-token")));
     }
 
     #[test]

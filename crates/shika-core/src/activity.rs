@@ -332,7 +332,13 @@ mod tests {
         .unwrap();
         let project = core.add_project(&repo).unwrap().project;
         let session = core
-            .create_session(&project.id, "pi", PtySize::default(), |_, _| {})
+            .create_session(
+                &project.id,
+                "pi",
+                PtySize::default(),
+                |_, _| {},
+                crate::LaunchOptions::default(),
+            )
             .unwrap();
         let snapshot = session.clone();
         let bridge = core.sessions.activity(&session.id).unwrap();

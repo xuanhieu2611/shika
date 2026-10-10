@@ -233,6 +233,15 @@ pub struct PromptCapture {
     mouse_remaining: u8,
 }
 impl PromptCapture {
+    /// The first prompt is already known, as when the CLI was launched with
+    /// it. Typed lines no longer name the task.
+    pub fn finish(&mut self) {
+        self.done = true;
+    }
+    /// Text is typed on the line and not yet submitted.
+    pub fn has_text(&self) -> bool {
+        !self.line.is_empty()
+    }
     pub fn feed(&mut self, bytes: &[u8]) -> Option<String> {
         if self.done {
             return None;
@@ -387,6 +396,14 @@ impl PromptCapture {
             self.backspace();
         }
     }
+}
+/// What a typed first line would have given the card: the first nonblank
+/// line of a launch prompt, with its whitespace collapsed.
+pub fn prompt_title(prompt: &str) -> Option<String> {
+    prompt
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|line| !line.is_empty())
 }
 pub fn card_title(title: &str) -> String {
     if title.chars().count() <= 80 {

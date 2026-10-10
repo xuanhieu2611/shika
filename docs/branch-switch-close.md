@@ -13,7 +13,7 @@ Previously, any switch blocked Close and required returning to the task branch, 
 
 ## User experience
 
-Close task is Cmd+Shift+W or the Close task button. Plain `c` does nothing.
+Close task is Cmd+Shift+W or the Close task button. Plain `c` does nothing. A Lead's `shika close <task>` can open this confirmation for a worker it started; the command blocks until the author confirms or cancels ([shika-cli.md](shika-cli.md#shika-close-task)).
 
 Normal Close first checks branch identity as before. When it detects a mismatch, the app runs a separate background verification:
 

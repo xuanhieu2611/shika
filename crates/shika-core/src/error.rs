@@ -97,6 +97,17 @@ pub enum Error {
     #[error("Could not prepare the shell.")]
     PrepareShell,
 
+    /// A launch prompt that cannot be passed safely as the CLI's one
+    /// positional argument.
+    #[error("{0}")]
+    InvalidPrompt(String),
+    #[error("This project already has a Lead.")]
+    LeadExists,
+    /// The Lead has no branch, no diff, and no shell tabs, so branch, diff,
+    /// publish, and shell operations refuse it.
+    #[error("The Lead works in a detached worktree and has no branch, so it cannot do that.")]
+    LeadUnsupported,
+
     #[error("Worktree preparation failed: {0}")]
     Preparation(String),
     #[error("Approve the current worktree preparation configuration before starting an agent.")]

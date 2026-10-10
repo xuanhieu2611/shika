@@ -36,6 +36,7 @@ pub struct Draft {
 #[serde(rename_all = "camelCase")]
 pub struct JournalEntry {
     pub project_id: String,
+    /// Empty for a Lead's detached worktree, which has no branch.
     pub branch: String,
     pub path: PathBuf,
     /// The ref the branch started from, such as `refs/remotes/origin/dev`.
@@ -117,6 +118,35 @@ pub fn create_draft(
         return Err(Error::CreateWorktree(first_line(&output.stderr)));
     }
     Ok(Draft { branch, path })
+}
+
+/// Creates `<repo>/.worktrees/shika-lead-<id>` as a detached checkout of
+/// `start`, for a project's Lead. No branch is created, so nothing the Lead
+/// does can move a task branch or the main checkout. Returns the path.
+pub fn create_lead(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    id: &str,
+    start: &str,
+) -> Result<PathBuf> {
+    ensure_excluded(git, path_env, repo)?;
+    let path = repo.join(".worktrees").join(format!("shika-lead-{id}"));
+    if path.exists() {
+        return Err(Error::DraftExists);
+    }
+    fs::create_dir_all(repo.join(".worktrees")).map_err(|_| Error::CreateWorktree(None))?;
+    let output = git_cmd(git, path_env, repo)
+        .args(["worktree", "add", "--detach"])
+        .arg(&path)
+        .arg(start)
+        .output()
+        .map_err(|_| Error::CreateWorktree(None))?;
+    if !output.status.success() {
+        let _ = fs::remove_dir(repo.join(".worktrees"));
+        return Err(Error::CreateWorktree(first_line(&output.stderr)));
+    }
+    Ok(path)
 }
 
 /// Where New starts a task branch.
