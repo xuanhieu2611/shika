@@ -403,6 +403,12 @@ h2 { margin: 0; font-size: clamp(32px, 4.2vw, 50px); line-height: 1.06; letter-s
 .dot.waiting { background: var(--st-waiting); }
 .pixels { display: flex; align-items: flex-end; gap: 2px; height: 10px; }
 .pixels i { width: 3px; height: 3px; background: var(--st-working); }
+.spark {
+  display: grid; grid-template-columns: repeat(5, 2px); gap: 1px;
+  width: 14px; height: 14px;
+}
+.spark i { width: 2px; height: 2px; background: var(--st-working); opacity: 0; }
+.spark i.on { opacity: 1; }
 
 .notif-stack { width: 100%; max-width: 360px; }
 .m-notif {
@@ -575,6 +581,12 @@ h2 { margin: 0; font-size: clamp(32px, 4.2vw, 50px); line-height: 1.06; letter-s
 /* Motion: one entrance for the hero, a quiet reveal below. Off for reduced motion. */
 @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 @keyframes wave { 0%, 50%, 100% { transform: translateY(0); } 25% { transform: translateY(-5px); } }
+@keyframes twinkle {
+  0%, 36%, 100% { opacity: 0; box-shadow: none; }
+  9% { opacity: 0.67; }
+  18% { opacity: 1; box-shadow: 0 0 2px var(--st-working); }
+  27% { opacity: 0.67; }
+}
 @media (prefers-reduced-motion: no-preference) {
   .rise { animation: rise 900ms var(--ease) both; animation-delay: calc(240ms + var(--i, 0) * 90ms); }
   .js .reveal { opacity: 0; transform: translateY(16px); transition: opacity 800ms var(--ease), transform 800ms var(--ease); transition-delay: calc(var(--i, 0) * 70ms); }
@@ -582,6 +594,7 @@ h2 { margin: 0; font-size: clamp(32px, 4.2vw, 50px); line-height: 1.06; letter-s
   .pixels i { animation: wave 1.2s steps(6, end) infinite; }
   .pixels i:nth-child(2) { animation-delay: 0.2s; }
   .pixels i:nth-child(3) { animation-delay: 0.4s; }
+  .spark i { animation: twinkle 2s linear infinite; animation-delay: var(--d, 0s); }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
