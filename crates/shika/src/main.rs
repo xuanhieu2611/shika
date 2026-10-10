@@ -341,7 +341,7 @@ struct Card {
     /// The checks on the PR that Create PR made or reused. Memory only.
     pr: Option<checks::PrWatch>,
     /// The `since` of the Ready turn the user has seen. Every turn that ends
-    /// gets a new `since`, so its dot and tint return until it is seen.
+    /// gets a new `since`, so its dot returns until it is seen.
     seen: Option<Instant>,
     launch_preset: String,
     launch: Launch,
@@ -561,6 +561,11 @@ struct Shika {
     last_revealed_selection: Option<Selection>,
     busy: bool,
     toast: Option<(String, Instant)>,
+    /// The corner update notice. A release build sets it from Sparkle.
+    /// `--preview-update` paints a sample so the layout can be seen locally.
+    update_notice: Option<updates::UpdateCard>,
+    /// Clicks on the sample card only change the picture.
+    preview_update: bool,
     leftovers: Vec<JournalEntry>,
     leftover_selected: usize,
     clock: Instant,
@@ -615,6 +620,7 @@ impl Shika {
         core: Arc<Core>,
         settings: shika_core::Result<Settings>,
         diagnostics: Option<PathBuf>,
+        preview_update: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -679,6 +685,8 @@ impl Shika {
             } else {
                 Some((load_errors.join("; "), Instant::now()))
             },
+            update_notice: preview_update.then(sample_update_notice),
+            preview_update,
             leftovers,
             leftover_selected: 0,
             clock: Instant::now(),
@@ -757,6 +765,66 @@ impl Shika {
     }
     fn message(&mut self, text: String) {
         self.toast = Some((text, Instant::now()));
+    }
+    /// Sparkle posts on the main thread. The corner card reads the queue here,
+    /// and again immediately after a click.
+    fn drain_update_notice(&mut self, cx: &App) -> bool {
+        if !cx.has_global::<updates::Updater>() {
+            return false;
+        }
+        let mut changed = false;
+        for event in cx.global::<updates::Updater>().poll() {
+            changed = true;
+            match event {
+                updates::UpdateEvent::Show(card) => self.update_notice = Some(card),
+                updates::UpdateEvent::Clear => self.update_notice = None,
+                updates::UpdateEvent::Toast(text) => self.message(text),
+            }
+        }
+        changed
+    }
+    fn answer_update(&mut self, action: updates::CardAction, cx: &mut Context<Self>) {
+        if self.preview_update {
+            self.advance_update_preview(action);
+            cx.notify();
+            return;
+        }
+        let open = match (&action, &self.update_notice) {
+            (
+                updates::CardAction::Primary,
+                Some(updates::UpdateCard::Available {
+                    offer: Some(updates::Offer::Open(url)),
+                    ..
+                }),
+            ) => Some(url.clone()),
+            _ => None,
+        };
+        if let Some(url) = open {
+            cx.open_url(&url);
+        }
+        if cx.has_global::<updates::Updater>() {
+            cx.global::<updates::Updater>().respond(action);
+        }
+        self.drain_update_notice(cx);
+        cx.notify();
+    }
+    /// The sample card. Download shows the restart card. Every other button closes it.
+    fn advance_update_preview(&mut self, action: updates::CardAction) {
+        self.update_notice = match (&self.update_notice, action) {
+            (
+                Some(updates::UpdateCard::Available {
+                    offer: Some(updates::Offer::Download),
+                    version,
+                    ..
+                }),
+                updates::CardAction::Primary,
+            ) => Some(updates::UpdateCard::Ready {
+                version: version.clone(),
+            }),
+            (Some(updates::UpdateCard::Available { .. }), updates::CardAction::Secondary)
+            | (Some(updates::UpdateCard::Ready { .. }), _) => None,
+            (other, _) => other.clone(),
+        };
     }
     fn selected_card(&self) -> Option<usize> {
         match self.selection {
@@ -1762,7 +1830,7 @@ impl Shika {
             cx.notify();
         }
         let now = Instant::now();
-        let mut changed = false;
+        let mut changed = self.drain_update_notice(cx);
         // The Lead's shika commands run here, with the rest of the state.
         self.drain_control(window, cx);
         // Reconcile agent/shell branch renames independently of the one-shot
@@ -2220,7 +2288,7 @@ impl Shika {
         })
         .detach();
     }
-    /// The picker for one project, from its `+` or its empty box.
+    /// The picker for one project, from its `+`.
     fn picker_for(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;
@@ -4227,7 +4295,7 @@ impl Shika {
         self.title_drag(row, cx)
     }
 
-    /// One project: its header, then its empty box or every card.
+    /// One project: its header, then every card.
     fn project_group(
         &self,
         project: &Project,
@@ -4250,6 +4318,7 @@ impl Shika {
         let base_name = self.bases.get(&id).and_then(|b| b.name.clone());
         let base_group = SharedString::from(format!("base-group-{id}"));
         let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+        let path = SharedString::from(model::tilde(&project.path, home));
         let header = div()
             .id(SharedString::from(format!("project-{id}")))
             .relative()
@@ -4274,22 +4343,24 @@ impl Shika {
                 window.focus(&this.focus, cx);
                 cx.notify();
             }))
+            // The path is in the name's tooltip, not on the row.
             .child(
                 div()
-                    .flex_none()
+                    .id(SharedString::from(format!("name-{id}")))
+                    .min_w_0()
+                    .truncate()
                     .text_size(px(15.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(chrome.ink_1)
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| KeyTip {
+                            bg: tip_bg,
+                            fg: tip_fg,
+                            text: path.clone(),
+                        })
+                        .into()
+                    })
                     .child(project.name.clone()),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .font_family(MONO)
-                    .text_size(px(12.))
-                    .text_color(chrome.ink_3)
-                    .child(model::tilde(&project.path, home)),
             )
             // The branch New starts from. A click or `b` changes it.
             .when_some(base_name, |d, name| {
@@ -4351,15 +4422,6 @@ impl Shika {
                         }
                     })),
             )
-            .when(!indices.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_size(px(11.5))
-                        .text_color(chrome.ink_3)
-                        .child(model::plural(indices.len(), "agent")),
-                )
-            })
             .child(
                 div()
                     .id(SharedString::from(format!("new-in-{id}")))
@@ -4385,30 +4447,6 @@ impl Shika {
             .filter(|d| d.card.project == id)
             .collect::<Vec<_>>();
         let mut column = div().flex().flex_col().gap(px(CARD_GAP)).child(header);
-        // The empty box waits until the last card has finished leaving.
-        if indices.is_empty() && departing.is_empty() {
-            let card_rest = chrome.card_rest;
-            let ink_2 = chrome.ink_2;
-            column = column.child(
-                div()
-                    .id(SharedString::from(format!("empty-{id}")))
-                    .border_1()
-                    .border_dashed()
-                    .border_color(chrome.dashed)
-                    .rounded(px(10.))
-                    .px(px(14.))
-                    .py(px(12.))
-                    .text_size(px(12.5))
-                    .line_height(px(16.))
-                    .text_color(chrome.ink_3)
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(card_rest).text_color(ink_2))
-                    .child("No one is on this repo. Press + to start an agent.")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.picker_for(id.clone(), window, cx)
-                    })),
-            );
-        }
         let shown = indices
             .iter()
             .map(|&at| self.cards[at].agent.view.entity_id())
@@ -4528,7 +4566,7 @@ impl Shika {
         let stat = card
             .diff
             .filter(|d| card.status == Status::Ready && d.files > 0)
-            .map(|d| model::diff_stat_label(d.files, d.insertions, d.deletions));
+            .map(|d| model::diff_stat_parts(d.files, d.insertions, d.deletions));
         // Setup progress and failure are facts the signal cannot say. Waiting,
         // Working, and Ready stay on the signal, the tint, the timer, and the
         // diff stat.
@@ -4553,11 +4591,11 @@ impl Shika {
                     .truncate()
                     .text_size(px(14.))
                     .line_height(px(20.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if card.named {
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if card.named || selected {
                         chrome.ink_1
                     } else {
-                        chrome.ink_3
+                        chrome.ink_2
                     })
                     .child(card.title.clone()),
             )
@@ -4575,7 +4613,7 @@ impl Shika {
             })
             .child(if card.closing {
                 // A card on its way out has no status to signal.
-                div().flex_none().w(px(13.)).into_any_element()
+                div().flex_none().w(px(SIGNAL_SLOT)).into_any_element()
             } else {
                 card_signal(&key, card.status, card.unseen(), chrome)
             });
@@ -4587,7 +4625,9 @@ impl Shika {
             .whitespace_nowrap()
             .text_size(px(12.))
             .line_height(px(16.))
-            .text_color(chrome.ink_3)
+            // The CLI and branch sit back so the task reads first. Results
+            // (the diff stat, the PR mark, the hints) stay a step brighter.
+            .text_color(chrome.ink_4)
             .child(div().flex_none().child(card.preset.clone()))
             // Where the task came from, quiet: not a status.
             .when(card.started_by.is_some(), |d| {
@@ -4646,7 +4686,19 @@ impl Shika {
                 // Text on the card, not a control. A click here is the
                 // card's click: select it and focus its terminal. The
                 // panel opens from the shortcut, the toggle, or the menu.
-                d.child(separator()).child(div().flex_none().child(stat))
+                // The counts take the Changes panel's diff colors; the file
+                // count stays ink.
+                let (files, added, removed) = stat;
+                d.child(separator()).child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .gap(px(4.))
+                        .text_color(chrome.ink_3)
+                        .child(files)
+                        .child(div().text_color(chrome.diff_added.text).child(added))
+                        .child(div().text_color(chrome.diff_removed.text).child(removed)),
+                )
             })
             .when_some(card.pr.as_ref(), |d, pr| {
                 d.child(separator()).child(pr_mark(&key, pr, chrome, cx))
@@ -4661,6 +4713,7 @@ impl Shika {
                         .gap(px(4.))
                         .ml(px(6.))
                         .text_size(px(11.))
+                        .text_color(chrome.ink_3)
                         .child(kbd(*key, chrome.sunken, chrome.ink_2).py_0())
                         .child(*label)
                 }))
@@ -4672,6 +4725,9 @@ impl Shika {
             .flex_col()
             .gap(px(6.))
             .rounded(px(10.))
+            .pt(px(12.))
+            .px(px(14.))
+            .pb(px(11.))
             .when_some(at, |d, i| {
                 d.capture_any_mouse_down(cx.listener(
                     move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -4692,54 +4748,13 @@ impl Shika {
                     this.focus_terminal(window, cx);
                 }))
             });
+        // The selected card is a soft wash over the column, like a hover,
+        // so glass shows through it. The key hints show when the cards have
+        // focus. Every other card is bare text.
         let base = if selected {
-            // The ring sits outside the card, like the design's box-shadow,
-            // so the selected card keeps the resting card's size.
-            let (ring, width) = if cards_focused {
-                (chrome.focus, 1.5)
-            } else {
-                (chrome.line_selected_dim, 1.)
-            };
-            let mut shadows = vec![];
-            if cards_focused {
-                shadows.push(
-                    BoxShadow::new(px(0.), px(2.), chrome.card_shadow.into())
-                        .blur_radius(px(chrome.card_shadow_blur)),
-                );
-            }
-            shadows.push(BoxShadow::new(px(0.), px(0.), ring.into()).spread_radius(px(width)));
             base.bg(chrome.card_selected)
-                .pt(px(12.))
-                .px(px(14.))
-                .pb(px(11.))
-                .shadow(shadows)
         } else {
-            // A drop shadow would also paint under a translucent card, so the
-            // resting ring is a border and the padding gives back its 1px.
             base.overflow_hidden()
-                .bg(if card.status == Status::Asking {
-                    chrome.card_asking
-                } else if card.unseen() {
-                    chrome.card_ready
-                } else {
-                    chrome.card_rest
-                })
-                .border_1()
-                .border_color(chrome.line_subtle)
-                .pt(px(11.))
-                .px(px(13.))
-                .pb(px(10.))
-                .when(chrome.glass, |d| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .right_0()
-                            .h(px(1.))
-                            .bg(chrome.card_highlight),
-                    )
-                })
         };
         base.child(task)
             .child(meta)
@@ -5381,7 +5396,66 @@ impl Shika {
                     ),
             );
         }
+        if let Some(card) = &self.update_notice
+            && !card.centered()
+        {
+            right = right.child(
+                div()
+                    .absolute()
+                    .bottom(px(22.))
+                    .right(px(20.))
+                    .child(self.update_notice_panel(card, chrome, window, cx)),
+            );
+        }
         right
+    }
+
+    /// The update card. It does not take focus, so typing and Escape stay in
+    /// the terminal. 320 is the column's minimum, with the card's own padding.
+    fn update_notice_panel(
+        &self,
+        card: &updates::UpdateCard,
+        chrome: &Chrome,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let notice = card.view();
+        let max_h = (window.viewport_size().height - px(44.)).max(px(120.));
+        let mut panel = panel_shell("update-notice", 320., max_h, chrome)
+            .occlude()
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .pt(px(12.))
+            .px(px(14.))
+            .pb(px(11.))
+            .gap(px(6.))
+            .child(dialog_title(div()).child(notice.title))
+            .child(dialog_text(chrome).child(notice.body));
+        if notice.secondary.is_some() || notice.primary.is_some() {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .flex_wrap()
+                    .when_some(notice.secondary, |row, label| {
+                        row.child(
+                            notice_secondary("update-secondary", label, chrome).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.answer_update(updates::CardAction::Secondary, cx)
+                                }),
+                            ),
+                        )
+                    })
+                    .when_some(notice.primary, |row, label| {
+                        row.child(notice_primary("update-primary", label, chrome).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.answer_update(updates::CardAction::Primary, cx)
+                            }),
+                        ))
+                    }),
+            );
+        }
+        panel
     }
 
     /// A pointer-anchored menu with a transparent, click-consuming backdrop.
@@ -6451,7 +6525,7 @@ const MONO: &str = "JetBrains Mono";
 /// The 960px window minimum leaves room for the default 540px column.
 const MIN_TERMINAL_WIDTH: f32 = 420.;
 /// Every card's height: the 20px task line, the 6px gap, the 16px meta line,
-/// and 23px of padding (a resting card's 21 plus its 1px border on each side).
+/// and 23px of padding.
 /// A closed card's row collapses from this.
 const CARD_HEIGHT: f32 = 65.;
 /// The space between cards, and between a project header and its cards.
@@ -6460,6 +6534,9 @@ const CARD_GAP: f32 = 6.;
 const CLOSING_CARD_OPACITY: f32 = 0.5;
 /// A closing task's terminal fades to a trace of its output.
 const CLOSING_TERMINAL_OPACITY: f32 = 0.06;
+/// The status signal at the right end of a card's first line: the 14px
+/// working pixels, or an 8px dot centered in it.
+const SIGNAL_SLOT: f32 = 14.;
 /// A closed card shrinks toward its center to this size as it fades out.
 const EXIT_SCALE: f32 = 0.94;
 /// The narrowest column that fits the footer's key hints, without and with
@@ -6713,11 +6790,11 @@ fn pr_mark(
         }))
 }
 
-/// The right end of a card's first line, one 13px slot so the signals line
+/// The right end of a card's first line, one 14px slot so the signals line
 /// up down the column: working pixels, a ready dot until the result is seen,
 /// a grey waiting dot, and nothing once a Ready result has been seen.
 fn card_signal(card: &str, status: Status, unseen: bool, chrome: &Chrome) -> gpui::AnyElement {
-    let slot = div().flex_none().flex().justify_center().w(px(13.));
+    let slot = div().flex_none().flex().justify_center().w(px(SIGNAL_SLOT));
     let color = chrome.status(status).dot;
     match status {
         Status::Working => slot.child(working_pixels(card, color)),
@@ -6728,7 +6805,7 @@ fn card_signal(card: &str, status: Status, unseen: bool, chrome: &Chrome) -> gpu
 }
 
 /// The terminal area. While its task closes, the terminal fades to a trace
-/// behind a grey wave and "Closing...", so the CLI's exit line and the
+/// behind grey sparkling pixels and "Closing...", so the CLI's exit line and the
 /// stopped session do not read as the result. Opacity only: the terminal
 /// keeps its size, so its PTY is never resized.
 fn closing_terminal(card: &Card, pane: &Pane, chrome: &Chrome) -> gpui::AnyElement {
@@ -6760,12 +6837,11 @@ fn closing_terminal(card: &Card, pane: &Pane, chrome: &Chrome) -> gpui::AnyEleme
                 .gap(px(12.))
                 .text_size(px(13.))
                 .text_color(chrome.term_faint)
-                .child(pixel_wave(
-                    format!("closing-wave-{view}"),
+                .child(pixel_sparkle(
+                    format!("closing-pixels-{view}"),
                     chrome.term_dim,
                     4.,
-                    3.,
-                    6.,
+                    2.,
                 ))
                 .child("Closing...")
                 .with_animation(
@@ -6777,37 +6853,73 @@ fn closing_terminal(card: &Card, pane: &Pane, chrome: &Chrome) -> gpui::AnyEleme
         .into_any_element()
 }
 
-/// A working card's indicator: three 3px squares rising and falling in a
-/// staggered wave every 1.2s. Offsets snap to whole points so the squares
-/// stay crisp and step like pixels. GPUI skips the loop when macOS asks for
-/// reduced motion, leaving the first frame, a still staircase.
+/// A working card's indicator: a 5x5 field of 2px pixels, 14px square, that
+/// twinkle about eight at a time. Every size and offset is a whole point, so
+/// the pixels stay crisp and the field sits 3px from the top of the 20px
+/// line, level with the 8px dots. GPUI skips the loop when macOS asks for
+/// reduced motion, leaving the first frame, a scatter of lit pixels.
 fn working_pixels(card: &str, color: gpui::Rgba) -> gpui::AnyElement {
-    pixel_wave(format!("working-{card}"), color, 3., 2., 5.)
+    pixel_sparkle(format!("working-{card}"), color, 2., 1.)
 }
 
-/// Three squares of `size` rising up to `rise` in a staggered wave every
-/// 1.2s, the shape of the working pixels.
-fn pixel_wave(id: String, color: gpui::Rgba, size: f32, gap: f32, rise: f32) -> gpui::AnyElement {
+/// One sparkle cycle. Each pixel lights once per cycle.
+const SPARKLE_CYCLE: Duration = Duration::from_millis(2000);
+/// The share of a cycle one pixel stays lit, rising and falling.
+const SPARKLE_TWINKLE: f32 = 0.36;
+/// When each pixel of the 5x5 field lights, row by row: pixel `i` starts at
+/// `SPARKLE_SLOT[i] / 25` of the cycle. Pixels that start within four slots
+/// of each other are never neighbors, so the field reads as scattered light
+/// rather than a sweep.
+const SPARKLE_SLOT: [u8; 25] = [
+    2, 14, 9, 20, 8, //
+    7, 19, 4, 15, 3, //
+    1, 13, 24, 10, 22, //
+    21, 6, 18, 5, 17, //
+    16, 11, 23, 12, 0,
+];
+
+/// How lit a pixel is at phase `t` of the cycle: off, or a third, two
+/// thirds, or full, in one rise and fall starting at its slot.
+fn sparkle_level(t: f32, slot: u8) -> f32 {
+    let local = (t - f32::from(slot) / 25.).rem_euclid(1.);
+    if local >= SPARKLE_TWINKLE {
+        return 0.;
+    }
+    ((std::f32::consts::PI * local / SPARKLE_TWINKLE).sin() * 3.).round() / 3.
+}
+
+/// A 5x5 field of `size` pixels, `gap` apart, that twinkle in `color`. A lit
+/// pixel blooms: a soft glow of its own color, as strong as the pixel is lit.
+fn pixel_sparkle(id: String, color: gpui::Rgba, size: f32, gap: f32) -> gpui::AnyElement {
+    let side = 5. * size + 4. * gap;
     div()
         .flex_none()
         .relative()
-        .w(px(3. * size + 2. * gap))
-        .h(px(size + rise))
+        .size(px(side))
         .with_animation(
             SharedString::from(id),
-            gpui::Animation::new(Duration::from_millis(1200))
+            gpui::Animation::new(SPARKLE_CYCLE)
                 .repeat_synced()
                 .with_max_fps(30.),
             move |d, t| {
-                d.children((0..3).map(|i| {
-                    let phase = t - i as f32 / 6.;
-                    let lift = (1. - (std::f32::consts::TAU * phase).cos()) / 2.;
-                    div()
-                        .absolute()
-                        .left(px(i as f32 * (size + gap)))
-                        .top(px(rise - (lift * rise).round()))
-                        .size(px(size))
-                        .bg(color)
+                d.children(SPARKLE_SLOT.iter().enumerate().filter_map(|(i, &slot)| {
+                    let level = sparkle_level(t, slot);
+                    (level > 0.).then(|| {
+                        div()
+                            .absolute()
+                            .left(px((i % 5) as f32 * (size + gap)))
+                            .top(px((i / 5) as f32 * (size + gap)))
+                            .size(px(size))
+                            .bg(with_alpha(color, color.a * level))
+                            .shadow(vec![
+                                BoxShadow::new(
+                                    px(0.),
+                                    px(0.),
+                                    with_alpha(color, color.a * level * 0.5).into(),
+                                )
+                                .blur_radius(px(size * 1.5)),
+                            ])
+                    })
                 }))
             },
         )
@@ -6857,6 +6969,42 @@ fn dialog_button(
                 .text_color(chrome.ink_3)
                 .child(key),
         )
+}
+
+/// A notice button with no key. The update card does not take focus.
+fn notice_secondary(
+    id: &'static str,
+    label: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    secondary_button(id, chrome)
+        .px(px(12.))
+        .py(px(6.))
+        .child(label)
+}
+
+/// The ink-filled notice button, with the primary button's padding and no key.
+fn notice_primary(
+    id: &'static str,
+    label: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    let hover = chrome.primary_hover;
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .rounded(px(7.))
+        .px(px(12.))
+        .py(px(7.))
+        .bg(chrome.primary_bg)
+        .text_color(chrome.primary_fg)
+        .text_size(px(12.5))
+        .line_height(px(16.))
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .child(label)
 }
 
 /// The ink-filled primary action of a dialog.
@@ -6972,10 +7120,19 @@ fn list_row(selected: bool, chrome: &Chrome) -> gpui::Div {
         .when(selected, |d| d.bg(chrome.row_selected))
 }
 
-/// The floating surface shared by the picker and every dialog.
+/// The floating surface shared by the picker, every dialog, and the update notice.
 fn dialog_shell(width: f32, max_h: Pixels, chrome: &Chrome) -> gpui::Stateful<gpui::Div> {
+    panel_shell("overlay-panel", width, max_h, chrome)
+}
+
+fn panel_shell(
+    id: &'static str,
+    width: f32,
+    max_h: Pixels,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
     div()
-        .id("overlay-panel")
+        .id(id)
         .w(px(width))
         .max_h(max_h)
         .overflow_y_scroll()
@@ -7140,10 +7297,30 @@ impl Render for Shika {
                 let left = window.viewport_size().width - width;
                 self.changes_handle(left, &chrome, cx)
             }));
+        if let Some(card) = &self.update_notice
+            && card.centered()
+        {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(self.update_notice_panel(card, &chrome, window, cx)),
+            );
+        }
         if let Some(overlay) = &self.overlay {
             root = root.child(self.overlay_view(overlay, &chrome, home.as_deref(), window, cx));
         }
         root
+    }
+}
+fn sample_update_notice() -> updates::UpdateCard {
+    updates::UpdateCard::Available {
+        version: "0.6.0".into(),
+        body: updates::available_body("", false, Some(&updates::Offer::Download)),
+        offer: Some(updates::Offer::Download),
     }
 }
 fn main() -> anyhow::Result<()> {
@@ -7159,9 +7336,11 @@ fn main() -> anyhow::Result<()> {
     }
     let mut data = None;
     let mut diagnostics = None;
+    let mut preview_update = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--preview-update" => preview_update = true,
             "--data-dir" => {
                 data = Some(PathBuf::from(
                     args.next()
@@ -7279,7 +7458,12 @@ fn main() -> anyhow::Result<()> {
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(1400.), px(880.)), cx);
+        let mut bounds = Bounds::centered(None, size(px(1400.), px(880.)), cx);
+        // The sample sits beside a normal window instead of covering it.
+        if preview_update {
+            bounds.origin.x += px(48.);
+            bounds.origin.y += px(36.);
+        }
         let settings = core.settings();
         let start = settings.as_ref().map(|s| s.appearance).unwrap_or_default();
         // Before the window opens, so it starts in the forced appearance.
@@ -7289,7 +7473,11 @@ fn main() -> anyhow::Result<()> {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(gpui::TitlebarOptions {
-                        title: Some("Shika".into()),
+                        title: Some(if preview_update {
+                            "Shika preview".into()
+                        } else {
+                            "Shika".into()
+                        }),
                         appears_transparent: true,
                         // Centers the traffic lights in the 48px top row.
                         traffic_light_position: Some(gpui::point(
@@ -7306,7 +7494,9 @@ fn main() -> anyhow::Result<()> {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let app = cx.new(|cx| Shika::new(core, settings, diagnostics, window, cx));
+                    let app = cx.new(|cx| {
+                        Shika::new(core, settings, diagnostics, preview_update, window, cx)
+                    });
                     window.focus(&app.focus_handle(cx), cx);
                     app
                 },
@@ -7329,6 +7519,46 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+
+    #[test]
+    fn every_sparkle_pixel_lights_once_per_cycle() {
+        let mut slots = SPARKLE_SLOT.to_vec();
+        slots.sort_unstable();
+        assert_eq!(slots, (0..25).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn sparkle_pixels_that_start_together_are_never_neighbors() {
+        for (a, &sa) in SPARKLE_SLOT.iter().enumerate() {
+            for (b, &sb) in SPARKLE_SLOT.iter().enumerate() {
+                let apart = (i32::from(sa) - i32::from(sb)).rem_euclid(25);
+                let near = (1..=4).contains(&apart.min(25 - apart));
+                let (ax, ay, bx, by) = (a % 5, a / 5, b % 5, b / 5);
+                let touching = ax.abs_diff(bx) <= 1 && ay.abs_diff(by) <= 1;
+                assert!(!(near && touching), "pixels {a} and {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn sparkle_keeps_about_eight_pixels_lit_in_steps() {
+        // The first frame is the still frame under reduced motion.
+        let lit = |t: f32| {
+            SPARKLE_SLOT
+                .iter()
+                .filter(|&&s| sparkle_level(t, s) > 0.)
+                .count()
+        };
+        assert!(lit(0.) >= 6);
+        for step in 0..300 {
+            let t = step as f32 / 300.;
+            assert!((7..=10).contains(&lit(t)), "{} lit at {t}", lit(t));
+            for &slot in &SPARKLE_SLOT {
+                let level = sparkle_level(t, slot);
+                assert!([0., 1. / 3., 2. / 3., 1.].contains(&level));
+            }
+        }
+    }
 
     #[test]
     fn card_menu_stays_bound_to_the_clicked_card_after_reordering_or_removal() {

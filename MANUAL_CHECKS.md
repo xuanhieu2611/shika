@@ -26,7 +26,7 @@ Workspace tests, formatting, and Clippy passed; the easing curve and exit timing
 - [ ] Cmd+Shift+W on a clean idle task: the card dims and reads "Closing...", the terminal fades behind the wave and "Closing...", and no `[process exited]` line reads as the result; then the card shrinks, fades, and collapses while the cards below slide up and the next terminal appears.
 - [ ] Discard and Push from the Close dialog show the same closing state while the dialog reads "Working...", including a slow push.
 - [ ] A failed close (a failed push, or a tree that turns dirty) restores the card and terminal and shows the error toast.
-- [ ] Closing the last card of a project shows the empty box only after the exit; closing a Lead and a Lead-started worker (`shika close`) look the same.
+- [ ] Closing the last card of a project leaves the header alone after the exit; closing a Lead and a Lead-started worker (`shika close`) look the same.
 - [ ] macOS Reduce Motion: the card and terminal dim without fading, and the card leaves without the exit.
 - [ ] The terminal's grid size does not change during the fade (no SIGWINCH redraw), in light, dark, and translucent themes.
 
@@ -55,7 +55,7 @@ Designed 2026-10-08; see [docs/changes-panel.md](docs/changes-panel.md). Use a b
 
 ### File cards, 2026-10-10
 
-Automated validation: 448 workspace tests passed (one existing ignored test), formatting, strict Clippy, debug bundle build, and strict signature verification passed. New tests cover card row ordering/bottoms for binary/capped/mode-only files, range-based folding, visible file/cap navigation, fold scroll anchoring, stable path/status identity on refresh, safe filename/directory/rename labels, and a 50,000-line index. Header inks meet 4.5:1 on the opaque header wash across the complete catalog and the existing synthetic themes/glass/Reduce transparency matrix.
+Automated validation after integrating current main: 455 workspace tests passed (one existing ignored test), formatting, strict Clippy, debug bundle build, and strict signature verification passed. The native captures below predate that main merge. New tests cover card row ordering/bottoms for binary/capped/mode-only files, range-based folding, visible file/cap navigation, fold scroll anchoring, stable path/status identity on refresh, safe filename/directory/rename labels, and a 50,000-line index. Header inks meet 4.5:1 on the opaque header wash across the complete catalog and the existing synthetic themes/glass/Reduce transparency matrix.
 
 A scratch copy outside the repository, with GPUI test-support, hard-coded disposable Core data and a unique bundle id, rendered synthetic diffs without PTYs or Git reads. These are injected/native-render checks, not macOS input or provider acceptance:
 
@@ -107,13 +107,21 @@ Exercised with the local recipe in `docs/updates.md`: bundle id `com.hieule.shik
 - [ ] `cargo run` and a `bundle-app.sh` bundle show no "Check for updates..." item.
 - [ ] The first real release after 0.3.0 reaches an installed 0.3.0 through `https://useshika.com/appcast.xml`.
 
+The standard Sparkle windows are no longer shown. The corner card still needs a release-build pass:
+
+- [ ] Second launch shows "Check for updates automatically?" in the terminal's bottom-right, in Shika's dialog colors, in light and dark. Check automatically and Not now both dismiss it. No Sparkle sheet appears.
+- [ ] Check for updates shows "Checking for updates..." and then the toast "No newer version found." when the feed has nothing newer.
+- [ ] A newer feed shows "Shika {version} is available" in the terminal's bottom-right, with Ignore and Download. Ignore dismisses it. Download shows progress there, then "Restart to update" centered in the window, with Later and Restart. Clicks outside that card still reach the app.
+- [ ] Restart quits, replaces the app, and reopens with projects intact. Later dismisses the card and installs on the next quit. Check for updates brings the restart card back before that quit.
+- [ ] The card does not take focus: typing and Escape still go to the terminal. A dialog covers it until the dialog closes.
+
 ## Themes, 2026-10-07
 
 Automated validation: workspace tests, formatting, and strict Clippy passed, and a debug bundle was built. Tests cover `theme` defaults, unknown and wrong-side ids, mode stepping, a byte-identical Shika chrome and palette snapshot across solid, glass, and Reduce transparency, and, for every catalog theme plus synthetic dark, light, and low-contrast themes, 4.5:1 secondary and status text on the column, the active tab matching the terminal, the shared column background, and solid popups. The bundle was opened with a disposable `--data-dir` and a forced mode opposite macOS's; it started and was quit. No screenshots or input were taken, so nothing below is established.
 
 - [ ] Theme Light and Dark force the window, traffic lights, menus, and tooltips whatever macOS says; System follows a live macOS appearance change again, in both directions.
 - [ ] `h` / `l` on Light theme and Dark theme step and wrap through the catalog, repaint the chrome, and recolor every live agent and shell terminal at once. The choice survives a relaunch.
-- [ ] Several derived themes (Catppuccin, Rosé Pine, Tokyo Night, Dracula, Gruvbox) look like themselves: cards, selected card, dialogs, key caps, segmented tracks, toast, status dots, timers, and tints, opaque and in glass, with frost on the sidebar alone and on the terminal.
+- [ ] Several derived themes (Catppuccin, Rosé Pine, Tokyo Night, Dracula, Gruvbox) look like themselves: cards, selected card, dialogs, key caps, segmented tracks, toast, status dots, and timers, opaque and in glass, with frost on the sidebar alone and on the terminal.
 - [ ] The Settings panel scrolls in a 600px-high window and `j` / `k` keep the selected row in view.
 
 ## Confirmed PR publishing
@@ -157,7 +165,7 @@ Remaining integrated checks (not established by fixture/unit tests):
 - [ ] First blocker or completion notifies once; later completion still produces an unseen result and fresh diff stat. Notification click selects the task.
 - [ ] Close protects active and blocked clean tasks; idle drafts do not create a false Working warning. Existing dirty/unpushed/branch-switch safety remains intact.
 - [ ] Pi completes fast and continued/retried turns correctly with the temporary extension. Missing/unsupported reports fall back; multiple concurrent sessions do not cross-report.
-- [ ] Asking amber dot/tint, hints, ordering, and timer chrome render correctly in light/dark, opaque/glass, narrow/wide, and hidden column modes.
+- [ ] Asking amber dot, hints, ordering, and timer chrome render correctly in light/dark, opaque/glass, narrow/wide, and hidden column modes.
 
 ## Resizable and hideable agent column, 2026-10-06
 

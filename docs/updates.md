@@ -7,16 +7,16 @@ Related: [AGENTS.md](../AGENTS.md) for the build scripts and [MANUAL_CHECKS.md](
 ## What the user sees
 
 - Only the notarized DMG from `scripts/release-app.sh` contains Sparkle. `cargo run` and bundles from `scripts/bundle-app.sh` have no updater and no menu item, so a local build never replaces itself with a release.
-- On the second launch Sparkle asks "Check for updates automatically?", with an opt-in to download and install automatically. This is Sparkle's default; Shika does not set `SUEnableAutomaticChecks`.
-- With checks on, Sparkle checks once a day. **Shika > Check for updates...** checks now, or brings an update in progress to the front.
-- An update shows the version and its release notes. Install and Relaunch quits Shika like Cmd+Q: PTYs stop and worktrees stay. Automatic updates install when the user quits.
+- The notice is a small Shika card, 320px wide, using the dialog surface. It does not take focus, so typing and Escape stay in the terminal. Sparkle's own windows are not shown.
+- On the second launch the card asks "Check for updates automatically?". **Check automatically** looks once a day. **Not now** leaves checks off. Either way, a download starts only from the card. Shika does not set `SUEnableAutomaticChecks` or turn on automatic download.
+- With checks on, Sparkle checks once a day. A new version shows "Shika {version} is available" in the bottom-right of the terminal, with **Download** and **Ignore**. Ignore dismisses it until the next check. It does not skip the version.
+- Download shows progress in that corner, then "Restart to update" in the center of the window. **Restart** quits Shika like Cmd+Q: PTYs stop and worktrees stay, and the new version opens. **Later** dismisses the card and installs the update the next time Shika quits. **Shika > Check for updates...** brings that card back. Clicks outside the centered card still reach the app.
+- The menu item while nothing is pending shows "Checking for updates...". Up to date is the toast "No newer version found." A failure stays on the card until **Close**.
 - Shika 0.2.0 and earlier have no updater. Their users download one more version by hand.
-
-Sparkle's windows are its standard AppKit UI. They are not styled by [design/DESIGN.md](../design/DESIGN.md).
 
 ## How it works
 
-- **Loading.** `updates::Updater::start` looks for `Contents/Frameworks/Sparkle.framework`, loads it with `NSBundle`, and creates `SPUStandardUpdaterController` with nil delegates. No framework, no updater, and no "Check for updates..." item. Shika does not link Sparkle at build time, so contributors never download it.
+- **Loading.** `updates::Updater::start` looks for `Contents/Frameworks/Sparkle.framework`, loads it with `NSBundle`, and starts `SPUUpdater` with Shika's user driver. No framework, no updater, and no "Check for updates..." item. Shika does not link Sparkle at build time, so contributors never download it. The driver answers on the main thread; the window paints `UpdateCard`.
 - **Feed.** `SUFeedURL` is `https://useshika.com/appcast.xml`. `site/_redirects` sends it (302) to `https://github.com/xuanhieu2611/shika/releases/latest/download/appcast.xml`, the feed attached to the latest GitHub release. Releasing needs no site commit, and moving the feed later means changing one redirect, not shipping a build. The feed holds only the newest version.
 - **Trust.** An update installs only when all of these hold:
   - The feed is signed with the EdDSA key (`SURequireSignedFeed`), so the release notes and metadata are authentic too.
@@ -54,6 +54,16 @@ The EdDSA private key lives in the release Mac's login keychain. `generate_keys`
 
 The Developer ID certificate is the second key. Back up its `.p12` the same way.
 
+## Preview the card
+
+This paints the corner card and does not check, download, or install:
+
+```sh
+cargo run -p shika -- --data-dir /tmp/shika-update-preview --preview-update
+```
+
+Use a disposable data directory. **Download** switches to the restart card. **Ignore**, **Later**, and **Restart** only close the preview. Run the command again to see it once more.
+
 ## Testing an update locally
 
 Never point a test build at the real feed or at normal app data. Sparkle relaunches without `--data-dir`, so test install-on-quit rather than Install and Relaunch.
@@ -71,7 +81,7 @@ In zsh, `log` is a builtin. Use `/usr/bin/log stream --predicate 'process == "Au
 
 | Where | What |
 | --- | --- |
-| `crates/shika/src/updates.rs` | `Updater::start` loads Sparkle and starts the controller; `Updater::check` is the menu action |
+| `crates/shika/src/updates.rs` | `Updater::start` loads Sparkle and starts `SPUUpdater` with Shika's driver; `UpdateCard` is the corner notice; `Updater::check` is the menu action |
 | `crates/shika/src/main.rs` | `CheckForUpdates`, and the Shika menu item added only when the updater started |
 | `assets/macos/Info.plist` | `SUFeedURL`, `SUPublicEDKey`, `SUVerifyUpdateBeforeExtraction`, `SURequireSignedFeed` |
 | `scripts/sparkle.sh` | Pinned Sparkle version and checksum; downloads to `target/sparkle/` and checks the committed license |
