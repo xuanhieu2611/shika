@@ -9,6 +9,7 @@
 //! two groups.
 //!
 //! - **Blocking.** [`Core::add_project`], [`Core::create_session`],
+//!   [`Core::create_session_with_preparation`], [`Core::create_lead`],
 //!   [`Core::open_shell`], [`Core::session_dirty`], [`Core::session_git_state`],
 //!   [`Core::session_diff_stat`], [`Core::session_diff`], [`Core::session_file_diff`],
 //!   [`Core::session_publish_preview`], [`Core::session_publish`],
@@ -27,9 +28,9 @@
 //! - **Quick.** [`Core::open`], [`Core::projects`], [`Core::settings`],
 //!   [`Core::save_settings`],
 //!   [`Core::worktree_journal`], [`Core::leftovers_list`],
-//!   [`Core::sessions`], [`Core::session`], [`Core::write`], and
-//!   [`Core::resize`]. They read a small JSON file, take a short lock, or
-//!   queue bytes, and are fine on the main thread. `write` never blocks on
+//!   [`Core::sessions`], [`Core::session`], [`Core::lead_for_project`],
+//!   [`Core::workers_of`], [`Core::write`], and [`Core::resize`]. They read a
+//!   small JSON file, take a short lock, or queue bytes, and are fine on the main thread. `write` never blocks on
 //!   the PTY: each PTY has its own writer thread.
 //!
 //! The login-shell PATH is captured once, on first use. To keep the picker
@@ -49,6 +50,7 @@
 mod activity;
 mod agents;
 mod cli_title;
+pub mod control;
 mod diff;
 mod error;
 mod path_env;
@@ -70,7 +72,8 @@ use std::time::{Duration, Instant};
 pub use activity::{AgentActivity, AgentActivityState};
 pub use agents::{CliCatalog, CliPreset};
 pub use diff::{
-    Collapse, DiffLine, FileDiff, FileKey, FileStatus, Hunk, LineKind, ModeChange, SessionDiff,
+    Collapse, DiffLine, FileDiff, FileKey, FileStatus, Hunk, LineKind, ModeChange,
+    RENDER_CAP_BYTES, SessionDiff, render_unified,
 };
 pub use error::{Error, Result};
 pub use path_env::{LoginShellError, PathEnv};
@@ -78,7 +81,7 @@ pub use preparation::{PreparationConfig, PreparationControl, PreparationEvent};
 pub use projects::{Project, ProjectAdded};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::{ChecksState, PrChecks, PublishPreview, PublishedPr};
-pub use session::{DiffStat, Session, SessionGitState, task_title};
+pub use session::{DiffStat, LaunchOptions, LeadEnv, Session, SessionGitState, task_title};
 pub use settings::{
     Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, Settings,
     ThemeMode, ThemeSettings, Translucency,
@@ -114,6 +117,14 @@ pub struct ProjectBase {
     pub name: Option<String>,
     /// The branch New would start from with no base set.
     pub default_name: Option<String>,
+}
+
+fn refuse_lead(session: &Session) -> Result<()> {
+    if session.lead {
+        Err(Error::LeadUnsupported)
+    } else {
+        Ok(())
+    }
 }
 
 /// A fetch of one project's base branch, started at the picker or at New.
@@ -328,6 +339,14 @@ impl Core {
         if branch.is_empty() {
             return self.projects.set_base_branch(id, None);
         }
+        let name = self.existing_or_fetched_branch(&project, branch)?;
+        self.projects.set_base_branch(id, Some(name))
+    }
+
+    /// The name of `branch` once it exists locally or on origin, fetching it
+    /// from origin when it is new there. `origin/dev` is taken as `dev`.
+    /// Blocking: runs git and may fetch.
+    fn existing_or_fetched_branch(&self, project: &Project, branch: &str) -> Result<String> {
         let git = self.git()?;
         let env = self.path_env().path();
         let repo = project.path.as_path();
@@ -337,7 +356,7 @@ impl Core {
         }
         for name in &names {
             if worktree::configured_ref(&git, env, repo, name)?.is_some() {
-                return self.projects.set_base_branch(id, Some(name.to_string()));
+                return Ok(name.to_string());
             }
         }
         if worktree::has_origin(&git, env, repo) {
@@ -345,7 +364,7 @@ impl Core {
                 if worktree::fetch_branch(&git, env, repo, name, worktree::FETCH_TIMEOUT)
                     && worktree::configured_ref(&git, env, repo, name)?.is_some()
                 {
-                    return self.projects.set_base_branch(id, Some(name.to_string()));
+                    return Ok(name.to_string());
                 }
             }
         }
@@ -444,19 +463,24 @@ impl Core {
     /// best effort and bounded (see [`Core::prefetch_base`]). A configured
     /// base that exists nowhere is an error. Failed launches remove only a
     /// provably untouched worktree; changed or unverifiable work is journaled
-    /// for explicit cleanup. Blocking: runs git and optional setup commands.
+    /// for explicit cleanup. `options` carries an optional initial prompt
+    /// (passed to the CLI as its positional argument; branch naming from it
+    /// is the caller's job through [`Core::session_rename_from_prompt`]) and
+    /// the owning Lead. Blocking: runs git and optional setup commands.
     pub fn create_session(
         &self,
         project_id: &str,
         preset_id: &str,
         size: PtySize,
         sink: impl PtySink,
+        options: LaunchOptions,
     ) -> Result<Session> {
         self.create_session_with_preparation(
             project_id,
             preset_id,
             size,
             sink,
+            options,
             PreparationControl::default(),
             |_| {},
         )
@@ -465,15 +489,20 @@ impl Core {
     /// Same launch, with cancellable preparation and live progress. Commands
     /// run off the app thread, outside the operation lock. At most two setups
     /// run at once. No agent PTY exists until all preparation succeeds.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_session_with_preparation(
         &self,
         project_id: &str,
         preset_id: &str,
         size: PtySize,
         sink: impl PtySink,
+        options: LaunchOptions,
         control: PreparationControl,
         mut report: impl FnMut(PreparationEvent),
     ) -> Result<Session> {
+        if let Some(prompt) = &options.prompt {
+            session::check_prompt(prompt)?;
+        }
         let env = self.path_env();
         let preset = agents::presets_from(env)
             .into_iter()
@@ -491,8 +520,15 @@ impl Core {
         }
         control.check()?;
         report(PreparationEvent::Stage("Creating worktree...".into()));
-        // Neither fetching nor installation holds up close or discard.
-        self.freshen_base(&self.projects.get(project_id)?);
+        // Neither fetching nor installation holds up close or discard. A
+        // per-launch base replaces the project's for this task only.
+        let mut launch_project = self.projects.get(project_id)?;
+        if let Some(base) = options.base.as_deref() {
+            launch_project.base_branch =
+                Some(self.existing_or_fetched_branch(&launch_project, base.trim())?);
+        }
+        let launch_base = launch_project.base_branch.clone();
+        self.freshen_base(&launch_project);
         let (project, base, draft) = {
             let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
             control.check()?;
@@ -501,20 +537,9 @@ impl Core {
                 return Err(Error::PreparationNeedsApproval);
             }
             let git = self.git()?;
-            let mut ids = self.sessions.ids();
-            ids.extend(
-                self.journal
-                    .list()?
-                    .iter()
-                    .filter_map(|e| e.branch.strip_prefix("shika-draft-").map(str::to_owned)),
-            );
-            let id = session::new_id(&ids);
-            let base = worktree::resolve_base(
-                &git,
-                env.path(),
-                &project.path,
-                project.base_branch.as_deref(),
-            )?;
+            let id = session::new_id(&self.taken_ids()?);
+            let base =
+                worktree::resolve_base(&git, env.path(), &project.path, launch_base.as_deref())?;
             let draft = worktree::create_draft(&git, env.path(), &project.path, &id, base.start())?;
             let entry = JournalEntry {
                 project_id: project.id.clone(),
@@ -579,7 +604,7 @@ impl Core {
                 .flatten();
             let mut request = SpawnRequest {
                 program,
-                args: preset.args.clone(),
+                args: agents::launch_flags(&preset, &draft.path),
                 cwd: draft.path.clone(),
                 path: env.path().to_string(),
                 size,
@@ -588,6 +613,19 @@ impl Core {
             if let Some(activity) = &activity {
                 activity.wire(&mut request);
             }
+            // After the extension flags, so the prompt is the last argument.
+            request.args = match session::launch_args(
+                std::mem::take(&mut request.args),
+                options.prompt.as_deref(),
+            ) {
+                Ok(args) => args,
+                Err(err) => {
+                    if let Some(activity) = &activity {
+                        activity.cleanup();
+                    }
+                    return Err(err);
+                }
+            };
             let pty = match self
                 .ptys
                 .open(request, activity::activity_sink(activity.clone(), sink))
@@ -621,6 +659,8 @@ impl Core {
                 pty,
                 shell_ptys: Vec::new(),
                 cli_titled: false,
+                lead: false,
+                started_by: options.started_by.clone(),
             };
             if let Some(activity) = activity {
                 self.sessions.remember_activity(&session.id, activity);
@@ -677,6 +717,189 @@ impl Core {
         }
     }
 
+    /// Starts a project's Lead: an agent CLI in its own detached worktree,
+    /// `<repo>/.worktrees/shika-lead-<id>`, created with `git worktree add
+    /// --detach` from the same start point New uses (fetched first, best
+    /// effort). No branch is created and preparation never runs. The CLI gets
+    /// the preset's flags plus `lead_env.prompt` as its last argument, `PATH`
+    /// starting with `lead_env.bin_dir`, and `SHIKA_SOCKET` and `SHIKA_TOKEN`.
+    /// Every other PTY Shika opens has those two variables removed.
+    ///
+    /// The returned session has `lead: true`, the title `Lead`, and an EMPTY
+    /// `branch` (also empty in the journal). The app must not rename, publish,
+    /// diff-stat, or open shells for it; the Core methods that would refuse it
+    /// with [`Error::LeadUnsupported`]. Close and discard work: they remove
+    /// the worktree and have no branch to delete. A second Lead for a project
+    /// is [`Error::LeadExists`]. Blocking: runs git.
+    pub fn create_lead(
+        &self,
+        project_id: &str,
+        preset_id: &str,
+        size: PtySize,
+        sink: impl PtySink,
+        lead_env: LeadEnv,
+    ) -> Result<Session> {
+        session::check_prompt(&lead_env.prompt)?;
+        let env = self.path_env();
+        let preset = agents::presets_from(env)
+            .into_iter()
+            .find(|preset| preset.id == preset_id)
+            .ok_or(Error::UnknownCli)?;
+        let program = preset
+            .path
+            .clone()
+            .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+        if self.lead_for_project(project_id).is_some() {
+            return Err(Error::LeadExists);
+        }
+        self.freshen_base(&self.projects.get(project_id)?);
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        let project = self.projects.get(project_id)?;
+        // Checked again under the lock: two starts cannot both pass.
+        if self.lead_for_project(project_id).is_some() {
+            return Err(Error::LeadExists);
+        }
+        let git = self.git()?;
+        let id = session::new_id(&self.taken_ids()?);
+        let base = worktree::resolve_base(
+            &git,
+            env.path(),
+            &project.path,
+            project.base_branch.as_deref(),
+        )?;
+        let path = worktree::create_lead(&git, env.path(), &project.path, &id, base.start())?;
+        let entry = JournalEntry {
+            project_id: project.id.clone(),
+            branch: String::new(),
+            path: path.clone(),
+            base_ref: base.reference.clone(),
+        };
+        if let Err(err) = self.journal.add(&entry) {
+            let _ = worktree::remove_worktree(&git, env.path(), &project.path, &path, true);
+            return Err(err);
+        }
+        // Keeps leftovers from offering the tree while the launch completes.
+        self.preparing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                path.clone(),
+                (project.id.clone(), PreparationControl::default()),
+            );
+        let launched = (|| {
+            let activity = (preset.id == "pi")
+                .then(activity::ActivityBridge::install)
+                .flatten();
+            let search_path = if env.path().is_empty() {
+                lead_env.bin_dir.to_string_lossy().into_owned()
+            } else {
+                format!("{}:{}", lead_env.bin_dir.display(), env.path())
+            };
+            let mut request = SpawnRequest {
+                program,
+                args: agents::launch_flags(&preset, &path),
+                cwd: path.clone(),
+                path: search_path,
+                size,
+                env: vec![
+                    (
+                        "SHIKA_SOCKET".into(),
+                        lead_env.socket.to_string_lossy().into_owned(),
+                    ),
+                    ("SHIKA_TOKEN".into(), lead_env.token.clone()),
+                ],
+            };
+            if let Some(activity) = &activity {
+                activity.wire(&mut request);
+            }
+            request.args =
+                session::launch_args(std::mem::take(&mut request.args), Some(&lead_env.prompt))?;
+            let pty = match self
+                .ptys
+                .open(request, activity::activity_sink(activity.clone(), sink))
+            {
+                Ok(pty) => pty,
+                Err(err) => {
+                    if let Some(activity) = &activity {
+                        activity.cleanup();
+                    }
+                    return Err(err);
+                }
+            };
+            let session = Session {
+                id: id.clone(),
+                project_id: project.id.clone(),
+                preset_id: preset.id.clone(),
+                preset_name: preset.name.clone(),
+                title: "Lead".into(),
+                manual_title: false,
+                branch: String::new(),
+                repo: project.path.clone(),
+                worktree: path.clone(),
+                base_ref: base.reference.clone(),
+                pty,
+                shell_ptys: Vec::new(),
+                cli_titled: false,
+                lead: true,
+                started_by: None,
+            };
+            if let Some(activity) = activity {
+                self.sessions.remember_activity(&session.id, activity);
+            }
+            self.sessions.insert(session.clone());
+            Ok(session)
+        })();
+        self.preparing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&path);
+        if launched.is_err() {
+            // Nothing ran in the tree, so it is safe to remove outright.
+            if worktree::remove_worktree(&git, env.path(), &project.path, &path, true).is_ok() {
+                self.journal.remove_path(&path)?;
+            }
+        }
+        launched
+    }
+
+    /// The project's live Lead, if any. Quick.
+    pub fn lead_for_project(&self, project_id: &str) -> Option<Session> {
+        self.sessions
+            .all()
+            .into_iter()
+            .find(|session| session.lead && session.project_id == project_id)
+    }
+
+    /// The live workers a Lead started, in creation order. Quick.
+    pub fn workers_of(&self, lead_id: &str) -> Vec<Session> {
+        self.sessions
+            .all()
+            .into_iter()
+            .filter(|session| session.started_by.as_deref() == Some(lead_id))
+            .collect()
+    }
+
+    /// Ids already used by a live session or a journaled worktree, whether a
+    /// draft or a Lead, so a new id never collides with either. A draft's
+    /// branch can be renamed, so the worktree folder name is the stable source.
+    fn taken_ids(&self) -> Result<Vec<String>> {
+        let mut ids = self.sessions.ids();
+        for entry in self.journal.list()? {
+            ids.extend(entry.branch.strip_prefix("shika-draft-").map(str::to_owned));
+            let name = entry
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            ids.extend(
+                ["shika-draft-", "shika-lead-"]
+                    .iter()
+                    .find_map(|prefix| name.strip_prefix(prefix).map(str::to_owned)),
+            );
+        }
+        Ok(ids)
+    }
+
     /// Starts a new independent login shell in the task's worktree.
     /// Blocking: shell discovery and PTY creation. Every shell is owned by
     /// the session and is stopped when that session closes.
@@ -686,6 +909,7 @@ impl Core {
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(session_id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
         let env = self.path_env();
         let shell = path_env::user_shell();
         let request = session::shell_request(&shell, &session.worktree, env.path(), size);
@@ -732,6 +956,7 @@ impl Core {
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
         if session.branch != format!("shika-draft-{}", session.id) || session.cli_titled {
             return Ok(session);
         }
@@ -758,6 +983,7 @@ impl Core {
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
         if session.cli_titled {
             return Ok(None);
         }
@@ -835,6 +1061,16 @@ impl Core {
 
     fn session_git_state_locked(&self, id: &str, agent_working: bool) -> Result<SessionGitState> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        if session.lead {
+            // A detached Lead has no branch to compare: only its edits count.
+            return Ok(SessionGitState {
+                dirty: worktree::is_dirty(&self.git()?, self.path_env().path(), &session.worktree)?,
+                unpushed: false,
+                pushed: false,
+                has_own_commits: false,
+                agent_working,
+            });
+        }
         let session = self.ensure_session_branch(&session)?;
         worktree::git_state(
             &self.git()?,
@@ -858,6 +1094,7 @@ impl Core {
 
     fn switched_close_check_locked(&self, id: &str) -> Result<SwitchedBranchClose> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
         let git = self.git()?;
         let path = self.path_env().path();
         let current = worktree::head_branch(&git, path, &session.worktree)?
@@ -913,6 +1150,10 @@ impl Core {
     /// so a background refresh never holds up close or discard.
     pub fn session_diff_stat(&self, id: &str) -> Result<DiffStat> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        if session.lead {
+            // A Lead is not measured against a base; it shows no stat.
+            return Ok(DiffStat::default());
+        }
         worktree::diff_stat(
             &self.git()?,
             self.path_env().path(),
@@ -934,6 +1175,7 @@ impl Core {
     /// missing or broken: git never reads the main checkout in its place.
     pub fn session_diff(&self, id: &str) -> Result<SessionDiff> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
         worktree::session_diff(
             &self.git()?,
             self.path_env().path(),
@@ -952,6 +1194,7 @@ impl Core {
     /// file no longer differs; refresh the whole diff then.
     pub fn session_file_diff(&self, id: &str, key: &FileKey) -> Result<Option<FileDiff>> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
         worktree::file_diff(&self.git()?, self.path_env().path(), &session.worktree, key)
     }
 
@@ -960,6 +1203,7 @@ impl Core {
     pub fn session_publish_preview(&self, id: &str) -> Result<PublishPreview> {
         let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
         let session = self.ensure_session_branch(&session)?;
         let gh = self.path_env().resolve("gh").ok_or_else(|| {
             Error::Publish(
@@ -982,6 +1226,7 @@ impl Core {
             .sessions
             .get(&preview.session_id)
             .ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
         let session = self.ensure_session_branch(&session)?;
         let gh = self.path_env().resolve("gh").ok_or_else(|| {
             Error::Publish(
@@ -1003,6 +1248,7 @@ impl Core {
     /// the diff stat, so a slow network never holds up close or publishing.
     pub fn session_pr_checks(&self, id: &str, repository: &str, number: u64) -> Result<PrChecks> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
         let gh = self
             .path_env()
             .resolve("gh")
@@ -1020,6 +1266,9 @@ impl Core {
     /// push from the task's shell or agent moves. None when there is none.
     pub fn session_pushed_head(&self, id: &str) -> Result<Option<String>> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        if session.lead {
+            return Ok(None);
+        }
         worktree::pushed_head(
             &self.git()?,
             self.path_env().path(),
@@ -1047,6 +1296,9 @@ impl Core {
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        if session.lead {
+            return self.close_lead(&session, false, true);
+        }
         let session = self.ensure_session_branch(&session)?;
         self.hang_up(&session);
         let session = self.ensure_session_branch(&session)?;
@@ -1068,6 +1320,7 @@ impl Core {
             .operations
             .lock()
             .unwrap_or_else(|err| err.into_inner());
+        refuse_lead(&self.sessions.get(id).ok_or(Error::UnknownSession)?)?;
         let state = self.session_git_state_locked(id, false)?;
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
         if state.dirty {
@@ -1110,6 +1363,10 @@ impl Core {
             .operations
             .lock()
             .unwrap_or_else(|err| err.into_inner());
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        if session.lead {
+            return self.close_lead(&session, agent_working, false);
+        }
         let state = self.session_git_state_locked(id, agent_working)?;
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
         if state.dirty {
@@ -1145,6 +1402,29 @@ impl Core {
         self.forget_session(&session)
     }
 
+    /// Called under the operations lock. A Lead has no branch to keep or push:
+    /// closing it stops its PTY and removes the detached worktree. Without
+    /// `discard`, edits or a working agent need confirmation first. Commits
+    /// made on the detached HEAD are not preserved; the Lead never codes.
+    fn close_lead(&self, lead: &Session, agent_working: bool, discard: bool) -> Result<()> {
+        let git = self.git()?;
+        let path = self.path_env().path();
+        if !discard {
+            if worktree::is_dirty(&git, path, &lead.worktree)? {
+                return Err(Error::WorktreeHasChanges(None));
+            }
+            if agent_working {
+                return Err(Error::CloseNeedsConfirmation);
+            }
+        }
+        self.hang_up(lead);
+        if !discard && worktree::is_dirty(&git, path, &lead.worktree)? {
+            return Err(Error::WorktreeHasChanges(None));
+        }
+        worktree::remove_worktree(&git, path, &lead.repo, &lead.worktree, discard)?;
+        self.forget_session(lead)
+    }
+
     /// Compatibility helper: confirmation is explicitly a discard choice.
     pub fn close_session(&self, id: &str, confirmed: bool) -> Result<()> {
         if confirmed {
@@ -1162,6 +1442,9 @@ impl Core {
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        if session.lead {
+            return Ok(session);
+        }
         self.ensure_session_branch(&session)
     }
 
@@ -1230,6 +1513,11 @@ impl Core {
         let repo = parent.parent().ok_or(Error::UnknownLeftover)?;
         let git = self.git()?;
         let path_env = self.path_env().path();
+        if entry.branch.is_empty() {
+            // A Lead's detached worktree: nothing to delete but the tree.
+            worktree::remove_worktree(&git, path_env, repo, &entry.path, true)?;
+            return self.journal.remove_path(&entry.path);
+        }
         // Follow a branch the user may have manually renamed since quit.
         let branch = if entry.path.exists() {
             let output = worktree::git_cmd(&git, path_env, &entry.path)
@@ -1427,7 +1715,13 @@ mod tests {
 
         let (sink, rx) = channel_sink();
         let session = core
-            .create_session(&added.project.id, "claude", PtySize::new(30, 90), sink)
+            .create_session(
+                &added.project.id,
+                "claude",
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions::default(),
+            )
             .unwrap();
         assert_eq!(session.title, "New Claude Code");
         assert_eq!(session.branch, format!("shika-draft-{}", session.id));
@@ -1510,20 +1804,38 @@ mod tests {
 
         let (sink, _rx) = channel_sink();
         assert_eq!(
-            core.create_session(&added.project.id, "cursor", PtySize::default(), sink)
-                .unwrap_err(),
+            core.create_session(
+                &added.project.id,
+                "cursor",
+                PtySize::default(),
+                sink,
+                LaunchOptions::default()
+            )
+            .unwrap_err(),
             Error::CliNotFound("Cursor CLI".into())
         );
         let (sink, _rx) = channel_sink();
         assert_eq!(
-            core.create_session(&added.project.id, "kiro", PtySize::default(), sink)
-                .unwrap_err(),
+            core.create_session(
+                &added.project.id,
+                "kiro",
+                PtySize::default(),
+                sink,
+                LaunchOptions::default()
+            )
+            .unwrap_err(),
             Error::UnknownCli
         );
         let (sink, _rx) = channel_sink();
         assert_eq!(
-            core.create_session("missing", "claude", PtySize::default(), sink)
-                .unwrap_err(),
+            core.create_session(
+                "missing",
+                "claude",
+                PtySize::default(),
+                sink,
+                LaunchOptions::default()
+            )
+            .unwrap_err(),
             Error::UnknownProject
         );
         assert!(!repo.join(".worktrees").exists());
@@ -1538,7 +1850,13 @@ mod tests {
         let added = core.add_project(&repo).unwrap();
         let (sink, rx) = channel_sink();
         let session = core
-            .create_session(&added.project.id, "claude", PtySize::default(), sink)
+            .create_session(
+                &added.project.id,
+                "claude",
+                PtySize::default(),
+                sink,
+                LaunchOptions::default(),
+            )
             .unwrap();
 
         let gone = core.remove_project(&added.project.id).unwrap();
@@ -1553,8 +1871,14 @@ mod tests {
     }
     fn create_fake_session(core: &Core, project_id: &str) -> Session {
         let (sink, _rx) = channel_sink();
-        core.create_session(project_id, "claude", PtySize::new(30, 90), sink)
-            .unwrap()
+        core.create_session(
+            project_id,
+            "claude",
+            PtySize::new(30, 90),
+            sink,
+            LaunchOptions::default(),
+        )
+        .unwrap()
     }
 
     fn local_remote(scratch: &Scratch, repo: &Path) -> PathBuf {
@@ -1719,6 +2043,53 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_base_applies_to_that_task_only() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        git(&repo, &["switch", "-c", "staging"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "staging work"]);
+        git(&repo, &["switch", "main"]);
+        let core = core_with_fake_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+
+        let (sink, _rx) = channel_sink();
+        let session = core
+            .create_session(
+                &project.id,
+                "claude",
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions {
+                    base: Some("staging".into()),
+                    ..LaunchOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(session.base_ref.as_deref(), Some("refs/heads/staging"));
+        assert_eq!(rev(&session.worktree, "HEAD"), rev(&repo, "staging"));
+        // The project's saved base is untouched, so the next New is plain.
+        assert_eq!(core.projects().unwrap()[0].base_branch, None);
+        let plain = create_fake_session(&core, &project.id);
+        assert_eq!(rev(&plain.worktree, "HEAD"), rev(&repo, "main"));
+
+        // A base that exists nowhere fails before anything is created.
+        let journal = core.worktree_journal().unwrap();
+        let (sink, _rx) = channel_sink();
+        let result = core.create_session(
+            &project.id,
+            "claude",
+            PtySize::new(30, 90),
+            sink,
+            LaunchOptions {
+                base: Some("nope".into()),
+                ..LaunchOptions::default()
+            },
+        );
+        assert!(matches!(result, Err(Error::NoSuchBranch(_))));
+        assert_eq!(core.worktree_journal().unwrap(), journal);
+    }
+
+    #[test]
     fn a_missing_base_branch_is_refused_and_creates_nothing() {
         let scratch = Scratch::new();
         let repo = scratch.repo("demo");
@@ -1738,8 +2109,14 @@ mod tests {
         git(&repo, &["branch", "-D", "staging"]);
         let (sink, _rx) = channel_sink();
         assert_eq!(
-            core.create_session(&project.id, "claude", PtySize::default(), sink)
-                .unwrap_err(),
+            core.create_session(
+                &project.id,
+                "claude",
+                PtySize::default(),
+                sink,
+                LaunchOptions::default()
+            )
+            .unwrap_err(),
             Error::BaseBranchMissing("staging".into())
         );
         assert!(core.sessions().is_empty());
@@ -2926,5 +3303,327 @@ mod tests {
         );
         git(&session.worktree, &["checkout", &session.branch]);
         core.session_discard(&session.id).unwrap();
+    }
+
+    /// Prints what the launch handed the CLI, then idles like `fake_cli`.
+    const REPORTING_CLI: &str = "#!/bin/sh\nfor a in \"$@\"; do last=\"$a\"; done\nprintf 'last:%s\\n' \"$last\"\nprintf 'sock:%s\\n' \"$SHIKA_SOCKET\"\nprintf 'token:%s\\n' \"$SHIKA_TOKEN\"\nprintf 'path:%s\\n' \"$PATH\"\nprintf 'end-report\\n'\nwhile IFS= read -r line; do :; done\n";
+
+    fn core_with_reporting_cli(scratch: &Scratch) -> Core {
+        let core = core_with_fake_cli(scratch);
+        fs::write(scratch.path.join("bin").join("claude"), REPORTING_CLI).unwrap();
+        core
+    }
+
+    fn lead_env(scratch: &Scratch) -> LeadEnv {
+        LeadEnv {
+            socket: scratch.path.join("control/sock"),
+            token: "lead-token".into(),
+            bin_dir: scratch.path.join("control/bin"),
+            prompt: "You lead this project. Run shika help.".into(),
+        }
+    }
+
+    fn create_lead(core: &Core, scratch: &Scratch, project_id: &str) -> (Session, String) {
+        let (sink, rx) = channel_sink();
+        let lead = core
+            .create_lead(
+                project_id,
+                "claude",
+                PtySize::new(30, 90),
+                sink,
+                lead_env(scratch),
+            )
+            .unwrap();
+        let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+        (lead, report)
+    }
+
+    fn branches(repo: &Path) -> String {
+        git(repo, &["branch", "--format=%(refname)"])
+    }
+
+    #[test]
+    fn a_lead_is_a_detached_worktree_with_its_env_and_no_branch() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_reporting_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        // An unapproved preparation config blocks New but must not touch a Lead.
+        fs::create_dir_all(repo.join(".shika")).unwrap();
+        fs::write(
+            repo.join(preparation::CONFIG_PATH),
+            "{\"setup-worktree\":[\"touch ran-setup\"]}",
+        )
+        .unwrap();
+        let before = branches(&repo);
+
+        let (lead, report) = create_lead(&core, &scratch, &project.id);
+        assert!(lead.lead && lead.started_by.is_none());
+        assert_eq!(lead.title, "Lead");
+        assert_eq!(lead.branch, "");
+        assert_eq!(
+            lead.worktree,
+            repo.join(".worktrees")
+                .join(format!("shika-lead-{}", lead.id))
+        );
+        assert_eq!(
+            git(&lead.worktree, &["rev-parse", "--abbrev-ref", "HEAD"]).trim(),
+            "HEAD"
+        );
+        assert_eq!(
+            git(&lead.worktree, &["rev-parse", "HEAD"]),
+            git(&repo, &["rev-parse", "main"])
+        );
+        assert_eq!(branches(&repo), before);
+        assert!(!lead.worktree.join("ran-setup").exists());
+        let journal = core.worktree_journal().unwrap();
+        assert_eq!(journal.len(), 1);
+        assert_eq!(journal[0].path, lead.worktree);
+        assert_eq!(journal[0].branch, "");
+        assert!(
+            fs::read_to_string(repo.join(".git/info/exclude"))
+                .unwrap()
+                .contains(".worktrees/")
+        );
+        assert_eq!(core.lead_for_project(&project.id), Some(lead.clone()));
+        assert!(core.lead_for_project("other").is_none());
+
+        // Preset flags first, the prompt last; the control env is set and
+        // the shika command directory leads PATH.
+        assert!(
+            report.contains("last:You lead this project. Run shika help."),
+            "{report}"
+        );
+        let control = scratch.path.join("control");
+        assert!(
+            report.contains(&format!("sock:{}", control.join("sock").display())),
+            "{report}"
+        );
+        assert!(report.contains("token:lead-token"), "{report}");
+        assert!(
+            report.contains(&format!("path:{}:", control.join("bin").display())),
+            "{report}"
+        );
+        assert!(core.taken_ids().unwrap().contains(&lead.id));
+
+        // One Lead per project, and a refusal creates nothing.
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.create_lead(
+                &project.id,
+                "claude",
+                PtySize::default(),
+                sink,
+                lead_env(&scratch)
+            ),
+            Err(Error::LeadExists)
+        );
+        assert_eq!(core.worktree_journal().unwrap().len(), 1);
+        assert_eq!(core.sessions().len(), 1);
+    }
+
+    #[test]
+    fn a_lead_needs_a_good_prompt_and_a_found_cli() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_reporting_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        for prompt in ["", "-x"] {
+            let (sink, _rx) = channel_sink();
+            let mut env = lead_env(&scratch);
+            env.prompt = prompt.into();
+            assert!(matches!(
+                core.create_lead(&project.id, "claude", PtySize::default(), sink, env),
+                Err(Error::InvalidPrompt(_))
+            ));
+        }
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.create_lead(
+                &project.id,
+                "codex",
+                PtySize::default(),
+                sink,
+                lead_env(&scratch)
+            ),
+            Err(Error::CliNotFound("Codex".into()))
+        );
+        assert!(core.worktree_journal().unwrap().is_empty());
+        assert!(!repo.join(".worktrees").exists());
+    }
+
+    #[test]
+    fn workers_get_the_prompt_last_an_owner_and_no_control_env() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_reporting_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (lead, _) = create_lead(&core, &scratch, &project.id);
+
+        let (sink, rx) = channel_sink();
+        let worker = core
+            .create_session(
+                &project.id,
+                "claude",
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions {
+                    prompt: Some("Fix the login bug\nsecond line".into()),
+                    started_by: Some(lead.id.clone()),
+                    ..LaunchOptions::default()
+                },
+            )
+            .unwrap();
+        let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+        assert!(!worker.lead);
+        assert_eq!(worker.started_by.as_deref(), Some(lead.id.as_str()));
+        assert_eq!(worker.title, "New Claude Code");
+        assert_eq!(worker.branch, format!("shika-draft-{}", worker.id));
+        assert!(
+            report.contains("sock:\r\n") && report.contains("token:\r\n"),
+            "{report}"
+        );
+        assert!(
+            !report.contains("lead-token") && !report.contains("control/bin"),
+            "{report}"
+        );
+        assert_eq!(core.workers_of(&lead.id), vec![worker.clone()]);
+        assert!(core.workers_of(&worker.id).is_empty());
+
+        // Draft and lead ids never collide.
+        assert_ne!(worker.id, lead.id);
+
+        // Bad prompts are refused before anything is created.
+        let journal = core.worktree_journal().unwrap();
+        for prompt in ["", "  ", "--help", "-p"] {
+            let (sink, _rx) = channel_sink();
+            let result = core.create_session(
+                &project.id,
+                "claude",
+                PtySize::default(),
+                sink,
+                LaunchOptions {
+                    prompt: Some(prompt.into()),
+                    started_by: None,
+                    ..LaunchOptions::default()
+                },
+            );
+            assert!(matches!(result, Err(Error::InvalidPrompt(_))), "{prompt:?}");
+        }
+        assert_eq!(core.worktree_journal().unwrap(), journal);
+        assert_eq!(core.sessions().len(), 2);
+    }
+
+    #[test]
+    fn closing_a_lead_removes_the_tree_and_leaves_branches_alone() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_reporting_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (lead, _) = create_lead(&core, &scratch, &project.id);
+        let before = branches(&repo);
+
+        let state = core.session_git_state(&lead.id, true).unwrap();
+        assert!(!state.dirty && !state.unpushed && !state.pushed && state.agent_working);
+        assert_eq!(core.session_diff_stat(&lead.id), Ok(DiffStat::default()));
+        assert_eq!(core.session_pushed_head(&lead.id), Ok(None));
+        assert_eq!(core.session_refresh_branch(&lead.id).unwrap(), lead);
+
+        assert_eq!(
+            core.session_close(&lead.id, true),
+            Err(Error::CloseNeedsConfirmation)
+        );
+        fs::write(lead.worktree.join("edit.txt"), "x\n").unwrap();
+        assert_eq!(core.session_dirty(&lead.id), Ok(true));
+        assert_eq!(
+            core.session_close(&lead.id, false),
+            Err(Error::WorktreeHasChanges(None))
+        );
+        assert!(lead.worktree.exists());
+        assert_eq!(core.sessions().len(), 1);
+
+        fs::remove_file(lead.worktree.join("edit.txt")).unwrap();
+        core.session_close(&lead.id, false).unwrap();
+        assert!(!lead.worktree.exists());
+        assert!(core.sessions().is_empty());
+        assert!(core.worktree_journal().unwrap().is_empty());
+        assert_eq!(branches(&repo), before);
+        assert!(core.lead_for_project(&project.id).is_none());
+        assert!(!git(&repo, &["worktree", "list"]).contains("shika-lead"));
+
+        // A new Lead may start once the old one is gone; discard removes
+        // even a dirty tree.
+        let (again, _) = create_lead(&core, &scratch, &project.id);
+        fs::write(again.worktree.join("edit.txt"), "x\n").unwrap();
+        core.session_discard(&again.id).unwrap();
+        assert!(!again.worktree.exists());
+        assert!(core.worktree_journal().unwrap().is_empty());
+        assert_eq!(branches(&repo), before);
+    }
+
+    #[test]
+    fn a_lead_left_behind_is_a_leftover_without_a_branch_to_delete() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_reporting_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (lead, _) = create_lead(&core, &scratch, &project.id);
+        assert!(core.leftovers_list().unwrap().is_empty());
+        assert_eq!(
+            core.leftover_remove(&lead.worktree),
+            Err(Error::UnknownLeftover)
+        );
+        let before = branches(&repo);
+        drop(core);
+
+        let core = core_with_reporting_cli(&scratch);
+        let leftovers = core.leftovers_list().unwrap();
+        assert_eq!(leftovers.len(), 1);
+        assert_eq!(leftovers[0].path, lead.worktree);
+        assert_eq!(leftovers[0].branch, "");
+        // Ids stay unique against a journaled Lead from an earlier run.
+        assert!(core.taken_ids().unwrap().contains(&lead.id));
+        core.leftover_remove(&lead.worktree).unwrap();
+        assert!(!lead.worktree.exists());
+        assert!(core.leftovers_list().unwrap().is_empty());
+        assert_eq!(branches(&repo), before);
+        assert!(!git(&repo, &["worktree", "list"]).contains("shika-lead"));
+    }
+
+    #[test]
+    fn a_lead_refuses_branch_diff_publish_and_shell_operations() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_reporting_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (lead, _) = create_lead(&core, &scratch, &project.id);
+        let refused = Err(Error::LeadUnsupported);
+        assert_eq!(core.session_rename_from_prompt(&lead.id, "x"), refused);
+        assert_eq!(
+            core.session_apply_cli_title(&lead.id),
+            Err(Error::LeadUnsupported)
+        );
+        assert_eq!(
+            core.session_push_and_close(&lead.id),
+            Err(Error::LeadUnsupported)
+        );
+        assert!(matches!(
+            core.session_publish_preview(&lead.id),
+            Err(Error::LeadUnsupported)
+        ));
+        assert!(matches!(
+            core.session_diff(&lead.id),
+            Err(Error::LeadUnsupported)
+        ));
+        assert!(matches!(
+            core.session_switched_close_check(&lead.id),
+            Err(Error::LeadUnsupported)
+        ));
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.open_shell(&lead.id, PtySize::default(), sink),
+            Err(Error::LeadUnsupported)
+        );
+        assert_eq!(core.session(&lead.id), Some(lead));
     }
 }

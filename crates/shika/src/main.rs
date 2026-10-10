@@ -2,6 +2,8 @@ mod activity;
 mod appearance;
 mod changes;
 mod checks;
+mod control;
+mod control_client;
 mod lifecycle;
 mod model;
 mod name_input;
@@ -19,9 +21,9 @@ use model::{PromptCapture, Status, TitleWatch};
 use notifications::Notifications;
 use shika_core::{
     Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize, JournalEntry,
-    KnownBranches, PreparationConfig, PreparationControl, PreparationEvent, Project, ProjectBase,
-    PtyEvent, PtyId, PtySize, PublishPreview, Session, SessionGitState, Settings, ThemeMode,
-    ThemeSettings, Translucency,
+    KnownBranches, LaunchOptions, LeadEnv, PreparationConfig, PreparationControl, PreparationEvent,
+    Project, ProjectBase, PtyEvent, PtyId, PtySize, PublishPreview, Session, SessionGitState,
+    Settings, ThemeMode, ThemeSettings, Translucency,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalEvent, TerminalOptions,
@@ -45,6 +47,7 @@ gpui::actions!(
         CheckForUpdates,
         NewAgent,
         NewTerminal,
+        NewLead,
         CreatePr,
         CloseTerminal,
         CloseTask,
@@ -115,6 +118,9 @@ struct HostState {
     exited: bool,
     submission: u64,
     last_submission: Option<Instant>,
+    /// The latest submission is the prompt the CLI was launched with. The
+    /// tick hands that to the activity clock once.
+    launch_turn: bool,
     lifecycle: Option<shika_core::AgentActivity>,
     lifecycle_checking: bool,
     pending_input: Vec<Vec<u8>>,
@@ -143,26 +149,7 @@ impl PtyHost for Host {
             s.last_interaction = Some(now);
         }
         if self.capture && source == InputSource::Typed {
-            if let Some(title) = s.prompt.feed(bytes) {
-                s.title = Some(title);
-            }
-            // Only a nonempty submitted line is a candidate turn. Embedded
-            // paste newlines, mouse/focus reports, and query replies are not.
-            if matches!(bytes, b"\x1b[A" | b"\x1bOA" | b"\x1b[B" | b"\x1bOB") {
-                // History lives inside the CLI editor, not in captured keys.
-                // Treat a subsequent Enter as a candidate accepted prompt.
-                s.submission_recalled = true;
-            }
-            if matches!(bytes, b"\x15" | b"\x03") {
-                s.submission_recalled = false;
-            }
-            let recalled_enter = s.submission_recalled && matches!(bytes, b"\r" | b"\n" | b"\r\n");
-            if s.submission_capture.feed(bytes).is_some() || recalled_enter {
-                s.submission += 1;
-                s.last_submission = Some(now);
-                s.submission_capture = PromptCapture::default();
-                s.submission_recalled = false;
-            }
+            s.capture_typed(bytes, now);
         }
         if let Some(pty) = s.pty {
             let _ = self.core.write(pty, bytes);
@@ -183,6 +170,35 @@ impl PtyHost for Host {
     }
 }
 impl HostState {
+    /// Feeds typed bytes to the naming and submission capture. A nonempty
+    /// submitted line is a candidate turn; embedded paste newlines, reports,
+    /// and query replies are not.
+    fn capture_typed(&mut self, bytes: &[u8], now: Instant) {
+        if let Some(title) = self.prompt.feed(bytes) {
+            self.title = Some(title);
+        }
+        if matches!(bytes, b"\x1b[A" | b"\x1bOA" | b"\x1b[B" | b"\x1bOB") {
+            // History lives inside the CLI editor, not in captured keys.
+            // Treat a subsequent Enter as a candidate accepted prompt.
+            self.submission_recalled = true;
+        }
+        if matches!(bytes, b"\x15" | b"\x03") {
+            self.submission_recalled = false;
+        }
+        let recalled_enter = self.submission_recalled && matches!(bytes, b"\r" | b"\n" | b"\r\n");
+        if self.submission_capture.feed(bytes).is_some() || recalled_enter {
+            self.submission += 1;
+            self.last_submission = Some(now);
+            self.submission_capture = PromptCapture::default();
+            self.submission_recalled = false;
+        }
+    }
+    /// Typed input that has not been submitted: text on the line, or a
+    /// recalled history entry. A CLI's grey suggestion is not typed, so it
+    /// does not count.
+    fn has_draft(&self) -> bool {
+        self.submission_capture.has_text() || self.submission_recalled
+    }
     /// Bytes are arrival metadata, not proof of work. The activity sampler
     /// separately compares live transcript content, excluding the editor.
     fn note_output(&mut self, now: Instant) {
@@ -283,6 +299,18 @@ fn open_terminal_link(uri: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// What a card's launch starts. A retry repeats it.
+#[derive(Clone)]
+enum Launch {
+    /// New from the picker: nothing typed yet.
+    Task,
+    /// `shika new`: the CLI starts with the Lead's prompt and the card is
+    /// not selected, because the author is typing elsewhere.
+    Worker(LaunchOptions),
+    /// The project's Lead, started by the author.
+    Lead(LeadEnv),
+}
+
 struct Card {
     session: Option<Session>,
     project: String,
@@ -316,6 +344,14 @@ struct Card {
     /// gets a new `since`, so its dot and tint return until it is seen.
     seen: Option<Instant>,
     launch_preset: String,
+    launch: Launch,
+    /// The Lead session that started this worker.
+    started_by: Option<String>,
+    /// The control socket state, on the project's Lead card only.
+    lead: Option<control::LeadState>,
+    /// A failed launch nobody asked for (a worker): removed by the tick once
+    /// no dialog depends on card positions.
+    discard: bool,
     launch_control: Option<PreparationControl>,
     launch_error: Option<String>,
     stage: String,
@@ -399,9 +435,11 @@ enum Overlay {
         row: usize,
         error: Option<String>,
     },
+    /// `lead` starts the project's Lead instead of a task.
     Picker {
         project: String,
         index: usize,
+        lead: bool,
     },
     Close {
         index: usize,
@@ -497,6 +535,9 @@ struct Shika {
     bases: HashMap<String, ProjectBase>,
     /// The read-only Changes panel right of the terminal.
     changes: changes::Panel,
+    /// The Lead's control socket, or why there is none.
+    control: Option<control::Server>,
+    control_error: Option<String>,
 }
 impl Shika {
     fn new(
@@ -531,6 +572,10 @@ impl Shika {
         let notification_sound = settings.notification_sound;
         let column = settings.column;
         let changes = changes::Panel::new(settings.changes, cx.focus_handle(), diagnostics.clone());
+        let (control, control_error) = match control::Server::start() {
+            Ok(server) => (Some(server), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         let reduce_transparency = appearance::reduce_transparency();
         let entity = cx.entity().downgrade();
         let appearance_watch = window.observe_window_appearance(move |window, cx| {
@@ -582,6 +627,8 @@ impl Shika {
             column_drag_from: None,
             bases: HashMap::new(),
             changes,
+            control,
+            control_error,
         };
         cx.spawn_in(window, async move |this, cx| {
             let catalog = cx
@@ -666,7 +713,8 @@ impl Shika {
             .filter(|(_, c)| c.project == project)
             .map(|(i, _)| i)
             .collect::<Vec<_>>();
-        indices.sort_by_key(|i| self.cards[*i].status.rank());
+        // The Lead leads its group; the rest sort by attention.
+        indices.sort_by_key(|i| (self.cards[*i].lead.is_none(), self.cards[*i].status.rank()));
         indices
     }
     fn move_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
@@ -740,7 +788,11 @@ impl Shika {
         if let Some(project) = self.project_id() {
             self.prefetch_base(project.clone(), cx);
             self.overlay_return_focus = window.focused(cx);
-            self.overlay = Some(Overlay::Picker { project, index: 0 });
+            self.overlay = Some(Overlay::Picker {
+                project,
+                index: 0,
+                lead: false,
+            });
             window.focus(&self.focus, cx);
             cx.notify();
         } else {
@@ -788,7 +840,12 @@ impl Shika {
         if self.busy {
             return;
         }
-        let Some(Overlay::Picker { project, index }) = &self.overlay else {
+        let Some(Overlay::Picker {
+            project,
+            index,
+            lead,
+        }) = &self.overlay
+        else {
             return;
         };
         let Some(preset) = self
@@ -799,7 +856,106 @@ impl Shika {
         else {
             return;
         };
-        self.request_launch(project.clone(), preset, None, window, cx);
+        let (project, lead) = (project.clone(), *lead);
+        if lead {
+            self.start_lead(project, preset, window, cx);
+        } else {
+            self.request_launch(project, preset, None, window, cx);
+        }
+    }
+
+    /// The picker's choice in Lead mode: the project's one Lead.
+    fn start_lead(
+        &mut self,
+        project: String,
+        preset: CliPreset,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !preset.found() {
+            self.message(format!("{} not found on PATH", preset.binary));
+            cx.notify();
+            return;
+        }
+        // Tab can move the picker to a project that already has its Lead.
+        if self.show_lead(&project, window, cx) {
+            self.overlay = None;
+            self.overlay_return_focus = None;
+            return;
+        }
+        let Some(server) = &self.control else {
+            let why = self.control_error.clone().unwrap_or_default();
+            self.message(format!("The Lead needs Shika's control socket: {why}"));
+            cx.notify();
+            return;
+        };
+        let name = self
+            .projects
+            .iter()
+            .find(|p| p.id == project)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        let env = LeadEnv {
+            socket: server.socket(),
+            token: shika_core::control::new_token(),
+            bin_dir: server.bin_dir(),
+            prompt: format!(
+                "You are the Lead agent for the \"{name}\" project in Shika. Run `shika help` and follow it, then ask the author what they want done."
+            ),
+        };
+        self.begin_launch(
+            project,
+            preset,
+            false,
+            None,
+            Launch::Lead(env),
+            None,
+            window,
+            cx,
+        );
+    }
+
+    /// Cmd+L and Agent > New Lead: the selected project's Lead, started or,
+    /// when it exists, shown with its terminal focused.
+    fn new_lead(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let Some(project) = self.project_id() else {
+            self.message("Add a project first.".into());
+            cx.notify();
+            return;
+        };
+        if self.show_lead(&project, window, cx) {
+            return;
+        }
+        if self.control.is_none() {
+            let why = self.control_error.clone().unwrap_or_default();
+            self.message(format!("The Lead needs Shika's control socket: {why}"));
+            cx.notify();
+            return;
+        }
+        self.prefetch_base(project.clone(), cx);
+        self.overlay_return_focus = window.focused(cx);
+        self.overlay = Some(Overlay::Picker {
+            project,
+            index: 0,
+            lead: true,
+        });
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Selects the project's Lead and focuses its terminal. False when it
+    /// has none.
+    fn show_lead(&mut self, project: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.lead_card(project) else {
+            return false;
+        };
+        self.selection = Some(Selection::Card(index));
+        self.focus_terminal(window, cx);
+        cx.notify();
+        true
     }
 
     fn request_launch(
@@ -848,9 +1004,16 @@ impl Shika {
                         });
                         window.focus(&this.focus, cx);
                     }
-                    Ok((config, _)) => {
-                        this.begin_launch(project, preset, config.is_some(), retry, window, cx)
-                    }
+                    Ok((config, _)) => this.begin_launch(
+                        project,
+                        preset,
+                        config.is_some(),
+                        retry,
+                        Launch::Task,
+                        None,
+                        window,
+                        cx,
+                    ),
                     Err(error) => this.message(error.to_string()),
                 }
                 cx.notify();
@@ -889,7 +1052,16 @@ impl Shika {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok(()) => this.begin_launch(project, preset, true, retry, window, cx),
+                    Ok(()) => this.begin_launch(
+                        project,
+                        preset,
+                        true,
+                        retry,
+                        Launch::Task,
+                        None,
+                        window,
+                        cx,
+                    ),
                     Err(error) => {
                         this.overlay = None;
                         this.restore_overlay_focus(window, cx);
@@ -963,28 +1135,51 @@ impl Shika {
         self.last_revealed_selection = None;
     }
 
+    /// Creates the card and starts the launch off the UI thread. A task from
+    /// the picker, a Lead, and a retry are the author's: the card is selected
+    /// and the dialogs close. A worker from `shika new` (`reply` answers the
+    /// Lead's command) touches neither selection, focus, dialogs, nor `busy`,
+    /// because the author is typing elsewhere.
+    #[allow(clippy::too_many_arguments)]
     fn begin_launch(
         &mut self,
         project: String,
         preset: CliPreset,
         configured: bool,
         retry: Option<Arc<Mutex<HostState>>>,
+        launch: Launch,
+        reply: Option<std::sync::mpsc::Sender<shika_core::control::Reply>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let mut launch = launch;
+        let mut retried = false;
         if let Some(retry) = retry
             && let Some(i) = self
                 .cards
                 .iter()
                 .position(|c| Arc::ptr_eq(&c.agent.state, &retry))
         {
+            launch = self.cards[i].launch.clone();
+            retried = true;
             self.remove_card(i);
         }
-        self.overlay = None;
-        self.overlay_return_focus = None;
+        let author = retried || !matches!(launch, Launch::Worker(_));
+        let (started_by, lead) = match &launch {
+            Launch::Worker(options) => (options.started_by.clone(), None),
+            Launch::Lead(env) => (None, Some(control::LeadState::new(env.token.clone()))),
+            Launch::Task => (None, None),
+        };
+        if author {
+            self.overlay = None;
+            self.overlay_return_focus = None;
+        }
         // Long setup must not prevent starting another card or using a live
         // terminal. Keep the existing short-launch behavior without config.
-        self.busy = !configured;
+        let holds_busy = author && !configured;
+        if author {
+            self.busy = holds_busy;
+        }
         let opacity = self.terminal_opacity();
         let pane = Pane::new(
             self.core.clone(),
@@ -998,9 +1193,10 @@ impl Shika {
         let terminal = pane.terminal.clone();
         let state = pane.state.clone();
         lock(&state).preparing = configured;
-        if configured {
-            // A second launch can hide this pane before its first layout.
-            // Give it a real initial grid so setup does not wait forever for
+        if configured || !author {
+            // A second launch can hide this pane before its first layout, and
+            // a worker's pane is never shown until the author picks it. Give
+            // it a real initial grid so the launch does not wait forever for
             // a visible view; the next layout/PTY binding uses the actual fit.
             let fallback = self
                 .selected_card()
@@ -1010,10 +1206,15 @@ impl Shika {
         }
         let control = PreparationControl::default();
         let index = self.cards.len();
+        let is_lead = lead.is_some();
         self.cards.push(Card {
             session: None,
             project: project.clone(),
-            title: format!("New {}", preset.name),
+            title: if is_lead {
+                "Lead".into()
+            } else {
+                format!("New {}", preset.name)
+            },
             preset: preset.name.clone(),
             status: Status::Waiting,
             since: Instant::now(),
@@ -1030,19 +1231,26 @@ impl Shika {
             submitted: 0,
             creating: true,
             title_watch: TitleWatch::default(),
-            named: false,
+            named: is_lead,
             diff: None,
             pr: None,
             seen: None,
             launch_preset: preset.id.clone(),
+            launch: launch.clone(),
+            started_by,
+            lead,
+            discard: false,
             launch_control: Some(control.clone()),
             launch_error: None,
             stage: "Creating worktree...".into(),
         });
-        self.selection = Some(Selection::Card(index));
-        window.focus(&self.focus, cx);
+        if author {
+            self.selection = Some(Selection::Card(index));
+            window.focus(&self.focus, cx);
+        }
         cx.notify();
         let core = self.core.clone();
+        let finished = launch.clone();
         cx.spawn_in(window, async move |this, cx| {
             let measured = loop {
                 if let Some(size) = lock(&state).measured {
@@ -1064,49 +1272,61 @@ impl Shika {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let result = core.create_session_with_preparation(
-                        &project,
-                        &preset.id,
-                        PtySize::new(measured.rows, measured.cols),
-                        move |_, event| match event {
-                            PtyEvent::Output(bytes) => {
-                                sink_terminal.feed(&bytes);
-                                lock(&output_state).note_output(Instant::now());
-                            }
-                            PtyEvent::Exit(exit) => {
-                                sink_terminal.feed(
-                                    format!("\r\n[process exited with code {}]\r\n", exit.code)
-                                        .as_bytes(),
-                                );
-                                let mut state = lock(&output_state);
-                                state.last_output = Some(Instant::now());
-                                state.exited = true;
-                            }
-                        },
-                        control,
-                        move |event| match event {
-                            PreparationEvent::Stage(stage) => {
-                                lock(&progress_state).preparation_stage = stage;
-                            }
-                            PreparationEvent::StartingAgent => {
-                                let mut host = lock(&progress_state);
-                                host.agent_starting = true;
-                                host.preparation_stage = "Starting agent...".into();
-                            }
-                            PreparationEvent::Output(bytes) => {
-                                // Pipes emit LF; the terminal needs CRLF. Preserve
-                                // existing CRLF rather than doubling its CR.
-                                let mut output = Vec::with_capacity(bytes.len());
-                                for byte in bytes {
-                                    if byte == b'\n' && output.last() != Some(&b'\r') {
-                                        output.push(b'\r');
-                                    }
-                                    output.push(byte);
+                    let size = PtySize::new(measured.rows, measured.cols);
+                    let sink = move |_, event| match event {
+                        PtyEvent::Output(bytes) => {
+                            sink_terminal.feed(&bytes);
+                            lock(&output_state).note_output(Instant::now());
+                        }
+                        PtyEvent::Exit(exit) => {
+                            sink_terminal.feed(
+                                format!("\r\n[process exited with code {}]\r\n", exit.code)
+                                    .as_bytes(),
+                            );
+                            let mut state = lock(&output_state);
+                            state.last_output = Some(Instant::now());
+                            state.exited = true;
+                        }
+                    };
+                    let report = move |event| match event {
+                        PreparationEvent::Stage(stage) => {
+                            lock(&progress_state).preparation_stage = stage;
+                        }
+                        PreparationEvent::StartingAgent => {
+                            let mut host = lock(&progress_state);
+                            host.agent_starting = true;
+                            host.preparation_stage = "Starting agent...".into();
+                        }
+                        PreparationEvent::Output(bytes) => {
+                            // Pipes emit LF; the terminal needs CRLF. Preserve
+                            // existing CRLF rather than doubling its CR.
+                            let mut output = Vec::with_capacity(bytes.len());
+                            for byte in bytes {
+                                if byte == b'\n' && output.last() != Some(&b'\r') {
+                                    output.push(b'\r');
                                 }
-                                progress_terminal.feed(&output);
+                                output.push(byte);
                             }
-                        },
-                    );
+                            progress_terminal.feed(&output);
+                        }
+                    };
+                    let result = match launch {
+                        Launch::Lead(env) => {
+                            core.create_lead(&project, &preset.id, size, sink, env)
+                        }
+                        Launch::Worker(options) => core.create_session_with_preparation(
+                            &project, &preset.id, size, sink, options, control, report,
+                        ),
+                        Launch::Task => core.create_session_with_preparation(
+                            &project,
+                            &preset.id,
+                            size,
+                            sink,
+                            LaunchOptions::default(),
+                            control,
+                            report,
+                        ),
+                    };
                     if let Ok(s) = &result {
                         bind_host(&core, &state_bind, s.pty);
                     }
@@ -1116,7 +1336,7 @@ impl Shika {
             let orphan = result.as_ref().ok().map(|s| s.id.clone());
             let completion_core = callback_core.clone();
             let updated = this.update_in(cx, |this, window, cx| {
-                if !configured {
+                if holds_busy {
                     this.busy = false;
                 }
                 let Some(index) = this
@@ -1124,6 +1344,10 @@ impl Shika {
                     .iter()
                     .position(|c| Arc::ptr_eq(&c.agent.state, &state))
                 else {
+                    control::answer(
+                        &reply,
+                        control::failure_reply(&shika_core::Error::PreparationCancelled),
+                    );
                     if let Ok(session) = result {
                         let core = completion_core.clone();
                         cx.background_executor()
@@ -1142,7 +1366,23 @@ impl Shika {
                             .as_ref()
                             .is_some_and(|c| c.is_cancelled()) =>
                     {
-                        lock(&state).preparing = false;
+                        {
+                            let mut host = lock(&state);
+                            host.preparing = false;
+                            // Nobody types a launch prompt, so it counts as
+                            // submitted now: the turn starts with the CLI.
+                            let now = Instant::now();
+                            match &finished {
+                                Launch::Worker(LaunchOptions {
+                                    prompt: Some(prompt),
+                                    ..
+                                }) => host.seed_launch_prompt(prompt, true, now),
+                                Launch::Lead(env) => {
+                                    host.seed_launch_prompt(&env.prompt, false, now)
+                                }
+                                _ => {}
+                            }
+                        }
                         this.cards[index].session = Some(session);
                         this.cards[index].launch_control = None;
                         // Completion never steals focus from another card or
@@ -1151,13 +1391,19 @@ impl Shika {
                         {
                             this.focus_terminal(window, cx);
                         }
+                        control::answer(&reply, this.started_reply(index));
                     }
                     Ok(session) => {
                         this.stop_cancelled_launch(session.id, cx);
                         this.cards[index].launch_error =
                             Some("Worktree preparation was cancelled.".into());
+                        control::answer(
+                            &reply,
+                            control::failure_reply(&shika_core::Error::PreparationCancelled),
+                        );
                     }
                     Err(error) if configured => {
+                        control::answer(&reply, control::failure_reply(&error));
                         lock(&state).agent_starting = false;
                         this.cards[index].agent.terminal.feed(
                             format!("\r\n{error}\r\nRetry creates a fresh worktree.\r\n")
@@ -1167,7 +1413,14 @@ impl Shika {
                         this.cards[index].stage = "Setup failed".into();
                     }
                     Err(error) => {
-                        this.remove_card(index);
+                        control::answer(&reply, control::failure_reply(&error));
+                        if author {
+                            this.remove_card(index);
+                        } else {
+                            // Removing a card under an open dialog would
+                            // shift the positions it holds; the tick does it.
+                            this.cards[index].discard = true;
+                        }
                         this.message(error.to_string());
                     }
                 }
@@ -1223,6 +1476,11 @@ impl Shika {
             return;
         };
         if self.cards[index].creating {
+            return;
+        }
+        if self.cards[index].lead.is_some() {
+            self.message("The Lead has no shell tabs. It works from its terminal.".into());
+            cx.notify();
             return;
         }
         let Some(session) = self.cards[index].session.clone() else {
@@ -1389,6 +1647,8 @@ impl Shika {
         }
         let now = Instant::now();
         let mut changed = false;
+        // The Lead's shika commands run here, with the rest of the state.
+        self.drain_control(window, cx);
         // Reconcile agent/shell branch renames independently of the one-shot
         // CLI title watch. Git runs off-thread, with only one batch in flight.
         if !self.branch_check_pending
@@ -1452,10 +1712,11 @@ impl Shika {
                 let card = &self.cards[i];
                 if !card.creating
                     && card.session.is_none()
-                    && card
-                        .launch_control
-                        .as_ref()
-                        .is_some_and(|c| c.is_cancelled())
+                    && (card.discard
+                        || card
+                            .launch_control
+                            .as_ref()
+                            .is_some_and(|c| c.is_cancelled()))
                 {
                     let return_to_cards = self.selection == Some(Selection::Card(i))
                         || card.agent.view.focus_handle(cx).is_focused(window);
@@ -1513,11 +1774,15 @@ impl Shika {
                 }
                 changed = true;
             }
-            if state.submission > 0 {
+            // The Lead keeps its title and has no CLI title file to read.
+            if state.submission > 0 && card.lead.is_none() {
                 card.title_watch.start(now);
             }
             let submission = if state.submission != card.submitted {
                 card.submitted = state.submission;
+                if std::mem::take(&mut state.launch_turn) {
+                    card.activity.hold_for_launch();
+                }
                 if matches!(card.status, Status::Waiting | Status::Ready) {
                     // An idle report from the previous turn is not evidence
                     // about a newly submitted prompt.
@@ -1575,7 +1840,8 @@ impl Shika {
             card.since = card.activity.since;
             changed |= transition.changed;
             if let Some(session) = &card.session {
-                if transition.ready {
+                // The Lead has no diff to count.
+                if transition.ready && card.lead.is_none() {
                     ready.push(session.id.clone());
                 }
                 if transition.notify {
@@ -1845,7 +2111,11 @@ impl Shika {
         }
         self.prefetch_base(project.clone(), cx);
         self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Picker { project, index: 0 });
+        self.overlay = Some(Overlay::Picker {
+            project,
+            index: 0,
+            lead: false,
+        });
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -2068,6 +2338,11 @@ impl Shika {
             return;
         };
         let card = &self.cards[index];
+        if card.lead.is_some() {
+            self.message("The Lead has no branch, so there is nothing to publish.".into());
+            cx.notify();
+            return;
+        }
         if card.creating || card.running() {
             self.message("Wait for the agent to finish before publishing.".into());
             cx.notify();
@@ -2445,7 +2720,12 @@ impl Shika {
         }
         self.commit_setting_edit(window, cx);
         let shell = match &self.overlay {
-            Some(Overlay::Close { index, state }) if state.dirty || state.unpushed => Some(*index),
+            // The Lead has no shell to commit in.
+            Some(Overlay::Close { index, state })
+                if (state.dirty || state.unpushed) && self.cards[*index].lead.is_none() =>
+            {
+                Some(*index)
+            }
             _ => None,
         };
         self.overlay = None;
@@ -3016,7 +3296,7 @@ impl Shika {
             // A project the picker moved to, to fetch its base branch.
             let mut moved_to = None;
             match &mut self.overlay {
-                Some(Overlay::Picker { index, project }) => {
+                Some(Overlay::Picker { index, project, .. }) => {
                     let len = self
                         .catalog
                         .as_ref()
@@ -3939,6 +4219,24 @@ impl Shika {
             .line_height(px(16.))
             .text_color(chrome.ink_3)
             .child(div().flex_none().child(card.preset.clone()))
+            // Where the task came from, quiet: not a status.
+            .when(card.started_by.is_some(), |d| {
+                d.child(separator()).child(
+                    div()
+                        .flex_none()
+                        .text_color(chrome.ink_4)
+                        .child("from Lead"),
+                )
+            })
+            .when(card.lead.is_some(), |d| {
+                d.child(separator()).child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(chrome.ink_2)
+                        .child("Project lead"),
+                )
+            })
             .when_some(notice, |d, notice| {
                 d.child(separator()).child(
                     div()
@@ -3955,17 +4253,20 @@ impl Shika {
                         .child(notice),
                 )
             })
-            .when_some(card.session.as_ref(), |d, session| {
-                // The branch truncates before the diff stat.
-                d.child(separator()).child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .font_family(MONO)
-                        .text_size(px(11.5))
-                        .child(session.branch.clone()),
-                )
-            })
+            .when_some(
+                card.session.as_ref().filter(|_| card.lead.is_none()),
+                |d, session| {
+                    // The branch truncates before the diff stat.
+                    d.child(separator()).child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(MONO)
+                            .text_size(px(11.5))
+                            .child(session.branch.clone()),
+                    )
+                },
+            )
             .when_some(stat, |d, stat| {
                 let (ink, tip_bg, tip_fg) = (chrome.ink_1, chrome.toast_bg, chrome.toast_fg);
                 d.child(separator()).child(
@@ -4437,41 +4738,45 @@ impl Shika {
                 .bg(with_alpha(chrome.term_header, chrome.term_header_alpha))
                 .children(show_column.map(baseline))
                 .child(tabs)
-                .child(
-                    baseline(div())
-                        .flex()
-                        .flex_col()
-                        .justify_end()
-                        .pr(px(4.))
-                        .child(
-                            div().h(px(TAB_HEIGHT)).flex().items_center().child(
-                                div()
-                                    .id("new-terminal")
-                                    .occlude()
-                                    .size(px(24.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(6.))
-                                    .text_size(px(15.))
-                                    .text_color(chrome.term_dim)
-                                    .cursor_pointer()
-                                    .hover(move |style| style.bg(term_hover).text_color(term_white))
-                                    .child("+")
-                                    .tooltip(move |_, cx| {
-                                        cx.new(|_| KeyTip {
-                                            bg: tip_bg,
-                                            fg: tip_fg,
-                                            text: "New shell tab  ⌘T".into(),
+                .when(card.lead.is_none(), |d| {
+                    d.child(
+                        baseline(div())
+                            .flex()
+                            .flex_col()
+                            .justify_end()
+                            .pr(px(4.))
+                            .child(
+                                div().h(px(TAB_HEIGHT)).flex().items_center().child(
+                                    div()
+                                        .id("new-terminal")
+                                        .occlude()
+                                        .size(px(24.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(6.))
+                                        .text_size(px(15.))
+                                        .text_color(chrome.term_dim)
+                                        .cursor_pointer()
+                                        .hover(move |style| {
+                                            style.bg(term_hover).text_color(term_white)
                                         })
-                                        .into()
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.new_shell(true, window, cx)
-                                    })),
+                                        .child("+")
+                                        .tooltip(move |_, cx| {
+                                            cx.new(|_| KeyTip {
+                                                bg: tip_bg,
+                                                fg: tip_fg,
+                                                text: "New shell tab  ⌘T".into(),
+                                            })
+                                            .into()
+                                        })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.new_shell(true, window, cx)
+                                        })),
+                                ),
                             ),
-                        ),
-                )
+                    )
+                })
                 .child(baseline(div()).flex_1().min_w_0())
                 .child(
                     baseline(div())
@@ -4557,31 +4862,36 @@ impl Shika {
                                 .font_family(MONO)
                                 .child(path),
                         )
-                        .when(card.session.is_some() && !card.creating, |d| {
-                            d.child(
-                                div()
-                                    .id("create-pr")
-                                    .occlude()
-                                    .flex_none()
-                                    .rounded(px(6.))
-                                    .px(px(8.))
-                                    .py(px(4.))
-                                    .cursor_pointer()
-                                    .hover(move |style| style.bg(term_hover).text_color(term_white))
-                                    .child("Create PR")
-                                    .tooltip(move |_, cx| {
-                                        cx.new(|_| KeyTip {
-                                            bg: tip_bg,
-                                            fg: tip_fg,
-                                            text: "Commit, push, create PR  ⌘⇧P".into(),
+                        .when(
+                            card.session.is_some() && !card.creating && card.lead.is_none(),
+                            |d| {
+                                d.child(
+                                    div()
+                                        .id("create-pr")
+                                        .occlude()
+                                        .flex_none()
+                                        .rounded(px(6.))
+                                        .px(px(8.))
+                                        .py(px(4.))
+                                        .cursor_pointer()
+                                        .hover(move |style| {
+                                            style.bg(term_hover).text_color(term_white)
                                         })
-                                        .into()
-                                    })
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.create_pr(window, cx)
-                                    })),
-                            )
-                        })
+                                        .child("Create PR")
+                                        .tooltip(move |_, cx| {
+                                            cx.new(|_| KeyTip {
+                                                bg: tip_bg,
+                                                fg: tip_fg,
+                                                text: "Commit, push, create PR  ⌘⇧P".into(),
+                                            })
+                                            .into()
+                                        })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.create_pr(window, cx)
+                                        })),
+                                )
+                            },
+                        )
                         .child(div().flex_none().text_color(chrome.term_faint).child(
                             if card.creating && cards_focused {
                                 "setup is non-interactive"
@@ -4927,7 +5237,11 @@ impl Shika {
                         ),
                 )
             }
-            Overlay::Picker { project, index } => {
+            Overlay::Picker {
+                project,
+                index,
+                lead,
+            } => {
                 let name = self
                     .projects
                     .iter()
@@ -4945,7 +5259,11 @@ impl Shika {
                             .pt(px(8.))
                             .px(px(10.))
                             .pb(px(10.))
-                            .child(dialog_title(div()).child("New agent"))
+                            .child(dialog_title(div()).child(if *lead {
+                                "New Lead"
+                            } else {
+                                "New agent"
+                            }))
                             .child(
                                 div()
                                     .text_size(px(13.))
@@ -5029,8 +5347,13 @@ impl Shika {
                             Some(name) => div()
                                 .flex()
                                 .gap(px(4.))
-                                .child("branches from")
+                                .child(if *lead {
+                                    "reads a checkout of"
+                                } else {
+                                    "branches from"
+                                })
                                 .child(div().font_family(MONO).child(name)),
+                            None if *lead => div().child("reads a detached worktree"),
                             None => div().child("creates a branch and a worktree"),
                         }),
                 )
@@ -5078,12 +5401,17 @@ impl Shika {
             Overlay::Close { index, state } => {
                 let i = *index;
                 let can_push = state.can_push();
+                let lead = self.cards[i].lead.is_some();
                 let mut panel = dialog(chrome, max_h)
                     .child(dialog_title(div()).child(format!("Close “{}”?", self.cards[i].title)));
                 if state.agent_working {
                     panel = panel.child(dialog_text(chrome).child("The agent is still working."));
                 }
-                if state.dirty {
+                if state.dirty && lead {
+                    panel = panel.child(dialog_text(chrome).child(
+                        "The Lead edited files in its worktree. It should never do that; its tasks belong to workers.",
+                    ));
+                } else if state.dirty {
                     panel = panel.child(dialog_text(chrome).child(
                         "The worktree has uncommitted changes. Commit in the shell or use Create PR before closing. Close does not commit.",
                     ));
@@ -5094,10 +5422,11 @@ impl Shika {
                             .child("The branch has commits that are not on the remote."),
                     );
                 }
-                panel =
-                    panel.child(dialog_text(chrome).child(
-                        "Discard stops the session and deletes the worktree and local branch.",
-                    ));
+                panel = panel.child(dialog_text(chrome).child(if lead {
+                    "Discard stops the Lead and deletes its worktree. Its workers stay as ordinary cards."
+                } else {
+                    "Discard stops the session and deletes the worktree and local branch."
+                }));
                 let discard =
                     cx.listener(move |this, _, window, cx| this.finish_close(i, 1, window, cx));
                 let buttons = dialog_buttons().child(self.cancel_button("Cancel", chrome, cx));
@@ -6050,6 +6379,7 @@ impl Render for Shika {
             .track_focus(&self.focus)
             .key_context("Shika")
             .on_action(cx.listener(|this, _: &NewAgent, window, cx| this.picker(window, cx)))
+            .on_action(cx.listener(|this, _: &NewLead, window, cx| this.new_lead(window, cx)))
             .on_action(
                 cx.listener(|this, _: &NewTerminal, window, cx| this.new_shell(true, window, cx)),
             )
@@ -6122,6 +6452,16 @@ impl Render for Shika {
     }
 }
 fn main() -> anyhow::Result<()> {
+    // `shika help`, `shika new`, and the rest run in a Lead's terminal as this
+    // same binary. They only talk to the socket: no GPUI, settings, or data.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // Inside a Lead terminal (either variable set) this is always the client,
+    // so a bare or mistyped `shika` never starts a second app on real data.
+    let lead_env =
+        std::env::var_os("SHIKA_SOCKET").is_some() || std::env::var_os("SHIKA_TOKEN").is_some();
+    if shika_core::control::is_client_invocation(&args, lead_env) {
+        std::process::exit(control_client::run(&args));
+    }
     let mut data = None;
     let mut diagnostics = None;
     let mut args = std::env::args().skip(1);
@@ -6159,6 +6499,7 @@ fn main() -> anyhow::Result<()> {
         shika_terminal::init(cx);
         let mut bindings = vec![
             gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
+            gpui::KeyBinding::new("cmd-l", NewLead, Some("Shika")),
             gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
             gpui::KeyBinding::new("cmd-shift-p", CreatePr, Some("Shika")),
             gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
@@ -6220,6 +6561,7 @@ fn main() -> anyhow::Result<()> {
             gpui::Menu::new("Shika").items(app_menu),
             gpui::Menu::new("Agent").items([
                 gpui::MenuItem::action("New agent", NewAgent),
+                gpui::MenuItem::action("New Lead…", NewLead),
                 gpui::MenuItem::action("New terminal tab", NewTerminal),
                 gpui::MenuItem::action("Create PR", CreatePr),
                 gpui::MenuItem::action("Close terminal tab", CloseTerminal),
@@ -6277,6 +6619,13 @@ fn main() -> anyhow::Result<()> {
             .expect("Open Shika window");
         // The blur radius needs the window on screen, which it is now.
         let _ = handle.update(cx, |_, window, _| appearance::apply(&start, window));
+        // Closes the control socket and removes its directory on quit; the
+        // window's state may never be dropped.
+        cx.on_app_quit(move |cx| {
+            let _ = handle.update(cx, |app, _, _| app.control = None);
+            async {}
+        })
+        .detach();
         cx.activate(true);
     });
     Ok(())
@@ -6399,6 +6748,98 @@ mod host_tests {
         drop(host);
         drop(core);
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn a_launch_prompt_counts_as_the_first_submission_and_names_the_task_once() {
+        let path = std::env::temp_dir().join(format!(
+            "shika-launch-prompt-host-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let core = Arc::new(Core::open(&path).unwrap());
+        let state = Arc::new(Mutex::new(HostState::default()));
+        let host = Host {
+            core: core.clone(),
+            state: state.clone(),
+            capture: true,
+        };
+        let now = Instant::now();
+        lock(&state).seed_launch_prompt("  Fix the   login bug\nsecond line", true, now);
+        {
+            let s = lock(&state);
+            assert_eq!(s.submission, 1);
+            assert_eq!(s.last_submission, Some(now));
+            assert!(s.launch_turn);
+            // The same name a typed first line would have produced.
+            assert_eq!(s.title.as_deref(), Some("Fix the login bug"));
+        }
+        // The author typing a different first line later neither renames the
+        // task nor is lost as a submission.
+        lock(&state).title = None;
+        host.write(b"something else\r", InputSource::Typed);
+        assert!(lock(&state).title.is_none());
+        assert_eq!(lock(&state).submission, 2);
+
+        // The Lead keeps its own title.
+        let mut lead = HostState::default();
+        lead.seed_launch_prompt("You are the Lead", false, now);
+        assert_eq!((lead.submission, lead.title.as_deref()), (1, None));
+        drop(host);
+        drop(core);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    /// The tick's consumption of a submission, in order, for a card whose CLI
+    /// was started with a prompt instead of typed into.
+    #[test]
+    fn a_launch_prompt_turn_runs_the_same_steps_as_a_typed_one() {
+        let t = Instant::now();
+        let at = |ms: u64| t + Duration::from_millis(ms);
+        let mut host = HostState::default();
+        host.seed_launch_prompt("Add tests", true, t);
+        let mut activity = activity::Activity::new(t);
+        let mut lifecycle = lifecycle::Lifecycle::default();
+        let mut submitted = 0;
+
+        // First tick after the session exists: the submission is consumed,
+        // the lifecycle is fenced, and the activity clock is armed.
+        assert_ne!(host.submission, submitted);
+        submitted = host.submission;
+        lifecycle.submitted(host.lifecycle);
+        if std::mem::take(&mut host.launch_turn) {
+            activity.hold_for_launch();
+        }
+        let first = activity.advance(
+            activity::Signal::Unknown,
+            host.last_submission,
+            None,
+            at(100),
+            false,
+        );
+        assert!(first.changed && !first.notify);
+        assert_eq!(activity.status, Status::Working);
+        assert_eq!(activity.turn_started, Some(t));
+        assert_eq!(submitted, host.submission);
+
+        // Pi: its startup Idle report is not an answer, a later Working
+        // report confirms the turn, and a later Idle report finishes it.
+        use shika_core::{AgentActivity, AgentActivityState::*};
+        let report = |seq, state| Some(AgentActivity { seq, state });
+        assert_eq!(lifecycle.observe(report(1, Idle)), None);
+        assert_eq!(
+            lifecycle.observe(report(2, Working)),
+            Some(activity::Signal::Working)
+        );
+        activity.advance_authoritative(activity::Signal::Working, None, None, at(900), false);
+        let idle = lifecycle.observe(report(3, Idle)).unwrap();
+        activity.advance_authoritative(idle, None, None, at(5000), false);
+        let done = activity.advance_authoritative(idle, None, None, at(5600), false);
+        assert!(done.ready && done.notify);
+        assert_eq!(activity.turn_started, Some(t));
     }
 
     #[test]

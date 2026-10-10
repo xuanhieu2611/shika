@@ -72,8 +72,13 @@ impl Fixture {
     }
 
     fn launch(&self) -> Result<Session> {
-        self.core
-            .create_session(&self.project.id, "claude", PtySize::default(), |_, _| {})
+        self.core.create_session(
+            &self.project.id,
+            "claude",
+            PtySize::default(),
+            |_, _| {},
+            LaunchOptions::default(),
+        )
     }
 
     fn running(
@@ -94,6 +99,7 @@ impl Fixture {
                 "claude",
                 PtySize::default(),
                 |_, _| {},
+                LaunchOptions::default(),
                 job_control,
                 move |event| {
                     if let PreparationEvent::Output(bytes) = event
@@ -261,6 +267,7 @@ fn changed_configuration_during_setup_never_launches_an_agent() {
         "claude",
         PtySize::default(),
         |_, _| {},
+        LaunchOptions::default(),
         PreparationControl::default(),
         move |event| {
             if let PreparationEvent::Stage(stage) = event
@@ -387,6 +394,7 @@ fn cancellation_before_start_allocates_no_worktree() {
             "claude",
             PtySize::default(),
             |_, _| {},
+            LaunchOptions::default(),
             control,
             |_| {}
         ),
@@ -517,7 +525,13 @@ fn slow_setup_does_not_hold_operation_lock_or_block_another_session() {
     let start = Instant::now();
     let session = f
         .core
-        .create_session(&project.id, "claude", PtySize::default(), |_, _| {})
+        .create_session(
+            &project.id,
+            "claude",
+            PtySize::default(),
+            |_, _| {},
+            LaunchOptions::default(),
+        )
         .unwrap();
     f.core.session_close(&session.id, false).unwrap();
     assert!(start.elapsed() < Duration::from_secs(3));
