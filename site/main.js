@@ -1,5 +1,5 @@
-// Shika landing page: theme toggle, sticky nav state, scroll reveal, the live demo
-// frame, and copy. The paintings live in field.js.
+// Shika site: theme toggle, sticky nav state, scroll reveal, the live demo
+// frame, copy, and the guide's section list. The paintings live in field.js.
 (function () {
   var root = document.documentElement;
   var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -81,17 +81,49 @@
   }
   labelToggle();
 
-  // Copy the install commands without the prompts.
-  var copy = document.getElementById('copy');
-  var cmds = document.getElementById('install-cmds');
-  var label = document.getElementById('copy-label');
-  if (copy && cmds) {
+  // The guide's section list follows the heading nearest the top of the viewport.
+  var toc = document.querySelector('.guide-toc');
+  if (toc && 'IntersectionObserver' in window) {
+    var tocLinks = Array.prototype.filter.call(toc.querySelectorAll('a[href^="#"]'), function (a) {
+      return document.getElementById(a.getAttribute('href').slice(1));
+    });
+    var setToc = function (id) {
+      Array.prototype.forEach.call(tocLinks, function (a) {
+        if (a.getAttribute('href') === '#' + id) a.setAttribute('aria-current', 'true');
+        else a.removeAttribute('aria-current');
+      });
+    };
+    if (tocLinks.length) {
+      var fromHash = (location.hash || '').slice(1);
+      var known = tocLinks.some(function (a) { return a.getAttribute('href') === '#' + fromHash; });
+      setToc(known ? fromHash : tocLinks[0].getAttribute('href').slice(1));
+      var tocObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) setToc(entry.target.id);
+        });
+      }, { rootMargin: '-15% 0px -75% 0px', threshold: 0 });
+      tocLinks.forEach(function (a) {
+        var section = document.getElementById(a.getAttribute('href').slice(1));
+        if (section) tocObserver.observe(section);
+      });
+    }
+  }
+
+  // Copy a code block without shell prompts.
+  document.querySelectorAll('.copy').forEach(function (copy) {
+    var block = copy.closest('.code');
+    var cmds = block ? block.querySelector('pre') : null;
+    var label = copy.querySelector('.copy-label');
+    if (!cmds) return;
     copy.addEventListener('click', function () {
       var text = cmds.innerText.split('\n').map(function (l) { return l.replace(/^\$\s*/, ''); }).join('\n').trim();
       var done = function () {
         copy.classList.add('is-done');
-        label.textContent = 'Copied';
-        setTimeout(function () { copy.classList.remove('is-done'); label.textContent = 'Copy'; }, 1800);
+        if (label) label.textContent = 'Copied';
+        setTimeout(function () {
+          copy.classList.remove('is-done');
+          if (label) label.textContent = 'Copy';
+        }, 1800);
       };
       if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(text).then(done, function () {});
@@ -103,5 +135,5 @@
         document.body.removeChild(ta);
       }
     });
-  }
+  });
 })();

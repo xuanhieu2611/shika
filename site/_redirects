@@ -1,1 +1,3 @@
 /appcast.xml https://github.com/xuanhieu2611/shika/releases/latest/download/appcast.xml 302
+/guide/story /guide/story.html 200
+/guide/story/ /guide/story.html 200

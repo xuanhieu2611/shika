@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The story - Shika</title>
+<meta name="description" content="Why Shika exists: a window for the coding agents you already run, named for the one who keeps track of everyone on the field.">
+<link rel="canonical" href="https://useshika.com/guide/story">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Shika">
+<meta property="og:title" content="The story - Shika">
+<meta property="og:description" content="Why Shika exists, where the name comes from, and what the app stays.">
+<meta property="og:url" content="https://useshika.com/guide/story">
+<meta property="og:image" content="https://useshika.com/img/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The story - Shika">
+<meta name="twitter:description" content="Why Shika exists, where the name comes from, and what the app stays.">
+<meta name="twitter:image" content="https://useshika.com/img/og.png">
+<link rel="icon" type="image/png" sizes="32x32" href="../img/favicon-32.png">
+<link rel="icon" type="image/png" sizes="64x64" href="../img/favicon-64.png">
+<link rel="apple-touch-icon" href="../img/apple-touch-icon.png">
+<link rel="preload" href="../fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="../fonts/JetBrainsMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<script>
+  (function () {
+    var d = document.documentElement, t = null;
+    d.classList.add('js');
+    try { t = localStorage.getItem('shika-theme'); } catch (e) {}
+    if (t === 'light' || t === 'dark') d.dataset.theme = t;
+    else t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    d.dataset.resolvedTheme = t;
+  })();
+</script>
+<link rel="stylesheet" href="../styles.css">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4 -4.3 -2.5 -6 -3m12 5v-3.5c0 -1 .1 -1.4 -.5 -2c2.8 -.3 5.5 -1.4 5.5 -6a4.6 4.6 0 0 0 -1.3 -3.2a4.2 4.2 0 0 0 -.1 -3.2s-1.1 -.3 -3.5 1.3a12.3 12.3 0 0 0 -6.2 0c-2.4 -1.6 -3.5 -1.3 -3.5 -1.3a4.2 4.2 0 0 0 -.1 3.2a4.6 4.6 0 0 0 -1.3 3.2c0 4.6 2.7 5.7 5.5 6c-.6 .6 -.6 1.2 -.5 2v3.5"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2 -2v-2"/><path d="M7 11l5 5l5 -5"/><path d="M12 4l0 12"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z"/></symbol>
+</svg>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div id="top" aria-hidden="true"></div>
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="../" aria-label="Shika home"><img src="../img/logo-256.png" alt="" width="36" height="36">Shika</a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="../#how">How it works</a>
+      <a href="../#features">Features</a>
+      <a href="./" class="is-here">Guide</a>
+      <a href="../#faq">FAQ</a>
+    </nav>
+    <div class="nav-end">
+      <button class="icon-btn" type="button" id="theme-toggle" aria-label="Switch to light theme"><svg class="icon i-sun"><use href="#i-sun"/></svg><svg class="icon i-moon"><use href="#i-moon"/></svg></button>
+      <a class="icon-btn nav-gh" href="https://github.com/xuanhieu2611/shika" aria-label="Shika on GitHub"><svg class="icon"><use href="#i-github"/></svg></a>
+      <a class="btn btn-primary btn-sm" href="../#install">Download</a>
+    </div>
+  </div>
+</header>
+<main id="main">
+  <header class="guide-hero">
+    <canvas class="field" data-mode="frame" data-clear=".guide-intro" data-src="../img/forest-frame-2.webp" aria-hidden="true"></canvas>
+    <div class="wrap guide-intro">
+      <img class="guide-mark" src="../img/app-icon-256.png" alt="" width="64" height="64">
+      <p class="eyebrow">The story</p>
+      <h1>A window for the agents you already run.</h1>
+      <p class="lede">I built Shika to stop juggling worktrees and terminals when several coding agents are in flight. I use it every day, including to build Shika.</p>
+    </div>
+  </header>
+  <div class="wrap guide-layout">
+    <nav class="guide-toc" aria-label="Guide">
+      <a href="#why">Why</a>
+      <a href="#name">The name</a>
+      <a href="#stays">What it stays</a>
+      <a class="toc-else" href="./">Using Shika</a>
+    </nav>
+    <div class="guide-body">
+      <section class="guide-section" id="why">
+        <h2>Why</h2>
+        <p>Each task needed its own checkout. I wanted one place that showed who was working, who was asking, and who was ready, without reading every terminal to find out.</p>
+        <p>Shika is that window. It starts the CLI you already pay for, Claude Code, Codex, Cursor CLI, or Pi, in a real terminal, with your login and your plan. Shika doesn't wrap a model API. Your provider, your settings, and your bill stay where they were.</p>
+      </section>
+
+      <section class="guide-section" id="name">
+        <h2>The name</h2>
+        <p>Shikamaru is the one who keeps track of everyone on the field while you give directions. Shika is also the Japanese word for deer, which is the mark on the app.</p>
+        <p>The cards are that field. You write the prompt in the terminal. The window keeps score, and a notification names the task that needs you.</p>
+      </section>
+
+      <section class="guide-section" id="stays">
+        <h2>What it stays</h2>
+        <p>You keep your git. Shika makes the worktree and the branch. Create PR commits only after you confirm the preview. Close can discard or push, and it never commits on its own. A push you type in the shell leaves the card up until you close it.</p>
+        <p>You keep your machine. There is no Shika account and no telemetry. The CLI talks to its provider. Git talks to your remotes. Create PR uses your GitHub CLI. Worktree setup runs only after you approve the commands in the repo.</p>
+        <p>You keep one task on screen. The others keep running. The CLI's own terminal is the conversation. Shika keeps the cards, the worktree, and a shell beside it.</p>
+        <p>It is a Mac app, and it is early. When something new needs explaining, it gets a section in the <a href="./">guide</a>. If a step you needed is missing, <a href="https://github.com/xuanhieu2611/shika/issues">open an issue</a>.</p>
+      </section>
+    </div>
+  </div>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="brand" href="../"><img src="../img/logo-256.png" alt="" width="28" height="28" loading="lazy">Shika</a>
+    <nav aria-label="Footer">
+      <a href="https://github.com/xuanhieu2611/shika">GitHub</a>
+      <a href="./" class="is-here">Guide</a>
+      <a href="https://github.com/xuanhieu2611/shika/issues">Issues</a>
+      <a href="https://github.com/xuanhieu2611/shika/blob/main/CONTRIBUTING.md">Contributing</a>
+      <a href="https://github.com/xuanhieu2611/shika/blob/main/LICENSE">MIT license</a>
+      <a href="../notices.html">Third-party notices</a>
+    </nav>
+    <span>Made by <a href="https://github.com/xuanhieu2611">Hieu Le</a></span>
+  </div>
+</footer>
+<script src="../field.js" defer></script>
+<script src="../main.js" defer></script>
+</body>
+</html>
