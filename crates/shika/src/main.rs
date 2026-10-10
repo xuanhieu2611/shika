@@ -4484,29 +4484,10 @@ impl Shika {
                 },
             )
             .when_some(stat, |d, stat| {
-                let (ink, tip_bg, tip_fg) = (chrome.ink_1, chrome.toast_bg, chrome.toast_fg);
-                d.child(separator()).child(
-                    div()
-                        .id(("diff-stat", i))
-                        .flex_none()
-                        .cursor_pointer()
-                        .hover(move |style| style.text_color(ink))
-                        .tooltip(move |_, cx| {
-                            cx.new(|_| KeyTip {
-                                bg: tip_bg,
-                                fg: tip_fg,
-                                text: "Show changes  \u{2325}\u{2318}B".into(),
-                            })
-                            .into()
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            // Not the card's own click, which would focus
-                            // its terminal.
-                            cx.stop_propagation();
-                            this.show_changes_for(i, window, cx);
-                        }))
-                        .child(stat),
-                )
+                // Text on the card, not a control. A click here is the
+                // card's click: select it and focus its terminal. The
+                // panel opens from the shortcut, the toggle, or the menu.
+                d.child(separator()).child(div().flex_none().child(stat))
             })
             .when_some(card.pr.as_ref(), |d, pr| {
                 d.child(separator()).child(pr_mark(i, pr, chrome, cx))

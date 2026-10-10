@@ -1134,17 +1134,6 @@ impl Shika {
         }
     }
 
-    /// A click on a card's diff stat: select that card and show its changes
-    /// focused. Escape then lands in its terminal, as a card click would.
-    pub fn show_changes_for(&mut self, card: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.overlay.is_some() || card >= self.cards.len() {
-            return;
-        }
-        self.selection = Some(crate::Selection::Card(card));
-        let terminal = self.cards[card].active_pane().view.focus_handle(cx);
-        self.open_changes(Some(terminal), window, cx);
-    }
-
     /// The panel's plain keys. They run only while the panel has focus, and
     /// none of them reaches a PTY.
     pub fn changes_key(
