@@ -449,9 +449,21 @@ pub fn checks_tip(mark: crate::checks::Mark) -> &'static str {
 
 /// What a ready task changed: `2 files +64 −3`, with a real minus sign.
 pub fn diff_stat_label(files: usize, insertions: usize, deletions: usize) -> String {
-    format!(
-        "{} +{insertions} \u{2212}{deletions}",
-        plural(files, "file")
+    let (files, added, removed) = diff_stat_parts(files, insertions, deletions);
+    format!("{files} {added} {removed}")
+}
+
+/// The pieces of [`diff_stat_label`], for a card that colors the counts:
+/// (`2 files`, `+64`, `−3`).
+pub fn diff_stat_parts(
+    files: usize,
+    insertions: usize,
+    deletions: usize,
+) -> (String, String, String) {
+    (
+        plural(files, "file"),
+        format!("+{insertions}"),
+        format!("\u{2212}{deletions}"),
     )
 }
 /// A path with the home directory written as `~`.

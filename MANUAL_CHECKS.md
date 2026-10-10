@@ -26,7 +26,7 @@ Workspace tests, formatting, and Clippy passed; the easing curve and exit timing
 - [ ] Cmd+Shift+W on a clean idle task: the card dims and reads "Closing...", the terminal fades behind the wave and "Closing...", and no `[process exited]` line reads as the result; then the card shrinks, fades, and collapses while the cards below slide up and the next terminal appears.
 - [ ] Discard and Push from the Close dialog show the same closing state while the dialog reads "Working...", including a slow push.
 - [ ] A failed close (a failed push, or a tree that turns dirty) restores the card and terminal and shows the error toast.
-- [ ] Closing the last card of a project shows the empty box only after the exit; closing a Lead and a Lead-started worker (`shika close`) look the same.
+- [ ] Closing the last card of a project leaves the header alone after the exit; closing a Lead and a Lead-started worker (`shika close`) look the same.
 - [ ] macOS Reduce Motion: the card and terminal dim without fading, and the card leaves without the exit.
 - [ ] The terminal's grid size does not change during the fade (no SIGWINCH redraw), in light, dark, and translucent themes.
 
@@ -96,7 +96,7 @@ Automated validation: workspace tests, formatting, and strict Clippy passed, and
 
 - [ ] Theme Light and Dark force the window, traffic lights, menus, and tooltips whatever macOS says; System follows a live macOS appearance change again, in both directions.
 - [ ] `h` / `l` on Light theme and Dark theme step and wrap through the catalog, repaint the chrome, and recolor every live agent and shell terminal at once. The choice survives a relaunch.
-- [ ] Several derived themes (Catppuccin, Rosé Pine, Tokyo Night, Dracula, Gruvbox) look like themselves: cards, selected card, dialogs, key caps, segmented tracks, toast, status dots, timers, and tints, opaque and in glass, with frost on the sidebar alone and on the terminal.
+- [ ] Several derived themes (Catppuccin, Rosé Pine, Tokyo Night, Dracula, Gruvbox) look like themselves: cards, selected card, dialogs, key caps, segmented tracks, toast, status dots, and timers, opaque and in glass, with frost on the sidebar alone and on the terminal.
 - [ ] The Settings panel scrolls in a 600px-high window and `j` / `k` keep the selected row in view.
 
 ## Confirmed PR publishing
@@ -140,7 +140,7 @@ Remaining integrated checks (not established by fixture/unit tests):
 - [ ] First blocker or completion notifies once; later completion still produces an unseen result and fresh diff stat. Notification click selects the task.
 - [ ] Close protects active and blocked clean tasks; idle drafts do not create a false Working warning. Existing dirty/unpushed/branch-switch safety remains intact.
 - [ ] Pi completes fast and continued/retried turns correctly with the temporary extension. Missing/unsupported reports fall back; multiple concurrent sessions do not cross-report.
-- [ ] Asking amber dot/tint, hints, ordering, and timer chrome render correctly in light/dark, opaque/glass, narrow/wide, and hidden column modes.
+- [ ] Asking amber dot, hints, ordering, and timer chrome render correctly in light/dark, opaque/glass, narrow/wide, and hidden column modes.
 
 ## Resizable and hideable agent column, 2026-10-06
 

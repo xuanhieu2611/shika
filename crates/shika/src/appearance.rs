@@ -125,20 +125,13 @@ pub struct DiffColors {
 /// follow `design/DESIGN.md`: `ink_1` is `--ink-1`, `line_2` is `--line-2`.
 #[derive(Clone, Copy, Debug)]
 pub struct Chrome {
-    pub glass: bool,
     pub column: Rgba,
     /// `--line-1`: the column edge.
     pub hairline: Rgba,
     /// `--line-2`: the footer and picker footer rules.
     pub line_2: Rgba,
-    /// `--shadow-card`: the 1px ring on a resting card.
-    pub line_subtle: Rgba,
-    /// The ring on the selected card while the terminal has focus.
-    pub line_selected_dim: Rgba,
     /// Borders of buttons and number fields.
     pub line_control: Rgba,
-    /// The empty project box.
-    pub dashed: Rgba,
     pub ink_1: Rgba,
     pub ink_2: Rgba,
     pub ink_3: Rgba,
@@ -146,14 +139,8 @@ pub struct Chrome {
     /// Meta separators (`·`).
     pub ink_5: Rgba,
     pub focus: Rgba,
-    pub card_rest: Rgba,
+    /// The selected card: an ink wash a step stronger than `hover`.
     pub card_selected: Rgba,
-    pub card_ready: Rgba,
-    pub card_asking: Rgba,
-    pub card_highlight: Rgba,
-    /// The soft drop under the selected card, below its focus ring.
-    pub card_shadow: Rgba,
-    pub card_shadow_blur: f32,
     pub row_selected: Rgba,
     pub overlay: Rgba,
     pub toast_bg: Rgba,
@@ -345,7 +332,6 @@ fn shika_chrome(frame: &Frame, dark: bool) -> Chrome {
         )
     };
     Chrome {
-        glass,
         column,
         hairline: pick(
             rgb(0xDADDD3),
@@ -359,23 +345,11 @@ fn shika_chrome(frame: &Frame, dark: bool) -> Chrome {
             tint(0x000000, 0.08),
             tint(0xFFFFFF, 0.07),
         ),
-        line_subtle: if dark {
-            tint(0xFFFFFF, 0.055)
-        } else {
-            tint(0x141E0A, 0.05)
-        },
-        line_selected_dim: if dark { rgb(0x3A3E36) } else { rgb(0xD6DACE) },
         line_control: pick(
             rgb(0xD3D7CC),
             rgb(0x383C35),
             tint(0x000000, 0.10),
             tint(0xFFFFFF, 0.12),
-        ),
-        dashed: pick(
-            rgb(0xCFD3C7),
-            rgb(0x383C35),
-            tint(0x28341E, 0.22),
-            tint(0xFFFFFF, 0.16),
         ),
         ink_1: if dark { rgb(0xE8EBE3) } else { rgb(0x262824) },
         ink_2: if dark { rgb(0xB6BBAE) } else { rgb(0x4E524A) },
@@ -383,38 +357,12 @@ fn shika_chrome(frame: &Frame, dark: bool) -> Chrome {
         ink_4: pick(rgb(0x9EA296), rgb(0x6B7065), rgb(0x868B7E), rgb(0x9A9F92)),
         ink_5: pick(rgb(0xC3C6BC), rgb(0x464A42), rgb(0xADB1A5), rgb(0x5E6359)),
         focus: if dark { rgb(0xE8EBE3) } else { rgb(0x2F332C) },
-        card_rest: pick(
-            rgb(0xF8F9F5),
-            tint(0xFFFFFF, 0.03),
-            tint(0xFFFFFF, 0.48),
-            tint(0xFFFFFF, 0.045),
+        card_selected: pick(
+            tint(0x141E0A, 0.10),
+            tint(0xFFFFFF, 0.11),
+            tint(0x28341E, 0.12),
+            tint(0xFFFFFF, 0.12),
         ),
-        card_selected: if dark { rgb(0x272A25) } else { rgb(0xFFFFFF) },
-        card_ready: pick(
-            rgb(0xEEFBF0),
-            rgb(0x18241A),
-            tint(0xE7FEEB, 0.78),
-            tint(0x1C3422, 0.62),
-        ),
-        // The existing asking tokens from the archived design/demo, converted
-        // from oklch to sRGB, like the ready and working tokens below.
-        card_asking: pick(
-            rgb(0xFFF5E7),
-            rgb(0x2B1F11),
-            tint(0xFFF4DA, 0.78),
-            tint(0x3E290F, 0.62),
-        ),
-        card_highlight: if glass {
-            tint(0xFFFFFF, if dark { 0.05 } else { 0.75 })
-        } else {
-            tint(0xFFFFFF, 0.0)
-        },
-        card_shadow: if dark {
-            tint(0x000000, 0.30)
-        } else {
-            tint(0x141E0A, 0.07)
-        },
-        card_shadow_blur: if dark { 8. } else { 6. },
         row_selected: if dark { rgb(0x363A33) } else { rgb(0xE8EBE2) },
         // Solid in glass too. The window-server blur only reaches the desktop
         // and GPUI has no backdrop blur, so a translucent popup would show the
@@ -560,7 +508,7 @@ pub const TEXT_CONTRAST: f32 = 4.5;
 /// Chrome for any theme but Shika's, from its palette and `ui`:
 ///
 /// - The theme's background is the column and the terminal, solid and in
-///   glass. `ui.surface` is the selected card, raised controls, and popups;
+///   glass. `ui.surface` is raised controls and popups;
 ///   `ui.mantle` is the solid terminal header, key caps, and sunken tracks.
 ///   Without `ui`, the surface is a step toward white (light) or the
 ///   foreground (dark), and the mantle a step toward the frame.
@@ -574,12 +522,10 @@ pub const TEXT_CONTRAST: f32 = 4.5;
 ///   (working); failed PR checks are ANSI red. Text darkens the hue toward black on a light theme, or
 ///   lightens it toward white on a dark one, until it meets 4.5:1; that
 ///   keeps the hue where mixing toward a tinted foreground would grey it.
-///   Waiting is the ink scale's grey. Card tints mix the hue lightly into
-///   the background.
+///   Waiting is the ink scale's grey.
 /// - The primary button is the foreground with background text; the toast
 ///   is inverted the same way. Popups stay solid.
 fn derived_chrome(frame: &Frame, theme: &Theme) -> Chrome {
-    let glass = frame.glass;
     let dark = theme.dark;
     let palette = &theme.palette;
     let side = |light: f32, dark_value: f32| if dark { dark_value } else { light };
@@ -611,41 +557,19 @@ fn derived_chrome(frame: &Frame, theme: &Theme) -> Chrome {
             text: legible(hue, bg, extreme(bg), TEXT_CONTRAST),
         }
     };
-    let card_tint = |index: usize| {
-        let tinted = mix(bg, rgba_of(palette.ansi[index]), side(0.12, 0.10));
-        if glass {
-            with_alpha(tinted, side(0.78, 0.62))
-        } else {
-            tinted
-        }
-    };
     let term = frame.term_surfaces(mantle);
     Chrome {
-        glass,
         column: with_alpha(rgba_of(frame.column_base), frame.alpha),
         hairline: ink(side(0.12, 0.08)),
         line_2: ink(side(0.10, 0.07)),
-        line_subtle: ink(side(0.06, 0.055)),
-        line_selected_dim: mix(bg, fg, side(0.13, 0.16)),
         line_control: ink(side(0.14, 0.12)),
-        dashed: ink(side(0.24, 0.16)),
         ink_1: fg,
         ink_2,
         ink_3,
         ink_4,
         ink_5,
         focus: fg,
-        card_rest: with_alpha(surface, 0.4),
-        card_selected: surface,
-        card_ready: card_tint(2),
-        card_asking: card_tint(3),
-        card_highlight: if glass {
-            with_alpha(white, side(0.75, 0.05))
-        } else {
-            with_alpha(white, 0.0)
-        },
-        card_shadow: with_alpha(black, side(0.07, 0.30)),
-        card_shadow_blur: side(6., 8.),
+        card_selected: ink(side(0.10, 0.11)),
         row_selected: mix(surface, fg, 0.09),
         // Solid in glass too, like Shika's: GPUI has no backdrop blur.
         overlay: surface,
@@ -997,7 +921,7 @@ mod tests {
             WindowBackgroundAppearance::Opaque
         );
         let chrome = chrome_for(&appearance, shika_theme(false), true);
-        assert!(!chrome.glass);
+        assert_eq!(chrome.column.a, 1.0);
         assert_eq!(
             Rgba {
                 a: 1.0,
@@ -1008,14 +932,13 @@ mod tests {
     }
 
     #[test]
-    fn glass_uses_the_frosted_column_and_resting_card() {
+    fn glass_uses_the_frosted_column_and_a_washed_selected_card() {
         let appearance = Appearance {
             opacity: 58,
             blur: 44,
             translucency: Translucency::Sidebar,
         };
         let chrome = chrome_for(&appearance, shika_theme(false), false);
-        assert!(chrome.glass);
         assert!((chrome.column.a - 0.58).abs() < 0.001);
         assert_eq!(
             Rgba {
@@ -1024,8 +947,7 @@ mod tests {
             },
             rgb(0xF6F8F2)
         );
-        assert!((chrome.card_rest.a - 0.48).abs() < 0.001);
-        assert_eq!(chrome.card_selected.a, 1.0);
+        assert!(chrome.card_selected.a > chrome.hover.a && chrome.card_selected.a < 0.2);
         let dark = chrome_for(&appearance, shika_theme(true), false);
         assert_eq!(
             Rgba {
@@ -1034,8 +956,7 @@ mod tests {
             },
             rgb(0x181A17)
         );
-        assert!((dark.card_rest.a - 0.045).abs() < 0.001);
-        assert_eq!(dark.card_selected.a, 1.0);
+        assert!(dark.card_selected.a > dark.hover.a && dark.card_selected.a < 0.2);
     }
 
     #[test]
@@ -1047,7 +968,7 @@ mod tests {
         };
         for theme in every_theme() {
             let chrome = chrome_for(&appearance, theme, false);
-            assert!(chrome.glass);
+            assert!(chrome.column.a < 1.0, "{}", theme.id);
             assert_eq!(chrome.overlay.a, 1.0, "{}", theme.id);
             assert_eq!(chrome.toast_bg.a, 1.0, "{}", theme.id);
         }
@@ -1274,7 +1195,6 @@ mod tests {
         assert_eq!(light.ink_1, rgb(0x262824));
         assert_eq!(light.ink_3, rgb(0x6C7166));
         assert_eq!(light.ready.text, rgb(0x21763C));
-        assert_eq!(light.card_asking, rgb(0xFFF5E7));
         assert_eq!(light.term_header, rgb(0xE7E9E1));
         assert_eq!(light.toast_bg, rgb(0x252823));
         let dark = chrome_for(&solid, shika_theme(true), false);
@@ -1287,12 +1207,10 @@ mod tests {
         let glass_dark = chrome_for(&glass, shika_theme(true), false);
         assert_eq!(glass_dark.column, tint(0x181A17, 0.6));
         assert_eq!(glass_dark.ink_3, rgb(0xA6AB9E));
-        assert_eq!(glass_dark.card_ready, tint(0x1C3422, 0.62));
         assert_eq!(glass_dark.term_header, rgb(0x181A17));
         assert!((glass_dark.term_header_alpha - 0.5).abs() < 1e-6);
         let glass_light = chrome_for(&glass, shika_theme(false), false);
         assert_eq!(glass_light.hairline, tint(0x000000, 0.10));
-        assert_eq!(glass_light.card_rest, tint(0xFFFFFF, 0.48));
         assert_eq!(
             terminal_palette(&glass, shika_theme(false), false).background,
             Rgb::hex(0xF6F8F2)
@@ -1329,8 +1247,8 @@ mod tests {
             assert_eq!(
                 got.map(|c| format!("{c:06X}")),
                 expected.map(|c| format!("{c:06X}")),
-                "dark {dark} glass {}",
-                chrome.glass
+                "dark {dark} opacity {}",
+                appearance.opacity
             );
         }
     }
@@ -1351,6 +1269,25 @@ mod tests {
                     "{}",
                     theme.id
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn diff_counts_are_readable_on_the_column() {
+        // A ready card colors its `+N` and `−N` with the Changes panel's
+        // diff text, so that text must also read on the column.
+        for theme in every_theme() {
+            for (appearance, reduce) in modes() {
+                let chrome = chrome_for(&appearance, theme, reduce);
+                let column = with_alpha(chrome.column, 1.0);
+                for (name, color) in [
+                    ("added", chrome.diff_added.text),
+                    ("removed", chrome.diff_removed.text),
+                ] {
+                    let ratio = contrast(color, column);
+                    assert!(ratio >= TEXT_CONTRAST, "{} {name}: {ratio}", theme.id);
+                }
             }
         }
     }
@@ -1392,7 +1329,6 @@ mod tests {
     fn derived_chrome_uses_the_theme_surfaces_and_hues() {
         let chrome = chrome_for(&Appearance::default(), &MOCHA, false);
         let ui = MOCHA.ui.unwrap();
-        assert_eq!(chrome.card_selected, rgba_of(ui.surface));
         assert_eq!(chrome.overlay, rgba_of(ui.surface));
         assert_eq!(chrome.sunken, rgba_of(ui.mantle));
         assert_eq!(chrome.term_header, rgba_of(ui.mantle));
