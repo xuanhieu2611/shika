@@ -68,9 +68,12 @@ pub fn detect(preset: &str, lines: &[String], title: Option<&str>) -> Signal {
 
     // A current prompt bounds history above and drafts below. Permission option
     // selectors use the same glyph, so numbered options are not input prompts.
+    // Cursor's composer is a `→` row. Half-block bars frame it; a `>` quote above
+    // that row is transcript text, not the editor.
     let prompt = rows.iter().rposition(|s| prompt_body(preset, s).is_some());
-    let top = prompt.and_then(|p| (0..p).rev().find(|&i| rule(rows[i])));
-    let bottom = prompt.and_then(|p| ((p + 1)..rows.len()).find(|&i| rule(rows[i])));
+    let top = prompt.and_then(|p| (0..p).rev().find(|&i| screen_frame(preset, rows[i])));
+    let bottom =
+        prompt.and_then(|p| ((p + 1)..rows.len()).find(|&i| screen_frame(preset, rows[i])));
     let boxed = top.zip(bottom);
     let live: Vec<&str> = if let Some(p) = prompt {
         // Only footer controls after the input can block. Never inspect drafts.
@@ -163,13 +166,15 @@ pub fn detect(preset: &str, lines: &[String], title: Option<&str>) -> Signal {
         .iter()
         .rev()
         .copied()
-        .find(|s| !s.is_empty() && !rule(s));
+        .find(|s| !s.is_empty() && !screen_frame(preset, s));
     let working = candidate.is_some_and(|s| working_row(preset, s))
         || (preset == "cursor"
             && boxed.is_some()
             && live
                 .iter()
-                .any(|s| s.eq_ignore_ascii_case("ctrl+c to stop")));
+                .any(|s| s.eq_ignore_ascii_case("ctrl+c to stop")))
+        || (preset == "cursor"
+            && prompt.is_some_and(|index| cursor_processing_prompt(rows[index])));
     // Pi's current indicator is embedded in the editor's top border.
     let pi_border = pi_top.is_some_and(|i| {
         let s = rows[i];
@@ -249,6 +254,8 @@ fn prompt_body<'a>(preset: &str, row: &'a str) -> Option<&'a str> {
         "cursor" => {
             if row.starts_with('❯') {
                 '❯'
+            } else if row.starts_with('→') {
+                '→'
             } else {
                 '>'
             }
@@ -256,6 +263,14 @@ fn prompt_body<'a>(preset: &str, row: &'a str) -> Option<&'a str> {
         _ => return None,
     };
     let body = row.strip_prefix(marker)?.trim();
+    // Cursor decision rows are `→ Run (once) (y)`, not the composer. A draft on
+    // the composer can be "Yes"; that filter stays for the other glyphs.
+    if preset == "cursor" && marker == '→' {
+        if cursor_decision_option(body) {
+            return None;
+        }
+        return Some(body);
+    }
     let lower = body.to_lowercase();
     if (body.chars().next().is_some_and(|c| c.is_ascii_digit())
         && (body.contains(". ") || body.contains(") ")))
@@ -268,6 +283,40 @@ fn prompt_body<'a>(preset: &str, row: &'a str) -> Option<&'a str> {
         return None;
     }
     Some(body)
+}
+
+/// Box drawing, or Cursor's half-block prompt bar (`▄` above, `▀` below).
+fn screen_frame(preset: &str, s: &str) -> bool {
+    rule(s) || (preset == "cursor" && half_block_bar(s))
+}
+
+fn half_block_bar(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c @ ('▄' | '▀')) => s.chars().count() >= 3 && chars.all(|next| next == c),
+        _ => false,
+    }
+}
+
+/// Selected approval rows look like `Run (once) (y)` or `Skip (esc or n)`.
+fn cursor_decision_option(body: &str) -> bool {
+    let Some((_, hint)) = body.rsplit_once(" (") else {
+        return false;
+    };
+    (1..=18).contains(&hint.chars().count())
+        && hint.ends_with(')')
+        && hint
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '+' | '-' | ')'))
+}
+
+/// Empty-input processing placeholder, painted on the right of the `→` row.
+fn cursor_processing_prompt(row: &str) -> bool {
+    let Some(body) = row.trim_start_matches('│').trim().strip_prefix('→') else {
+        return false;
+    };
+    let body = body.trim();
+    body.eq_ignore_ascii_case("ctrl+c to stop") || body.to_lowercase().ends_with(" ctrl+c to stop")
 }
 
 fn rule(s: &str) -> bool {
@@ -356,6 +405,7 @@ fn working_row(preset: &str, s: &str) -> bool {
         "cursor" => {
             lower == "ctrl+c to stop"
                 || lower.starts_with("ctrl+c to stop ·")
+                || cursor_status_line(s)
                 || ((spinner(first) || matches!(first, '⬡' | '⬢'))
                     && rest
                         .split_whitespace()
@@ -368,6 +418,59 @@ fn working_row(preset: &str, s: &str) -> bool {
 }
 
 /// Require the CLI timer grammar, not an arbitrary parenthesized sentence.
+/// Cursor CLI 2026.10 paints a one- or two-cell braille spinner, then a short
+/// status word: Thinking, Summarizing, Working, or a progressive tool verb.
+fn cursor_status_line(s: &str) -> bool {
+    let mut chars = s.chars();
+    if !chars.next().is_some_and(braille_cell) {
+        return false;
+    }
+    if chars.as_str().chars().next().is_some_and(braille_cell) {
+        chars.next();
+    }
+    let rest = chars.as_str().trim();
+    // A long braille line is transcript text. Live status is a short label,
+    // optionally followed by a path and a token count.
+    if rest.split_whitespace().count() > 8 {
+        return false;
+    }
+    let Some(word) = rest.split_whitespace().next() else {
+        return false;
+    };
+    let word = word
+        .trim_matches(|c: char| !c.is_alphabetic())
+        .to_lowercase();
+    // Cursor CLI 2026.10. Keep this list aligned with its status row, not with
+    // every English word that ends in "ing".
+    matches!(
+        word.as_str(),
+        "thinking"
+            | "summarizing"
+            | "working"
+            | "composing"
+            | "reconnecting"
+            | "reading"
+            | "grepping"
+            | "searching"
+            | "globbing"
+            | "listing"
+            | "deleting"
+            | "editing"
+            | "running"
+            | "waiting"
+            | "calling"
+            | "exploring"
+            | "updating"
+            | "planning"
+            | "writing"
+            | "creating"
+    )
+}
+
+fn braille_cell(c: char) -> bool {
+    ('\u{2800}'..='\u{28ff}').contains(&c)
+}
+
 fn elapsed_suffix(s: &str) -> bool {
     let Some((_, suffix)) = s.rsplit_once(" (") else {
         return false;
@@ -477,7 +580,9 @@ fn transcript_signature(preset: &str, lines: &[String]) -> String {
         let marker = match preset {
             "claude" => s.starts_with('❯'),
             "codex" => s.starts_with('›'),
-            "cursor" => s.starts_with('>') || s.starts_with('❯'),
+            // `→` is the composer, including a draft of "Yes". Decision rows use
+            // the same glyph; the last matching row is still the input boundary.
+            "cursor" => s.starts_with('>') || s.starts_with('❯') || s.starts_with('→'),
             _ => false,
         };
         // An unfinished response fence must not swallow the real editor. Its
@@ -485,11 +590,12 @@ fn transcript_signature(preset: &str, lines: &[String]) -> String {
         marker
             && (!in_code[i]
                 || editor_footer
-                || (rows[..i].iter().any(|s| rule(s)) && rows[i + 1..].iter().any(|s| rule(s))))
+                || (rows[..i].iter().any(|s| screen_frame(preset, s))
+                    && rows[i + 1..].iter().any(|s| screen_frame(preset, s))))
     });
     let end = if let Some(prompt) = prompt {
-        let top = (0..prompt).rev().find(|&i| rule(rows[i]));
-        let bottom = ((prompt + 1)..rows.len()).any(|i| rule(rows[i]));
+        let top = (0..prompt).rev().find(|&i| screen_frame(preset, rows[i]));
+        let bottom = ((prompt + 1)..rows.len()).any(|i| screen_frame(preset, rows[i]));
         if bottom {
             top.unwrap_or(prompt)
         } else {
@@ -796,6 +902,113 @@ mod tests {
             ),
             Signal::Idle
         );
+    }
+
+    fn cursor_cli(status: Option<&str>, prompt: &str) -> Vec<String> {
+        let mut rows = vec![
+            "> quoted plan stays in the transcript".to_string(),
+            "The patch is ready to review.".to_string(),
+        ];
+        if let Some(status) = status {
+            rows.push(status.to_string());
+        }
+        rows.extend([
+            "▄▄▄▄▄▄▄▄".to_string(),
+            format!("→ {prompt}"),
+            "▀▀▀▀▀▀▀▀".to_string(),
+            "composer · ~/repo · main".to_string(),
+        ]);
+        rows
+    }
+
+    #[test]
+    fn cursor_status_row_stays_working_when_a_quote_is_on_screen() {
+        let thinking = "\u{2800}\u{28d4} Thinking".to_string();
+        assert_eq!(
+            detect("cursor", &cursor_cli(Some(&thinking), ""), None),
+            Signal::Working
+        );
+        for line in [
+            "\u{2820}\u{2818} Summarizing",
+            "\u{2800}\u{28d4} Reading src/main.rs",
+            "\u{2800}\u{28d4} Working  12.4k",
+            "\u{28ff} Grepping",
+        ] {
+            assert_eq!(
+                detect("cursor", &cursor_cli(Some(line), "follow up"), None),
+                Signal::Working,
+                "{line}"
+            );
+        }
+        // A finished response between an old spinner and the prompt is not live.
+        let stale = "\u{2800}\u{28d4} Thinking".to_string();
+        assert_eq!(
+            screen(
+                "cursor",
+                &[stale.as_str(), "Done.", "▄▄▄▄▄▄▄▄", "→", "▀▀▀▀▀▀▀▀"]
+            ),
+            Signal::Idle
+        );
+        assert_eq!(detect("cursor", &cursor_cli(None, ""), None), Signal::Idle);
+        assert_eq!(
+            detect("cursor", &cursor_cli(None, "Yes"), None),
+            Signal::Idle
+        );
+        assert_eq!(
+            screen(
+                "cursor",
+                &["Thinking about the next step", "▄▄▄▄", "→", "▀▀▀▀"]
+            ),
+            Signal::Idle
+        );
+    }
+
+    #[test]
+    fn cursor_processing_placeholder_is_working_and_a_draft_of_it_is_not() {
+        assert_eq!(
+            screen("cursor", &["▄▄▄▄▄▄", "→ ctrl+c to stop", "▀▀▀▀▀▀"]),
+            Signal::Working
+        );
+        assert_eq!(
+            screen(
+                "cursor",
+                &["▄▄▄▄▄▄", "→                ctrl+c to stop", "▀▀▀▀▀▀"]
+            ),
+            Signal::Working
+        );
+    }
+
+    #[test]
+    fn cursor_visible_status_does_not_notify_until_it_clears() {
+        let t = Instant::now();
+        let thinking = "\u{2800}\u{28d4} Thinking".to_string();
+        let working = cursor_cli(Some(&thinking), "");
+        assert_eq!(detect("cursor", &working, None), Signal::Working);
+        let mut activity = Activity::new(t);
+        let started = activity.advance(Signal::Working, Some(t), Some(t), t, false);
+        assert!(started.changed);
+        assert!(!started.notify);
+        assert!(
+            !activity
+                .advance(
+                    detect("cursor", &working, None),
+                    Some(t),
+                    Some(t),
+                    at(t, 30_000),
+                    false
+                )
+                .notify
+        );
+        let idle = cursor_cli(None, "");
+        assert_eq!(detect("cursor", &idle, None), Signal::Idle);
+        assert!(
+            !activity
+                .advance(Signal::Idle, None, None, at(t, 30_100), false)
+                .ready
+        );
+        let done = activity.advance(Signal::Idle, None, None, at(t, 30_700), false);
+        assert!(done.notify);
+        assert!(done.ready);
     }
 
     #[test]
@@ -1515,6 +1728,25 @@ mod tests {
             _ => unreachable!(),
         }
         rows
+    }
+
+    #[test]
+    fn cursor_status_spinner_is_not_transcript_evidence() {
+        let t = Instant::now();
+        let mut evidence = OutputEvidence::default();
+        let first = cursor_cli(Some("\u{2800}\u{28d4} Thinking"), "draft");
+        let spun = cursor_cli(Some("\u{2820}\u{2818} Thinking"), "draft changed");
+        assert_eq!(evidence.observe("cursor", &first, Some(t), None, t), None);
+        assert_eq!(
+            evidence.observe("cursor", &spun, Some(at(t, 300)), None, at(t, 300)),
+            None
+        );
+        let mut answered = spun;
+        answered[1] = "The patch changed.".to_string();
+        assert_eq!(
+            evidence.observe("cursor", &answered, Some(at(t, 400)), None, at(t, 400)),
+            Some(at(t, 400))
+        );
     }
 
     #[test]

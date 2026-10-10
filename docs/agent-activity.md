@@ -69,7 +69,7 @@ The screen rules are original code. Herdr's Apache-2.0 implementation informed t
 | --- | --- | --- |
 | Claude Code | Live-screen chrome and explicit terminal title signals | Private UI formats can change. No state-reporting hook is installed. |
 | Codex | Live-screen chrome and explicit terminal title signals | No app-server or lifecycle hook integration is installed. |
-| Cursor CLI | Live-screen working/approval/editor chrome | Do not assume editor hooks have identical CLI coverage. |
+| Cursor CLI | Live status row and the `→` composer prompt | Cursor CLI 2026.10 paints a one- or two-cell braille spinner plus a short status word (`Thinking`, `Summarizing`, `Working`, or a tool verb such as `Reading`) immediately above a `→` prompt. `▄` and `▀` bars frame that prompt, and an empty prompt shows `ctrl+c to stop` while processing. A `>` quote is transcript text, not the prompt. Terminal-title status is off unless the user enables it. Do not assume editor hooks have identical CLI coverage. |
 | Pi | Session-local lifecycle extension, with screen fallback and visible blockers | The bridge does not universally observe dialogs from other extensions. |
 
 Source precedence in the app:
@@ -216,6 +216,7 @@ Search by symbol rather than historical line numbers:
 | History prompt reuses the old timer or does not notify | Recall/Enter capture and new submission generation | Completed turn, Up/Enter, then new Working/completion |
 | Card stays Working after completion | Live footer/title match and lifecycle availability; watch for prose matching chrome | Completed response containing the exact working-like phrase |
 | Card turns Ready while silently working | Strong-signal recognition and authority selection; do not just enlarge quiet | Quiet tool/model interval with persistent working chrome |
+| Cursor notifies while its status row is still up | The row above the `→` prompt, not a `>` quote or two seconds of quiet | Quote plus a live braille status stays Working; Ready only after that row and the processing placeholder are gone |
 | Permission overlay becomes Ready | Blocker controls and Unknown retention | Dialog, ambiguous redraw, cancellation or resume |
 | New Pi turn finishes immediately | Background read generation, buffered-report floor, startup sequence | Delayed old Idle crossing a new submission |
 | Authority never returns after a transient failure | Same-sequence recovery and report validation | Valid report, failed read, same valid report |

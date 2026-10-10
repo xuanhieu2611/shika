@@ -124,6 +124,7 @@ Remaining integrated checks (not established by fixture/unit tests):
 - [ ] With each real CLI Working, type a draft, accidentally press a key, click other cards, focus/unfocus the window, scroll history, switch shell tabs, and resize. Timer retains the turn epoch; status does not falsely finish from interactions.
 - [ ] Submit a new prompt, including Up/Enter history recall after completion. It gets a new timer and notification budget. Enter while Working or answering a blocker does not reset the current epoch.
 - [ ] Long quiet tool/model work retains Working when live working chrome or a lifecycle report remains. A final ordinary text question can become Ready to check.
+- [ ] Cursor CLI: while the braille status row is up, including after a reply that contains a `>` quote, the card stays Working and does not notify. The notification arrives only after that row clears.
 - [ ] Actual permission/structured-question dialogs become Asking you and resume without resetting time. Cancellation, interruption, rejected requests, and process failure settle correctly.
 - [ ] First blocker or completion notifies once; later completion still produces an unseen result and fresh diff stat. Notification click selects the task.
 - [ ] Close protects active and blocked clean tasks; idle drafts do not create a false Working warning. Existing dirty/unpushed/branch-switch safety remains intact.
