@@ -19,6 +19,17 @@ A scratch copy outside the repository, built as an ad hoc signed `.app` with GPU
 - [ ] Future Create PR previews prefill the new name; existing commits/PRs are unchanged. Preview/publish defaults and historical commit preservation are covered with real Git and fake gh.
 - [ ] Setup-running/failed Rename is disabled; disappearing target or lost opening focus falls back safely. Relaunch restores no sessions or manual names.
 
+## Close animation, 2026-10-09
+
+Workspace tests, formatting, and Clippy passed; the easing curve and exit timing are unit tested in `model.rs`. A browser prototype was used to choose the motion and was not committed. The GUI checks below are open.
+
+- [ ] Cmd+Shift+W on a clean idle task: the card dims and reads "Closing...", the terminal fades behind the wave and "Closing...", and no `[process exited]` line reads as the result; then the card shrinks, fades, and collapses while the cards below slide up and the next terminal appears.
+- [ ] Discard and Push from the Close dialog show the same closing state while the dialog reads "Working...", including a slow push.
+- [ ] A failed close (a failed push, or a tree that turns dirty) restores the card and terminal and shows the error toast.
+- [ ] Closing the last card of a project shows the empty box only after the exit; closing a Lead and a Lead-started worker (`shika close`) look the same.
+- [ ] macOS Reduce Motion: the card and terminal dim without fading, and the card leaves without the exit.
+- [ ] The terminal's grid size does not change during the fade (no SIGWINCH redraw), in light, dark, and translucent themes.
+
 ## Card context menu
 
 See [docs/keyboard-flow.md](docs/keyboard-flow.md#card-context-menu). Use disposable repositories and an isolated `--data-dir`.
