@@ -30,13 +30,15 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
 | `Cmd+L` | Start the selected project's Lead (Agent > New Lead…), or show it when the project already has one | Picker in Lead mode (same keys as New; Tab changes project); the Lead card is selected and its terminal focused. When one exists, its terminal is focused at once. See [lead-agent.md](lead-agent.md) |
 
+These are the defaults. Settings, Keyboard, can change Hide or show changes, Go to agent 1 through 9, and Go to tab 1 through 9. A new Command chord replaces the old one. Go to agent N selects the Nth card in the column, skipping project headers, and does nothing when that card is not there. Agent rows start with no chord. The other shortcuts in this table stay fixed.
+
 Next/previous agent skips project headers, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
 
 These actions do nothing while the app is busy or any overlay is open. A Lead has no shell tabs or Create PR: `Cmd+T` and `Cmd+Shift+P` show a short message on its card. Workers started by a Lead (`shika new`) never take selection or focus from the author. `Cmd+N` uses the first project when nothing is selected and opens Add project when there are no projects.
 
 ## Settings sections
 
-Settings (`Cmd-,`) is Appearance and Agents. `j`/`k` move within the section. `[` and `]` change section. Appearance keeps its row keys. On Agents, `h` turns the selected CLI off and `l` turns it on. Escape closes Settings.
+Settings (`Cmd-,`) is Appearance, Keyboard, and Agents. `j`/`k` move within the section. `[` and `]` change section. Appearance keeps its row keys. On Keyboard, Enter or a click on the chord records the next Command shortcut, Delete clears that row, and Escape cancels the recording. A chord already used by another Keyboard row moves to the new row. A chord used by a fixed shortcut, such as New agent, is refused. On Agents, `h` turns the selected CLI off and `l` turns it on. Escape closes Settings.
 
 New lists only CLIs that are on the login-shell PATH and turned on. Number keys match that list. When none are available, Enter opens Settings on Agents and keeps the focus return New captured, so Done still restores it.
 
@@ -72,7 +74,7 @@ Implementation: `Overlay::CardMenu`, `CardMenu::target_index`, `open_card_menu`,
 - Close cancellation still routes dirty or unpushed work to the task shell. It is a workflow transition, not generic focus restoration.
 - Cards remain sorted by attention within each project. This improvement does not stabilize their order during status changes.
 - One terminal is visible at a time. Hidden views and PTYs stay alive. The Changes panel is a read-only diff beside it, not a second terminal.
-- There is no prefix mode, configurable keymap, or saved keyboard preference. Terminal tabs add no persistence. Core's memory-only Session now records `shell_ptys`; `open_shell` creates a fresh PTY on each call and `close_shell` validates task ownership before stopping one.
+- Keyboard in Settings can rebind Hide or show changes and the numbered agent and tab jumps. It does not add a prefix mode, and it does not rebind the other shortcuts. Terminal tabs add no persistence. Core's memory-only Session now records `shell_ptys`; `open_shell` creates a fresh PTY on each call and `close_shell` validates task ownership before stopping one.
 
 ## Why Command, not a multiplexer prefix
 
@@ -82,7 +84,7 @@ Command provides a useful ownership boundary: Shika owns its Command shortcuts; 
 
 A multiplexer prefix would add a keyboard mode and an extra step to frequent transitions. It also needs cancellation, conflict handling, and a way to send the prefix itself into the terminal. Being a developer does not imply wanting that trade-off.
 
-The decision is one interaction model with a small, predictable default shortcut set. An optional prefix could be added later if actual users need it, but it should invoke the same actions and preserve the same focus rules, not create a second product mode. Full keymap customization is not part of this change.
+The decision is one interaction model with a small, predictable default shortcut set. Settings can replace a few of those Command chords. It does not add a second mode, and a plain key still belongs to the cards or the CLI.
 
 ## Implementation map
 
@@ -105,7 +107,8 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 | Scroll arithmetic | `crates/shika/src/model.rs`: `reveal_delta` | Minimal offset adjustment; oversized rows align their top |
 | Terminal ownership | `crates/shika-terminal/src/view.rs`: `init`, `key_for` | Keeps Command shortcuts, Ctrl+Tab, and Ctrl+Shift+Tab out of PTY key encoding; retains terminal copy/paste and history bindings |
 | Discovery | `main` menu registration, `top_row`, `terminal_side`, `KeyTip` | Native Agent menu and existing themed tooltip component |
-| Changes panel | `ToggleChanges` (binding `cmd-alt-b` in the `Shika` context, View menu); `crates/shika/src/changes.rs`: `Shika::toggle_changes`, `close_changes`, `restore_changes_focus`, `changes_key` on the panel's `Changes` key context, `Panel::focus`, `Panel::return_focus`; `move_agent` | Toggle, saved return focus, panel-local scrolling keys (see [changes-panel.md](changes-panel.md#architecture-and-code-map)) |
+| Changes panel | `ToggleChanges`, bound from `shortcuts::bindings` (default `cmd-alt-b`) in the `Shika` context, View menu; `crates/shika/src/changes.rs`: `Shika::toggle_changes`, `close_changes`, `restore_changes_focus`, `changes_key` on the panel's `Changes` key context, `Panel::focus`, `Panel::return_focus`; `move_agent` | Toggle, saved return focus, panel-local scrolling keys (see [changes-panel.md](changes-panel.md#architecture-and-code-map)) |
+| Custom shortcuts | `crates/shika/src/shortcuts.rs`: `COMMANDS`, `bindings`, `assign`; `install_keys` in `main.rs`; `KeyOverrides` in `settings.json` | The Keyboard rows, conflict handling, and the chords actually bound |
 
 ### Agent navigation
 
@@ -198,6 +201,7 @@ For a keyboard contribution, exercise the agent and multiple shell tabs, both fo
 ## Contributor guardrails
 
 - Extend the existing GPUI actions and handlers rather than adding a parallel keyboard dispatcher or per-CLI shortcut map.
+- New customizable shortcuts go in `shortcuts::COMMANDS` and `install_keys`. A custom chord must include Command, so `key_for` keeps it out of the terminal. Do not take a fixed shortcut such as Quit, New agent, or copy and paste.
 - Keep app shortcuts out of the terminal encoder. Preserve plain typing, Escape, and supported CLI bindings.
 - Keep the busy/overlay guards when adding action entry points, including menus.
 - Focus restoration is the default for non-workflow overlays; explicit workflow transitions may intentionally choose another destination.

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -403,6 +403,27 @@ fn agents_or_default<'de, D: Deserializer<'de>>(
     Ok(AgentSettings::from_json(&value))
 }
 
+/// Shortcut overrides saved in `settings.json`. A missing id keeps that
+/// shortcut's default. An empty string clears it. The app decides which ids
+/// exist and which chords are allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct KeyOverrides(BTreeMap<String, String>);
+
+impl KeyOverrides {
+    pub fn get(&self, id: &str) -> Option<&str> {
+        self.0.get(id).map(String::as_str)
+    }
+
+    pub fn set(&mut self, id: &str, chord: impl Into<String>) {
+        self.0.insert(id.to_string(), chord.into());
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// `settings.json`. A missing file, or a missing field, takes the default.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -435,6 +456,10 @@ pub struct Settings {
         deserialize_with = "agents_or_default"
     )]
     pub agents: AgentSettings,
+    /// Shortcut overrides. Missing, or an empty object, keeps every default.
+    /// Only chords the user changed are written.
+    #[serde(default, skip_serializing_if = "KeyOverrides::is_empty")]
+    pub keys: KeyOverrides,
 }
 
 impl Default for Settings {
@@ -448,6 +473,7 @@ impl Default for Settings {
             column: Column::default(),
             changes: Changes::default(),
             agents: AgentSettings::default(),
+            keys: KeyOverrides::default(),
         }
     }
 }
@@ -552,6 +578,7 @@ mod tests {
             },
             changes: Changes { width: 610 },
             agents: AgentSettings::default(),
+            keys: KeyOverrides::default(),
         };
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -728,6 +755,44 @@ mod tests {
             Changes::default()
         );
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn key_overrides_round_trip_and_a_missing_field_is_empty() {
+        let path = temp_file("keys");
+        let file = SettingsFile::open(path.clone());
+        let mut keys = KeyOverrides::default();
+        keys.set("toggleChanges", "cmd-r");
+        keys.set("selectTab1", "");
+        let settings = Settings {
+            keys,
+            ..Settings::default()
+        };
+        file.save(&settings).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"toggleChanges\": \"cmd-r\""));
+        assert!(text.contains("\"selectTab1\": \"\""));
+        assert_eq!(file.load().unwrap(), settings);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+
+        let bare = temp_file("keys-bare");
+        fs::create_dir_all(bare.parent().unwrap()).unwrap();
+        fs::write(&bare, "{}\n").unwrap();
+        assert!(
+            SettingsFile::open(bare.clone())
+                .load()
+                .unwrap()
+                .keys
+                .is_empty()
+        );
+        fs::remove_dir_all(bare.parent().unwrap()).unwrap();
+
+        let defaults_path = temp_file("keys-default");
+        SettingsFile::open(defaults_path.clone())
+            .save(&Settings::default())
+            .unwrap();
+        assert!(!fs::read_to_string(&defaults_path).unwrap().contains("keys"));
+        fs::remove_dir_all(defaults_path.parent().unwrap()).unwrap();
     }
 
     #[test]

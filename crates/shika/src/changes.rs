@@ -1496,10 +1496,14 @@ impl Shika {
     /// 12 from the window's edge in both places.
     pub fn changes_toggle(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
-        let tip = if self.changes.open {
-            "Hide changes  \u{2325}\u{2318}B"
-        } else {
-            "Show changes  \u{2325}\u{2318}B"
+        let tip = match (
+            self.changes.open,
+            crate::shortcuts::bound_label(&self.keys, "toggleChanges"),
+        ) {
+            (true, Some(shortcut)) => format!("Hide changes  {shortcut}"),
+            (false, Some(shortcut)) => format!("Show changes  {shortcut}"),
+            (true, None) => "Hide changes".to_string(),
+            (false, None) => "Show changes".to_string(),
         };
         let (hover, ink_hover) = (chrome.term_hover, chrome.term_white);
         div()
@@ -1515,10 +1519,11 @@ impl Shika {
             .cursor_pointer()
             .hover(move |style| style.bg(hover))
             .tooltip(move |_, cx| {
-                cx.new(|_| KeyTip {
+                let text = tip.clone();
+                cx.new(move |_| KeyTip {
                     bg: tip_bg,
                     fg: tip_fg,
-                    text: tip.into(),
+                    text: text.into(),
                 })
                 .into()
             })
