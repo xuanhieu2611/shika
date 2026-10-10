@@ -8,7 +8,7 @@ Start here before changing the panel. This document records the product decision
 
 The author's loop after a turn: the card turns Ready, open a shell tab, type `lazygit`, read a few hunks, quit lazygit, close the tab. It works, but it is five steps to look at something Shika already knows how to compute: the card's diff stat compares the same tree against the same base.
 
-The panel makes that one key (Cmd+Option+B) or one click (the card's diff stat). It answers "what did the agent touch, and does it look right?", not "let me work on this code". So it is read only:
+The panel opens from Cmd+Option+B, the toggle button, or the View menu. It answers "what did the agent touch, and does it look right?", not "let me work on this code". So it is read only:
 
 - No editing, staging, unstaging, reverting, or committing. Create PR stays the only git write path in Shika, and the shell stays the place for hands-on git.
 - Nothing in the panel writes to the repository, the index, or the worktree, or takes `index.lock`. Git runs with `GIT_OPTIONAL_LOCKS=0`, like the diff stat.
@@ -47,7 +47,7 @@ The goal is snappy, light, and reliable. Closed, it costs nothing. Open, it stay
 | Control | Result |
 | --- | --- |
 | Cmd+Option+B, the toggle button, View menu "Hide or show changes" | Open the panel and focus it, or close it. Does nothing while a dialog or picker is open or the app is busy |
-| Click a card's diff stat | Select that card, open the panel if closed, and focus it |
+| Click a card, including its diff stat | Select that card and focus its terminal. The panel stays as it is |
 | Escape in the panel | Close it and restore the focus saved when it opened |
 | Click in the terminal | Focus the terminal; the panel stays open |
 | Click in the panel | Focus the panel |
@@ -66,7 +66,7 @@ The goal is snappy, light, and reliable. Closed, it costs nothing. Open, it stay
 
 The panel's plain keys run only while the panel has focus. None of them reach a PTY, and Escape in a terminal still goes to the CLI. There is no text cursor and no selection in this version, so there is no copy from the panel.
 
-When the panel opens it saves `window.focused(cx)` and focuses itself. Closing it from the panel (Escape, the toggle, or the button) restores that handle once; if that view is gone, focus goes to the cards. The panel follows the selection, so a saved terminal that belongs to another card than the one now selected gives way to the selected card's shown terminal (the same surface, on the card in view). Closing it while something else has focus moves no focus. A diff stat click saves the clicked card's terminal as the return focus, so Escape lands where a plain card click would have.
+When the panel opens it saves `window.focused(cx)` and focuses itself. Closing it from the panel (Escape, the toggle, or the button) restores that handle once; if that view is gone, focus goes to the cards. The panel follows the selection, so a saved terminal that belongs to another card than the one now selected gives way to the selected card's shown terminal (the same surface, on the card in view). Closing it while something else has focus moves no focus. A click on a card, including its diff stat, selects that card and focuses its terminal and leaves the panel as it is.
 
 ### Layout and width
 
@@ -135,7 +135,7 @@ Search by symbol rather than line number. App symbols are in `crates/shika/src/c
 | Diff types | `crates/shika-core/src/diff.rs`: `SessionDiff`, `FileDiff`, `Collapse`, `FileKey`, `FileStatus`, `Hunk`, `DiffLine`, `LineKind`, `Budget` | Owned, UI-free, testable results; caps recorded as `collapsed: Option<Collapse>` (why) and `hidden_lines` |
 | Expansion | `Core::session_file_diff`; `Shika::expand_changes_file`, `DiffView::with_file` | One file without the per-file cap, up to the hard limit, read off the UI thread and spliced into a new row index there |
 | Settings | `crates/shika-core/src/settings.rs`: `Changes`, `changes_or_default` | `changes.width`, 320 to 900, default 480, an invalid field read as the default; no open state |
-| Toggle and focus | `ToggleChanges` (action, binding, and View menu item in `main.rs`); `Shika::toggle_changes`, `open_changes`, `close_changes`, `restore_changes_focus`, `show_changes_for`, `Panel::return_focus`; `move_agent` in `main.rs` keeps panel focus | Open/close, saved focus, busy/overlay guards |
+| Toggle and focus | `ToggleChanges` (action, binding, and View menu item in `main.rs`); `Shika::toggle_changes`, `open_changes`, `close_changes`, `restore_changes_focus`, `Panel::return_focus`; `move_agent` in `main.rs` keeps panel focus | Open/close, saved focus, busy/overlay guards |
 | Layout | `pane_widths`, `drag_width`, `Shika::drag_changes`, `changes_handle`, `ChangesDrag`; `Shika::pane_widths`, `column_width`, `drag_column`, `MIN_TERMINAL_WIDTH` in `main.rs` | Yield order: panel, then column, then terminal; widths saved when a drag ends (`tick`) |
 | Panel view | `Panel`, `Shika::changes_panel`, `changes_list`, `changes_toggle`, `changes_key`, `RowPaint`, `CHANGES_ICON`; `DiffView`, `Row` | Title row, toggle, rows, horizontal offset, empty states, keys |
 | Refresh | `Shika::sync_changes` (runs each paint, acts only on a new target), `fetch_changes`, `Panel::generation`, `Panel::shows`; the Ready hook beside `fetch_diff_stat` in `tick` | Fetch on open, card change, Ready, and `r`; drop stale results |
@@ -223,5 +223,5 @@ When extending the panel:
 - Keep the caps and the virtualized, uniform-height list. Measure a 50,000-line diff before and after any change to rows or parsing.
 - Keep git in core, behind `read_only_git` and `GIT_OPTIONAL_LOCKS=0`, with the same base as the diff stat.
 - Use the design tokens in `design/DESIGN.md`. The diff green and red stay inside the panel's rows.
-- Guard every entry point, including the menu and the stat click, against overlays and busy state.
+- Guard every entry point, including the menu and the toggle, against overlays and busy state. A card click, including its diff stat, selects the card and focuses its terminal; it is not an entry point for the panel.
 - Update this document, `AGENTS.md`, `design/DESIGN.md`, `docs/keyboard-flow.md`, and the acceptance checks when behavior changes. Record validation honestly.

@@ -53,14 +53,14 @@ Exercised 2026-10-08 on a debug bundle with a disposable repository, a local bar
 - PASS (frames): "No agent selected", "No changes" on a fresh task, and "Could not read changes" with `fatal: not a git repository: /nonexistent/dir` when the worktree's `.git` file pointed nowhere; `r` recovered once it was restored.
 - PASS (diagnostics file): opening on the 48,733-row result read and parsed in 60 to 73ms and indexed in 14ms (debug build, background executor). `r` after an edit read again and the title stat changed from +57011 to +57012. Reopening read once; nothing ran in 5 seconds closed. Relaunch started closed, and the leftovers dialog blocked the toggle.
 - [ ] The same checks with real keystrokes, clicks, and trackpad gestures (macOS event translation for ⌥⌘B, momentum scrolling), and the View menu item.
-- [ ] Clicking a Ready card's diff stat selects that card, opens the panel focused, and Escape then lands in that card's terminal. Hover turns the stat ink-1. (No card turned Ready: no prompt was sent.)
+- [ ] Clicking a Ready card, including its diff stat, selects that card and focuses its terminal. The panel stays closed. The stat has no pointer, hover color, or tooltip. (No card turned Ready: no prompt was sent.)
 - [ ] The panel refreshes when the shown card turns Ready, keeping scroll on the same card, and does not refresh on its own while the agent works. (Same reason.)
 - [ ] Escape after the saved shell tab was closed falls back to the cards.
 - [ ] Frame rate while scrolling the 48,733-row result and while an agent streams output beside it; frames were not timed.
 - [ ] "Preparing worktree" during configured setup, "Setup failed", and "Reading changes" after 500ms on a slow read.
 - [ ] Deleted, mode-only, untracked symlink, and no-trailing-newline rows (in the set, not inspected), an untracked file over 1 MiB, and an expand past the 100,000-line limit.
 - [ ] Gruvbox and the light derived themes; translucency at 85%; Reduce transparency.
-- [ ] Cmd+Option+B and the stat click do nothing while Settings, Base branch, Close, or Create PR is open; the toast stays over the terminal.
+- [ ] Cmd+Option+B does nothing while Settings, Base branch, Close, or Create PR is open; the toast stays over the terminal. A click on a card, including its diff stat, also leaves the panel closed while an overlay is open.
 - [ ] While the panel is open, `git status`, commits, and pushes in a shell never hit `index.lock` errors.
 - [ ] Added after the run above, covered by unit and disposable-repository tests only: with a task worktree's `.git` file deleted, the panel shows "Could not read changes" with `not a git repository` and the card hides its diff stat; `git worktree repair` and `r` bring the diff back.
 - [ ] Collapsed rows name their cap: "Large diff hidden - N lines" over 2,000 changed lines, "Large file hidden - 1.1 MB" for an untracked file over 1 MiB, and "Diff hidden - N lines" on small files past the total budget; each expands on click and `o`.
