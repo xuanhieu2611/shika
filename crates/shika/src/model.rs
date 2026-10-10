@@ -462,6 +462,47 @@ pub fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
         None => path.display().to_string(),
     }
 }
+/// The design's motion curve, `cubic-bezier(.2,.8,.2,1)`, at progress `t`
+/// from 0 to 1.
+pub fn ease(t: f32) -> f32 {
+    // Exact ends, so an animation starts and settles exactly where it should.
+    if t <= 0. {
+        return 0.;
+    }
+    if t >= 1. {
+        return 1.;
+    }
+    let curve = |p1: f32, p2: f32, s: f32| {
+        let r = 1. - s;
+        3. * r * r * s * p1 + 3. * r * s * s * p2 + s * s * s
+    };
+    // x rises from 0 to 1 along the curve, so halving finds the point at x = t.
+    let (mut lo, mut hi) = (0f32, 1f32);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.;
+        if curve(0.2, 0.2, mid) < t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    curve(0.8, 1., (lo + hi) / 2.)
+}
+/// A closing task's card and terminal fade to their closing look.
+pub const CLOSING_FADE: Duration = Duration::from_millis(180);
+/// A closed card shrinks and fades out, then its row collapses.
+pub const EXIT_SHRINK: Duration = Duration::from_millis(160);
+pub const EXIT_COLLAPSE: Duration = Duration::from_millis(220);
+pub const EXIT: Duration = Duration::from_millis(160 + 220);
+/// A closed card's exit at `t` of [`EXIT`], 0 to 1: how far the card has
+/// shrunk and faded, then how far its row has collapsed, both eased. The row
+/// starts to collapse once the card is gone.
+pub fn card_exit(t: f32) -> (f32, f32) {
+    let ms = t.clamp(0., 1.) * EXIT.as_millis() as f32;
+    let shrink = ms / EXIT_SHRINK.as_millis() as f32;
+    let collapse = (ms - EXIT_SHRINK.as_millis() as f32) / EXIT_COLLAPSE.as_millis() as f32;
+    (ease(shrink), ease(collapse))
+}
 /// How long a Ready card must stay selected in the active window before its
 /// dot clears, so pressing `j` past a card does not count as reading it.
 pub const SEEN_AFTER: Duration = Duration::from_secs(1);
@@ -485,6 +526,34 @@ impl Dwell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ease_runs_from_zero_to_one_and_front_loads_the_motion() {
+        assert_eq!(ease(0.), 0.);
+        assert!((ease(1.) - 1.).abs() < 1e-4);
+        assert_eq!(ease(-1.), 0.);
+        assert!((ease(2.) - 1.).abs() < 1e-4);
+        let mut last = 0.;
+        for i in 1..=100 {
+            let y = ease(i as f32 / 100.);
+            assert!(y >= last, "ease falls at {i}");
+            last = y;
+        }
+        // An ease-out: most of the distance is covered early.
+        assert!(ease(0.25) > 0.6);
+    }
+
+    #[test]
+    fn card_exit_shrinks_before_the_row_collapses() {
+        assert_eq!(card_exit(0.), (0., 0.));
+        let shrunk = EXIT_SHRINK.as_secs_f32() / EXIT.as_secs_f32();
+        let (shrink, collapse) = card_exit(shrunk);
+        assert!((shrink - 1.).abs() < 1e-4);
+        assert_eq!(collapse, 0.);
+        let (shrink, collapse) = card_exit(1.);
+        assert!((shrink - 1.).abs() < 1e-4);
+        assert!((collapse - 1.).abs() < 1e-4);
+    }
 
     #[test]
     fn dwell_counts_only_one_card_on_screen_without_a_break() {

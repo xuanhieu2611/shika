@@ -360,6 +360,18 @@ struct Card {
     launch_control: Option<PreparationControl>,
     launch_error: Option<String>,
     stage: String,
+    /// Close is stopping its terminals and removing its worktree: the card
+    /// dims and says so, and its terminal fades behind "Closing...".
+    closing: bool,
+}
+/// A closed card on its way out. It is no longer in `cards`, so nothing can
+/// select, count, or act on it; it only paints until its exit has played.
+struct Departing {
+    card: Card,
+    /// Drawn before this card, the one that followed it in its group when it
+    /// closed. `None` puts it at the end of its group.
+    before: Option<gpui::EntityId>,
+    key: u64,
 }
 impl Card {
     fn unseen(&self) -> bool {
@@ -594,6 +606,9 @@ struct Shika {
     /// waiting on. See `control::LeadDialog`.
     lead_dialog: Option<control::LeadDialog>,
     control_error: Option<String>,
+    /// Closed cards playing their exit. See [`Departing`].
+    departing: Vec<Departing>,
+    departing_serial: u64,
 }
 impl Shika {
     fn new(
@@ -688,6 +703,8 @@ impl Shika {
             control,
             lead_dialog: None,
             control_error,
+            departing: Vec::new(),
+            departing_serial: 0,
         };
         cx.spawn_in(window, async move |this, cx| {
             let catalog = cx
@@ -1198,6 +1215,35 @@ impl Shika {
         self.last_revealed_selection = None;
     }
 
+    /// Takes a closed card out of `cards` and lets it play its exit in place
+    /// for [`model::EXIT`]. Selection is the caller's. With macOS Reduce
+    /// motion the card goes at once.
+    fn depart(&mut self, index: usize, cx: &mut Context<Self>) {
+        let project = self.cards[index].project.clone();
+        let before = self
+            .sorted_cards(&project)
+            .into_iter()
+            .skip_while(|&i| i != index)
+            .nth(1)
+            .map(|i| self.cards[i].agent.view.entity_id());
+        let card = self.cards.remove(index);
+        self.last_revealed_selection = None;
+        if cx.reduce_motion() {
+            return;
+        }
+        self.departing_serial += 1;
+        let key = self.departing_serial;
+        self.departing.push(Departing { card, before, key });
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(model::EXIT).await;
+            let _ = this.update(cx, |this, cx| {
+                this.departing.retain(|d| d.key != key);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Creates the card and starts the launch off the UI thread. A task from
     /// the picker, a Lead, and a retry are the author's: the card is selected
     /// and the dialogs close. A worker from `shika new` (`reply` answers the
@@ -1312,6 +1358,7 @@ impl Shika {
             launch_control: Some(control.clone()),
             launch_error: None,
             stage: "Creating worktree...".into(),
+            closing: false,
         });
         if author {
             self.selection = Some(Selection::Card(index));
@@ -2762,6 +2809,8 @@ impl Shika {
         };
         let core = self.core.clone();
         self.busy = true;
+        self.cards[index].closing = true;
+        cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -2779,22 +2828,32 @@ impl Shika {
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
+                // Find the card again: positions can change while Close runs.
+                let index = this
+                    .cards
+                    .iter()
+                    .position(|c| c.session.as_ref().is_some_and(|s| s.id == task_id));
                 match result {
                     Ok(()) => {
                         this.lead_dialog_succeeded(&task_id, control::close_outcome(action).into());
-                        this.cards.remove(index);
+                        if let Some(index) = index {
+                            this.depart(index, cx);
+                            this.selection = if this.cards.is_empty() {
+                                this.projects
+                                    .first()
+                                    .map(|p| Selection::Project(p.id.clone()))
+                            } else {
+                                Some(Selection::Card(index.min(this.cards.len() - 1)))
+                            };
+                        }
                         this.overlay = None;
                         this.overlay_return_focus = None;
-                        this.selection = if this.cards.is_empty() {
-                            this.projects
-                                .first()
-                                .map(|p| Selection::Project(p.id.clone()))
-                        } else {
-                            Some(Selection::Card(index.min(this.cards.len() - 1)))
-                        };
                         window.focus(&this.focus, cx);
                     }
                     Err(e) => {
+                        if let Some(index) = index {
+                            this.cards[index].closing = false;
+                        }
                         this.lead_dialog_failed(&task_id, e.to_string());
                         this.message(e.to_string());
                     }
@@ -4320,8 +4379,14 @@ impl Shika {
                         this.picker_for(new_id.clone(), window, cx);
                     })),
             );
-        let mut column = div().flex().flex_col().gap(px(6.)).child(header);
-        if indices.is_empty() {
+        let departing = self
+            .departing
+            .iter()
+            .filter(|d| d.card.project == id)
+            .collect::<Vec<_>>();
+        let mut column = div().flex().flex_col().gap(px(CARD_GAP)).child(header);
+        // The empty box waits until the last card has finished leaving.
+        if indices.is_empty() && departing.is_empty() {
             let card_rest = chrome.card_rest;
             let ink_2 = chrome.ink_2;
             column = column.child(
@@ -4344,29 +4409,111 @@ impl Shika {
                     })),
             );
         }
+        let shown = indices
+            .iter()
+            .map(|&at| self.cards[at].agent.view.entity_id())
+            .collect::<Vec<_>>();
         for at in indices {
-            column = column.child(self.card_view(at, chrome, cards_focused, reveal_selection, cx));
+            let card = &self.cards[at];
+            let view = card.agent.view.entity_id();
+            for leaving in departing.iter().filter(|d| d.before == Some(view)) {
+                column = column.child(self.departing_view(leaving, chrome, cx));
+            }
+            let face = self.card_view(card, Some(at), chrome, cards_focused, reveal_selection, cx);
+            column = column.child(if card.closing {
+                face.with_animation(
+                    SharedString::from(format!("card-closing-{view}")),
+                    gpui::Animation::new(model::CLOSING_FADE).with_easing(model::ease),
+                    |d, t| d.opacity(1. - (1. - CLOSING_CARD_OPACITY) * t),
+                )
+                .into_any_element()
+            } else {
+                face.into_any_element()
+            });
+        }
+        // Cards whose follower is gone too leave from the end of the group.
+        for leaving in departing
+            .iter()
+            .filter(|d| d.before.is_none_or(|view| !shown.contains(&view)))
+        {
+            column = column.child(self.departing_view(leaving, chrome, cx));
         }
         column
+    }
+
+    /// A closed card's exit: it shrinks toward its center and fades out, then
+    /// its row collapses so the cards below slide up. GPUI cannot scale text,
+    /// so the box shrinks and the text keeps its size; it is fading by then.
+    /// Both animations start on the same frame and share one clock.
+    fn departing_view(
+        &self,
+        leaving: &Departing,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let key = SharedString::from(format!("departing-{}", leaving.key));
+        let from = if leaving.card.closing {
+            CLOSING_CARD_OPACITY
+        } else {
+            1.
+        };
+        let face = self
+            .card_view(&leaving.card, None, chrome, false, false, cx)
+            .size_full();
+        let exit = || gpui::Animation::new(model::EXIT);
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .overflow_hidden()
+            .child(div().child(face).with_animation(
+                SharedString::from(format!("{key}-shrink")),
+                exit(),
+                move |d, t| {
+                    let (shrink, _) = model::card_exit(t);
+                    let scale = 1. - (1. - EXIT_SCALE) * shrink;
+                    d.w(gpui::relative(scale))
+                        .h(gpui::relative(scale))
+                        .opacity(from * (1. - shrink))
+                },
+            ))
+            .with_animation(
+                SharedString::from(format!("{key}-collapse")),
+                exit(),
+                |d, t| {
+                    let (_, collapse) = model::card_exit(t);
+                    d.h(px(CARD_HEIGHT * (1. - collapse)))
+                        .mb(px(-CARD_GAP * collapse))
+                },
+            )
     }
 
     /// A card: task, the timer while working, and the status signal; then
     /// CLI, branch, the diff stat when ready, and key hints on the selected
     /// card. A setup stage, or "Setup failed", sits between the CLI and the
     /// branch. The status words are not painted here.
+    /// `at` is the card's place in `cards`; a departing card has none and
+    /// takes no clicks. Every card is [`CARD_HEIGHT`] tall.
     fn card_view(
         &self,
-        i: usize,
+        card: &Card,
+        at: Option<usize>,
         chrome: &Chrome,
         cards_focused: bool,
         reveal_selection: bool,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let card = &self.cards[i];
-        let selected = self.selected_card() == Some(i);
+    ) -> gpui::Stateful<gpui::Div> {
+        let selected = at.is_some() && self.selected_card() == at;
+        let key: SharedString = match at {
+            Some(i) => i.to_string().into(),
+            None => format!("departing-{}", card.agent.view.entity_id()).into(),
+        };
         let colors = chrome.status(card.status);
         let separator = || div().flex_none().text_color(chrome.ink_5).child("·");
-        let hints: &[(&str, &str)] = if card.creating {
+        let hints: &[(&str, &str)] = if card.closing {
+            &[]
+        } else if card.creating {
             &[("↵", "view setup"), ("c", "cancel")]
         } else if card.launch_error.is_some() {
             &[("r", "retry"), ("c", "close")]
@@ -4385,7 +4532,9 @@ impl Shika {
         // Setup progress and failure are facts the signal cannot say. Waiting,
         // Working, and Ready stay on the signal, the tint, the timer, and the
         // diff stat.
-        let notice = if card.creating {
+        let notice = if card.closing {
+            Some("Closing...".to_string())
+        } else if card.creating {
             Some(card.stage.clone())
         } else if card.launch_error.is_some() {
             Some("Setup failed".to_string())
@@ -4412,7 +4561,7 @@ impl Shika {
                     })
                     .child(card.title.clone()),
             )
-            .when(card.status == Status::Working, |d| {
+            .when(card.status == Status::Working && !card.closing, |d| {
                 d.child(
                     div()
                         .flex_none()
@@ -4424,7 +4573,12 @@ impl Shika {
                         )),
                 )
             })
-            .child(card_signal(i, card.status, card.unseen(), chrome));
+            .child(if card.closing {
+                // A card on its way out has no status to signal.
+                div().flex_none().w(px(13.)).into_any_element()
+            } else {
+                card_signal(&key, card.status, card.unseen(), chrome)
+            });
         let meta = div()
             .flex()
             .items_center()
@@ -4460,8 +4614,13 @@ impl Shika {
                         .truncate()
                         // A long setup stage gives way. "Setup failed" stays whole.
                         .when(!card.creating, |stage| stage.flex_none())
-                        .text_color(colors.text)
+                        .text_color(if card.closing {
+                            chrome.ink_2
+                        } else {
+                            colors.text
+                        })
                         .font_weight(match card.status {
+                            _ if card.closing => FontWeight::MEDIUM,
                             Status::Ready | Status::Asking => FontWeight::SEMIBOLD,
                             Status::Working => FontWeight::MEDIUM,
                             Status::Waiting => FontWeight::NORMAL,
@@ -4490,7 +4649,7 @@ impl Shika {
                 d.child(separator()).child(div().flex_none().child(stat))
             })
             .when_some(card.pr.as_ref(), |d, pr| {
-                d.child(separator()).child(pr_mark(i, pr, chrome, cx))
+                d.child(separator()).child(pr_mark(&key, pr, chrome, cx))
             })
             .child(div().flex_1())
             .when(selected && cards_focused, |d| {
@@ -4507,30 +4666,32 @@ impl Shika {
                 }))
             });
         let base = div()
-            .id(SharedString::from(format!("card-{i}")))
-            .capture_any_mouse_down(cx.listener(
-                move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    if event.button == MouseButton::Right
-                        || (event.button == MouseButton::Left && event.modifiers.control)
-                    {
-                        cx.stop_propagation();
-                        this.open_card_menu(i, event.position, window, cx);
-                    }
-                },
-            ))
+            .id(SharedString::from(format!("card-{key}")))
             .relative()
             .flex()
             .flex_col()
             .gap(px(6.))
             .rounded(px(10.))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if this.busy || this.overlay.is_some() {
-                    return;
-                }
-                this.selection = Some(Selection::Card(i));
-                this.focus_terminal(window, cx);
-            }));
+            .when_some(at, |d, i| {
+                d.capture_any_mouse_down(cx.listener(
+                    move |this, event: &gpui::MouseDownEvent, window, cx| {
+                        if event.button == MouseButton::Right
+                            || (event.button == MouseButton::Left && event.modifiers.control)
+                        {
+                            cx.stop_propagation();
+                            this.open_card_menu(i, event.position, window, cx);
+                        }
+                    },
+                ))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if this.busy || this.overlay.is_some() {
+                        return;
+                    }
+                    this.selection = Some(Selection::Card(i));
+                    this.focus_terminal(window, cx);
+                }))
+            });
         let base = if selected {
             // The ring sits outside the card, like the design's box-shadow,
             // so the selected card keeps the resting card's size.
@@ -5122,7 +5283,7 @@ impl Shika {
                             )),
                     )
                 })
-                .child(div().flex_1().min_h_0().child(pane.view.clone()));
+                .child(closing_terminal(card, pane, chrome));
         } else {
             let icon = Arc::new(gpui::Image::from_bytes(
                 gpui::ImageFormat::Png,
@@ -6289,6 +6450,18 @@ const MONO: &str = "JetBrains Mono";
 /// The terminal keeps at least this much of the window beside the column.
 /// The 960px window minimum leaves room for the default 540px column.
 const MIN_TERMINAL_WIDTH: f32 = 420.;
+/// Every card's height: the 20px task line, the 6px gap, the 16px meta line,
+/// and 23px of padding (a resting card's 21 plus its 1px border on each side).
+/// A closed card's row collapses from this.
+const CARD_HEIGHT: f32 = 65.;
+/// The space between cards, and between a project header and its cards.
+const CARD_GAP: f32 = 6.;
+/// A card dims to this while Close stops its terminals and removes its tree.
+const CLOSING_CARD_OPACITY: f32 = 0.5;
+/// A closing task's terminal fades to a trace of its output.
+const CLOSING_TERMINAL_OPACITY: f32 = 0.06;
+/// A closed card shrinks toward its center to this size as it fades out.
+const EXIT_SCALE: f32 = 0.94;
 /// The narrowest column that fits the footer's key hints, without and with
 /// the Leftover worktrees button.
 const FOOTER_HINTS_FIT: f32 = 420.;
@@ -6483,7 +6656,7 @@ fn hint(key: &str, label: &str, chrome: &Chrome) -> gpui::Div {
 /// pass, a cross in the failed color when one fails, and the number alone
 /// when the repository reports none. A click opens the PR.
 fn pr_mark(
-    card: usize,
+    card: &str,
     pr: &checks::PrWatch,
     chrome: &Chrome,
     cx: &mut Context<Shika>,
@@ -6543,7 +6716,7 @@ fn pr_mark(
 /// The right end of a card's first line, one 13px slot so the signals line
 /// up down the column: working pixels, a ready dot until the result is seen,
 /// a grey waiting dot, and nothing once a Ready result has been seen.
-fn card_signal(card: usize, status: Status, unseen: bool, chrome: &Chrome) -> gpui::AnyElement {
+fn card_signal(card: &str, status: Status, unseen: bool, chrome: &Chrome) -> gpui::AnyElement {
     let slot = div().flex_none().flex().justify_center().w(px(13.));
     let color = chrome.status(status).dot;
     match status {
@@ -6554,21 +6727,74 @@ fn card_signal(card: usize, status: Status, unseen: bool, chrome: &Chrome) -> gp
     .into_any_element()
 }
 
+/// The terminal area. While its task closes, the terminal fades to a trace
+/// behind a grey wave and "Closing...", so the CLI's exit line and the
+/// stopped session do not read as the result. Opacity only: the terminal
+/// keeps its size, so its PTY is never resized.
+fn closing_terminal(card: &Card, pane: &Pane, chrome: &Chrome) -> gpui::AnyElement {
+    let terminal = div().flex_1().min_h_0().child(pane.view.clone());
+    if !card.closing {
+        return terminal.into_any_element();
+    }
+    let view = card.agent.view.entity_id();
+    let fade = || gpui::Animation::new(model::CLOSING_FADE).with_easing(model::ease);
+    div()
+        .flex_1()
+        .min_h_0()
+        .relative()
+        .flex()
+        .flex_col()
+        .child(terminal.with_animation(
+            SharedString::from(format!("terminal-closing-{view}")),
+            fade(),
+            |d, t| d.opacity(1. - (1. - CLOSING_TERMINAL_OPACITY) * t),
+        ))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(12.))
+                .text_size(px(13.))
+                .text_color(chrome.term_faint)
+                .child(pixel_wave(
+                    format!("closing-wave-{view}"),
+                    chrome.term_dim,
+                    4.,
+                    3.,
+                    6.,
+                ))
+                .child("Closing...")
+                .with_animation(
+                    SharedString::from(format!("closing-label-{view}")),
+                    fade(),
+                    |d, t| d.opacity(t),
+                ),
+        )
+        .into_any_element()
+}
+
 /// A working card's indicator: three 3px squares rising and falling in a
 /// staggered wave every 1.2s. Offsets snap to whole points so the squares
 /// stay crisp and step like pixels. GPUI skips the loop when macOS asks for
 /// reduced motion, leaving the first frame, a still staircase.
-fn working_pixels(card: usize, color: gpui::Rgba) -> gpui::AnyElement {
-    const SIZE: f32 = 3.;
-    const GAP: f32 = 2.;
-    const RISE: f32 = 5.;
+fn working_pixels(card: &str, color: gpui::Rgba) -> gpui::AnyElement {
+    pixel_wave(format!("working-{card}"), color, 3., 2., 5.)
+}
+
+/// Three squares of `size` rising up to `rise` in a staggered wave every
+/// 1.2s, the shape of the working pixels.
+fn pixel_wave(id: String, color: gpui::Rgba, size: f32, gap: f32, rise: f32) -> gpui::AnyElement {
     div()
         .flex_none()
         .relative()
-        .w(px(3. * SIZE + 2. * GAP))
-        .h(px(SIZE + RISE))
+        .w(px(3. * size + 2. * gap))
+        .h(px(size + rise))
         .with_animation(
-            SharedString::from(format!("working-{card}")),
+            SharedString::from(id),
             gpui::Animation::new(Duration::from_millis(1200))
                 .repeat_synced()
                 .with_max_fps(30.),
@@ -6578,9 +6804,9 @@ fn working_pixels(card: usize, color: gpui::Rgba) -> gpui::AnyElement {
                     let lift = (1. - (std::f32::consts::TAU * phase).cos()) / 2.;
                     div()
                         .absolute()
-                        .left(px(i as f32 * (SIZE + GAP)))
-                        .top(px(RISE - (lift * RISE).round()))
-                        .size(px(SIZE))
+                        .left(px(i as f32 * (size + gap)))
+                        .top(px(rise - (lift * rise).round()))
+                        .size(px(size))
                         .bg(color)
                 }))
             },
