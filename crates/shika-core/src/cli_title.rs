@@ -44,10 +44,20 @@ impl CliHome {
 
     #[cfg(test)]
     pub(crate) fn at(home: PathBuf) -> Self {
+        Self::with_homes(home, None, None)
+    }
+
+    /// A home directory plus optional Claude and Codex config roots.
+    #[cfg(test)]
+    pub(crate) fn with_homes(
+        home: PathBuf,
+        claude_config: Option<PathBuf>,
+        codex_home: Option<PathBuf>,
+    ) -> Self {
         Self {
             home,
-            claude_config: None,
-            codex_home: None,
+            claude_config,
+            codex_home,
             pi_agent_dir: None,
             pi_session_dir: None,
         }
@@ -68,36 +78,42 @@ impl CliHome {
         (!title.is_empty()).then_some(title)
     }
 
+    /// `$CLAUDE_CONFIG_DIR` or `~/.claude`.
+    pub(crate) fn claude_root(&self) -> PathBuf {
+        self.claude_config
+            .clone()
+            .unwrap_or_else(|| self.home.join(".claude"))
+    }
+
+    /// `$CODEX_HOME` or `~/.codex`.
+    pub(crate) fn codex_root(&self) -> PathBuf {
+        self.codex_home
+            .clone()
+            .unwrap_or_else(|| self.home.join(".codex"))
+    }
+
+    /// `<config>/projects/<cwd with every non-alphanumeric as ->`.
+    pub(crate) fn claude_project_dir(&self, cwd: &Path) -> PathBuf {
+        cwd.join(self.claude_root())
+            .join("projects")
+            .join(encode_claude_cwd(cwd))
+    }
+
     /// `<config>/projects/<cwd with every non-alphanumeric as ->/<session>.jsonl`,
     /// with lines like `{"type":"ai-title","aiTitle":"Fix login flow",...}`.
     /// The newest session with a title wins, and its last title is current.
     fn claude(&self, cwd: &Path) -> Option<String> {
-        let config = self
-            .claude_config
-            .clone()
-            .unwrap_or_else(|| self.home.join(".claude"));
-        let encoded: String = cwd
-            .to_string_lossy()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-        let mut sessions: Vec<_> = fs::read_dir(config.join("projects").join(encoded))
-            .ok()?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-            .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
-            .collect();
-        sessions.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-        sessions.into_iter().find_map(|(_, path)| {
-            let text = fs::read_to_string(path).ok()?;
-            text.lines()
-                .filter(|line| line.contains("\"ai-title\""))
-                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .filter(|record| record["type"] == "ai-title")
-                .filter_map(|record| record["aiTitle"].as_str().map(str::to_string))
-                .next_back()
-        })
+        jsonl_newest_first(&self.claude_project_dir(cwd))
+            .into_iter()
+            .find_map(|path| {
+                let text = fs::read_to_string(path).ok()?;
+                text.lines()
+                    .filter(|line| line.contains("\"ai-title\""))
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .filter(|record| record["type"] == "ai-title")
+                    .filter_map(|record| record["aiTitle"].as_str().map(str::to_string))
+                    .next_back()
+            })
     }
 
     /// `~/.cursor/chats/<md5 of cwd>/<agent>/meta.json`, holding `cwd` and a
@@ -125,11 +141,7 @@ impl CliHome {
     /// is the short conversation name. `title` is often the raw first message,
     /// so it is not read. Checked against Codex CLI 0.160.0 on 2026-10-05.
     fn codex(&self, cwd: &Path) -> Option<String> {
-        let root = self
-            .codex_home
-            .clone()
-            .unwrap_or_else(|| self.home.join(".codex"));
-        let db = newest_state_db(&root)?;
+        let db = newest_state_db(&cwd.join(self.codex_root()))?;
         let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
         let cwd = cwd.to_string_lossy();
         conn.query_row(
@@ -175,9 +187,38 @@ impl CliHome {
     }
 }
 
+/// `<cwd with every non-alphanumeric character replaced by ->`.
+pub(crate) fn encode_claude_cwd(cwd: &Path) -> String {
+    cwd.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// `.jsonl` files directly in `dir`, newest mtime first. Not recursive, so a
+/// session's subagent directory is left alone. Missing directories are empty.
+pub(crate) fn jsonl_newest_first(dir: &Path) -> Vec<PathBuf> {
+    let mut sessions: Vec<_> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .filter_map(|path| {
+            let meta = fs::metadata(&path).ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            Some((meta.modified().ok()?, path))
+        })
+        .collect();
+    sessions.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    sessions.into_iter().map(|(_, path)| path).collect()
+}
+
 /// `state_<n>.sqlite` with the highest `n`. Sidecars such as `state_5.sqlite-wal`
 /// do not match.
-fn newest_state_db(root: &Path) -> Option<PathBuf> {
+pub(crate) fn newest_state_db(root: &Path) -> Option<PathBuf> {
     fs::read_dir(root)
         .ok()?
         .filter_map(|entry| {
@@ -215,7 +256,7 @@ fn pi_session_folder(cwd: &Path) -> String {
 /// The CLIs record the directory they were started in. That is the worktree
 /// path Shika used, and on macOS can also be its resolved form (`/tmp` is
 /// `/private/tmp`).
-fn cwd_forms(worktree: &Path) -> Vec<PathBuf> {
+pub(crate) fn cwd_forms(worktree: &Path) -> Vec<PathBuf> {
     let mut forms = vec![worktree.to_path_buf()];
     if let Ok(real) = worktree.canonicalize()
         && real != worktree
