@@ -1210,3 +1210,200 @@ fn compressed_backlog_pins_four_readers_until_they_finish() {
     assert_eq!(scratch.shown().codex, 6);
     assert_eq!(DECODERS.with(|cache| cache.borrow().len()), 0);
 }
+
+#[test]
+fn notification_after_ingest_survives_an_already_due_final_retry() {
+    let scratch = Scratch::new();
+    let queue = queue();
+    let target = Arc::new(scratch.target());
+    let source = queue.source(target.clone());
+    queue.schedule(target, Duration::ZERO, RETRIES.len(), Priority::Live);
+    queue.ingest(); // worker saw no fresh output before this scheduling step
+    source.notify(); // output arrives just before the old retry is popped
+    drop(source); // EOF can also release the final PTY sink at this point
+    let retry = queue
+        .requests
+        .lock()
+        .unwrap()
+        .take_due(Instant::now())
+        .unwrap();
+    assert_eq!(retry.attempt, RETRIES.len());
+    assert!(!retry.consumed_notification);
+    // Even if that final retry finishes without scheduling any further reads,
+    // the event must independently restart collection at attempt zero.
+    queue.ingest();
+    let fresh = queue
+        .requests
+        .lock()
+        .unwrap()
+        .take_due(Instant::now() + COALESCE)
+        .unwrap();
+    assert_eq!(fresh.attempt, 0);
+    assert!(fresh.consumed_notification);
+    assert!(queue.requests.lock().unwrap().signals.is_empty());
+}
+
+#[test]
+fn merged_recovery_keeps_the_ingested_notification_until_its_read_starts() {
+    let scratch = Scratch::new();
+    let queue = queue();
+    let target = Arc::new(scratch.target());
+    let source = queue.source(target.clone());
+    source.notify();
+    queue.ingest();
+    queue.schedule(target, Duration::ZERO, RETRIES.len(), Priority::History);
+    let request = queue
+        .requests
+        .lock()
+        .unwrap()
+        .take_due(Instant::now() + COALESCE)
+        .unwrap();
+    assert_eq!(request.attempt, 0);
+    assert!(request.consumed_notification);
+    assert!(!source.signal.notified.load(Ordering::Acquire));
+    source.notify();
+    assert!(queue.dirty.load(Ordering::Acquire));
+}
+
+#[test]
+fn a_symlinked_codex_home_reads_regular_index_and_rollout_files() {
+    use std::os::unix::fs::symlink;
+    let scratch = Scratch::new();
+    let (target, _, _, _) = codex_fixture(&scratch);
+    let Target::Codex { root, cwds } = target else {
+        unreachable!()
+    };
+    let linked = scratch.0.join("linked-codex-home");
+    symlink(root, &linked).unwrap();
+    let target = Target::Codex { root: linked, cwds };
+    let mut conn = open_store(&scratch.data()).unwrap();
+    drain(&mut conn, &target);
+    assert_eq!(scratch.shown().codex, 27);
+    assert!(!scratch.shown().pending);
+}
+
+#[test]
+fn collection_idle_distinguishes_notifications_jobs_execution_and_data_gaps() {
+    let scratch = Scratch::new();
+    let queue = queue();
+    let collector = Collector {
+        data_dir: scratch.data(),
+        queue: queue.clone(),
+    };
+    assert!(!collector.idle()); // initial recovery has not started
+    queue.recovery.store(false, Ordering::Release);
+    assert!(collector.idle());
+    let target = Arc::new(scratch.target());
+    let source = queue.source(target.clone());
+    source.notify();
+    assert!(!collector.idle());
+    queue.ingest();
+    assert!(!collector.idle()); // coalesced notification is now queued
+    queue.schedule(target, Duration::ZERO, 0, Priority::Live);
+    let request = queue
+        .next(&scratch.data(), &mut Recovery::default())
+        .unwrap();
+    assert!(queue.requests.lock().unwrap().jobs.is_empty());
+    assert!(!collector.idle()); // popped job is active before releasing its lock
+    drop(request);
+    queue.active.store(false, Ordering::Release); // job and pacing finished
+    assert!(collector.idle());
+    queue
+        .failures
+        .lock()
+        .unwrap()
+        .insert("unreadable source".into());
+    assert!(collector.pending());
+    assert!(collector.idle()); // a persistent data gap does not imply execution
+}
+
+#[test]
+fn collection_idle_stays_false_through_incremental_registry_enumeration() {
+    let scratch = Scratch::new();
+    let registry = scratch.data().join("usage-sources");
+    fs::create_dir_all(&registry).unwrap();
+    for n in 0..RECOVERY_BATCH {
+        fs::write(registry.join(format!("bad-{n}.json")), "bad metadata").unwrap();
+    }
+    let queue = queue();
+    let collector = Collector {
+        data_dir: scratch.data(),
+        queue: queue.clone(),
+    };
+    let mut recovery = Recovery::default();
+    assert!(!collector.idle());
+    recovery.step(&scratch.data(), &queue);
+    assert!(!queue.recovery.load(Ordering::Acquire));
+    assert!(queue.requests.lock().unwrap().jobs.is_empty());
+    assert!(queue.enumerating.load(Ordering::Acquire));
+    assert!(!collector.idle()); // nothing queued, but registry work remains
+    recovery.step(&scratch.data(), &queue);
+    assert!(!queue.enumerating.load(Ordering::Acquire));
+    assert!(collector.idle());
+    assert!(collector.pending()); // malformed registrations remain visible gaps
+}
+
+#[test]
+fn removed_compressed_rollouts_release_pinned_decoder_slots() {
+    DECODERS.with(|cache| cache.borrow_mut().clear());
+    let store = Scratch::new();
+    let mut sources = Vec::new();
+    for i in 0..5 {
+        let scratch = Scratch::new();
+        let (target, parent, _, _) = codex_fixture(&scratch);
+        let compressed = compress_rollout(
+            &parent,
+            &format!(
+                "{{\"type\":\"progress\",\"text\":\"{}\"}}\n{}",
+                "x".repeat(300 * 1024),
+                codex(&format!("unique-{i}"), "parent", 1)
+            ),
+        );
+        sources.push((scratch, target, compressed));
+    }
+    let mut conn = open_store(&store.data()).unwrap();
+    for (_, target, _) in sources.iter().take(4) {
+        assert!(collect(&mut conn, target, day(), &stopped()).unwrap().more);
+    }
+    assert_eq!(DECODERS.with(|cache| cache.borrow().len()), 4);
+    for (_, _, path) in sources.iter().take(4) {
+        fs::remove_file(path).unwrap();
+    }
+    // None of the missing sources has been woken. A fifth source can still
+    // claim a stale slot and finish, rather than yielding forever.
+    assert!(
+        collect(&mut conn, &sources[4].1, day(), &stopped())
+            .unwrap()
+            .more
+    );
+    assert_eq!(DECODERS.with(|cache| cache.borrow().len()), 1);
+    drain(&mut conn, &sources[4].1);
+    assert_eq!(DECODERS.with(|cache| cache.borrow().len()), 0);
+    assert_eq!(store.shown().codex, 8); // one deduplicated child plus fifth parent
+    drain(&mut conn, &sources[0].1);
+    assert!(store.shown().pending);
+}
+
+#[test]
+fn failed_source_transactions_release_their_decoder_slots() {
+    DECODERS.with(|cache| cache.borrow_mut().clear());
+    let scratch = Scratch::new();
+    let (target, parent, _, _) = codex_fixture(&scratch);
+    compress_rollout(
+        &parent,
+        &format!(
+            "{{\"type\":\"progress\",\"text\":\"{}\"}}\n{}",
+            "x".repeat(300 * 1024),
+            codex("p", "parent", 20)
+        ),
+    );
+    let mut conn = open_store(&scratch.data()).unwrap();
+    assert!(collect(&mut conn, &target, day(), &stopped()).unwrap().more);
+    assert_eq!(DECODERS.with(|cache| cache.borrow().len()), 1);
+    conn.execute_batch("CREATE TRIGGER fail_source BEFORE INSERT ON source_files BEGIN SELECT RAISE(ABORT,'fixture failure'); END").unwrap();
+    assert!(collect(&mut conn, &target, day(), &stopped()).is_err());
+    assert_eq!(DECODERS.with(|cache| cache.borrow().len()), 0);
+    conn.execute_batch("DROP TRIGGER fail_source").unwrap();
+    drain(&mut conn, &target);
+    assert_eq!(scratch.shown().codex, 27);
+}

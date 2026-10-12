@@ -278,16 +278,24 @@ fn measure(root: &Path, enabled: bool) {
     let expected = (ARCHIVES * 4 * 2 + 2) as u64;
     let mut all_receipts_seconds = None;
     // Wait for the bounded settling burst to finish, without scheduling reads.
+    // Worker idleness is a metadata diagnostic, independent of collection
+    // warnings and native rendering/notification acceptance.
     if enabled {
         let deadline = Instant::now() + Duration::from_secs(90);
+        let mut idle_samples = 0;
         loop {
             let report = core.token_usage();
             if report.claude == expected && all_receipts_seconds.is_none() {
                 all_receipts_seconds = Some(collection_start.elapsed().as_secs_f64());
             }
-            if !report.pending {
-                assert_eq!(report.claude, expected);
+            if report.claude == expected && core.usage_collection_idle() {
+                idle_samples += 1;
+            } else {
+                idle_samples = 0;
+            }
+            if idle_samples >= 3 {
                 assert!(!report.unreadable);
+                assert!(!report.pending, "valid fixtures have a collection issue");
                 break;
             }
             assert!(Instant::now() < deadline, "usage backlog never settled");

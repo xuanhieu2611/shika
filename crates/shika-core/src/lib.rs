@@ -15,7 +15,7 @@
 //!   [`Core::session_diff_stat`], [`Core::session_diff`], [`Core::session_file_diff`],
 //!   [`Core::session_publish_preview`], [`Core::session_publish`],
 //!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
-//!   [`Core::session_switch_agent`], [`Core::token_usage`], [`Core::recover_token_usage`],
+//!   [`Core::session_switch_agent`], [`Core::token_usage`],
 //!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
 //!   [`Core::remove_project`], [`Core::project_base`], [`Core::project_branches`],
@@ -31,7 +31,7 @@
 //!   [`Core::save_settings`],
 //!   [`Core::worktree_journal`], [`Core::leftovers_list`],
 //!   [`Core::sessions`], [`Core::session`], [`Core::lead_for_project`],
-//!   [`Core::workers_of`], [`Core::start_usage_collection`], [`Core::record_token_usage`],
+//!   [`Core::workers_of`], [`Core::start_usage_collection`], [`Core::record_token_usage`], [`Core::recover_token_usage`],
 //!   [`Core::write`], and [`Core::resize`]. They read a
 //!   small JSON file, take a short lock, or queue bytes, and are fine on the main thread. `write` never blocks on
 //!   the PTY: each PTY has its own writer thread.
@@ -1356,11 +1356,18 @@ impl Core {
         }
     }
 
-    /// Retry registered sources, on a background caller (small metadata files).
+    /// Signal paced source recovery. The caller performs no file I/O.
     pub fn recover_token_usage(&self) {
         if let Some(collector) = self.usage.get() {
             collector.recover();
         }
+    }
+
+    /// Metadata-only collection diagnostic. True when no source reads, queued
+    /// jobs, or recovery passes remain. Collection gaps are reported separately
+    /// by [`Self::token_usage`]; this performs no provider I/O.
+    pub fn usage_collection_idle(&self) -> bool {
+        self.usage.get().is_none_or(|collector| collector.idle())
     }
 
     /// Indexed saved totals. Call off the UI thread; never opens provider files.
@@ -1867,6 +1874,7 @@ mod tests {
     fn usage_sink_registers_before_spawn_and_recovers_after_close_and_restart() {
         let scratch = Scratch::new();
         let mut core = core_with_fake_cli(&scratch);
+        assert!(core.usage_collection_idle()); // collection is opt-in
         let home = CliHome::at(scratch.path.join("usage-home"));
         core.cli_home = Some(home.clone());
         let held = rusqlite::Connection::open(core.data_dir().join("usage.sqlite")).unwrap();

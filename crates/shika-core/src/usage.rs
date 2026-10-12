@@ -46,7 +46,7 @@ pub(crate) struct Date {
 
 impl Date {
     fn from_parts(year: i32, month: u32, day: u32) -> Option<Self> {
-        if !(1..=12).contains(&month) {
+        if !(0..=9999).contains(&year) || !(1..=12).contains(&month) {
             return None;
         }
         let month = month as u8;
@@ -60,8 +60,14 @@ impl Date {
     fn parse(text: &str) -> Option<Self> {
         let (year, rest) = text.split_once('-')?;
         let (month, day) = rest.split_once('-')?;
-        if year.len() != 4 || month.len() != 2 || day.len() != 2
-            || !year.bytes().chain(month.bytes()).chain(day.bytes()).all(|b| b.is_ascii_digit())
+        if year.len() != 4
+            || month.len() != 2
+            || day.len() != 2
+            || !year
+                .bytes()
+                .chain(month.bytes())
+                .chain(day.bytes())
+                .all(|b| b.is_ascii_digit())
         {
             return None;
         }
@@ -152,7 +158,7 @@ fn local_date(secs: libc::time_t) -> Option<Date> {
 /// Both providers persist RFC 3339 timestamps. Convert the recorded instant
 /// using the Mac's local calendar, including its historical DST offset.
 pub(crate) fn recorded_date(timestamp: &str) -> Option<Date> {
-    local_date(timestamp_seconds(timestamp)?.try_into().ok()?)
+    local_date(timestamp_seconds(timestamp)?)
 }
 
 fn timestamp_seconds(timestamp: &str) -> Option<i64> {
@@ -167,7 +173,9 @@ fn timestamp_seconds(timestamp: &str) -> Option<i64> {
     }
     let date = Date::parse(&timestamp[..10])?;
     let number = |part: &str| -> Option<i64> {
-        part.bytes().all(|byte| byte.is_ascii_digit()).then_some(())?;
+        part.bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then_some(())?;
         part.parse().ok()
     };
     let hour = number(&timestamp[11..13])?;
@@ -230,19 +238,30 @@ mod tests {
     fn provider_timestamps_preserve_the_instant_across_calendar_boundaries() {
         assert_eq!(timestamp_seconds("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(timestamp_seconds("1969-12-31T16:00:00-08:00"), Some(0));
-        assert_eq!(timestamp_seconds("1970-01-01T01:00:00.123456+01:00"), Some(0));
+        assert_eq!(
+            timestamp_seconds("1970-01-01T01:00:00.123456+01:00"),
+            Some(0)
+        );
         assert_eq!(
             recorded_date("2026-10-11T23:30:00-07:00"),
             recorded_date("2026-10-12T06:30:00.123Z")
         );
         for invalid in [
-            "2026-02-29T12:00:00Z", "2026-10-12T24:00:00Z",
-            "2026-10-12T00:60:00Z", "2026-10-12T00:00:00+24:00",
-            "2026-10-12T00:00:00.Z", "2026-10-12T00:00:00",
-            "2026-10-12T00:00:00Zextra", "2026-10-12T00:00:00+0a:00",
+            "2026-02-29T12:00:00Z",
+            "2026-10-12T24:00:00Z",
+            "2026-10-12T00:60:00Z",
+            "2026-10-12T00:00:00+24:00",
+            "2026-10-12T00:00:00.Z",
+            "2026-10-12T00:00:00",
+            "2026-10-12T00:00:00Zextra",
+            "2026-10-12T00:00:00+0a:00",
+            "0000-01-01T00:00:00+23:59",
+            "9999-12-31T23:59:59-23:59",
             "🦌2026-10-12T00:00:00Z",
         ] {
             assert_eq!(recorded_date(invalid), None, "{invalid}");
         }
+        assert!(Date::from_parts(-1, 12, 31).is_none());
+        assert!(Date::from_parts(10000, 1, 1).is_none());
     }
 }

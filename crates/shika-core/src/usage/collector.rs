@@ -86,6 +86,7 @@ struct Request {
     due: Instant,
     attempt: usize,
     priority: Priority,
+    consumed_notification: bool,
 }
 
 #[derive(Default)]
@@ -114,6 +115,7 @@ impl Requests {
             request.due = request.due.min(previous.due);
             request.attempt = request.attempt.min(previous.attempt);
             request.priority = request.priority.min(previous.priority);
+            request.consumed_notification |= previous.consumed_notification;
         }
         self.deadlines(request.priority)
             .insert((request.due, id.clone()));
@@ -145,15 +147,19 @@ impl Requests {
         } else {
             0
         };
+        let request = self.jobs.remove(&id)?;
         if let Some(signal) = self.signals.get(&id) {
-            // Clear before the read. Output arriving during collection schedules
-            // another drain rather than disappearing behind this one.
-            signal.notified.store(false, Ordering::Release);
-            if Arc::strong_count(signal) == 1 {
+            // Only clear a notification this job actually ingested. A retry
+            // can become due between ingest and notify; clearing its new flag
+            // would lose the fresh event and its renewed settling/retry burst.
+            if request.consumed_notification {
+                signal.notified.store(false, Ordering::Release);
+            }
+            if Arc::strong_count(signal) == 1 && !signal.notified.load(Ordering::Acquire) {
                 self.signals.remove(&id);
             }
         }
-        self.jobs.remove(&id)
+        Some(request)
     }
 
     fn delay(&self) -> Option<Duration> {
@@ -178,6 +184,8 @@ struct Queue {
     worker: OnceLock<thread::Thread>,
     dirty: AtomicBool,
     recovery: AtomicBool,
+    enumerating: AtomicBool,
+    active: AtomicBool,
     stopped: Arc<AtomicBool>,
     failed: AtomicBool,
     failures: Mutex<BTreeSet<String>>,
@@ -190,6 +198,8 @@ impl Queue {
             worker: OnceLock::new(),
             dirty: AtomicBool::new(false),
             recovery: AtomicBool::new(true),
+            enumerating: AtomicBool::new(false),
+            active: AtomicBool::new(false),
             stopped: Arc::new(AtomicBool::new(false)),
             failed: AtomicBool::new(false),
             failures: Mutex::new(BTreeSet::new()),
@@ -217,6 +227,7 @@ impl Queue {
                     due: Instant::now() + delay,
                     attempt,
                     priority,
+                    consumed_notification: false,
                 },
             );
         self.wake();
@@ -269,6 +280,7 @@ impl Queue {
                     due: now + COALESCE,
                     attempt: 0,
                     priority: Priority::Live,
+                    consumed_notification: true,
                 },
             );
         }
@@ -284,6 +296,9 @@ impl Queue {
             recovery.step(data_dir, self);
             let mut requests = self.requests.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(request) = requests.take_due(Instant::now()) {
+                // Publish execution under the same lock that removed the job.
+                // Diagnostics cannot mistake a popped job for quiescence.
+                self.active.store(true, Ordering::Release);
                 return Some(request);
             }
             let delay = requests.delay();
@@ -372,6 +387,24 @@ impl Collector {
         }
     }
 
+    /// Metadata-only diagnostic. Quiescence is independent of collection gaps.
+    pub(crate) fn idle(&self) -> bool {
+        let requests = self
+            .queue
+            .requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        requests.jobs.is_empty()
+            && !self.queue.active.load(Ordering::Acquire)
+            && !self.queue.recovery.load(Ordering::Acquire)
+            && !self.queue.enumerating.load(Ordering::Acquire)
+            && !self.queue.dirty.load(Ordering::Acquire)
+            && !requests
+                .signals
+                .values()
+                .any(|signal| signal.notified.load(Ordering::Acquire))
+    }
+
     pub(crate) fn pending(&self) -> bool {
         self.queue.failed.load(Ordering::Relaxed)
             || !self
@@ -449,7 +482,19 @@ impl Recovery {
     fn step(&mut self, data_dir: &Path, queue: &Queue) {
         // Keep one additional pass if Usage opens during enumeration: a
         // registration already visited may have become readable since then.
-        if self.entries.is_none() && queue.recovery.swap(false, Ordering::AcqRel) {
+        let start = if self.entries.is_none() {
+            let _requests = queue.requests.lock().unwrap_or_else(|e| e.into_inner());
+            let start = queue.recovery.swap(false, Ordering::AcqRel);
+            if start {
+                // Publish enumeration before clearing its pending predicate
+                // becomes visible to diagnostics that hold this same lock.
+                queue.enumerating.store(true, Ordering::Release);
+            }
+            start
+        } else {
+            false
+        };
+        if start {
             match fs::read_dir(data_dir.join("usage-sources")) {
                 Ok(entries) => {
                     queue
@@ -459,13 +504,16 @@ impl Recovery {
                         .remove("registry");
                     self.entries = Some(entries);
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    queue.enumerating.store(false, Ordering::Release);
+                }
                 Err(_) => {
                     queue
                         .failures
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .insert("registry".into());
+                    queue.enumerating.store(false, Ordering::Release);
                 }
             }
         }
@@ -482,6 +530,7 @@ impl Recovery {
             };
             let Some(entry) = entries.next() else {
                 self.entries = None;
+                queue.enumerating.store(false, Ordering::Release);
                 return;
             };
             let entry = match entry {
@@ -591,6 +640,7 @@ fn run(data_dir: &Path, queue: &Queue) {
         // Global pacing, not just per source. A large startup backlog must
         // not turn into continuous CPU/disk activity across many worktrees.
         thread::sleep(COALESCE);
+        queue.active.store(false, Ordering::Release);
     }
 }
 
@@ -862,7 +912,6 @@ fn receipt(
     record: Envelope,
     day: Date,
 ) -> rusqlite::Result<()> {
-    let day = record.timestamp.as_deref().and_then(recorded_date).unwrap_or(day);
     if file.cli == "codex" && record.kind == "event_msg" {
         if let Some(payload) = record.payload
             && payload.kind == "token_count"
@@ -987,6 +1036,11 @@ fn receipt(
         params![file.cli, owner, next],
     )?;
     if delta > 0 {
+        let day = record
+            .timestamp
+            .as_deref()
+            .and_then(recorded_date)
+            .unwrap_or(day);
         let day = day.iso();
         let old: i64 = tx
             .query_row(
@@ -1045,6 +1099,24 @@ fn registered_jsonl(dir: &Path) -> std::io::Result<(Vec<PathBuf>, bool)> {
 fn input_files(store: &Connection, target: &Target) -> rusqlite::Result<(Vec<InputFile>, bool)> {
     let mut files = BTreeMap::new();
     let mut pending = false;
+    let source = target.id();
+    let cli = match target {
+        Target::Claude { .. } => "claude",
+        Target::Codex { .. } => "codex",
+    };
+    // Keep independently readable children even if their parent's log or the
+    // provider's discovery index disappears after a previous successful read.
+    let mut known =
+        store.prepare("SELECT path,session FROM source_files WHERE source=?1 AND cli=?2")?;
+    for row in known.query_map(params![source, cli], |r| {
+        Ok((
+            PathBuf::from(r.get::<_, String>(0)?),
+            r.get::<_, String>(1)?,
+        ))
+    })? {
+        let (path, session) = row?;
+        files.insert(path.clone(), InputFile { path, cli, session });
+    }
     match target {
         Target::Claude { directories } => {
             for dir in directories {
@@ -1088,25 +1160,6 @@ fn input_files(store: &Connection, target: &Target) -> rusqlite::Result<(Vec<Inp
             }
         }
         Target::Codex { root, cwds } => {
-            let source = target.id();
-            let mut known = store
-                .prepare("SELECT path,session FROM source_files WHERE source=?1 AND cli='codex'")?;
-            for row in known.query_map([&source], |r| {
-                Ok((
-                    PathBuf::from(r.get::<_, String>(0)?),
-                    r.get::<_, String>(1)?,
-                ))
-            })? {
-                let (path, session) = row?;
-                files.insert(
-                    path.clone(),
-                    InputFile {
-                        path,
-                        cli: "codex",
-                        session,
-                    },
-                );
-            }
             let discovered = (|| -> rusqlite::Result<()> {
                 let mut newest = None;
                 let entries = match fs::read_dir(root) {
@@ -1152,8 +1205,16 @@ fn input_files(store: &Connection, target: &Target) -> rusqlite::Result<(Vec<Inp
                     return Ok(());
                 };
                 store.execute("INSERT OR IGNORE INTO indexes VALUES (?1)", [&source])?;
+                // SQLite NOFOLLOW rejects symlinks in parent components too.
+                // Honor a linked provider home while still refusing a linked
+                // final index filename, including a replacement racing open.
+                let parent = db.parent().ok_or(rusqlite::Error::InvalidQuery)?;
+                let name = db.file_name().ok_or(rusqlite::Error::InvalidQuery)?;
+                let parent = parent
+                    .canonicalize()
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let conn = Connection::open_with_flags(
-                    db,
+                    parent.join(name),
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
                 )?;
                 conn.busy_timeout(BUSY)?;
@@ -1313,6 +1374,7 @@ fn save_cursor(
 
 type MetadataReader = BufReader<Box<dyn Read>>;
 struct CachedDecoder {
+    source: String,
     path: PathBuf,
     device: u64,
     inode: u64,
@@ -1365,6 +1427,22 @@ fn collect(
     day: Date,
     stopped: &Arc<AtomicBool>,
 ) -> rusqlite::Result<Outcome> {
+    let result = collect_inner(conn, target, day, stopped);
+    if result.is_err() {
+        // A source can exhaust its bounded retry burst after a store failure.
+        // Its uncommitted continuation must not pin a decoder slot forever.
+        let source = target.id();
+        DECODERS.with(|cache| cache.borrow_mut().retain(|c| c.source != source));
+    }
+    result
+}
+
+fn collect_inner(
+    conn: &mut Connection,
+    target: &Target,
+    day: Date,
+    stopped: &Arc<AtomicBool>,
+) -> rusqlite::Result<Outcome> {
     let (files, discovery_pending) = input_files(conn, target)?;
     let tx = conn.transaction()?;
     let discovery = format!("discovery:{}", target.id());
@@ -1394,6 +1472,10 @@ fn collect(
         }
         let path = file.path.to_string_lossy();
         let compressed = file.cli == "codex" && file.path.extension().is_some_and(|e| e == "zst");
+        if !compressed && file.cli == "codex" {
+            let sibling = file.path.with_extension("jsonl.zst");
+            DECODERS.with(|cache| cache.borrow_mut().retain(|c| c.path != sibling));
+        }
         let previous: Option<Cursor> = tx
             .query_row(
                 "SELECT device,inode,offset,modified,anchors FROM files WHERE path=?1",
@@ -1416,6 +1498,7 @@ fn collect(
         let (mut handle, metadata) = match read {
             Ok(opened) => opened,
             Err(_) => {
+                DECODERS.with(|cache| cache.borrow_mut().retain(|c| c.path != file.path));
                 tx.execute("INSERT OR IGNORE INTO issues VALUES (?1)", [path.as_ref()])?;
                 outcome.pending = true;
                 continue;
@@ -1461,6 +1544,20 @@ fn collect(
         } else {
             None
         };
+        if compressed && cached.is_none() {
+            // Other sources may have lost/replaced a rollout before their next
+            // wakeup. Stale readers must not keep the bounded pool full.
+            DECODERS.with(|cache| {
+                cache.borrow_mut().retain(|c| {
+                    fs::symlink_metadata(&c.path).is_ok_and(|m| {
+                        m.is_file()
+                            && m.dev() == c.device
+                            && m.ino() == c.inode
+                            && modified(&m) == c.stamp
+                    })
+                })
+            });
+        }
         if compressed && cached.is_none() && DECODERS.with(|cache| cache.borrow().len() >= 4) {
             // Yield this source until another decoder drains. Existing sources
             // continue through the scheduler, so history never evicts a reader
@@ -1610,6 +1707,7 @@ fn collect(
                 DECODERS.with(|cache| {
                     let mut cache = cache.borrow_mut();
                     cache.push(CachedDecoder {
+                        source: target.id(),
                         path: file.path.clone(),
                         device: metadata.dev(),
                         inode: metadata.ino(),
