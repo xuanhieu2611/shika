@@ -207,7 +207,7 @@ fn checkpoint_schema_migrates_and_future_store_versions_are_refused() {
         upgraded
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        2
+        3
     );
     upgraded.pragma_update(None, "user_version", 999).unwrap();
     assert!(open_store(&scratch.data()).is_err());
@@ -575,7 +575,11 @@ fn locked_provider_database_has_a_bounded_wait_and_can_be_retried() {
     held.execute_batch("BEGIN EXCLUSIVE").unwrap();
     let mut conn = open_store(&scratch.data()).unwrap();
     let start = Instant::now();
-    assert!(collect(&mut conn, &target, day(), &stopped()).is_err());
+    assert!(
+        collect(&mut conn, &target, day(), &stopped())
+            .unwrap()
+            .pending
+    );
     assert!(start.elapsed() < Duration::from_secs(2));
     drop(held);
     drain(&mut conn, &target);
@@ -923,4 +927,286 @@ fn historical_continuations_stay_hot_but_live_jobs_still_preempt() {
         requests.take_due(Instant::now()).unwrap().priority,
         Priority::History
     );
+}
+
+#[test]
+fn truncate_and_regrow_past_the_old_cursor_replays_changed_prefix() {
+    let scratch = Scratch::new();
+    let path = scratch.claude("session.jsonl", &assistant("aa", 10, 10));
+    let mut conn = open_store(&scratch.data()).unwrap();
+    drain(&mut conn, &scratch.target());
+    fs::write(&path, assistant("bb", 20, 20) + &assistant("cc", 30, 30)).unwrap();
+    drain(&mut conn, &scratch.target());
+    assert_eq!(scratch.shown().claude, 120);
+    drain(&mut conn, &scratch.target());
+    assert_eq!(scratch.shown().claude, 120);
+}
+
+#[test]
+fn a_rewritten_partial_checkpoint_does_not_skip_new_receipts() {
+    let scratch = Scratch::new();
+    let first = assistant("aa", 10, 10);
+    let path = scratch.claude(
+        "session.jsonl",
+        &(first.clone() + "{\"type\":\"assistant\""),
+    );
+    let mut conn = open_store(&scratch.data()).unwrap();
+    assert!(
+        collect(&mut conn, &scratch.target(), day(), &stopped())
+            .unwrap()
+            .pending
+    );
+    fs::write(&path, assistant("bb", 20, 20) + &assistant("cc", 30, 30)).unwrap();
+    drain(&mut conn, &scratch.target());
+    assert_eq!(scratch.shown().claude, 120);
+    assert!(!scratch.shown().pending);
+}
+
+#[test]
+fn checkpoint_verification_reads_constant_samples_on_append() {
+    let scratch = Scratch::new();
+    let prefix = "x".repeat(2 * 1024 * 1024);
+    let path = scratch.claude("session.jsonl", &prefix);
+    let mut handle = File::open(&path).unwrap();
+    let metadata = handle.metadata().unwrap();
+    let fingerprint = anchors(&mut handle, metadata.len()).unwrap();
+    let previous = Some((
+        metadata.dev(),
+        metadata.ino(),
+        metadata.len(),
+        modified(&metadata),
+        fingerprint,
+    ));
+    append(&path, "new");
+    let grown = handle.metadata().unwrap();
+    assert_eq!(
+        resume_offset(&previous, &grown, &mut handle, false).unwrap(),
+        metadata.len()
+    );
+    // Verification touches only the first and last 4KB of the old prefix.
+    assert_eq!(handle.stream_position().unwrap(), metadata.len());
+}
+
+#[test]
+fn missing_codex_index_preserves_known_rollouts_and_recovers_discovery() {
+    let scratch = Scratch::new();
+    let (target, parent, _, _) = codex_fixture(&scratch);
+    let Target::Codex { root, .. } = &target else {
+        unreachable!()
+    };
+    let mut conn = open_store(&scratch.data()).unwrap();
+    drain(&mut conn, &target);
+    let db = root.join("state_5.sqlite");
+    let saved = root.join("saved.sqlite");
+    fs::rename(&db, &saved).unwrap();
+    append(&parent, &codex("late", "parent", 11));
+    assert!(
+        collect(&mut conn, &target, day(), &stopped())
+            .unwrap()
+            .pending
+    );
+    assert_eq!(scratch.shown().codex, 38);
+    assert!(scratch.shown().pending);
+    drop(conn);
+    let mut conn = open_store(&scratch.data()).unwrap();
+    drain(&mut conn, &target);
+    assert_eq!(scratch.shown().codex, 38);
+    fs::rename(saved, db).unwrap();
+    drain(&mut conn, &target);
+    assert!(!scratch.shown().pending);
+}
+
+#[test]
+fn absent_codex_home_is_initially_quiet_but_existing_storage_needs_an_index() {
+    let scratch = Scratch::new();
+    let root = scratch.0.join("new-codex-home");
+    let target = Target::Codex {
+        root: root.clone(),
+        cwds: vec![scratch.cwd()],
+    };
+    let mut conn = open_store(&scratch.data()).unwrap();
+    assert!(
+        !collect(&mut conn, &target, day(), &stopped())
+            .unwrap()
+            .pending
+    );
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    assert!(
+        collect(&mut conn, &target, day(), &stopped())
+            .unwrap()
+            .pending
+    );
+}
+
+#[test]
+fn unreadable_or_unsafe_codex_indexes_do_not_hide_known_receipts() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let scratch = Scratch::new();
+    let (target, parent, _, _) = codex_fixture(&scratch);
+    let Target::Codex { root, .. } = &target else {
+        unreachable!()
+    };
+    let mut conn = open_store(&scratch.data()).unwrap();
+    drain(&mut conn, &target);
+    let db = root.join("state_5.sqlite");
+    fs::set_permissions(&db, fs::Permissions::from_mode(0o0)).unwrap();
+    append(&parent, &codex("late", "parent", 11));
+    let outcome = collect(&mut conn, &target, day(), &stopped()).unwrap();
+    if unsafe { libc::geteuid() } != 0 {
+        assert!(outcome.pending);
+    }
+    assert_eq!(scratch.shown().codex, 38);
+    fs::set_permissions(&db, fs::Permissions::from_mode(0o600)).unwrap();
+    let moved = root.join("moved.sqlite");
+    fs::rename(&db, &moved).unwrap();
+    symlink(&moved, &db).unwrap();
+    assert!(
+        collect(&mut conn, &target, day(), &stopped())
+            .unwrap()
+            .pending
+    );
+    assert_eq!(scratch.shown().codex, 38);
+}
+
+fn compress_rollout(path: &Path, contents: &str) -> PathBuf {
+    let compressed = path.with_extension("jsonl.zst");
+    fs::write(
+        &compressed,
+        zstd::stream::encode_all(contents.as_bytes(), 1).unwrap(),
+    )
+    .unwrap();
+    fs::remove_file(path).unwrap();
+    compressed
+}
+
+#[test]
+fn compressed_siblings_recover_known_rollouts_without_recounting_receipts() {
+    let scratch = Scratch::new();
+    let (target, parent, child, _) = codex_fixture(&scratch);
+    let mut conn = open_store(&scratch.data()).unwrap();
+    drain(&mut conn, &target);
+    compress_rollout(
+        &parent,
+        &(codex("p", "parent", 20) + &codex("late", "parent", 11)),
+    );
+    compress_rollout(
+        &child,
+        &(codex("p", "parent", 20) + &codex("c", "child", 7)),
+    );
+    drain(&mut conn, &target);
+    assert_eq!(scratch.shown().codex, 38);
+    assert!(!scratch.shown().pending);
+    DECODERS.with(|cache| cache.borrow_mut().clear());
+    drop(conn);
+    let mut conn = open_store(&scratch.data()).unwrap();
+    drain(&mut conn, &target);
+    assert_eq!(scratch.shown().codex, 38);
+}
+
+#[test]
+fn compressed_large_records_are_paced_and_checkpoint_after_complete_lines() {
+    let scratch = Scratch::new();
+    let (target, parent, _, _) = codex_fixture(&scratch);
+    let giant = "x".repeat(2 * 1024 * 1024);
+    compress_rollout(
+        &parent,
+        &format!(
+            "{{\"type\":\"progress\",\"text\":\"{giant}\"}}\n{}broken\n{}",
+            codex("p", "parent", 20),
+            codex("late", "parent", 11)
+        ),
+    );
+    let mut conn = open_store(&scratch.data()).unwrap();
+    let first = collect(&mut conn, &target, day(), &stopped()).unwrap();
+    assert!(first.more);
+    let checkpoint: u64 = conn
+        .query_row(
+            "SELECT offset FROM files WHERE path LIKE '%.zst'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(checkpoint > 2 * 1024 * 1024);
+    assert!(DECODERS.with(|cache| cache.borrow().len()) <= 4);
+    // Exercise cold replay from an uncompressed logical checkpoint.
+    DECODERS.with(|cache| cache.borrow_mut().clear());
+    drain(&mut conn, &target);
+    assert_eq!(scratch.shown().codex, 38);
+    assert!(scratch.shown().pending); // malformed line remains an explicit gap
+}
+
+#[test]
+fn corrupt_compression_does_not_block_readable_siblings_and_recovers() {
+    let scratch = Scratch::new();
+    let (target, _, child, _) = codex_fixture(&scratch);
+    let compressed = compress_rollout(&child, &codex("c", "child", 7));
+    fs::write(&compressed, b"not a zstd frame").unwrap();
+    let mut conn = open_store(&scratch.data()).unwrap();
+    assert!(
+        collect(&mut conn, &target, day(), &stopped())
+            .unwrap()
+            .pending
+    );
+    assert_eq!(scratch.shown().codex, 20);
+    fs::write(
+        &compressed,
+        zstd::stream::encode_all(codex("c", "child", 7).as_bytes(), 1).unwrap(),
+    )
+    .unwrap();
+    drain(&mut conn, &target);
+    assert_eq!(scratch.shown().codex, 27);
+    assert!(!scratch.shown().pending);
+}
+
+#[test]
+fn compressed_backlog_pins_four_readers_until_they_finish() {
+    DECODERS.with(|cache| cache.borrow_mut().clear());
+    let scratch = Scratch::new();
+    let mut targets = Vec::new();
+    for i in 0..6 {
+        let root = scratch.0.join(format!("codex-{i}"));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("main.jsonl");
+        let db = Connection::open(root.join("state_5.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE threads(id TEXT,cwd TEXT,source TEXT,rollout_path TEXT); CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT)").unwrap();
+        db.execute(
+            "INSERT INTO threads VALUES ('main','/cwd','cli',?1)",
+            [path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        fs::write(&path, "").unwrap();
+        compress_rollout(
+            &path,
+            &format!(
+                "{{\"type\":\"progress\",\"text\":\"{}\"}}\n{}",
+                "x".repeat(300 * 1024),
+                codex(&format!("receipt-{i}"), "main", 1)
+            ),
+        );
+        targets.push(Target::Codex {
+            root,
+            cwds: vec![PathBuf::from("/cwd")],
+        });
+    }
+    let mut conn = open_store(&scratch.data()).unwrap();
+    for target in targets.iter().take(4) {
+        assert!(collect(&mut conn, target, day(), &stopped()).unwrap().more);
+    }
+    assert_eq!(DECODERS.with(|cache| cache.borrow().len()), 4);
+    assert!(
+        collect(&mut conn, &targets[4], day(), &stopped())
+            .unwrap()
+            .more
+    );
+    assert_eq!(DECODERS.with(|cache| cache.borrow().len()), 4);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+    for target in &targets {
+        drain(&mut conn, target);
+    }
+    assert_eq!(scratch.shown().codex, 6);
+    assert_eq!(DECODERS.with(|cache| cache.borrow().len()), 0);
 }

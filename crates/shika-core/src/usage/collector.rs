@@ -645,30 +645,42 @@ fn open_store(data_dir: &Path) -> rusqlite::Result<Connection> {
     )?;
     conn.busy_timeout(BUSY)?;
     let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if version > 2 {
+    if version > 3 {
         return Err(rusqlite::Error::InvalidQuery);
     }
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "FULL")?;
-    conn.execute_batch(
+    let tx = conn.transaction()?;
+    tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS days(day TEXT NOT NULL, cli TEXT NOT NULL, tokens INTEGER NOT NULL CHECK(tokens >= 0), PRIMARY KEY(day, cli));
          CREATE TABLE IF NOT EXISTS sessions(cli TEXT NOT NULL, id TEXT NOT NULL, observed INTEGER NOT NULL DEFAULT 0, baseline INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(cli, id));
          CREATE TABLE IF NOT EXISTS receipts(cli TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL, a INTEGER NOT NULL, b INTEGER NOT NULL, c INTEGER NOT NULL, d INTEGER NOT NULL, PRIMARY KEY(cli, id));
          CREATE INDEX IF NOT EXISTS receipts_session ON receipts(cli,session);
          CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, device INTEGER NOT NULL, inode INTEGER NOT NULL, offset INTEGER NOT NULL, modified TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS source_files(source TEXT NOT NULL,path TEXT NOT NULL,cli TEXT NOT NULL,session TEXT NOT NULL,PRIMARY KEY(source,path));
+         CREATE TABLE IF NOT EXISTS indexes(source TEXT PRIMARY KEY);
          CREATE TABLE IF NOT EXISTS issues(source TEXT PRIMARY KEY);
          CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
     )?;
-    let modified: bool = conn.query_row(
+    let modified: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('files') WHERE name='modified')",
         [],
         |r| r.get(0),
     )?;
     if !modified {
-        conn.execute_batch("ALTER TABLE files ADD COLUMN modified TEXT NOT NULL DEFAULT ''")?;
+        tx.execute_batch("ALTER TABLE files ADD COLUMN modified TEXT NOT NULL DEFAULT ''")?;
     }
+    let anchors: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('files') WHERE name='anchors')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !anchors {
+        tx.execute_batch("ALTER TABLE files ADD COLUMN anchors TEXT NOT NULL DEFAULT ''")?;
+    }
+    tx.pragma_update(None, "user_version", 3)?;
+    tx.commit()?;
     import_json(&mut conn, data_dir)?;
-    conn.pragma_update(None, "user_version", 2)?;
     Ok(conn)
 }
 
@@ -1030,7 +1042,7 @@ fn registered_jsonl(dir: &Path) -> std::io::Result<(Vec<PathBuf>, bool)> {
     Ok((files, pending))
 }
 
-fn input_files(target: &Target) -> rusqlite::Result<(Vec<InputFile>, bool)> {
+fn input_files(store: &Connection, target: &Target) -> rusqlite::Result<(Vec<InputFile>, bool)> {
     let mut files = BTreeMap::new();
     let mut pending = false;
     match target {
@@ -1076,45 +1088,112 @@ fn input_files(target: &Target) -> rusqlite::Result<(Vec<InputFile>, bool)> {
             }
         }
         Target::Codex { root, cwds } => {
-            let Some(db) = cli_title::newest_state_db(root) else {
-                return Ok((Vec::new(), false));
-            };
-            let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            conn.busy_timeout(BUSY)?;
-            let start = Instant::now();
-            conn.progress_handler(1000, Some(move || start.elapsed() > BUSY));
-            let edges: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_spawn_edges')", [], |r| r.get(0))?;
-            let sql = if edges {
-                "WITH RECURSIVE owned(id) AS (
+            let source = target.id();
+            let mut known = store
+                .prepare("SELECT path,session FROM source_files WHERE source=?1 AND cli='codex'")?;
+            for row in known.query_map([&source], |r| {
+                Ok((
+                    PathBuf::from(r.get::<_, String>(0)?),
+                    r.get::<_, String>(1)?,
+                ))
+            })? {
+                let (path, session) = row?;
+                files.insert(
+                    path.clone(),
+                    InputFile {
+                        path,
+                        cli: "codex",
+                        session,
+                    },
+                );
+            }
+            let discovered = (|| -> rusqlite::Result<()> {
+                let mut newest = None;
+                let entries = match fs::read_dir(root) {
+                    Ok(entries) => entries,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound && files.is_empty() => {
+                        return Ok(());
+                    }
+                    Err(_) => return Err(rusqlite::Error::InvalidQuery),
+                };
+                for entry in entries {
+                    let entry = entry.map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    let name = entry.file_name();
+                    let Some(number) = name
+                        .to_str()
+                        .and_then(|n| n.strip_prefix("state_"))
+                        .and_then(|n| n.strip_suffix(".sqlite"))
+                        .and_then(|n| n.parse::<u32>().ok())
+                    else {
+                        continue;
+                    };
+                    if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                        return Err(rusqlite::Error::InvalidQuery);
+                    }
+                    if newest.as_ref().is_none_or(|(n, _)| number > *n) {
+                        newest = Some((number, entry.path()));
+                    }
+                }
+                let Some((_, db)) = newest else {
+                    let seen: bool = store.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM indexes WHERE source=?1)",
+                        [&source],
+                        |r| r.get(0),
+                    )?;
+                    // An untouched home has no index yet. Once storage was
+                    // observed, losing it must remain visible and retryable.
+                    if seen
+                        || !files.is_empty()
+                        || root.join("sessions").exists()
+                        || root.join("archived_sessions").exists()
+                    {
+                        return Err(rusqlite::Error::InvalidQuery);
+                    }
+                    return Ok(());
+                };
+                store.execute("INSERT OR IGNORE INTO indexes VALUES (?1)", [&source])?;
+                let conn = Connection::open_with_flags(
+                    db,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                )?;
+                conn.busy_timeout(BUSY)?;
+                let start = Instant::now();
+                conn.progress_handler(1000, Some(move || start.elapsed() > BUSY));
+                let edges: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_spawn_edges')", [], |r| r.get(0))?;
+                let sql = if edges {
+                    "WITH RECURSIVE owned(id) AS (
                    SELECT id FROM threads WHERE cwd=?1 AND source='cli'
                    UNION SELECT child_thread_id FROM thread_spawn_edges JOIN owned ON parent_thread_id=owned.id
                  ) SELECT threads.id,rollout_path FROM threads JOIN owned ON threads.id=owned.id"
-            } else {
-                // A matching cwd alone does not establish child ownership.
-                // Keep valid CLI-root totals, but surface the discovery gap.
-                pending = true;
-                "SELECT id,rollout_path FROM threads WHERE cwd=?1 AND source='cli'"
-            };
-            for cwd in cwds {
-                let mut stmt = conn.prepare(sql)?;
-                let rows = stmt.query_map([cwd.to_string_lossy().as_ref()], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        PathBuf::from(r.get::<_, String>(1)?),
-                    ))
-                })?;
-                for row in rows {
-                    let (session, path) = row?;
-                    files.insert(
-                        path.clone(),
-                        InputFile {
-                            path,
-                            cli: "codex",
-                            session,
-                        },
-                    );
+                } else {
+                    // A matching cwd alone does not establish child ownership.
+                    // Keep valid CLI-root totals, but surface the discovery gap.
+                    pending = true;
+                    "SELECT id,rollout_path FROM threads WHERE cwd=?1 AND source='cli'"
+                };
+                for cwd in cwds {
+                    let mut stmt = conn.prepare(sql)?;
+                    let rows = stmt.query_map([cwd.to_string_lossy().as_ref()], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            PathBuf::from(r.get::<_, String>(1)?),
+                        ))
+                    })?;
+                    for row in rows {
+                        let (session, path) = row?;
+                        files.insert(
+                            path.clone(),
+                            InputFile {
+                                path,
+                                cli: "codex",
+                                session,
+                            },
+                        );
+                    }
                 }
-            }
+                Ok(())
+            })();
+            pending |= discovered.is_err();
         }
     }
     Ok((files.into_values().collect(), pending))
@@ -1129,14 +1208,14 @@ struct Outcome {
 /// A large single JSON value is streamed without allocating its content.
 /// Yield between 64KB reads so even a giant tool result cannot monopolize CPU
 /// or disk. The quantum is enforced between records, not inside a JSON value.
-struct PacedFile {
-    file: File,
+struct PacedFile<R = File> {
+    file: R,
     bytes: usize,
     remaining: u64,
     end: u64,
     stopped: Arc<AtomicBool>,
 }
-impl Read for PacedFile {
+impl<R: Read> Read for PacedFile<R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         if self.stopped.load(Ordering::Relaxed) {
             return Err(std::io::ErrorKind::ConnectionAborted.into());
@@ -1152,7 +1231,7 @@ impl Read for PacedFile {
         Ok(read)
     }
 }
-impl Seek for PacedFile {
+impl<R: Seek> Seek for PacedFile<R> {
     fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
         let position = self.file.seek(from)?;
         self.remaining = self.end.saturating_sub(position);
@@ -1170,16 +1249,55 @@ fn modified(metadata: &fs::Metadata) -> String {
     )
 }
 
-fn resume_offset(previous: &Option<(u64, u64, u64, String)>, metadata: &fs::Metadata) -> u64 {
-    previous
-        .as_ref()
-        .filter(|(dev, inode, offset, stamp)| {
-            *dev == metadata.dev()
-                && *inode == metadata.ino()
-                && *offset <= metadata.len()
-                && (*offset < metadata.len() || *stamp == modified(metadata))
-        })
-        .map_or(0, |row| row.2)
+type Cursor = (u64, u64, u64, String, String);
+const ANCHOR_BYTES: u64 = 4096;
+
+// Verify bounded samples of the consumed prefix, never hash all historic
+// content on append. The boundary sample includes incomplete-record rewrites.
+fn anchors(file: &mut File, offset: u64) -> std::io::Result<String> {
+    let mut digest = Md5::new();
+    let mut buffer = [0; ANCHOR_BYTES as usize];
+    for start in [0, offset.saturating_sub(ANCHOR_BYTES)] {
+        let length = offset.saturating_sub(start).min(ANCHOR_BYTES) as usize;
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buffer[..length])?;
+        digest.update(start.to_le_bytes());
+        digest.update(&buffer[..length]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn resume_offset(
+    previous: &Option<Cursor>,
+    metadata: &fs::Metadata,
+    handle: &mut File,
+    compressed: bool,
+) -> std::io::Result<u64> {
+    let Some((dev, inode, offset, stamp, fingerprint)) = previous else {
+        return Ok(0);
+    };
+    if *dev != metadata.dev() || *inode != metadata.ino() {
+        return Ok(0);
+    }
+    if compressed {
+        // Cold compressed rollouts are immutable. Any physical change replays
+        // the stream; receipt deduplication makes that replay safe.
+        return Ok(if *stamp == modified(metadata) {
+            *offset
+        } else {
+            0
+        });
+    }
+    if *offset > metadata.len() {
+        return Ok(0);
+    }
+    if *stamp == modified(metadata) {
+        return Ok(*offset);
+    }
+    if !fingerprint.is_empty() && anchors(handle, *offset)? == *fingerprint {
+        return Ok(*offset);
+    }
+    Ok(0)
 }
 
 fn save_cursor(
@@ -1187,9 +1305,58 @@ fn save_cursor(
     path: &str,
     metadata: &fs::Metadata,
     offset: u64,
+    fingerprint: &str,
 ) -> rusqlite::Result<()> {
-    tx.execute("INSERT INTO files VALUES (?1,?2,?3,?4,?5) ON CONFLICT(path) DO UPDATE SET device=excluded.device,inode=excluded.inode,offset=excluded.offset,modified=excluded.modified", params![path,metadata.dev(),metadata.ino(),offset,modified(metadata)])?;
+    tx.execute("INSERT INTO files(path,device,inode,offset,modified,anchors) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(path) DO UPDATE SET device=excluded.device,inode=excluded.inode,offset=excluded.offset,modified=excluded.modified,anchors=excluded.anchors",params![path,metadata.dev(),metadata.ino(),offset,modified(metadata),fingerprint])?;
     Ok(())
+}
+
+type MetadataReader = BufReader<Box<dyn Read>>;
+struct CachedDecoder {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    stamp: String,
+    offset: u64,
+    reader: MetadataReader,
+}
+thread_local! {
+    // One worker, at most four live decoder windows. In-progress readers
+    // keep their slots until EOF instead of thrashing on a startup backlog.
+    // Restart replays from disk checkpoints with receipt deduplication.
+    static DECODERS: std::cell::RefCell<Vec<CachedDecoder>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+// JSONL framing lets malformed records be drained without a backward seek.
+// Content stays streaming, including giant tool results in compressed files.
+struct JsonLine<'a> {
+    reader: &'a mut MetadataReader,
+    bytes: u64,
+    complete: bool,
+    nonwhite: bool,
+    until_end: usize,
+}
+impl Read for JsonLine<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.complete || buffer.is_empty() {
+            return Ok(0);
+        }
+        let available = self.reader.fill_buf()?;
+        if self.until_end == 0 {
+            self.until_end = available
+                .iter()
+                .position(|b| *b == b'\n')
+                .map_or(available.len(), |i| i + 1);
+        }
+        let length = self.until_end.min(buffer.len());
+        self.until_end -= length;
+        buffer[..length].copy_from_slice(&available[..length]);
+        self.complete = length > 0 && buffer[length - 1] == b'\n';
+        self.nonwhite |= buffer[..length].iter().any(|b| !b.is_ascii_whitespace());
+        self.reader.consume(length);
+        self.bytes += length as u64;
+        Ok(length)
+    }
 }
 
 fn collect(
@@ -1198,7 +1365,7 @@ fn collect(
     day: Date,
     stopped: &Arc<AtomicBool>,
 ) -> rusqlite::Result<Outcome> {
-    let (files, discovery_pending) = input_files(target)?;
+    let (files, discovery_pending) = input_files(conn, target)?;
     let tx = conn.transaction()?;
     let discovery = format!("discovery:{}", target.id());
     if discovery_pending {
@@ -1211,35 +1378,66 @@ fn collect(
         pending: discovery_pending,
     };
     let mut bytes = 0;
-    for file in files {
+    for mut file in files {
+        tx.execute("INSERT INTO source_files VALUES (?1,?2,?3,?4) ON CONFLICT(source,path) DO UPDATE SET cli=excluded.cli,session=excluded.session",params![target.id(),file.path.to_string_lossy(),file.cli,file.session])?;
+        if file.cli == "codex"
+            && !file.path.exists()
+            && file.path.extension().is_some_and(|e| e == "jsonl")
+        {
+            let compressed = file.path.with_extension("jsonl.zst");
+            if compressed.exists() {
+                file.path = compressed;
+            }
+        }
         if stopped.load(Ordering::Relaxed) {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let path = file.path.to_string_lossy();
-        let mut metadata = match fs::symlink_metadata(&file.path) {
-            Ok(metadata) if metadata.is_file() => metadata,
-            _ => {
+        let compressed = file.cli == "codex" && file.path.extension().is_some_and(|e| e == "zst");
+        let previous: Option<Cursor> = tx
+            .query_row(
+                "SELECT device,inode,offset,modified,anchors FROM files WHERE path=?1",
+                [path.as_ref()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        let read = (|| -> std::io::Result<(File, fs::Metadata)> {
+            // Nonblocking prevents raced FIFOs from hanging before type checks.
+            let handle = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(&file.path)?;
+            let metadata = handle.metadata()?;
+            if !metadata.is_file() {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            Ok((handle, metadata))
+        })();
+        let (mut handle, metadata) = match read {
+            Ok(opened) => opened,
+            Err(_) => {
                 tx.execute("INSERT OR IGNORE INTO issues VALUES (?1)", [path.as_ref()])?;
                 outcome.pending = true;
                 continue;
             }
         };
-        let previous: Option<(u64, u64, u64, String)> = tx
-            .query_row(
-                "SELECT device,inode,offset,modified FROM files WHERE path=?1",
-                [path.as_ref()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()?;
-        let offset = resume_offset(&previous, &metadata);
-        if offset == metadata.len() {
-            if previous.as_ref()
-                != Some(&(metadata.dev(), metadata.ino(), offset, modified(&metadata)))
-            {
-                // Persist an observed empty truncation too, even if the next
-                // write happens to restore exactly the previous file length.
-                save_cursor(&tx, &path, &metadata, offset)?;
-            }
+        let offset = resume_offset(&previous, &metadata, &mut handle, compressed)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        if compressed
+            && previous.as_ref().is_some_and(|c| {
+                c.0 == metadata.dev()
+                    && c.1 == metadata.ino()
+                    && c.3 == modified(&metadata)
+                    && c.4 == "eof"
+            })
+        {
+            tx.execute("DELETE FROM issues WHERE source=?1", [path.as_ref()])?;
+            continue;
+        }
+        if !compressed && offset == metadata.len() {
+            let fingerprint =
+                anchors(&mut handle, offset).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            save_cursor(&tx, &path, &metadata, offset, &fingerprint)?;
             tx.execute("DELETE FROM issues WHERE source=?1", [path.as_ref()])?;
             continue;
         }
@@ -1247,124 +1445,194 @@ fn collect(
             outcome.more = true;
             break;
         }
-        let mut handle = match fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&file.path)
-        {
-            Ok(file) => file,
-            Err(_) => {
-                tx.execute("INSERT OR IGNORE INTO issues VALUES (?1)", [path.as_ref()])?;
-                outcome.pending = true;
-                continue;
-            }
+        let cached = if compressed {
+            DECODERS.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                let found = cache.iter().position(|c| c.path == file.path);
+                found.and_then(|i| {
+                    let c = cache.remove(i);
+                    (c.device == metadata.dev()
+                        && c.inode == metadata.ino()
+                        && c.stamp == modified(&metadata)
+                        && c.offset == offset)
+                        .then_some(c.reader)
+                })
+            })
+        } else {
+            None
         };
-        // Use the opened inode, not a path stat that may have raced a rename.
-        metadata = handle
-            .metadata()
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        if !metadata.is_file() {
-            tx.execute("INSERT OR IGNORE INTO issues VALUES (?1)", [path.as_ref()])?;
-            outcome.pending = true;
+        if compressed && cached.is_none() && DECODERS.with(|cache| cache.borrow().len() >= 4) {
+            // Yield this source until another decoder drains. Existing sources
+            // continue through the scheduler, so history never evicts a reader
+            // at every quantum and repeatedly decompresses the same prefix.
+            outcome.more = true;
             continue;
         }
-        let offset = resume_offset(&previous, &metadata);
-        handle
-            .seek(SeekFrom::Start(offset))
-            .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        let mut reader = BufReader::new(PacedFile {
-            file: handle,
-            bytes: 0,
-            remaining: metadata.len().saturating_sub(offset),
-            end: metadata.len(),
-            stopped: stopped.clone(),
-        });
-        let mut stream = serde_json::Deserializer::from_reader(&mut reader).into_iter::<Envelope>();
-        let mut consumed = 0u64;
-        let mut malformed = false;
-        let mut pending = false;
-        while let Some(record) = stream.next() {
-            match record {
-                Ok(record) => {
-                    tx.execute_batch("SAVEPOINT receipt")?;
-                    match receipt(&tx, &file, record, day) {
-                        Ok(()) => tx.execute_batch("RELEASE receipt")?,
-                        Err(rusqlite::Error::InvalidQuery) => {
-                            tx.execute_batch("ROLLBACK TO receipt; RELEASE receipt")?;
-                            tx.execute(
-                                "INSERT OR IGNORE INTO issues VALUES (?1)",
-                                [format!("corrupt:{path}")],
-                            )?;
+        tx.execute_batch("SAVEPOINT input")?;
+        let read_result = (|| -> rusqlite::Result<u64> {
+            let mut reader = match cached {
+                Some(reader) => reader,
+                None => {
+                    handle
+                        .seek(SeekFrom::Start(if compressed { 0 } else { offset }))
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    let raw = PacedFile {
+                        file: handle
+                            .try_clone()
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        bytes: 0,
+                        remaining: metadata.len().saturating_sub(if compressed {
+                            0
+                        } else {
+                            offset
+                        }),
+                        end: metadata.len(),
+                        stopped: stopped.clone(),
+                    };
+                    let input: Box<dyn Read> = if compressed {
+                        let mut decoder = zstd::stream::read::Decoder::new(raw)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                        // Refuse pathological dictionary windows instead of an
+                        // unbounded allocation from untrusted compressed metadata.
+                        decoder
+                            .window_log_max(23)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                        Box::new(PacedFile {
+                            file: decoder,
+                            bytes: 0,
+                            remaining: u64::MAX,
+                            end: u64::MAX,
+                            stopped: stopped.clone(),
+                        })
+                    } else {
+                        Box::new(raw)
+                    };
+                    let mut reader = BufReader::new(input);
+                    if compressed && offset > 0 {
+                        let skipped =
+                            std::io::copy(&mut reader.by_ref().take(offset), &mut std::io::sink())
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                        if skipped != offset {
+                            return Err(rusqlite::Error::InvalidQuery);
                         }
-                        Err(err) => return Err(err),
                     }
-                    consumed = stream.byte_offset() as u64;
-                    if bytes + consumed >= QUANTUM {
-                        outcome.more = true;
+                    reader
+                }
+            };
+            let mut consumed = 0;
+            let mut pending = false;
+            let mut eof = false;
+            loop {
+                if reader
+                    .fill_buf()
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?
+                    .is_empty()
+                {
+                    eof = true;
+                    break;
+                }
+                let mut line = JsonLine {
+                    reader: &mut reader,
+                    bytes: 0,
+                    complete: false,
+                    nonwhite: false,
+                    until_end: 0,
+                };
+                let record = serde_json::from_reader::<_, Envelope>(&mut line);
+                std::io::copy(&mut line, &mut std::io::sink())
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                match record {
+                    Ok(record) => {
+                        tx.execute_batch("SAVEPOINT receipt")?;
+                        match receipt(&tx, &file, record, day) {
+                            Ok(()) => tx.execute_batch("RELEASE receipt")?,
+                            Err(rusqlite::Error::InvalidQuery) => {
+                                tx.execute_batch("ROLLBACK TO receipt; RELEASE receipt")?;
+                                tx.execute(
+                                    "INSERT OR IGNORE INTO issues VALUES (?1)",
+                                    [format!("corrupt:{path}")],
+                                )?;
+                            }
+                            Err(err) => return Err(err),
+                        }
+                    }
+                    Err(err) if err.is_io() => return Err(rusqlite::Error::InvalidQuery),
+                    Err(_) if !line.nonwhite => {}
+                    Err(_) if !line.complete => {
+                        pending = true;
                         break;
                     }
+                    Err(_) => {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO issues VALUES (?1)",
+                            [format!("corrupt:{path}")],
+                        )?;
+                    }
                 }
-                Err(err) if err.is_eof() => {
-                    pending = true;
-                    break;
-                }
-                Err(err) if err.is_io() => return Err(rusqlite::Error::InvalidQuery),
-                Err(_) => {
-                    malformed = true;
-                    break;
-                }
-            }
-        }
-        if !malformed && !pending {
-            consumed = stream.byte_offset() as u64;
-        }
-        drop(stream);
-        if malformed {
-            // Skip only the broken JSONL record, retaining an explicit issue.
-            // Later valid records must not be stranded behind it forever.
-            reader
-                .seek(SeekFrom::Start(offset + consumed))
-                .map_err(|_| rusqlite::Error::InvalidQuery)?;
-            let before = consumed;
-            let mut complete = false;
-            loop {
-                let buffer = reader
-                    .fill_buf()
-                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
-                if buffer.is_empty() {
-                    break;
-                }
-                let (n, done) = match buffer.iter().position(|b| *b == b'\n') {
-                    Some(i) => (i + 1, true),
-                    None => (buffer.len(), false),
-                };
-                reader.consume(n);
-                consumed += n as u64;
-                if done {
-                    complete = true;
+                consumed += line.bytes;
+                if bytes + consumed >= QUANTUM {
+                    outcome.more = true;
                     break;
                 }
             }
-            if complete {
-                tx.execute(
-                    "INSERT OR IGNORE INTO issues VALUES (?1)",
-                    [format!("corrupt:{path}")],
-                )?;
-                outcome.more = true;
+            outcome.pending |= pending;
+            if pending {
+                tx.execute("INSERT OR IGNORE INTO issues VALUES (?1)", [path.as_ref()])?;
             } else {
-                // A torn final record may still be completed by the provider.
-                consumed = before;
-                pending = true;
+                tx.execute("DELETE FROM issues WHERE source=?1", [path.as_ref()])?;
             }
+            let fingerprint = if compressed {
+                if eof { "eof".to_owned() } else { String::new() }
+            } else {
+                anchors(&mut handle, offset + consumed)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?
+            };
+            // A write concurrent with this read makes a checkpoint uncertain. Force
+            // a deduplicated replay next time instead of trusting mixed bytes.
+            let stamp_unchanged = handle
+                .metadata()
+                .is_ok_and(|m| modified(&m) == modified(&metadata));
+            save_cursor(
+                &tx,
+                &path,
+                &metadata,
+                if stamp_unchanged {
+                    offset + consumed
+                } else {
+                    0
+                },
+                if stamp_unchanged { &fingerprint } else { "" },
+            )?;
+            if !stamp_unchanged {
+                outcome.more = true;
+            }
+            if compressed && !pending && !eof && stamp_unchanged {
+                DECODERS.with(|cache| {
+                    let mut cache = cache.borrow_mut();
+                    cache.push(CachedDecoder {
+                        path: file.path.clone(),
+                        device: metadata.dev(),
+                        inode: metadata.ino(),
+                        stamp: modified(&metadata),
+                        offset: offset + consumed,
+                        reader,
+                    });
+                });
+            }
+            Ok(consumed)
+        })();
+        match read_result {
+            Ok(consumed) => {
+                tx.execute_batch("RELEASE input")?;
+                bytes += consumed;
+            }
+            Err(rusqlite::Error::InvalidQuery) if !stopped.load(Ordering::Relaxed) => {
+                tx.execute_batch("ROLLBACK TO input; RELEASE input")?;
+                tx.execute("INSERT OR IGNORE INTO issues VALUES (?1)", [path.as_ref()])?;
+                outcome.pending = true;
+            }
+            Err(err) => return Err(err),
         }
-        outcome.pending |= pending;
-        if pending {
-            tx.execute("INSERT OR IGNORE INTO issues VALUES (?1)", [path.as_ref()])?;
-        } else {
-            tx.execute("DELETE FROM issues WHERE source=?1", [path.as_ref()])?;
-        }
-        save_cursor(&tx, &path, &metadata, offset + consumed)?;
-        bytes += consumed;
     }
     tx.commit()?;
     Ok(outcome)
@@ -1402,7 +1670,7 @@ pub(super) fn report(dir: &Path, today: Option<Date>) -> UsageReport {
         )?;
         conn.busy_timeout(BUSY)?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 2 {
+        if version > 3 {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let imported: bool = conn.query_row(

@@ -21,3 +21,6 @@ rusqlite = { version = "0.37", features = ["bundled", "hooks"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+
+# Codex optionally compresses cold rollout files in place. Stream them read-only.
+zstd = { version = "0.13", default-features = false }
