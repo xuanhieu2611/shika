@@ -89,14 +89,7 @@ fn append(path: &Path, text: &str) {
 }
 
 fn queue() -> Arc<Queue> {
-    Arc::new(Queue {
-        requests: Mutex::new(BTreeMap::new()),
-        wake: Condvar::new(),
-        stopped: stopped(),
-        failed: AtomicBool::new(false),
-        active: AtomicBool::new(false),
-        failures: Mutex::new(BTreeSet::new()),
-    })
+    Arc::new(Queue::new())
 }
 
 #[test]
@@ -148,33 +141,23 @@ fn a_reader_uses_its_opened_file_snapshot_not_an_unbounded_live_append() {
 }
 
 #[test]
-fn dropping_an_idle_collector_wakes_its_worker_under_the_predicate_mutex() {
-    let queue = queue();
-    let guard = queue.requests.lock().unwrap();
-    let collector = Collector {
-        data_dir: PathBuf::new(),
-        queue: queue.clone(),
-    };
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    let handle = std::thread::spawn(move || {
-        ready_tx.send(()).unwrap();
-        drop(collector);
-    });
-    ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    std::thread::sleep(Duration::from_millis(10));
-    assert!(!queue.stopped.load(Ordering::Relaxed));
-    drop(guard);
-    handle.join().unwrap();
-    assert!(queue.next().is_none());
+fn dropping_an_idle_collector_wakes_its_worker_without_the_queue_lock() {
     for _ in 0..30 {
-        let queue = self::queue();
+        let queue = queue();
         let waiting = queue.clone();
-        let handle = std::thread::spawn(move || waiting.next().is_none());
+        let handle = std::thread::spawn(move || {
+            waiting
+                .next(Path::new("/unused"), &mut Recovery::default())
+                .is_none()
+        });
         std::thread::sleep(Duration::from_millis(1));
+        let guard = queue.requests.lock().unwrap();
         drop(Collector {
             data_dir: PathBuf::new(),
-            queue,
+            queue: queue.clone(),
         });
+        assert!(queue.stopped.load(Ordering::Relaxed));
+        drop(guard);
         assert!(handle.join().unwrap());
     }
 }
@@ -194,12 +177,16 @@ fn repaired_registration_metadata_clears_its_scoped_failure() {
         data_dir: scratch.data(),
         queue: queue.clone(),
     };
-    recover(&scratch.data(), &queue);
+    let mut recovery = Recovery::default();
+    queue.recovery.store(true, Ordering::Release);
+    recovery.step(&scratch.data(), &queue);
     assert!(collector.pending());
     persist_target(&scratch.data(), &target).unwrap();
-    recover(&scratch.data(), &queue);
+    let mut recovery = Recovery::default();
+    queue.recovery.store(true, Ordering::Release);
+    recovery.step(&scratch.data(), &queue);
     assert!(queue.failures.lock().unwrap().is_empty());
-    queue.requests.lock().unwrap().clear();
+    *queue.requests.lock().unwrap() = Requests::default();
     assert!(!collector.pending());
 }
 
@@ -692,32 +679,127 @@ fn reports_are_read_only_and_week_totals_match_saved_days_across_year_boundary()
 }
 
 #[test]
-fn wakeups_are_coalesced_and_no_work_is_scheduled_when_idle() {
+fn pty_notifications_coalesce_without_waiting_for_a_contended_worker_queue() {
     let scratch = Scratch::new();
-    let queue = Arc::new(Queue {
-        requests: Mutex::new(BTreeMap::new()),
-        wake: Condvar::new(),
-        stopped: stopped(),
-        failed: AtomicBool::new(false),
-        active: AtomicBool::new(false),
-        failures: Mutex::new(BTreeSet::new()),
+    let queue = queue();
+    let source = queue.source(Arc::new(scratch.target()));
+    let guard = queue.requests.lock().unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let notifier = std::thread::spawn(move || {
+        for _ in 0..20000 {
+            source.notify();
+        }
+        done_tx.send(source).unwrap();
     });
-    let target = Arc::new(scratch.target());
-    let source = Source {
-        id: target.id(),
-        target,
-        queue: queue.clone(),
-    };
-    for _ in 0..20000 {
-        source.notify();
-    }
-    assert_eq!(queue.requests.lock().unwrap().len(), 1);
-    let request = queue.requests.lock().unwrap().pop_first().unwrap().1;
-    assert!(request.due <= Instant::now() + COALESCE);
-    assert!(queue.requests.lock().unwrap().is_empty());
-    queue.stopped.store(true, Ordering::Relaxed);
+    // The lock stays held until the notifier finishes. A locking notifier
+    // cannot pass this test regardless of scheduler timing.
+    let source = done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    notifier.join().unwrap();
+    assert!(queue.dirty.load(Ordering::Acquire));
+    assert!(guard.jobs.is_empty());
+    drop(guard);
+    queue.ingest();
+    assert_eq!(queue.requests.lock().unwrap().jobs.len(), 1);
+    assert!(!queue.dirty.load(Ordering::Acquire));
     source.notify();
-    assert!(queue.requests.lock().unwrap().is_empty());
+    assert!(!queue.dirty.load(Ordering::Acquire));
+    let request = queue
+        .requests
+        .lock()
+        .unwrap()
+        .take_due(Instant::now() + COALESCE)
+        .unwrap();
+    assert_eq!(request.priority, Priority::Live);
+    source.notify(); // notification during a collection requests another drain
+    assert!(queue.dirty.load(Ordering::Acquire));
+    queue.ingest();
+    assert_eq!(queue.requests.lock().unwrap().jobs.len(), 1);
+    queue.stopped.store(true, Ordering::Relaxed);
+    queue
+        .requests
+        .lock()
+        .unwrap()
+        .take_due(Instant::now() + COALESCE);
+    source.notify();
+    assert!(!queue.dirty.load(Ordering::Acquire));
+}
+
+#[test]
+fn live_jobs_overtake_a_thousand_historical_jobs_without_starving_history() {
+    let queue = queue();
+    for n in 0..1000 {
+        queue.schedule(
+            Arc::new(Target::Claude {
+                directories: vec![PathBuf::from(format!("old-{n}"))],
+            }),
+            Duration::ZERO,
+            0,
+            Priority::History,
+        );
+    }
+    for n in 0..8 {
+        queue.schedule(
+            Arc::new(Target::Claude {
+                directories: vec![PathBuf::from(format!("live-{n}"))],
+            }),
+            Duration::ZERO,
+            0,
+            Priority::Live,
+        );
+    }
+    let mut requests = queue.requests.lock().unwrap();
+    let priorities: Vec<_> = (0..8)
+        .map(|_| requests.take_due(Instant::now()).unwrap().priority)
+        .collect();
+    assert_eq!(
+        priorities,
+        vec![
+            Priority::Live,
+            Priority::Live,
+            Priority::Live,
+            Priority::History,
+            Priority::Live,
+            Priority::Live,
+            Priority::Live,
+            Priority::History
+        ]
+    );
+    assert_eq!(requests.history.len(), 998);
+    assert_eq!(requests.live.len(), 2);
+}
+
+#[test]
+fn registry_recovery_is_incremental_and_has_a_bounded_queued_window() {
+    let scratch = Scratch::new();
+    for n in 0..1000 {
+        persist_target(
+            &scratch.data(),
+            &Target::Claude {
+                directories: vec![PathBuf::from(format!("old-{n}"))],
+            },
+        )
+        .unwrap();
+    }
+    let queue = queue();
+    let mut recovery = Recovery::default();
+    recovery.step(&scratch.data(), &queue);
+    assert_eq!(queue.requests.lock().unwrap().jobs.len(), RECOVERY_BATCH);
+    for _ in 0..100 {
+        recovery.step(&scratch.data(), &queue);
+    }
+    assert_eq!(queue.requests.lock().unwrap().jobs.len(), RECOVERY_WINDOW);
+    assert!(recovery.entries.is_some());
+    let source = queue.source(Arc::new(scratch.target()));
+    source.notify();
+    queue.ingest();
+    let request = queue
+        .requests
+        .lock()
+        .unwrap()
+        .take_due(Instant::now() + COALESCE)
+        .unwrap();
+    assert_eq!(request.priority, Priority::Live);
+    assert!(Arc::ptr_eq(&request.target, &source.signal.target));
 }
 
 #[test]
@@ -748,4 +830,97 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
         thread::sleep(Duration::from_millis(20));
     }
     panic!("background collector did not converge");
+}
+
+#[test]
+fn scheduled_recovery_and_live_wakeups_are_not_collection_failures() {
+    let scratch = Scratch::new();
+    let queue = queue();
+    let collector = Collector {
+        data_dir: scratch.data(),
+        queue: queue.clone(),
+    };
+    let source = queue.source(Arc::new(scratch.target()));
+    source.notify();
+    collector.recover();
+    queue.ingest();
+    assert!(!collector.pending());
+    queue.failures.lock().unwrap().insert("failure".into());
+    assert!(collector.pending());
+    queue.failures.lock().unwrap().clear();
+    assert!(!collector.pending());
+}
+
+#[test]
+fn notification_before_worker_registration_is_drained_and_idle_worker_wakes_again() {
+    let scratch = Scratch::new();
+    let queue = queue();
+    let source = queue.source(Arc::new(scratch.target()));
+    source.notify(); // worker Thread is not registered yet
+    let waiting = queue.clone();
+    let data_dir = scratch.data();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        let mut recovery = Recovery::default();
+        assert!(waiting.next(&data_dir, &mut recovery).is_some());
+        done_tx.send(()).unwrap();
+        assert!(waiting.next(&data_dir, &mut recovery).is_some());
+        done_tx.send(()).unwrap();
+        assert!(waiting.next(&data_dir, &mut recovery).is_none());
+    });
+    done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    source.notify();
+    done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    drop(Collector {
+        data_dir: scratch.data(),
+        queue,
+    });
+    worker.join().unwrap();
+}
+
+#[test]
+fn historical_continuations_stay_hot_but_live_jobs_still_preempt() {
+    let queue = queue();
+    for (name, priority) in [
+        ("older", Priority::History),
+        ("stream", Priority::Continuation),
+    ] {
+        queue.schedule(
+            Arc::new(Target::Claude {
+                directories: vec![PathBuf::from(name)],
+            }),
+            Duration::ZERO,
+            0,
+            priority,
+        );
+    }
+    for n in 0..4 {
+        queue.schedule(
+            Arc::new(Target::Claude {
+                directories: vec![PathBuf::from(format!("live-{n}"))],
+            }),
+            Duration::ZERO,
+            0,
+            Priority::Live,
+        );
+    }
+    let mut requests = queue.requests.lock().unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            requests.take_due(Instant::now()).unwrap().priority,
+            Priority::Live
+        );
+    }
+    assert_eq!(
+        requests.take_due(Instant::now()).unwrap().priority,
+        Priority::Continuation
+    );
+    assert_eq!(
+        requests.take_due(Instant::now()).unwrap().priority,
+        Priority::Live
+    );
+    assert_eq!(
+        requests.take_due(Instant::now()).unwrap().priority,
+        Priority::History
+    );
 }

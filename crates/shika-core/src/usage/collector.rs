@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -74,89 +74,249 @@ impl Target {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum Priority {
+    Live,
+    Continuation,
+    History,
+}
+
 struct Request {
     target: Arc<Target>,
     due: Instant,
     attempt: usize,
+    priority: Priority,
+}
+
+#[derive(Default)]
+struct Requests {
+    jobs: BTreeMap<String, Request>,
+    live: BTreeSet<(Instant, String)>,
+    history: BTreeSet<(Instant, String)>,
+    continuations: BTreeSet<(Instant, String)>,
+    signals: BTreeMap<String, Arc<Signal>>,
+    live_streak: usize,
+}
+
+impl Requests {
+    fn deadlines(&mut self, priority: Priority) -> &mut BTreeSet<(Instant, String)> {
+        match priority {
+            Priority::Live => &mut self.live,
+            Priority::History => &mut self.history,
+            Priority::Continuation => &mut self.continuations,
+        }
+    }
+
+    fn schedule(&mut self, id: String, mut request: Request) {
+        if let Some(previous) = self.jobs.remove(&id) {
+            self.deadlines(previous.priority)
+                .remove(&(previous.due, id.clone()));
+            request.due = request.due.min(previous.due);
+            request.attempt = request.attempt.min(previous.attempt);
+            request.priority = request.priority.min(previous.priority);
+        }
+        self.deadlines(request.priority)
+            .insert((request.due, id.clone()));
+        self.jobs.insert(id, request);
+    }
+
+    fn take_due(&mut self, now: Instant) -> Option<Request> {
+        let live = self.live.first().filter(|(due, _)| *due <= now);
+        let historical = if self
+            .continuations
+            .first()
+            .is_some_and(|(due, _)| *due <= now)
+        {
+            Some(Priority::Continuation)
+        } else if self.history.first().is_some_and(|(due, _)| *due <= now) {
+            Some(Priority::History)
+        } else {
+            None
+        };
+        let priority = match (live, historical) {
+            (Some(_), Some(priority)) if self.live_streak >= 3 => priority,
+            (Some(_), _) => Priority::Live,
+            (_, Some(priority)) => priority,
+            _ => return None,
+        };
+        let (_, id) = self.deadlines(priority).pop_first().unwrap();
+        self.live_streak = if priority == Priority::Live {
+            (self.live_streak + 1).min(3)
+        } else {
+            0
+        };
+        if let Some(signal) = self.signals.get(&id) {
+            // Clear before the read. Output arriving during collection schedules
+            // another drain rather than disappearing behind this one.
+            signal.notified.store(false, Ordering::Release);
+            if Arc::strong_count(signal) == 1 {
+                self.signals.remove(&id);
+            }
+        }
+        self.jobs.remove(&id)
+    }
+
+    fn delay(&self) -> Option<Duration> {
+        self.live
+            .first()
+            .into_iter()
+            .chain(self.history.first())
+            .chain(self.continuations.first())
+            .map(|(due, _)| due.saturating_duration_since(Instant::now()))
+            .min()
+    }
+}
+
+struct Signal {
+    id: String,
+    target: Arc<Target>,
+    notified: AtomicBool,
 }
 
 struct Queue {
-    requests: Mutex<BTreeMap<String, Request>>,
-    wake: Condvar,
+    requests: Mutex<Requests>,
+    worker: OnceLock<thread::Thread>,
+    dirty: AtomicBool,
+    recovery: AtomicBool,
     stopped: Arc<AtomicBool>,
     failed: AtomicBool,
-    active: AtomicBool,
     failures: Mutex<BTreeSet<String>>,
 }
 
 impl Queue {
-    fn schedule(&self, target: Arc<Target>, delay: Duration, attempt: usize) {
-        if self.stopped.load(Ordering::Relaxed) {
-            return;
+    fn new() -> Self {
+        Self {
+            requests: Mutex::new(Requests::default()),
+            worker: OnceLock::new(),
+            dirty: AtomicBool::new(false),
+            recovery: AtomicBool::new(true),
+            stopped: Arc::new(AtomicBool::new(false)),
+            failed: AtomicBool::new(false),
+            failures: Mutex::new(BTreeSet::new()),
         }
-        self.schedule_id(target.id(), target, delay, attempt);
     }
 
-    fn schedule_id(&self, id: String, target: Arc<Target>, delay: Duration, attempt: usize) {
+    fn wake(&self) {
+        if let Some(worker) = self.worker.get() {
+            // Unlike a condvar, unpark keeps one token if it races with park.
+            worker.unpark();
+        }
+    }
+
+    fn schedule(&self, target: Arc<Target>, delay: Duration, attempt: usize, priority: Priority) {
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
-        let due = Instant::now() + delay;
-        let mut pending = self.requests.lock().unwrap_or_else(|e| e.into_inner());
-        pending
-            .entry(id)
-            .and_modify(|r| {
-                r.due = r.due.min(due);
-                r.attempt = r.attempt.min(attempt);
+        self.requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .schedule(
+                target.id(),
+                Request {
+                    target,
+                    due: Instant::now() + delay,
+                    attempt,
+                    priority,
+                },
+            );
+        self.wake();
+    }
+
+    fn source(self: &Arc<Self>, target: Arc<Target>) -> Source {
+        let id = target.id();
+        let signal = self
+            .requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .signals
+            .entry(id.clone())
+            .or_insert_with(|| {
+                Arc::new(Signal {
+                    id,
+                    target,
+                    notified: AtomicBool::new(false),
+                })
             })
-            .or_insert(Request {
-                target,
-                due,
-                attempt,
-            });
-        self.wake.notify_one();
+            .clone();
+        Source {
+            signal,
+            queue: self.clone(),
+        }
     }
 
-    fn next(&self) -> Option<Request> {
-        let mut pending = self.requests.lock().unwrap_or_else(|e| e.into_inner());
+    fn ingest(&self) {
+        if !self.dirty.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let mut requests = self.requests.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        // Only the worker visits live handles. The PTY never touches this lock,
+        // the deadline indexes, or the historical registry.
+        let signals: Vec<_> = requests
+            .signals
+            .values()
+            .filter(|signal| signal.notified.load(Ordering::Acquire))
+            .cloned()
+            .collect();
+        requests.signals.retain(|_, signal| {
+            Arc::strong_count(signal) > 1 || signal.notified.load(Ordering::Acquire)
+        });
+        for signal in signals {
+            requests.schedule(
+                signal.id.clone(),
+                Request {
+                    target: signal.target.clone(),
+                    due: now + COALESCE,
+                    attempt: 0,
+                    priority: Priority::Live,
+                },
+            );
+        }
+    }
+
+    fn next(&self, data_dir: &Path, recovery: &mut Recovery) -> Option<Request> {
+        self.worker.get_or_init(thread::current);
         loop {
             if self.stopped.load(Ordering::Relaxed) {
                 return None;
             }
-            let next = pending
-                .iter()
-                .min_by_key(|(_, r)| r.due)
-                .map(|(id, r)| (id.clone(), r.due));
-            if let Some((id, due)) = next {
-                if due <= Instant::now() {
-                    return pending.remove(&id);
-                }
-                let delay = due.saturating_duration_since(Instant::now());
-                pending = self
-                    .wake
-                    .wait_timeout(pending, delay)
-                    .unwrap_or_else(|e| e.into_inner())
-                    .0;
+            self.ingest();
+            recovery.step(data_dir, self);
+            let mut requests = self.requests.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(request) = requests.take_due(Instant::now()) {
+                return Some(request);
+            }
+            let delay = requests.delay();
+            let advance = (recovery.entries.is_some() || self.recovery.load(Ordering::Acquire))
+                && requests.history.len() + requests.continuations.len() < RECOVERY_WINDOW;
+            drop(requests);
+            if advance {
+                // Enumeration without a collection job still yields between
+                // bounded batches. Notification can interrupt this yield.
+                thread::park_timeout(COALESCE);
+            } else if let Some(delay) = delay {
+                thread::park_timeout(delay);
             } else {
-                pending = self.wake.wait(pending).unwrap_or_else(|e| e.into_inner());
+                thread::park();
             }
         }
     }
 }
 
-/// A source handle on an agent's existing PTY sink. No file I/O on that thread.
+/// A source handle on an agent's existing PTY sink. No file I/O or queue lock.
 pub(crate) struct Source {
-    id: String,
-    target: Arc<Target>,
+    signal: Arc<Signal>,
     queue: Arc<Queue>,
 }
 
 impl Source {
     pub(crate) fn notify(&self) {
-        // Only an ID and Arc are cloned per frame. No hashing, serialization,
-        // file I/O, or unbounded event channel on the PTY reader thread.
-        self.queue
-            .schedule_id(self.id.clone(), self.target.clone(), COALESCE, 0);
+        if !self.queue.stopped.load(Ordering::Relaxed)
+            && !self.signal.notified.swap(true, Ordering::AcqRel)
+        {
+            self.queue.dirty.store(true, Ordering::Release);
+            self.queue.wake();
+        }
     }
 }
 
@@ -167,14 +327,7 @@ pub(crate) struct Collector {
 
 impl Collector {
     pub(crate) fn start(data_dir: PathBuf) -> Self {
-        let queue = Arc::new(Queue {
-            requests: Mutex::new(BTreeMap::new()),
-            wake: Condvar::new(),
-            stopped: Arc::new(AtomicBool::new(false)),
-            failed: AtomicBool::new(false),
-            active: AtomicBool::new(false),
-            failures: Mutex::new(BTreeSet::new()),
-        });
+        let queue = Arc::new(Queue::new());
         let worker_queue = queue.clone();
         let worker_dir = data_dir.clone();
         if thread::Builder::new()
@@ -200,34 +353,27 @@ impl Collector {
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(target.id());
         }
-        self.queue.schedule(target.clone(), COALESCE, 0);
-        Some(Source {
-            id: target.id(),
-            target,
-            queue: self.queue.clone(),
-        })
+        let source = self.queue.source(target);
+        source.notify();
+        Some(source)
     }
 
     pub(crate) fn request(&self, home: &CliHome, preset: &str, cwd: &Path) {
         if let Some(target) = Target::new(home, preset, cwd) {
-            self.queue.schedule(Arc::new(target), COALESCE, 0);
+            self.queue
+                .schedule(Arc::new(target), COALESCE, 0, Priority::Live);
         }
     }
 
     /// Explicit recovery request; never scans the user's global CLI history.
     pub(crate) fn recover(&self) {
-        recover(&self.data_dir, &self.queue);
+        if !self.queue.recovery.swap(true, Ordering::AcqRel) {
+            self.queue.wake();
+        }
     }
 
     pub(crate) fn pending(&self) -> bool {
         self.queue.failed.load(Ordering::Relaxed)
-            || self.queue.active.load(Ordering::Relaxed)
-            || !self
-                .queue
-                .requests
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_empty()
             || !self
                 .queue
                 .failures
@@ -239,16 +385,8 @@ impl Collector {
 
 impl Drop for Collector {
     fn drop(&mut self) {
-        // Change the wait predicate under the same mutex as Queue::next.
-        // Otherwise a notification between its check and wait could be lost,
-        // leaving an idle worker alive after its collector was dropped.
-        let _guard = self
-            .queue
-            .requests
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        self.queue.stopped.store(true, Ordering::Relaxed);
-        self.queue.wake.notify_one();
+        self.queue.stopped.store(true, Ordering::Release);
+        self.queue.wake();
         // Do not join: quit and terminal lifecycle never wait on this worker.
         // Source metadata and committed offsets survive for next launch.
     }
@@ -299,59 +437,83 @@ fn read_target(path: &Path) -> std::io::Result<Target> {
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
 }
 
-fn recover(data_dir: &Path, queue: &Queue) {
-    let entries = match fs::read_dir(data_dir.join("usage-sources")) {
-        Ok(entries) => {
-            queue
-                .failures
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove("registry");
-            entries
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
-        Err(_) => {
-            queue
-                .failures
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert("registry".into());
-            return;
-        }
-    };
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(_) => {
-                queue
-                    .failures
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert("registry".into());
-                continue;
-            }
-        };
-        if queue.stopped.load(Ordering::Relaxed) {
-            break;
-        }
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "json") {
-            let failure = format!("metadata:{}", path.display());
-            match read_target(&path) {
-                Ok(target) => {
+const RECOVERY_BATCH: usize = 16;
+const RECOVERY_WINDOW: usize = 64;
+
+#[derive(Default)]
+struct Recovery {
+    entries: Option<fs::ReadDir>,
+}
+
+impl Recovery {
+    fn step(&mut self, data_dir: &Path, queue: &Queue) {
+        // Keep one additional pass if Usage opens during enumeration: a
+        // registration already visited may have become readable since then.
+        if self.entries.is_none() && queue.recovery.swap(false, Ordering::AcqRel) {
+            match fs::read_dir(data_dir.join("usage-sources")) {
+                Ok(entries) => {
                     queue
                         .failures
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .remove(&failure);
-                    queue.schedule(Arc::new(target), COALESCE, 0);
+                        .remove("registry");
+                    self.entries = Some(entries);
                 }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => {
                     queue
                         .failures
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .insert(failure);
+                        .insert("registry".into());
+                }
+            }
+        }
+        for _ in 0..RECOVERY_BATCH {
+            let historical = {
+                let requests = queue.requests.lock().unwrap_or_else(|e| e.into_inner());
+                requests.history.len() + requests.continuations.len()
+            };
+            if queue.stopped.load(Ordering::Relaxed) || historical >= RECOVERY_WINDOW {
+                return;
+            }
+            let Some(entries) = self.entries.as_mut() else {
+                return;
+            };
+            let Some(entry) = entries.next() else {
+                self.entries = None;
+                return;
+            };
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    queue
+                        .failures
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert("registry".into());
+                    continue;
+                }
+            };
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                let failure = format!("metadata:{}", path.display());
+                match read_target(&path) {
+                    Ok(target) => {
+                        queue
+                            .failures
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&failure);
+                        queue.schedule(Arc::new(target), COALESCE, 0, Priority::History);
+                    }
+                    Err(_) => {
+                        queue
+                            .failures
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(failure);
+                    }
                 }
             }
         }
@@ -360,10 +522,9 @@ fn recover(data_dir: &Path, queue: &Queue) {
 
 fn run(data_dir: &Path, queue: &Queue) {
     background_priority();
-    recover(data_dir, queue);
+    let mut recovery = Recovery::default();
     let mut connection = None;
-    while let Some(request) = queue.next() {
-        queue.active.store(true, Ordering::Relaxed);
+    while let Some(request) = queue.next(data_dir, &mut recovery) {
         // Retry a failed registration too. Disk/permission recovery must not
         // require a new task, and available counters can still be saved.
         let registered = persist_target(data_dir, &request.target).is_ok();
@@ -398,8 +559,20 @@ fn run(data_dir: &Path, queue: &Queue) {
                 }
                 drop(failures);
                 if outcome.more {
-                    queue.schedule(request.target, COALESCE, request.attempt);
+                    // Keep a partially drained historical stream hot. Rotating
+                    // through old sources would evict compressed-reader state
+                    // and repeatedly decompress their already-read prefixes.
+                    let priority = if request.priority == Priority::Live {
+                        Priority::Live
+                    } else {
+                        Priority::Continuation
+                    };
+                    queue.schedule(request.target, COALESCE, request.attempt, priority);
                 } else if outcome.pending || !registered || request.attempt < 2 {
+                    let mut request = request;
+                    if request.priority == Priority::Continuation {
+                        request.priority = Priority::History;
+                    }
                     // Re-read after success as well: a provider may flush its
                     // final receipt after painting Ready or emitting PTY EOF.
                     retry(queue, request);
@@ -415,7 +588,6 @@ fn run(data_dir: &Path, queue: &Queue) {
                 retry(queue, request);
             }
         }
-        queue.active.store(false, Ordering::Relaxed);
         // Global pacing, not just per source. A large startup backlog must
         // not turn into continuous CPU/disk activity across many worktrees.
         thread::sleep(COALESCE);
@@ -440,6 +612,7 @@ fn retry(queue: &Queue, request: Request) {
             request.target,
             Duration::from_secs(*secs),
             request.attempt + 1,
+            request.priority,
         );
     }
     // After a bounded burst, stop. The durable source is retried on the next
