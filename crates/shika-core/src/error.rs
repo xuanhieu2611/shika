@@ -104,7 +104,7 @@ pub enum Error {
     #[error("This project already has a Lead.")]
     LeadExists,
     /// The Lead has no branch, no diff, and no shell tabs, so branch, diff,
-    /// publish, and shell operations refuse it.
+    /// publish, shell, and agent-switch operations refuse it.
     #[error("The Lead works in a detached worktree and has no branch, so it cannot do that.")]
     LeadUnsupported,
 

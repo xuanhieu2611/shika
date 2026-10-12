@@ -333,6 +333,39 @@ impl SessionStore {
         Ok(session.clone())
     }
 
+    /// Point the session at a new agent process. The branch, title, worktree,
+    /// base ref, shells, and owner stay. `cli_titled` is set so a later CLI
+    /// title cannot rename the branch or replace the display name. Returns
+    /// the previous agent PTY so the caller can stop it after the new one is
+    /// running.
+    pub(crate) fn retarget_agent(
+        &self,
+        id: &str,
+        preset_id: String,
+        preset_name: String,
+        pty: PtyId,
+    ) -> Result<(Session, PtyId)> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
+        let session = sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+            .ok_or(Error::UnknownSession)?;
+        let old = session.pty;
+        session.preset_id = preset_id;
+        session.preset_name = preset_name;
+        session.pty = pty;
+        session.cli_titled = true;
+        Ok((session.clone(), old))
+    }
+
+    /// Drop the session's Pi bridge, then keep `bridge` when the new agent is Pi.
+    pub(crate) fn replace_activity(&self, id: &str, bridge: Option<ActivityBridge>) {
+        self.forget_activity(id);
+        if let Some(bridge) = bridge {
+            self.remember_activity(id, bridge);
+        }
+    }
+
     pub(crate) fn remove(&self, id: &str) {
         self.forget_activity(id);
         self.sessions

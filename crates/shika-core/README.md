@@ -33,7 +33,7 @@ It is not:
 
 `Core` is `Send + Sync` and is shared as `Arc<Core>`. The crate docs in `src/lib.rs` list which methods block. The short version:
 
-- **Blocking** methods run git, the user's login shell, or setup commands, and can take seconds: `add_project`, `project_preparation_draft`, `save_project_preparation`, `save_and_approve_project_preparation`, `create_session`, `create_session_with_preparation`, `create_lead`, `open_shell`, every `session_*` git method, `leftover_remove`, `remove_project`, the base-branch methods, and the first call to `path_env` or `cli_catalog` (the login shell gets up to 20 seconds). Call them from a background executor, never from the GPUI main thread.
+- **Blocking** methods run git, the user's login shell, or setup commands, and can take seconds: `add_project`, `project_preparation_draft`, `save_project_preparation`, `save_and_approve_project_preparation`, `create_session`, `create_session_with_preparation`, `create_lead`, `open_shell`, `session_switch_agent`, every `session_*` git method, `leftover_remove`, `remove_project`, the base-branch methods, and the first call to `path_env` or `cli_catalog` (the login shell gets up to 20 seconds). Call them from a background executor, never from the GPUI main thread.
 - **Quick** methods read a small JSON file, take a short lock, or queue bytes: `open`, `projects`, `settings`, `save_settings`, `worktree_journal`, `leftovers_list`, `sessions`, `session`, `lead_for_project`, `workers_of`, `write`, `resize`.
 
 `Core::operations` is one mutex that serializes everything that changes worktrees, branches, the journal, or the live session list: creating and removing worktrees, close, discard, push, rename, publish, and `remove_project`. Take it for any new method that mutates those. Two kinds of work deliberately stay outside it:
@@ -132,7 +132,7 @@ Methods and how they treat a Lead (`refuse_lead` returns `Error::LeadUnsupported
 
 | Behavior | Methods |
 | --- | --- |
-| Refuse with `LeadUnsupported` | `open_shell`, `session_rename_from_prompt`, `session_apply_cli_title`, `session_diff`, `session_file_diff`, `session_publish_preview`, `session_publish`, `session_pr_checks`, `session_push_and_close`, `session_switched_close_check` (and so branch-switch close) |
+| Refuse with `LeadUnsupported` | `open_shell`, `session_rename_from_prompt`, `session_apply_cli_title`, `session_switch_agent`, `session_diff`, `session_file_diff`, `session_publish_preview`, `session_publish`, `session_pr_checks`, `session_push_and_close`, `session_switched_close_check` (and so branch-switch close) |
 | Return a defined result | `session_git_state`: `dirty` from the tree, everything else false. `session_diff_stat`: `DiffStat::default()`. `session_pushed_head`: `None`. `session_refresh_branch`: the session unchanged. |
 | Work, with Lead rules | `session_close`: refuses a dirty tree (`WorktreeHasChanges`), asks when the agent is working (`CloseNeedsConfirmation`), then removes the worktree. `session_discard`: removes the worktree with force. Neither touches any branch. |
 | Unchanged | `session_dirty`, `session_set_title`, `cancel_session_start`, `close_shell`, `write`, `resize`, `leftover_remove` (an empty-branch entry removes the tree only) |

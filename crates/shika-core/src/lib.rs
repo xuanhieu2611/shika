@@ -15,6 +15,7 @@
 //!   [`Core::session_diff_stat`], [`Core::session_diff`], [`Core::session_file_diff`],
 //!   [`Core::session_publish_preview`], [`Core::session_publish`],
 //!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
+//!   [`Core::session_switch_agent`],
 //!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
 //!   [`Core::remove_project`], [`Core::project_base`], [`Core::project_branches`],
@@ -1016,6 +1017,101 @@ impl Core {
         self.sessions.forget_shell(session_id, pty)?;
         self.ptys.close(pty);
         Ok(())
+    }
+
+    /// Starts `preset_id` in this session's existing worktree. The prompt is
+    /// the CLI's single positional argument after the preset's launch flags.
+    /// Only after that process is running does this stop the current agent
+    /// PTY. Shell PTYs stay. The branch, title, base ref, worktree, and
+    /// `started_by` stay, and `cli_titled` is set so this prompt and the new
+    /// CLI's session title cannot rename the branch or replace the display
+    /// name. No preparation, commit, or push. A Lead is refused. `control` is
+    /// the worker env for a Lead-started worker's new agent PTY, and None for
+    /// a card the author created. If the start fails, the current agent keeps
+    /// running. Blocking: spawns a process.
+    pub fn session_switch_agent(
+        &self,
+        id: &str,
+        preset_id: &str,
+        prompt: &str,
+        size: PtySize,
+        sink: impl PtySink,
+        control: Option<WorkerEnv>,
+    ) -> Result<Session> {
+        session::check_prompt(prompt)?;
+        let env = self.path_env();
+        let _guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
+        let preset = agents::presets_from(env)
+            .into_iter()
+            .find(|preset| preset.id == preset_id)
+            .ok_or(Error::UnknownCli)?;
+        let program = preset
+            .path
+            .clone()
+            .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+        let activity = (preset.id == "pi")
+            .then(activity::ActivityBridge::install)
+            .flatten();
+        let (search_path, control_vars) = match &control {
+            Some(control) => (
+                session::control_path(&control.bin_dir, env.path()),
+                session::control_env(&control.socket, &control.token),
+            ),
+            None => (env.path().to_string(), Vec::new()),
+        };
+        let mut request = SpawnRequest {
+            program,
+            args: agents::launch_flags(&preset, &session.worktree),
+            cwd: session.worktree.clone(),
+            path: search_path,
+            size,
+            env: control_vars,
+        };
+        if let Some(activity) = &activity {
+            activity.wire(&mut request);
+        }
+        request.args = match session::launch_args(std::mem::take(&mut request.args), Some(prompt)) {
+            Ok(args) => args,
+            Err(err) => {
+                if let Some(activity) = &activity {
+                    activity.cleanup();
+                }
+                return Err(err);
+            }
+        };
+        let pty = match self
+            .ptys
+            .open(request, activity::activity_sink(activity.clone(), sink))
+        {
+            Ok(pty) => pty,
+            Err(err) => {
+                if let Some(activity) = &activity {
+                    activity.cleanup();
+                }
+                return Err(err);
+            }
+        };
+        let switched =
+            self.sessions
+                .retarget_agent(id, preset.id.clone(), preset.name.clone(), pty);
+        let (session, old_pty) = match switched {
+            Ok(pair) => pair,
+            Err(err) => {
+                self.ptys.close(pty);
+                if let Some(activity) = &activity {
+                    activity.cleanup();
+                }
+                return Err(err);
+            }
+        };
+        self.sessions.replace_activity(id, activity);
+        self.ptys.close(old_pty);
+        Ok(session)
     }
 
     /// Whether the worktree has uncommitted changes. Blocking: runs git.
@@ -3784,6 +3880,375 @@ mod tests {
             core.open_shell(&lead.id, PtySize::default(), sink),
             Err(Error::LeadUnsupported)
         );
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.session_switch_agent(
+                &lead.id,
+                "claude",
+                "Review the changes in this worktree.",
+                PtySize::default(),
+                sink,
+                None,
+            ),
+            Err(Error::LeadUnsupported)
+        );
         assert_eq!(core.session(&lead.id), Some(lead));
+    }
+
+    /// Prints every launch argument, then idles. The review prompt must arrive
+    /// as one positional argument after the preset's own flags.
+    const SWITCH_CLI: &str = "#!/bin/sh\nlast=\nfor a in \"$@\"; do\n  printf 'arg:%s\\n' \"$a\"\n  last=$a\ndone\nprintf 'last:%s\\n' \"$last\"\nprintf 'cwd:%s\\n' \"$(pwd -P)\"\nprintf 'sock:%s\\n' \"$SHIKA_SOCKET\"\nprintf 'token:%s\\n' \"$SHIKA_TOKEN\"\nprintf 'path:%s\\n' \"$PATH\"\nprintf 'end-report\\n'\nwhile IFS= read -r line; do :; done\n";
+
+    const REVIEW_PROMPT: &str = "Review the changes in this worktree against the base branch. Look for bugs. You have no earlier conversation. Do not rewrite the work unless you find a defect that should be fixed.";
+
+    fn write_exec(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let path = bin.join(name);
+        fs::write(&path, body).unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).unwrap();
+        path
+    }
+
+    fn core_with_switch_clis(scratch: &Scratch) -> Core {
+        let claude = write_exec(&scratch.path, "claude", SWITCH_CLI);
+        let agent = write_exec(&scratch.path, "agent", SWITCH_CLI);
+        let pi = write_exec(&scratch.path, "pi", SWITCH_CLI);
+        let env = PathEnv::from_lookup(
+            "/usr/bin:/bin".into(),
+            None,
+            &[
+                ("claude", Some(claude)),
+                ("agent", Some(agent)),
+                ("pi", Some(pi)),
+                ("codex", None),
+            ],
+        );
+        Core::open_with(scratch.path.join("data"), env).unwrap()
+    }
+
+    fn report_args(report: &str) -> Vec<String> {
+        report
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("arg:").map(str::to_string))
+            .collect()
+    }
+
+    fn switch_agent(
+        core: &Core,
+        id: &str,
+        preset: &str,
+        prompt: &str,
+        control: Option<WorkerEnv>,
+    ) -> (Session, String) {
+        let (sink, rx) = channel_sink();
+        let session = core
+            .session_switch_agent(id, preset, prompt, PtySize::new(30, 90), sink, control)
+            .unwrap();
+        let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+        (session, report)
+    }
+
+    #[test]
+    fn switching_the_agent_keeps_the_worktree_branch_shells_and_name() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_switch_clis(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (sink, _rx) = channel_sink();
+        let session = core
+            .create_session(
+                &project.id,
+                "claude",
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions::default(),
+            )
+            .unwrap();
+        let (shell_sink, _shell_rx) = channel_sink();
+        let shell = core
+            .open_shell(&session.id, PtySize::new(30, 90), shell_sink)
+            .unwrap();
+        fs::write(session.worktree.join("wip.txt"), "keep\n").unwrap();
+        fs::create_dir_all(repo.join(".shika")).unwrap();
+        fs::write(
+            repo.join(preparation::CONFIG_PATH),
+            "{\"setup-worktree\":[\"touch ran-setup\"]}",
+        )
+        .unwrap();
+        let branch = session.branch.clone();
+        let title = session.title.clone();
+        let worktree = session.worktree.clone();
+        let base = session.base_ref.clone();
+        let old_pty = session.pty;
+        assert_eq!(branch, format!("shika-draft-{}", session.id));
+        assert!(!session.cli_titled);
+
+        let (switched, report) = switch_agent(&core, &session.id, "cursor", REVIEW_PROMPT, None);
+        assert_eq!(
+            report_args(&report),
+            vec![
+                "--yolo".to_string(),
+                "--trust".to_string(),
+                "--sandbox".to_string(),
+                "disabled".to_string(),
+                REVIEW_PROMPT.to_string(),
+            ],
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("cwd:{}", worktree.display())),
+            "{report}"
+        );
+        assert!(
+            report.contains("sock:\r\n") && report.contains("token:\r\n"),
+            "{report}"
+        );
+        assert!(!report.contains("shika report"), "{report}");
+        assert!(!session.worktree.join("ran-setup").exists());
+        assert_eq!(
+            fs::read_to_string(worktree.join("wip.txt")).unwrap(),
+            "keep\n"
+        );
+        assert_eq!(
+            git(&worktree, &["symbolic-ref", "--short", "HEAD"]).trim(),
+            branch
+        );
+        assert_eq!(switched.branch, branch);
+        assert_eq!(switched.title, title);
+        assert!(!switched.manual_title);
+        assert!(switched.cli_titled);
+        assert_eq!(switched.worktree, worktree);
+        assert_eq!(switched.base_ref, base);
+        assert_eq!(switched.started_by, None);
+        assert_eq!(switched.preset_id, "cursor");
+        assert_eq!(switched.preset_name, "Cursor CLI");
+        assert_ne!(switched.pty, old_pty);
+        assert_eq!(switched.shell_ptys, vec![shell]);
+        assert!(!switched.lead);
+        assert_eq!(
+            core.write(old_pty, b"still there\n"),
+            Err(Error::UnknownPty)
+        );
+        assert!(core.write(shell, b"echo shells-stay\n").is_ok());
+        assert!(core.write(switched.pty, b"echo reviewer\n").is_ok());
+        let journal = core
+            .worktree_journal()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.path == worktree)
+            .unwrap();
+        assert_eq!(journal.branch, branch);
+        assert_eq!(
+            core.session_rename_from_prompt(&session.id, REVIEW_PROMPT)
+                .unwrap()
+                .branch,
+            branch
+        );
+        assert_eq!(core.session_apply_cli_title(&session.id).unwrap(), None);
+
+        let cursor_pty = switched.pty;
+        let (again, report) = switch_agent(&core, &session.id, "claude", REVIEW_PROMPT, None);
+        assert_eq!(
+            report_args(&report),
+            vec![
+                "--dangerously-skip-permissions".to_string(),
+                REVIEW_PROMPT.to_string(),
+            ],
+            "{report}"
+        );
+        assert_eq!(again.branch, branch);
+        assert_eq!(again.title, title);
+        assert!(again.cli_titled);
+        assert_eq!(again.preset_id, "claude");
+        assert_ne!(again.pty, cursor_pty);
+        assert_eq!(again.shell_ptys, vec![shell]);
+        assert_eq!(core.write(cursor_pty, b"x"), Err(Error::UnknownPty));
+        assert!(core.write(shell, b"echo still\n").is_ok());
+
+        let (pi, report) = switch_agent(&core, &session.id, "pi", REVIEW_PROMPT, None);
+        let args = report_args(&report);
+        assert_eq!(
+            args.first().map(String::as_str),
+            Some("--approve"),
+            "{report}"
+        );
+        assert!(args.iter().any(|arg| arg == "--extension"), "{report}");
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some(REVIEW_PROMPT),
+            "{report}"
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg == "--worktree" || arg.starts_with("--worktree=")),
+            "{report}"
+        );
+        assert_eq!(pi.branch, branch);
+        assert_eq!(pi.shell_ptys, vec![shell]);
+        assert!(core.write(shell, b"echo after-pi\n").is_ok());
+
+        fs::remove_file(repo.join(preparation::CONFIG_PATH)).unwrap();
+        let (sink, _rx) = channel_sink();
+        let named = core
+            .create_session(
+                &project.id,
+                "claude",
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions::default(),
+            )
+            .unwrap();
+        let named = core
+            .session_rename_from_prompt(&named.id, "Fix the login bug")
+            .unwrap();
+        let named_branch = named.branch.clone();
+        let named_title = named.title.clone();
+        assert_ne!(named_branch, format!("shika-draft-{}", named.id));
+        assert!(!named.cli_titled);
+        let (kept, _) = switch_agent(&core, &named.id, "cursor", REVIEW_PROMPT, None);
+        assert_eq!(kept.branch, named_branch);
+        assert_eq!(kept.title, named_title);
+        assert!(kept.cli_titled);
+        assert_eq!(core.session_apply_cli_title(&named.id).unwrap(), None);
+        assert_eq!(
+            git(&kept.worktree, &["symbolic-ref", "--short", "HEAD"]).trim(),
+            named_branch
+        );
+    }
+
+    #[test]
+    fn a_failed_agent_switch_leaves_the_original_process_running() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let claude = write_exec(&scratch.path, "claude", SWITCH_CLI);
+        let env = PathEnv::from_lookup(
+            "/usr/bin:/bin".into(),
+            None,
+            &[
+                ("claude", Some(claude)),
+                (
+                    "agent",
+                    Some(scratch.path.join("bin").join("missing-agent")),
+                ),
+            ],
+        );
+        let core = Core::open_with(scratch.path.join("data"), env).unwrap();
+        let project = core.add_project(&repo).unwrap().project;
+        let (sink, _rx) = channel_sink();
+        let session = core
+            .create_session(
+                &project.id,
+                "claude",
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions::default(),
+            )
+            .unwrap();
+        let old = session.pty;
+        let (sink, _rx) = channel_sink();
+        assert!(
+            core.session_switch_agent(
+                &session.id,
+                "cursor",
+                REVIEW_PROMPT,
+                PtySize::new(30, 90),
+                sink,
+                None,
+            )
+            .is_err()
+        );
+        let stayed = core.session(&session.id).unwrap();
+        assert_eq!(stayed.pty, old);
+        assert_eq!(stayed.preset_id, "claude");
+        assert!(!stayed.cli_titled);
+        assert_eq!(stayed.branch, session.branch);
+        assert!(core.write(old, b"still running\n").is_ok());
+
+        for prompt in ["", "  ", "-x"] {
+            let (sink, _rx) = channel_sink();
+            assert!(
+                matches!(
+                    core.session_switch_agent(
+                        &session.id,
+                        "claude",
+                        prompt,
+                        PtySize::default(),
+                        sink,
+                        None,
+                    ),
+                    Err(Error::InvalidPrompt(_))
+                ),
+                "{prompt:?}"
+            );
+        }
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.session_switch_agent(
+                &session.id,
+                "nope",
+                REVIEW_PROMPT,
+                PtySize::default(),
+                sink,
+                None,
+            ),
+            Err(Error::UnknownCli)
+        );
+        let stayed = core.session(&session.id).unwrap();
+        assert_eq!(stayed.pty, old);
+        assert!(!stayed.cli_titled);
+        assert!(core.write(old, b"still running\n").is_ok());
+    }
+
+    #[test]
+    fn a_worker_switch_keeps_its_owner_and_control_env_without_the_new_task_footer() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_switch_clis(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (lead, _) = create_lead(&core, &scratch, &project.id);
+        let control = scratch.path.join("control");
+        let env = WorkerEnv {
+            socket: control.join("sock"),
+            token: "worker-token".into(),
+            bin_dir: control.join("bin"),
+        };
+        let (sink, _rx) = channel_sink();
+        let worker = core
+            .create_session(
+                &project.id,
+                "claude",
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions {
+                    prompt: Some("Fix the login bug".into()),
+                    started_by: Some(lead.id.clone()),
+                    control: Some(env.clone()),
+                    ..LaunchOptions::default()
+                },
+            )
+            .unwrap();
+        let (switched, report) =
+            switch_agent(&core, &worker.id, "cursor", REVIEW_PROMPT, Some(env));
+        assert_eq!(switched.started_by.as_deref(), Some(lead.id.as_str()));
+        assert_eq!(switched.branch, worker.branch);
+        assert_eq!(
+            report_args(&report).last().map(String::as_str),
+            Some(REVIEW_PROMPT)
+        );
+        assert!(!report.contains("shika report"), "{report}");
+        assert!(report.contains("token:worker-token"), "{report}");
+        assert!(
+            report.contains(&format!("sock:{}", control.join("sock").display())),
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("path:{}:", control.join("bin").display())),
+            "{report}"
+        );
+        assert!(!report.contains("lead-token"), "{report}");
     }
 }

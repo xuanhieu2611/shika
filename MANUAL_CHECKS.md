@@ -432,3 +432,16 @@ Result 2026-10-09, fifth run (author, worker-report build, fresh disposable `tex
 - [ ] When a Lead-started worker runs `shika report "..."`, the text appears under its task line in the Lead's `shika wait`, `status`, and `tasks`, and the doorbell line reads `... is ready (reported)` without the text. A worker that finishes without reporting shows no report. After the Lead `send`s the worker a new instruction, the old report is gone until it reports again.
 - [ ] `echo $SHIKA_TOKEN` in a Lead-started worker's agent terminal (ask the CLI to run it) is set, and is empty in that worker's shell tabs and in any card the author created with Cmd+N. In the worker, `shika tasks` and `shika read <id>` print `refused: Workers can only run shika report.` (exit 1), and `shika help` prints three lines. A Lead running `shika report x` is refused.
 - [ ] The Lead's default check is the worker's report plus `shika diff <task> --stat`: it does not read the full diff or the screen unless the report is missing or the stat looks wrong. If the report omits test results, the Lead asks the worker with `shika send` to run them and report. Its final summary says what each worker reported and what nobody verified.
+
+## Review with another agent
+
+See [docs/agent-review.md](docs/agent-review.md). Unit tests cover the core switch (same worktree, unchanged branch, surviving shell, failed start, Lead refusal, worker control env) and that the review prompt is a submission that does not name the task. They do not mark the native dialog, menu, or shortcut passed.
+
+- [ ] From a Ready, Waiting, or exited ordinary task, Agent > Review with another agent… and Cmd+Shift+A open the dialog. Both do nothing while a dialog is open, while the app is busy, while the agent is Working or Asking, while setup is running, and while publishing.
+- [ ] Escape cancels and restores focus. The original agent process is still running.
+- [ ] Confirm switches to another CLI, and to a fresh process of the same CLI, in the same worktree. The branch name, display name, commits, and uncommitted files stay. The agent tab label is the new preset. Focus is the new terminal. The card shows Working.
+- [ ] A failed start leaves the original process running and shows the error in the dialog.
+- [ ] Unsent text in the agent terminal refuses the switch. Unsent text in a shell tab does not. Shell tabs are still there after a switch.
+- [ ] The Lead card refuses. A worker the Lead started can switch, stays marked from that Lead, and `shika report` still works in the new agent. The review prompt does not include the new-task report footer.
+- [ ] A draft branch is not renamed to the review prompt. A branch already on a remote stays. The new CLI's own session title does not rename the branch or replace the display name.
+- [ ] Diff stat and the Changes panel still compare against the base the task started from.

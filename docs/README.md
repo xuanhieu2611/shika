@@ -15,6 +15,7 @@ These guides explain why features exist, how they are implemented, and where to 
 | [Keyboard flow](keyboard-flow.md) | Native shortcuts, terminal/card focus, overlay restoration, and selection scrolling |
 | [Worktree preparation](worktree-preparation.md) | Feature evolution and decisions, per-project first-New onboarding, Settings editor, suggestions, consent/state routing, copy/setup lifecycle, debugging, and contribution guardrails |
 | [Confirmed PR publishing](publishing.md) | Decision rationale, recorded-base targeting, approved-tree checks, commit/push/gh lifecycle, debugging, retries, and contribution guardrails |
+| [Review with another agent](agent-review.md) | Switching an idle task to a second CLI in the same worktree, without copying the first conversation |
 | [PR checks on the card](pr-checks.md) | The read-only CI mark after Create PR, its polling schedule, head matching, classification, notifications, and debugging |
 | [Manual task names](task-names.md) | Rename task, display-name versus branch identity, commit/PR defaults, automatic-title priority, and the public FAQ |
 | [Branch naming](branch-naming.md) | First-prompt names, CLI session-title discovery, branch renaming, and fallbacks |

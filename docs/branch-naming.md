@@ -96,6 +96,7 @@ Both renames go through `rename_task_branch`, which adds the prefix, picks a fre
 - **Collisions** (`rename_branch`): if `refs/heads/<name>` or any `refs/remotes/*/<name>` exists, try `<name>-2`, `<name>-3`, and so on. Asking for the name the branch already has is a no-op.
 - **Never renamed**: a branch that is on a remote (`is_published`: it has an upstream, or a remote-tracking branch has its name, as after `git push origin HEAD` without `-u`); a worktree whose HEAD is not the task branch (the user switched branches). In both cases the card still takes the CLI title.
 - **Once**: after a CLI title is applied, later automatic titles and prompts change nothing. Manual Rename task can still update the display name.
+- **Review switch**: `Core::session_switch_agent` sets `cli_titled` without renaming, including while the branch is still `shika-draft-<id>`. The review prompt and the new CLI's session title cannot become the branch name or replace the display name. A branch already on a remote stays as it is. See [agent-review.md](agent-review.md).
 - **Manual override**: `Session::manual_title` prevents both prompt and CLI-title updates from replacing the display name. It does not suppress branch naming or set `cli_titled`. Both automatic store updates check the override under the metadata lock, and UI background completions reread the current session to reject stale title snapshots. See [task-names.md](task-names.md).
 
 ## Where the CLIs keep their titles
