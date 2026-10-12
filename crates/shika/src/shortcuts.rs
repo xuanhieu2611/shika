@@ -127,7 +127,7 @@ const RESERVED: &[(&str, &str)] = &[
     ("cmd-l", "New Lead"),
     ("cmd-t", "New terminal tab"),
     ("cmd-shift-p", "Create PR"),
-    ("cmd-shift-a", "Review with another agent"),
+    ("cmd-shift-a", "Switch agent"),
     ("cmd-w", "Close terminal tab"),
     ("cmd-shift-w", "Close task"),
     ("cmd-shift-r", "Rename task"),

@@ -18,7 +18,7 @@ The card-navigation model is still available. A small native shortcut layer now 
 | --- | --- | --- |
 | `Cmd+Shift+R` | Rename the selected live task, without renaming Git | Dialog; completion/cancel restores previous focus and selection |
 | `Cmd+Shift+P` | Preview commit, push, and Create PR for the task's original base | Dialog; cancel/completion restores previous focus |
-| `Cmd+Shift+A` | Review the selected task with another agent, in the same worktree | Dialog; cancel restores previous focus; confirm focuses the new agent terminal |
+| `Cmd+Shift+A` | Switch the selected task to another agent, in the same worktree | Dialog; cancel restores previous focus; confirm focuses the new agent terminal |
 | `Cmd+T` | New independent shell tab in this task's worktree | New shell; startup input is queued |
 | `Cmd+W` | Close selected shell tab. On the pinned agent it does nothing and does not close the task | Preceding tab if the closed view had focus; otherwise preserve focus |
 | `Cmd+Shift+W` | Close the selected task. Same path as the Close task button: cancel setup, remove a failed card, or the safe-close flow | Unchanged until close finishes; a clean idle task closes immediately |
@@ -35,7 +35,7 @@ These are the defaults. Settings, Keyboard, can change Hide or show changes, Go 
 
 Next/previous agent skips project headers, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
 
-These actions do nothing while the app is busy or any overlay is open. A Lead has no shell tabs, Create PR, or review switch: `Cmd+T`, `Cmd+Shift+P`, and `Cmd+Shift+A` show a short message on its card. Workers started by a Lead (`shika new`) never take selection or focus from the author. `Cmd+N` uses the first project when nothing is selected and opens Add project when there are no projects.
+These actions do nothing while the app is busy or any overlay is open. A Lead has no shell tabs, Create PR, or agent switch: `Cmd+T`, `Cmd+Shift+P`, and `Cmd+Shift+A` show a short message on its card. Workers started by a Lead (`shika new`) never take selection or focus from the author. `Cmd+N` uses the first project when nothing is selected and opens Add project when there are no projects.
 
 ## Settings sections
 
@@ -53,7 +53,7 @@ Other improvements:
 
 Create PR is also in the Agent menu and terminal metadata row. Its dialog uses Tab to switch title/target fields, Enter to confirm publishing, and Escape to cancel. Plain card keys never run while editing. Busy/overlay conflicts and active/blocked turns block entry. See [publishing.md](publishing.md); publishing runs on a worker, not by writing commands into a terminal.
 
-Review with another agent is in the Agent menu and on `Cmd+Shift+A`. Its dialog lists the same CLIs as New. `j`/`k` or the arrows move that list, Tab edits the prompt, Enter confirms, and Escape cancels and restores focus. While the prompt is focused, `j`/`k` type and Up/Down still move the list. Confirm focuses the new agent terminal and does not restore the old one. Busy, an open overlay, Working, Asking, setup, and unsent text in the agent terminal block entry; the check runs again at confirmation. See [agent-review.md](agent-review.md).
+Switch agent is in the Agent menu and on `Cmd+Shift+A`. Its dialog lists the same CLIs as New, and the prompt starts empty. `j`/`k` or the arrows move that list, Tab edits the prompt, Enter confirms, and Escape cancels and restores focus. While the prompt is focused, `j`/`k` type and Up/Down still move the list. Confirm focuses the new agent terminal and does not restore the old one. An empty prompt leaves the card Waiting; a prompt submits a turn. Busy, an open overlay, Working, Asking, setup, and unsent text in the agent terminal block entry; the check runs again at confirmation. See [agent-switch.md](agent-switch.md).
 
 ## Worktree setup
 
@@ -108,7 +108,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 | Navigation order | `rows`, `sorted_cards`, `adjacent_agent` | Project-grouped, status-sorted traversal; agent-only navigation skips headers |
 | Focus-preserving navigation | `move_agent`, `focus_terminal` | Changes selection and, only when needed, focuses the destination task's shown terminal |
 | Overlay restoration | `overlay_return_focus`, `restore_overlay_focus` | Stores a `FocusHandle`, restores it once, defaults to card focus when none was saved |
-| Overlay entry/exit | `picker`, `picker_for`, `open_settings`, `open_base`, `cancel_overlay`, `apply_base`, `launch`, `review_agent`, `confirm_review` | Captures focus before opening; restores on dismissal; launch and a confirmed review intentionally clear restoration |
+| Overlay entry/exit | `picker`, `picker_for`, `open_settings`, `open_base`, `cancel_overlay`, `apply_base`, `launch`, `review_agent`, `confirm_review` | Captures focus before opening; restores on dismissal; launch and a confirmed switch intentionally clear restoration |
 | Terminal switching | `toggle`, `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `Card::active_pane` | Task-local tabs, pinned agent, independent shells, selected-view focus and asynchronous PTY teardown |
 | Shell startup | `Pane::new`, `bind_host`, `Host::write` | Queues startup input; binds/resizes PTY and drains queued bytes in order |
 | Tab navigation | `model::adjacent_tab`, `model::tab_after_close`, `Card::tab_scroll` | Wrap navigation, preserve selection on removal, reveal selected tab horizontally |

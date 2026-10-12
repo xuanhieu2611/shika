@@ -42,7 +42,7 @@ Shika's version differs from those on purpose:
 ## User-facing contract
 
 - **Start.** The author starts a Lead for a project with any found CLI. A project has at most one live Lead. Like every session, a Lead is memory only and does not come back after a relaunch.
-- **Card.** The Lead card sits first in its project group and is marked as the Lead. It has the normal status signal and terminal. It has no diff stat, no Create PR, no shell tabs, and it cannot review with another agent.
+- **Card.** The Lead card sits first in its project group and is marked as the Lead. It has the normal status signal and terminal. It has no diff stat, no Create PR, no shell tabs, and it cannot switch agent.
 - **Worktree.** The Lead runs in its own detached worktree, `<repo>/.worktrees/shika-lead-<id>`, created from the project's base with `git worktree add --detach`. It reads code there. It has no branch, so it cannot be pushed or published, and an accidental edit never touches the main checkout or a worker. Preparation (`.shika/worktrees.json`) does not run for it. Closing the Lead removes its worktree after the normal dirty check.
 - **Never codes.** The Lead's guide tells it that every change, even a one-line fix, goes to a worker. Its worktree is for reading.
 - **Workers.** `shika new` does exactly what New does: a fresh `shika-draft-<id>` worktree from the project's base (or `--base`), preparation and its approval, the preset's launch flags, branch naming from the prompt and then the CLI title. The worker card appears in the project like any other, marked as started by the Lead. Notifications, status, timers, the Changes panel, Create PR, and Close behave as they do today.
@@ -133,7 +133,7 @@ The prompt is passed to the worker CLI as its positional prompt. All four CLIs a
 
 **Traps.**
 
-- A Lead has no branch. Anything that calls a per-session Core method refuses it with `LeadUnsupported`, which would show an error toast: CLI title polling, the diff stat on Ready, the Changes panel (`Target::Lead`), Create PR, shell tabs, Review with another agent, and the Close dialog's branch wording are all guarded by `Card::lead`. Add the same guard to any new per-session feature. A worker the Lead started may switch agents; it keeps `started_by`, and the new agent PTY still receives that worker's control env. See [agent-review.md](agent-review.md).
+- A Lead has no branch. Anything that calls a per-session Core method refuses it with `LeadUnsupported`, which would show an error toast: CLI title polling, the diff stat on Ready, the Changes panel (`Target::Lead`), Create PR, shell tabs, Switch agent, and the Close dialog's branch wording are all guarded by `Card::lead`. Add the same guard to any new per-session feature. A worker the Lead started may switch agents; it keeps `started_by`, and the new agent PTY still receives that worker's control env. See [agent-switch.md](agent-switch.md).
 - Cards are addressed by position in several places (`Overlay::Close { index }`, selection). The control path must only append cards; removals go through the tick.
 - A report is stored on the card with the turn it was made in (`Activity::turn_started`) and shown only while that turn is current. Anything that starts a turn without a report (a typed line, `send`) therefore clears it from the Lead's view.
 - Lead and worker prompts reach the CLI as one argument, so a prompt that starts with `-` or is empty is refused by Core before anything is created.

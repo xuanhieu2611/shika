@@ -1019,26 +1019,33 @@ impl Core {
         Ok(())
     }
 
-    /// Starts `preset_id` in this session's existing worktree. The prompt is
-    /// the CLI's single positional argument after the preset's launch flags.
-    /// Only after that process is running does this stop the current agent
-    /// PTY. Shell PTYs stay. The branch, title, base ref, worktree, and
-    /// `started_by` stay, and `cli_titled` is set so this prompt and the new
-    /// CLI's session title cannot rename the branch or replace the display
-    /// name. No preparation, commit, or push. A Lead is refused. `control` is
-    /// the worker env for a Lead-started worker's new agent PTY, and None for
-    /// a card the author created. If the start fails, the current agent keeps
-    /// running. Blocking: spawns a process.
+    /// Starts `preset_id` in this session's existing worktree. A prompt that
+    /// has text is the CLI's single positional argument after the preset's
+    /// launch flags. Empty or whitespace starts the CLI the way New does,
+    /// with no positional argument. Only after that process is running does
+    /// this stop the current agent PTY. Shell PTYs stay. The branch, title,
+    /// base ref, worktree, and `started_by` stay, and `cli_titled` is set so
+    /// this prompt and the new CLI's session title cannot rename the branch
+    /// or replace the display name. No preparation, commit, or push. A Lead
+    /// is refused. `control` is the worker env for a Lead-started worker's
+    /// new agent PTY, and None for a card the author created. If the start
+    /// fails, the current agent keeps running. Blocking: spawns a process.
     pub fn session_switch_agent(
         &self,
         id: &str,
         preset_id: &str,
-        prompt: &str,
+        prompt: Option<&str>,
         size: PtySize,
         sink: impl PtySink,
         control: Option<WorkerEnv>,
     ) -> Result<Session> {
-        session::check_prompt(prompt)?;
+        let prompt = match prompt {
+            Some(prompt) if !prompt.trim().is_empty() => {
+                session::check_prompt(prompt)?;
+                Some(prompt)
+            }
+            _ => None,
+        };
         let env = self.path_env();
         let _guard = self
             .operations
@@ -1075,7 +1082,7 @@ impl Core {
         if let Some(activity) = &activity {
             activity.wire(&mut request);
         }
-        request.args = match session::launch_args(std::mem::take(&mut request.args), Some(prompt)) {
+        request.args = match session::launch_args(std::mem::take(&mut request.args), prompt) {
             Ok(args) => args,
             Err(err) => {
                 if let Some(activity) = &activity {
@@ -3885,7 +3892,7 @@ mod tests {
             core.session_switch_agent(
                 &lead.id,
                 "claude",
-                "Review the changes in this worktree.",
+                Some("Continue the backend."),
                 PtySize::default(),
                 sink,
                 None,
@@ -3895,11 +3902,11 @@ mod tests {
         assert_eq!(core.session(&lead.id), Some(lead));
     }
 
-    /// Prints every launch argument, then idles. The review prompt must arrive
-    /// as one positional argument after the preset's own flags.
+    /// Prints every launch argument, then idles. A prompt must arrive as one
+    /// positional argument after the preset's own flags. An empty prompt adds none.
     const SWITCH_CLI: &str = "#!/bin/sh\nlast=\nfor a in \"$@\"; do\n  printf 'arg:%s\\n' \"$a\"\n  last=$a\ndone\nprintf 'last:%s\\n' \"$last\"\nprintf 'cwd:%s\\n' \"$(pwd -P)\"\nprintf 'sock:%s\\n' \"$SHIKA_SOCKET\"\nprintf 'token:%s\\n' \"$SHIKA_TOKEN\"\nprintf 'path:%s\\n' \"$PATH\"\nprintf 'end-report\\n'\nwhile IFS= read -r line; do :; done\n";
 
-    const REVIEW_PROMPT: &str = "Review the changes in this worktree against the base branch. Look for bugs. You have no earlier conversation. Do not rewrite the work unless you find a defect that should be fixed.";
+    const SWITCH_PROMPT: &str = "Continue the backend.";
 
     fn write_exec(dir: &Path, name: &str, body: &str) -> PathBuf {
         let bin = dir.join("bin");
@@ -3940,7 +3947,7 @@ mod tests {
         core: &Core,
         id: &str,
         preset: &str,
-        prompt: &str,
+        prompt: Option<&str>,
         control: Option<WorkerEnv>,
     ) -> (Session, String) {
         let (sink, rx) = channel_sink();
@@ -3986,7 +3993,8 @@ mod tests {
         assert_eq!(branch, format!("shika-draft-{}", session.id));
         assert!(!session.cli_titled);
 
-        let (switched, report) = switch_agent(&core, &session.id, "cursor", REVIEW_PROMPT, None);
+        let (switched, report) =
+            switch_agent(&core, &session.id, "cursor", Some(SWITCH_PROMPT), None);
         assert_eq!(
             report_args(&report),
             vec![
@@ -3994,7 +4002,7 @@ mod tests {
                 "--trust".to_string(),
                 "--sandbox".to_string(),
                 "disabled".to_string(),
-                REVIEW_PROMPT.to_string(),
+                SWITCH_PROMPT.to_string(),
             ],
             "{report}"
         );
@@ -4042,7 +4050,7 @@ mod tests {
             .unwrap();
         assert_eq!(journal.branch, branch);
         assert_eq!(
-            core.session_rename_from_prompt(&session.id, REVIEW_PROMPT)
+            core.session_rename_from_prompt(&session.id, SWITCH_PROMPT)
                 .unwrap()
                 .branch,
             branch
@@ -4050,12 +4058,12 @@ mod tests {
         assert_eq!(core.session_apply_cli_title(&session.id).unwrap(), None);
 
         let cursor_pty = switched.pty;
-        let (again, report) = switch_agent(&core, &session.id, "claude", REVIEW_PROMPT, None);
+        let (again, report) = switch_agent(&core, &session.id, "claude", Some(SWITCH_PROMPT), None);
         assert_eq!(
             report_args(&report),
             vec![
                 "--dangerously-skip-permissions".to_string(),
-                REVIEW_PROMPT.to_string(),
+                SWITCH_PROMPT.to_string(),
             ],
             "{report}"
         );
@@ -4068,7 +4076,7 @@ mod tests {
         assert_eq!(core.write(cursor_pty, b"x"), Err(Error::UnknownPty));
         assert!(core.write(shell, b"echo still\n").is_ok());
 
-        let (pi, report) = switch_agent(&core, &session.id, "pi", REVIEW_PROMPT, None);
+        let (pi, report) = switch_agent(&core, &session.id, "pi", Some(SWITCH_PROMPT), None);
         let args = report_args(&report);
         assert_eq!(
             args.first().map(String::as_str),
@@ -4078,7 +4086,7 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--extension"), "{report}");
         assert_eq!(
             args.last().map(String::as_str),
-            Some(REVIEW_PROMPT),
+            Some(SWITCH_PROMPT),
             "{report}"
         );
         assert!(
@@ -4090,6 +4098,27 @@ mod tests {
         assert_eq!(pi.branch, branch);
         assert_eq!(pi.shell_ptys, vec![shell]);
         assert!(core.write(shell, b"echo after-pi\n").is_ok());
+
+        let (blank, report) = switch_agent(&core, &session.id, "claude", None, None);
+        assert_eq!(
+            report_args(&report),
+            vec!["--dangerously-skip-permissions".to_string()],
+            "{report}"
+        );
+        assert_eq!(blank.branch, branch);
+        assert_eq!(blank.title, title);
+        assert!(blank.cli_titled);
+        assert_eq!(blank.shell_ptys, vec![shell]);
+
+        let (spaces, report) = switch_agent(&core, &session.id, "claude", Some("  \n"), None);
+        assert_eq!(
+            report_args(&report),
+            vec!["--dangerously-skip-permissions".to_string()],
+            "{report}"
+        );
+        assert_eq!(spaces.branch, branch);
+        assert_eq!(spaces.title, title);
+        assert!(spaces.cli_titled);
 
         fs::remove_file(repo.join(preparation::CONFIG_PATH)).unwrap();
         let (sink, _rx) = channel_sink();
@@ -4109,7 +4138,7 @@ mod tests {
         let named_title = named.title.clone();
         assert_ne!(named_branch, format!("shika-draft-{}", named.id));
         assert!(!named.cli_titled);
-        let (kept, _) = switch_agent(&core, &named.id, "cursor", REVIEW_PROMPT, None);
+        let (kept, _) = switch_agent(&core, &named.id, "cursor", Some(SWITCH_PROMPT), None);
         assert_eq!(kept.branch, named_branch);
         assert_eq!(kept.title, named_title);
         assert!(kept.cli_titled);
@@ -4154,7 +4183,7 @@ mod tests {
             core.session_switch_agent(
                 &session.id,
                 "cursor",
-                REVIEW_PROMPT,
+                Some(SWITCH_PROMPT),
                 PtySize::new(30, 90),
                 sink,
                 None,
@@ -4168,14 +4197,14 @@ mod tests {
         assert_eq!(stayed.branch, session.branch);
         assert!(core.write(old, b"still running\n").is_ok());
 
-        for prompt in ["", "  ", "-x"] {
+        for prompt in ["-x", "a\0b"] {
             let (sink, _rx) = channel_sink();
             assert!(
                 matches!(
                     core.session_switch_agent(
                         &session.id,
                         "claude",
-                        prompt,
+                        Some(prompt),
                         PtySize::default(),
                         sink,
                         None,
@@ -4190,7 +4219,7 @@ mod tests {
             core.session_switch_agent(
                 &session.id,
                 "nope",
-                REVIEW_PROMPT,
+                Some(SWITCH_PROMPT),
                 PtySize::default(),
                 sink,
                 None,
@@ -4232,12 +4261,12 @@ mod tests {
             )
             .unwrap();
         let (switched, report) =
-            switch_agent(&core, &worker.id, "cursor", REVIEW_PROMPT, Some(env));
+            switch_agent(&core, &worker.id, "cursor", Some(SWITCH_PROMPT), Some(env));
         assert_eq!(switched.started_by.as_deref(), Some(lead.id.as_str()));
         assert_eq!(switched.branch, worker.branch);
         assert_eq!(
             report_args(&report).last().map(String::as_str),
-            Some(REVIEW_PROMPT)
+            Some(SWITCH_PROMPT)
         );
         assert!(!report.contains("shika report"), "{report}");
         assert!(report.contains("token:worker-token"), "{report}");

@@ -65,20 +65,45 @@ gpui::actions!(
     ]
 );
 
-/// The prompt a review CLI starts with. It is one positional argument, and it
-/// must not name the branch: the session is marked already titled first.
-const REVIEW_PROMPT: &str = "Review the changes in this worktree against the base branch. Look for bugs. You have no earlier conversation. Do not rewrite the work unless you find a defect that should be fixed.";
-
-fn review_prompt_error(prompt: &str) -> Option<&'static str> {
+/// The prompt for a same-worktree switch. Empty starts the CLI with no
+/// positional argument. A non-empty prompt is that argument.
+fn switch_prompt(prompt: &str) -> Result<Option<&str>, &'static str> {
     if prompt.trim().is_empty() {
-        Some("The prompt is empty.")
+        Ok(None)
     } else if prompt.starts_with('-') {
-        Some("The prompt cannot start with \"-\"; the CLI would read it as a flag.")
+        Err("The prompt cannot start with \"-\"; the CLI would read it as a flag.")
     } else if prompt.contains('\0') {
-        Some("The prompt contains a NUL byte.")
+        Err("The prompt contains a NUL byte.")
     } else {
-        None
+        Ok(Some(prompt))
     }
+}
+
+/// Arms the new agent host after a switch. An empty prompt finishes naming
+/// and leaves activity Waiting, so the card stays idle until the author
+/// types. A prompt counts as a submission, does not name the task, and the
+/// returned activity is already in that launch turn.
+fn apply_switch_turn(
+    host: &mut HostState,
+    prompt: Option<&str>,
+    now: Instant,
+) -> activity::Activity {
+    let mut activity = activity::Activity::new(now);
+    if let Some(prompt) = prompt {
+        host.seed_launch_prompt(prompt, false, now);
+        host.launch_turn = false;
+        activity.hold_for_launch();
+        let _ = activity.advance(
+            activity::Signal::Unknown,
+            host.last_submission,
+            None,
+            now,
+            false,
+        );
+    } else {
+        host.prompt.finish();
+    }
+    activity
 }
 
 /// The drag on the agent column's edge. It draws nothing: the column itself
@@ -528,8 +553,9 @@ enum Overlay {
         row: usize,
         error: Option<String>,
     },
-    /// Switch the selected task's agent CLI. `index` is a row in the same
-    /// list New offers. The prompt is editable and is not a branch name.
+    /// Switch the selected task's agent CLI in its current worktree. `index`
+    /// is a row in the same list New offers. The prompt starts empty and is
+    /// not a branch name.
     Review {
         session_id: String,
         prompt: Entity<name_input::NameInput>,
@@ -590,7 +616,7 @@ impl Overlay {
             Self::CardMenu(_) => "a card menu",
             Self::Rename { .. } => "the Rename task dialog",
             Self::Publish { .. } => "the Create PR dialog",
-            Self::Review { .. } => "the Review with another agent dialog",
+            Self::Review { .. } => "the Switch agent dialog",
             Self::Picker { .. } => "the New picker",
             Self::Close { .. } | Self::SwitchedClose { .. } => "the Close task dialog",
             Self::Preparation { .. } => "the setup approval dialog",
@@ -2758,11 +2784,11 @@ impl Shika {
             });
         }).detach();
     }
-    /// Why Review with another agent is unavailable for the card at `index`.
+    /// Why Switch agent is unavailable for the card at `index`.
     fn review_blocker(&self, index: usize) -> Option<&'static str> {
         let card = &self.cards[index];
         if card.lead.is_some() {
-            return Some("The Lead cannot review with another agent.");
+            return Some("The Lead cannot switch agent.");
         }
         if card.creating {
             return Some("Wait for setup to finish before switching agents.");
@@ -2810,7 +2836,7 @@ impl Shika {
             .position(|preset| preset.id == current)
             .unwrap_or(0);
         let chrome = self.chrome(window);
-        let prompt = cx.new(|cx| name_input::NameInput::new(REVIEW_PROMPT.to_string(), chrome, cx));
+        let prompt = cx.new(|cx| name_input::NameInput::new(String::new(), chrome, cx));
         self.overlay_return_focus = window.focused(cx);
         self.overlay = Some(Overlay::Review {
             session_id,
@@ -2871,10 +2897,13 @@ impl Shika {
             self.review_error(why.into(), cx);
             return;
         }
-        if let Some(why) = review_prompt_error(&prompt_text) {
-            self.review_error(why.into(), cx);
-            return;
-        }
+        let prompt = match switch_prompt(&prompt_text) {
+            Ok(prompt) => prompt.map(str::to_owned),
+            Err(why) => {
+                self.review_error(why.into(), cx);
+                return;
+            }
+        };
         if self.catalog.is_none() {
             self.review_error("Resolving login-shell PATH...".into(), cx);
             return;
@@ -2925,7 +2954,7 @@ impl Shika {
         let state = pane.state.clone();
         self.review_pane = Some(pane);
         let core = self.core.clone();
-        let prompt_for_card = prompt_text.clone();
+        let prompt_for_card = prompt.clone();
         self.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
@@ -2951,7 +2980,7 @@ impl Shika {
                     match core.session_switch_agent(
                         &session_id,
                         &preset_id,
-                        &prompt_text,
+                        prompt.as_deref(),
                         size,
                         sink,
                         control,
@@ -2982,7 +3011,7 @@ impl Shika {
     fn install_switched_agent(
         &mut self,
         session: Session,
-        prompt: String,
+        prompt: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -3001,16 +3030,11 @@ impl Shika {
             return;
         };
         let now = Instant::now();
-        {
+        let activity = {
             let mut host = lock(&pane.state);
-            host.seed_launch_prompt(&prompt, false, now);
-            host.launch_turn = false;
-        }
+            apply_switch_turn(&mut host, prompt.as_deref(), now)
+        };
         let submitted = lock(&pane.state).submission;
-        let last_submission = lock(&pane.state).last_submission;
-        let mut activity = activity::Activity::new(now);
-        activity.hold_for_launch();
-        let _ = activity.advance(activity::Signal::Unknown, last_submission, None, now, false);
         let card = &mut self.cards[index];
         card.agent = pane;
         card.preset = session.preset_name.clone();
@@ -6660,7 +6684,7 @@ impl Shika {
         prompt.update(cx, |input, _| input.set_chrome(*chrome));
         let presets = self.offered_presets();
         let mut panel = dialog(chrome, max_h)
-            .child(dialog_title(div()).child("Review with another agent?"))
+            .child(dialog_title(div()).child("Switch agent?"))
             .child(
                 dialog_text(chrome)
                     .child("This stops the current agent only after the new one starts."),
@@ -6671,6 +6695,11 @@ impl Shika {
             .child(dialog_text(chrome).child("No transcript is copied."))
             .child(dialog_text(chrome).child("Prompt"))
             .child(prompt.clone())
+            .child(
+                dialog_text(chrome)
+                    .text_color(chrome.ink_3)
+                    .child("What should this agent do? Leave it empty to type in the terminal."),
+            )
             .child(dialog_text(chrome).child("Agent"));
         if self.catalog.is_none() {
             panel = panel.child(dialog_text(chrome).child("Resolving login-shell PATH..."));
@@ -6684,7 +6713,7 @@ impl Shika {
                 );
         } else {
             let mut rows = div()
-                .id("review-agents")
+                .id("switch-agents")
                 .max_h(px(BASE_LIST_MAX))
                 .overflow_y_scroll()
                 .flex()
@@ -6697,7 +6726,7 @@ impl Shika {
                     .unwrap_or_else(|| format!("{} not found on PATH", preset.binary));
                 rows = rows.child(
                     list_row(i == index, chrome)
-                        .id(SharedString::from(format!("review-agent-{}", preset.id)))
+                        .id(SharedString::from(format!("switch-agent-{}", preset.id)))
                         .gap(px(12.))
                         .cursor_pointer()
                         .child(
@@ -6736,7 +6765,7 @@ impl Shika {
         if let Some(error) = error {
             panel = panel.child(dialog_text(chrome).child(error.to_string()));
         }
-        let label = if self.busy { "Starting..." } else { "Review" };
+        let label = if self.busy { "Starting..." } else { "Switch" };
         panel
             .child(
                 div()
@@ -6746,13 +6775,13 @@ impl Shika {
                     .gap_y(px(6.))
                     .child(hint("j k", "choose", chrome))
                     .child(hint("tab", "edit prompt", chrome))
-                    .child(hint("enter", "review", chrome))
+                    .child(hint("enter", "switch", chrome))
                     .child(hint("esc", "cancel", chrome)),
             )
             .child(
                 dialog_buttons()
                     .child(self.cancel_button("Cancel", chrome, cx))
-                    .child(primary_button("review-agent", label, "↵", chrome).on_click(
+                    .child(primary_button("switch-agent", label, "↵", chrome).on_click(
                         cx.listener(|this, _, window, cx| this.confirm_review(window, cx)),
                     )),
             )
@@ -8286,7 +8315,7 @@ fn install_menus(cx: &mut App) {
             gpui::MenuItem::action("New Lead…", NewLead),
             gpui::MenuItem::action("New terminal tab", NewTerminal),
             gpui::MenuItem::action("Create PR", CreatePr),
-            gpui::MenuItem::action("Review with another agent…", ReviewAgent),
+            gpui::MenuItem::action("Switch agent…", ReviewAgent),
             gpui::MenuItem::action("Close terminal tab", CloseTerminal),
             gpui::MenuItem::action("Rename task…", RenameTask),
             gpui::MenuItem::action("Close task", CloseTask),
@@ -8654,16 +8683,16 @@ mod host_tests {
         lead.seed_launch_prompt("You are the Lead", false, now);
         assert_eq!((lead.submission, lead.title.as_deref()), (1, None));
 
-        // A review prompt is a submission and must not become the task name.
-        let mut review = HostState::default();
-        review.seed_launch_prompt(REVIEW_PROMPT, false, now);
-        assert_eq!(review.submission, 1);
-        assert!(review.launch_turn);
-        assert!(review.title.is_none());
-        review.launch_turn = false;
-        review.capture_typed(b"rename the branch\r", now);
-        assert!(review.title.is_none());
-        assert_eq!(review.submission, 2);
+        // A switch prompt is a submission and must not become the task name.
+        let mut switched = HostState::default();
+        switched.seed_launch_prompt("Continue the backend.", false, now);
+        assert_eq!(switched.submission, 1);
+        assert!(switched.launch_turn);
+        assert!(switched.title.is_none());
+        switched.launch_turn = false;
+        switched.capture_typed(b"rename the branch\r", now);
+        assert!(switched.title.is_none());
+        assert_eq!(switched.submission, 2);
         let mut activity = activity::Activity::new(now);
         activity.hold_for_launch();
         let started = activity.advance(activity::Signal::Unknown, Some(now), None, now, false);
@@ -8672,6 +8701,39 @@ mod host_tests {
         drop(host);
         drop(core);
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn an_empty_switch_does_not_submit_and_a_prompt_does_not_name_the_task() {
+        let now = Instant::now();
+        assert_eq!(switch_prompt(""), Ok(None));
+        assert_eq!(switch_prompt("  \n"), Ok(None));
+        assert_eq!(
+            switch_prompt("Continue the backend."),
+            Ok(Some("Continue the backend."))
+        );
+        assert!(switch_prompt("-x").is_err());
+        assert!(switch_prompt("a\0b").is_err());
+
+        let mut idle = HostState::default();
+        let waiting = apply_switch_turn(&mut idle, None, now);
+        assert_eq!(idle.submission, 0);
+        assert!(!idle.launch_turn);
+        assert!(idle.title.is_none());
+        assert_eq!(waiting.status, Status::Waiting);
+        idle.capture_typed(b"rename the branch\r", now);
+        assert!(idle.title.is_none());
+        assert_eq!(idle.submission, 1);
+
+        let mut prompted = HostState::default();
+        let working = apply_switch_turn(&mut prompted, Some("Continue the backend."), now);
+        assert_eq!(prompted.submission, 1);
+        assert!(!prompted.launch_turn);
+        assert!(prompted.title.is_none());
+        assert_eq!(working.status, Status::Working);
+        prompted.capture_typed(b"rename the branch\r", now);
+        assert!(prompted.title.is_none());
+        assert_eq!(prompted.submission, 2);
     }
 
     /// The tick's consumption of a submission, in order, for a card whose CLI
