@@ -91,6 +91,8 @@ The UI changed from `shell: Option<Pane>` plus `show_shell: bool` to:
 
 Do not confuse these identities. `active_tab` is a mutable position, `shell_number` is a display label, and `PtyId` identifies a core-owned terminal process. A shell labeled Shell 5 can be tab 1 after earlier shells have closed.
 
+Switch agent replaces the pinned agent pane and its PTY in place. `active_tab` returns to zero, the tab label becomes the new preset name, and `shells` are left running. Hidden shell views stay alive. See [agent-switch.md](agent-switch.md).
+
 Core's memory-only `Session` changed from `shell_pty: Option<PtyId>` to `shell_ptys: Vec<PtyId>`. `Core::open_shell` no longer returns/reuses a singleton shell or returns `ShellOpen`; every successful call returns a fresh `PtyId` attached to the supplied output sink. UI reuse happens by selecting an existing pane, not by calling `open_shell` again.
 
 The authoritative ownership list is in `SessionStore`. A `Session` returned by core is a clone/snapshot; the UI's stored session is not automatically refreshed when shells are added. Do not use that snapshot's `shell_ptys` to decide what core must tear down.

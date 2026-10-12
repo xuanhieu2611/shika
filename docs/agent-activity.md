@@ -152,6 +152,8 @@ A CLI can be started with its prompt as an argument (`shika new` for a Lead's wo
 
 Provider paths: Pi's startup Idle report (sequence 1) is ignored while its first turn is pending, so Pi's `agent_start` and `agent_settled` reports drive the launch turn like a typed one; Claude Code, Codex, and Cursor use live-screen chrome, so they depend on their Working chrome appearing within the grace. The tests are `a_launch_prompt_*` in `activity::tests` and `host_tests` (`a_launch_prompt_counts_as_the_first_submission_and_names_the_task_once`, `a_launch_prompt_turn_runs_the_same_steps_as_a_typed_one`, which walks the tick's steps including Pi's reports). Real-CLI behavior is a manual check in `MANUAL_CHECKS.md`.
 
+Switch agent uses that launch-turn path only when the prompt is non-empty: `apply_switch_turn` calls `seed_launch_prompt(prompt, name, now)`, so the prompt counts as a submission and names the card only while the task is still on its draft branch. It replaces `Activity` first: an exited activity ignores later submissions. It calls `hold_for_launch` and `advance` immediately, then clears the host's `launch_turn` and sets `Card.submitted` to the seeded count so the tick does not count that submission again. An empty prompt leaves a fresh Waiting activity, so the card stays Waiting until the author types. For a named task it also finishes the naming capture and `TitleWatch`, so neither that later line nor the new CLI's session title renames the branch; a draft task keeps both open, as after New. See [agent-switch.md](agent-switch.md).
+
 ### Lead typing: the doorbell, `send`, and `key`
 
 A Lead can type into terminals (see [lead-agent.md](lead-agent.md)). Those writes follow the input rules above instead of adding a second path:

@@ -21,6 +21,7 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 | Sparkle updates, the release feed, or signing keys | [Software updates](docs/updates.md) |
 | Agent and shell tabs, PTY ownership, or hidden terminals | [Terminal tabs](docs/terminal-tabs.md) |
 | Create PR, recorded-base targeting, commit/push, or publishing retries | [Confirmed PR publishing](docs/publishing.md), especially its [debugging playbook](docs/publishing.md#debugging-playbook) and [contributor guardrails](docs/publishing.md#contributor-guardrails-and-extension-points) |
+| Switching an idle task to another CLI in the same worktree | [Switch agent](docs/agent-switch.md) |
 | The CI checks mark on a card after Create PR | [PR checks on the card](docs/pr-checks.md), especially its [debugging playbook](docs/pr-checks.md#debugging-playbook) |
 | The Lead agent, or the `shika` command it runs | [Lead agent](docs/lead-agent.md) and the [command reference](docs/shika-cli.md), especially its [checklist for adding a command](docs/shika-cli.md#adding-a-command) |
 | The `shika-core` crate: `Core`, sessions, worktrees, PTYs, or the control protocol | [Crate README](crates/shika-core/README.md) |
