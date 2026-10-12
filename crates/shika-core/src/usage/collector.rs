@@ -15,7 +15,7 @@ use md5::{Digest, Md5};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
-use super::{Date, UsageDay, UsageReport, local_today};
+use super::{Date, UsageDay, UsageReport, local_today, recorded_date};
 use crate::cli_title::{self, CliHome};
 
 const QUANTUM: u64 = 256 * 1024;
@@ -584,6 +584,7 @@ fn import_json(conn: &mut Connection, dir: &Path) -> rusqlite::Result<()> {
 #[derive(Default, Debug)]
 struct Envelope {
     kind: String,
+    timestamp: Option<String>,
     message: Option<Message>,
     payload: Option<Payload>,
 }
@@ -604,6 +605,7 @@ impl<'de> Deserialize<'de> for Envelope {
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "type" => record.kind = map.next_value()?,
+                        "timestamp" => record.timestamp = map.next_value()?,
                         "message" if record.kind.is_empty() || record.kind == "assistant" => {
                             record.message = map.next_value()?;
                         }
@@ -675,6 +677,7 @@ fn receipt(
     record: Envelope,
     day: Date,
 ) -> rusqlite::Result<()> {
+    let day = record.timestamp.as_deref().and_then(recorded_date).unwrap_or(day);
     if file.cli == "codex" && record.kind == "event_msg" {
         if let Some(payload) = record.payload
             && payload.kind == "token_count"
@@ -1276,6 +1279,10 @@ pub(super) fn report(dir: &Path, today: Option<Date>) -> UsageReport {
 #[cfg(test)]
 #[path = "collector_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "receipt_date_tests.rs"]
+mod receipt_date_tests;
 
 // Days are inserted in SQL date order; this function is only for the legacy
 // BTreeMap path, which is ascending. Keep actual dates alongside labels below.

@@ -6,7 +6,7 @@ Read [AGENTS.md](../AGENTS.md) and [design/DESIGN.md](../design/DESIGN.md) befor
 
 ## Decisions from PR #69 review
 
-The author accepts grouping usage by the local day it is collected, including a turn crossing midnight. Missing available usage is not acceptable merely because a card closed or a read failed. Collection must stay independent of terminal responsiveness.
+For dashboard accuracy, timestamped receipts belong to the provider record's local calendar day, including historical time-zone and DST rules. Recovery after relaunch does not move those tokens into today. Missing or invalid timestamps fall back to the collection day; old saved estimates stay on their original dates. Missing available usage is not acceptable merely because a card closed or a read failed. Collection must stay independent of terminal responsiveness.
 
 The original summary-only design was replaced after review:
 
@@ -22,11 +22,11 @@ The app explicitly starts one `shika-usage` worker. `Core::open` alone does not 
 
 Before an agent starts, its launch thread atomically journals a small path-only source in `<data-dir>/usage-sources/<id>.json`. It records the exact project directories or Codex home and cwd forms, including a resolved cwd while the worktree still exists. No prompt, response, credential, or model API call is stored. Source registration failure does not block launch; Usage reports the collection problem. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honored, including relative roots resolved from the agent's cwd. Keep provider session storage outside disposable worktrees: deleted-before-read data cannot be recovered.
 
-The agent's existing PTY sink only coalesces a wakeup. No provider read, counter write, hash, or serialization happens on the PTY reader or UI thread. Ready and exit request collection too. The sink also covers Close, Switch agent, hidden terminals, and CLI output before its card is installed. Shell tabs do not register sources. The worker never takes Core's operations lock.
+The agent's existing PTY sink only marks a per-source atomic flag and unparks the worker on the first pending event. It never waits for the scheduler's mutex, clones a source ID, or wakes again while already marked. No provider read, counter write, hash, or serialization happens on the PTY reader or UI thread. Ready and exit request collection too. The sink also covers Close, Switch agent, hidden terminals, and CLI output before its card is installed. Shell tabs do not register sources. The worker never takes Core's operations lock.
 
 Wakeups coalesce at 250ms per source. After a successful drain there are two settling reads, after 1 and 2 seconds, to catch delayed writes. Failed or partial reads use a bounded retry burst of 1, 2, 5, 15, and 30 seconds. A source then waits for another PTY event, Usage open, or app launch; no perpetual idle poll or filesystem watcher runs. A failure retains every committed count.
 
-On restart the worker recovers only journaled Shika sources. It does not scan global Claude or Codex history, restore sessions, change leftovers, or require the worktree to survive. Sources remain registered after Close so a late provider flush can be recovered. Opening Usage requests another recovery and reads an indexed saved snapshot in the background; it never opens provider files on the UI thread. A snapshot does not live-refresh.
+On restart the worker recovers only journaled Shika sources. It does not scan global Claude or Codex history, restore sessions, change leftovers, or require the worktree to survive. Sources remain registered after Close so a late provider flush can be recovered. Recovery enumerates at most 16 registrations per step and keeps at most 64 queued historical jobs. Due live jobs have priority, with one historical job after at most three live jobs for progress. Historical batch continuations drain ahead of untouched history, so compressed readers do not repeatedly replay evicted prefixes. Opening Usage only signals recovery and reads an indexed saved snapshot in the background; it never enumerates the registry or opens provider files on the UI thread. A snapshot does not live-refresh. Routine scheduling or settling alone is not a collection warning; warnings represent observed read/format failures or unfinished records.
 
 Quit does not join the worker or delay terminal shutdown. A killed worker loses only its uncommitted transaction. Source metadata and completed-record offsets permit the next launch to replay it without counting a receipt twice.
 
@@ -68,7 +68,7 @@ This recovers records that providers actually persist. It cannot reconstruct:
 - legacy Codex snapshots without response receipts, or unknown child ownership on older databases;
 - usage from Cursor, Pi, other machines, or unrelated CLI sessions.
 
-Detectable read/format failures are shown as pending/unreadable, not invented numbers. A receipt that never existed cannot always be distinguished from no model work; Shika cannot detect every missing-provider-record case. Transient failures retry; permanently unavailable data cannot be promised complete. There is no measured claim that such failures are frequent or rare. Dates are collection dates, not exact consumption dates.
+Detectable read/format failures are shown as pending/unreadable, not invented numbers. A receipt that never existed cannot always be distinguished from no model work; Shika cannot detect every missing-provider-record case. Transient failures retry; permanently unavailable data cannot be promised complete. There is no measured claim that such failures are frequent or rare. Dates follow recorded receipts when available, with collection-date fallback. A persisted timestamp describes the provider's recording time, not a precise billing instant.
 
 ## Dialog and debugging
 

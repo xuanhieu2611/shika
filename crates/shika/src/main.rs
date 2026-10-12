@@ -627,7 +627,7 @@ enum Overlay {
         choices: Option<KnownBranches>,
         highlight: Option<usize>,
     },
-    /// Background snapshot of `usage.json`. The request identity fences a
+    /// Background snapshot of saved usage. The request identity fences a
     /// read that finishes after this dialog was closed and opened again.
     Usage {
         request: Arc<()>,
@@ -3479,7 +3479,7 @@ impl Shika {
         })
         .detach();
     }
-    /// View > Usage. The snapshot is `usage.json` only; CLI files stay closed.
+    /// View > Usage. Reads the saved store; CLI files stay on the collector.
     fn show_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;

@@ -60,7 +60,9 @@ impl Date {
     fn parse(text: &str) -> Option<Self> {
         let (year, rest) = text.split_once('-')?;
         let (month, day) = rest.split_once('-')?;
-        if year.len() != 4 || month.len() != 2 || day.len() != 2 {
+        if year.len() != 4 || month.len() != 2 || day.len() != 2
+            || !year.bytes().chain(month.bytes()).chain(day.bytes()).all(|b| b.is_ascii_digit())
+        {
             return None;
         }
         Self::from_parts(year.parse().ok()?, month.parse().ok()?, day.parse().ok()?)
@@ -132,6 +134,10 @@ fn days_in_month(year: i32, month: u8) -> u32 {
 pub(crate) fn local_today() -> Option<Date> {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let secs = libc::time_t::try_from(secs).ok()?;
+    local_date(secs)
+}
+
+fn local_date(secs: libc::time_t) -> Option<Date> {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     if unsafe { libc::localtime_r(&secs, &mut tm).is_null() } {
         return None;
@@ -141,6 +147,56 @@ pub(crate) fn local_today() -> Option<Date> {
         u32::try_from(tm.tm_mon).ok()?.checked_add(1)?,
         u32::try_from(tm.tm_mday).ok()?,
     )
+}
+
+/// Both providers persist RFC 3339 timestamps. Convert the recorded instant
+/// using the Mac's local calendar, including its historical DST offset.
+pub(crate) fn recorded_date(timestamp: &str) -> Option<Date> {
+    local_date(timestamp_seconds(timestamp)?.try_into().ok()?)
+}
+
+fn timestamp_seconds(timestamp: &str) -> Option<i64> {
+    let bytes = timestamp.as_bytes();
+    if !(20..=64).contains(&bytes.len())
+        || !bytes.is_ascii()
+        || !matches!(bytes[10], b'T' | b't')
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return None;
+    }
+    let date = Date::parse(&timestamp[..10])?;
+    let number = |part: &str| -> Option<i64> {
+        part.bytes().all(|byte| byte.is_ascii_digit()).then_some(())?;
+        part.parse().ok()
+    };
+    let hour = number(&timestamp[11..13])?;
+    let minute = number(&timestamp[14..16])?;
+    let second = number(&timestamp[17..19])?;
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let mut zone = &timestamp[19..];
+    if let Some(fraction) = zone.strip_prefix('.') {
+        let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        zone = &fraction[digits..];
+    }
+    let offset = match zone.as_bytes() {
+        [b'Z' | b'z'] => 0,
+        [sign @ (b'+' | b'-'), _, _, b':', _, _] => {
+            let hours = number(&zone[1..3])?;
+            let minutes = number(&zone[4..6])?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            (hours * 3600 + minutes * 60) * if *sign == b'+' { 1 } else { -1 }
+        }
+        _ => return None,
+    };
+    Some(date.epoch_days() * 86400 + hour * 3600 + minute * 60 + second - offset)
 }
 
 pub(crate) fn report(data_dir: &Path, today: Option<Date>) -> UsageReport {
@@ -168,5 +224,25 @@ mod tests {
         assert_eq!(format_tokens(0), "0");
         assert_eq!(format_tokens(1234), "1,234");
         assert_eq!(format_tokens(10_042_955), "10,042,955");
+    }
+
+    #[test]
+    fn provider_timestamps_preserve_the_instant_across_calendar_boundaries() {
+        assert_eq!(timestamp_seconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(timestamp_seconds("1969-12-31T16:00:00-08:00"), Some(0));
+        assert_eq!(timestamp_seconds("1970-01-01T01:00:00.123456+01:00"), Some(0));
+        assert_eq!(
+            recorded_date("2026-10-11T23:30:00-07:00"),
+            recorded_date("2026-10-12T06:30:00.123Z")
+        );
+        for invalid in [
+            "2026-02-29T12:00:00Z", "2026-10-12T24:00:00Z",
+            "2026-10-12T00:60:00Z", "2026-10-12T00:00:00+24:00",
+            "2026-10-12T00:00:00.Z", "2026-10-12T00:00:00",
+            "2026-10-12T00:00:00Zextra", "2026-10-12T00:00:00+0a:00",
+            "🦌2026-10-12T00:00:00Z",
+        ] {
+            assert_eq!(recorded_date(invalid), None, "{invalid}");
+        }
     }
 }
