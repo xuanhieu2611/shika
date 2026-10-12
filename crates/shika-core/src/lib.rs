@@ -15,7 +15,7 @@
 //!   [`Core::session_diff_stat`], [`Core::session_diff`], [`Core::session_file_diff`],
 //!   [`Core::session_publish_preview`], [`Core::session_publish`],
 //!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
-//!   [`Core::session_switch_agent`],
+//!   [`Core::session_switch_agent`], [`Core::token_usage`],
 //!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
 //!   [`Core::remove_project`], [`Core::project_base`], [`Core::project_branches`],
@@ -31,7 +31,8 @@
 //!   [`Core::save_settings`],
 //!   [`Core::worktree_journal`], [`Core::leftovers_list`],
 //!   [`Core::sessions`], [`Core::session`], [`Core::lead_for_project`],
-//!   [`Core::workers_of`], [`Core::write`], and [`Core::resize`]. They read a
+//!   [`Core::workers_of`], [`Core::start_usage_collection`], [`Core::record_token_usage`], [`Core::recover_token_usage`],
+//!   [`Core::write`], and [`Core::resize`]. They read a
 //!   small JSON file, take a short lock, or queue bytes, and are fine on the main thread. `write` never blocks on
 //!   the PTY: each PTY has its own writer thread.
 //!
@@ -64,6 +65,7 @@ mod pty;
 mod publish;
 mod session;
 mod settings;
+mod usage;
 mod worktree;
 
 use std::collections::HashMap;
@@ -90,6 +92,7 @@ pub use settings::{
     AgentSettings, Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize,
     KeyOverrides, Settings, ThemeMode, ThemeSettings, Translucency,
 };
+pub use usage::{UsageDay, UsageReport, format_tokens};
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 pub use worktree::{JournalEntry, KnownBranches};
 
@@ -167,6 +170,8 @@ pub struct Core {
     /// Where the agent CLIs keep their session titles. None without a home
     /// directory, which only means cards keep their prompt names.
     cli_home: Option<CliHome>,
+    /// Opt-in app-owned worker. Tests never read the user's provider data.
+    usage: OnceLock<usage::Collector>,
     /// The latest base branch fetch per project id, and a signal when one ends.
     fetches: Mutex<HashMap<String, BaseFetch>>,
     fetched: Condvar,
@@ -193,6 +198,7 @@ impl Core {
             ptys: PtyHub::new(),
             operations: Mutex::new(()),
             cli_home: CliHome::detect(),
+            usage: OnceLock::new(),
             fetches: Mutex::new(HashMap::new()),
             fetched: Condvar::new(),
             preparing: Mutex::new(HashMap::new()),
@@ -985,6 +991,17 @@ impl Core {
         sink: impl PtySink,
     ) -> Result<(PtyId, Option<activity::ActivityBridge>)> {
         let env = self.path_env();
+        let usage = self
+            .cli_home
+            .as_ref()
+            .and_then(|home| self.usage.get()?.register(home, &preset.id, worktree));
+        let mut sink = sink;
+        let sink = move |pty, event| {
+            if let Some(source) = &usage {
+                source.notify();
+            }
+            sink.send(pty, event);
+        };
         // Optional, session-owned shim. Installation failure keeps the
         // original native CLI launch, with no config changes.
         let activity = (preset.id == "pi")
@@ -1323,6 +1340,44 @@ impl Core {
             &session.worktree,
             session.base_ref.as_deref(),
         )
+    }
+
+    /// Starts the app's single background usage worker and restart recovery.
+    /// No provider reads on this caller. Explicit so tests remain isolated.
+    pub fn start_usage_collection(&self) {
+        self.usage
+            .get_or_init(|| usage::Collector::start(self.data_dir.clone()));
+    }
+
+    /// Coalesces a recovery request. No provider I/O or operations lock.
+    pub fn record_token_usage(&self, preset_id: &str, worktree: &Path) {
+        if let (Some(collector), Some(home)) = (self.usage.get(), &self.cli_home) {
+            collector.request(home, preset_id, worktree);
+        }
+    }
+
+    /// Signal paced source recovery. The caller performs no file I/O.
+    pub fn recover_token_usage(&self) {
+        if let Some(collector) = self.usage.get() {
+            collector.recover();
+        }
+    }
+
+    /// Metadata-only collection diagnostic. True when no source reads, queued
+    /// jobs, or recovery passes remain. Collection gaps are reported separately
+    /// by [`Self::token_usage`]; this performs no provider I/O.
+    pub fn usage_collection_idle(&self) -> bool {
+        self.usage.get().is_none_or(|collector| collector.idle())
+    }
+
+    /// Indexed saved totals. Call off the UI thread; never opens provider files.
+    pub fn token_usage(&self) -> UsageReport {
+        let mut report = usage::report(&self.data_dir, usage::local_today());
+        report.pending |= self
+            .usage
+            .get()
+            .is_some_and(|collector| collector.pending());
+        report
     }
 
     /// Blocking. The task's whole change for the Changes panel: every file's
@@ -1738,16 +1793,24 @@ mod tests {
     impl Scratch {
         fn new() -> Self {
             static COUNTER: AtomicU64 = AtomicU64::new(0);
-            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!("shika-core-{nanos}-{n}"));
-            fs::create_dir_all(&path).unwrap();
-            // `/var` is a symlink on macOS, and git reports resolved paths.
-            Self {
-                path: path.canonicalize().unwrap(),
+            loop {
+                let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
+                let path = std::env::temp_dir()
+                    .join(format!("shika-core-{}-{nanos}-{n}", std::process::id()));
+                match fs::create_dir(&path) {
+                    // `/var` is a symlink; git reports resolved paths.
+                    Ok(()) => {
+                        return Self {
+                            path: path.canonicalize().unwrap(),
+                        };
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(err) => panic!("could not reserve core fixture: {err}"),
+                }
             }
         }
 
@@ -1805,6 +1868,74 @@ mod tests {
             &[("claude", Some(cli)), ("agent", None)],
         );
         Core::open_with(scratch.path.join("data"), env).unwrap()
+    }
+
+    #[test]
+    fn usage_sink_registers_before_spawn_and_recovers_after_close_and_restart() {
+        let scratch = Scratch::new();
+        let mut core = core_with_fake_cli(&scratch);
+        assert!(core.usage_collection_idle()); // collection is opt-in
+        let home = CliHome::at(scratch.path.join("usage-home"));
+        core.cli_home = Some(home.clone());
+        let held = rusqlite::Connection::open(core.data_dir().join("usage.sqlite")).unwrap();
+        held.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        core.start_usage_collection();
+        let config = home.claude_root().to_string_lossy().replace('\'', "'\\''");
+        let data = core.data_dir().to_string_lossy().replace('\'', "'\\''");
+        fs::write(scratch.path.join("bin/claude"), format!(
+            "#!/bin/sh\ntest -d '{data}/usage-sources' || exit 42\nproject=$(printf '%s' \"$PWD\" | LC_ALL=C tr -c '[:alnum:]' '-')\nmkdir -p '{config}/projects/'\"$project\"\nprintf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"id\":\"first\",\"usage\":{{\"input_tokens\":11,\"output_tokens\":7}}}}}}' > '{config}/projects/'\"$project\"'/session.jsonl'\nprintf 'usage_written\\n'\nwhile IFS= read -r line; do :; done\n"
+        )).unwrap();
+        let project = core
+            .add_project(&scratch.repo("usage-repo"))
+            .unwrap()
+            .project;
+        let (sink, rx) = channel_sink();
+        let session = core
+            .create_session(
+                &project.id,
+                "claude",
+                PtySize::default(),
+                sink,
+                LaunchOptions::default(),
+            )
+            .unwrap();
+        assert!(
+            collect_until(&rx, "usage_written", Duration::from_secs(5)).contains("usage_written")
+        );
+        assert_eq!(
+            fs::read_dir(core.data_dir().join("usage-sources"))
+                .unwrap()
+                .count(),
+            1
+        );
+        let source = home
+            .claude_project_dir(&session.worktree)
+            .join("session.jsonl");
+        // The held database makes collection impossible until after Close.
+        // It must not block Close, lose the source, or depend on a live card.
+        core.session_discard(&session.id).unwrap();
+        assert!(!session.worktree.exists());
+        drop(held);
+        let deadline = std::time::Instant::now() + Duration::from_secs(6);
+        while core.token_usage().claude != 18 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(core.token_usage().claude, 18);
+        let data = core.data_dir().to_path_buf();
+        drop(core);
+        use std::io::Write;
+        fs::OpenOptions::new().append(true).open(source).unwrap().write_all(
+            b"{\"type\":\"assistant\",\"message\":{\"id\":\"late\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3}}}\n"
+        ).unwrap();
+        let mut reopened = Core::open(data).unwrap();
+        reopened.cli_home = Some(home);
+        reopened.start_usage_collection();
+        let deadline = std::time::Instant::now() + Duration::from_secs(6);
+        while reopened.token_usage().claude != 23 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(reopened.token_usage().claude, 23);
+        assert!(reopened.sessions().is_empty());
     }
 
     #[test]

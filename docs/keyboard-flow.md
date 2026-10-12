@@ -49,7 +49,7 @@ Other improvements:
 - A selection change scrolls the selected header/card into view with minimal movement. Ordinary redraws do not undo manual scrolling.
 - First shell open focuses the new view immediately. Early typing is queued until the PTY is bound; startup completion does not reclaim focus if the user has returned to the cards.
 - The native Agent menu lists the new actions and shortcuts. New agent, new shell, and shell close expose Command shortcuts in tooltips.
-- The View menu lists "Hide or show changes" with `Cmd+Option+B`, and the panel's toggle shows it in its tooltip.
+- The View menu lists "Hide or show changes" with `Cmd+Option+B`, and the panel's toggle shows it in its tooltip. Usage is in the View menu and has no shortcut.
 
 Create PR is also in the Agent menu and terminal metadata row. Its dialog uses Tab to switch title/target fields, Enter to confirm publishing, and Escape to cancel. Plain card keys never run while editing. Busy/overlay conflicts and active/blocked turns block entry. See [publishing.md](publishing.md); publishing runs on a worker, not by writing commands into a terminal.
 
