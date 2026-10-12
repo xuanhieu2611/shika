@@ -16,18 +16,19 @@ The prompt field starts empty. Its hint is: "What should this agent do? Leave it
 
 Confirming rechecks. If the turn became active, the current process keeps running and the dialog shows the error. Otherwise Shika starts the new agent PTY in the same worktree. It does not invent flags, pass `--worktree`, run worktree preparation, commit, push, or close. Only after that process is running does it stop the old agent PTY. Shell PTYs stay up the whole time. If the start fails, the old agent keeps running and the dialog shows the error.
 
-The pinned agent tab stays the pinned agent tab. Its label becomes the new preset name. The old agent scrollback goes away with the old PTY. One terminal view is created for the new PTY and focused. Hidden shell views stay alive. The diff stat, the Changes panel, and the base ref stay as they are.
+The pinned agent tab stays the pinned agent tab. Its label becomes the new preset name. A task nobody has named yet reads "New <CLI>" for the new CLI. The old agent scrollback goes away with the old PTY. One terminal view is created for the new PTY and focused. Hidden shell views stay alive. The diff stat, the Changes panel, and the base ref stay as they are.
 
-`session_rename_from_prompt` is not called. The new CLI's session title does not rename the branch or replace the display name. On a successful switch the session is marked already titled (`cli_titled`) without renaming, including while the branch is still `shika-draft-<id>`, so the prompt cannot become the branch name. An empty switch finishes the naming capture without counting a submission, so a line typed afterward starts a turn and still does not rename the branch or the display name. A branch already on a remote stays as it is.
+Naming depends on whether the task already has a name. A task whose branch is no longer `shika-draft-<id>` (or whose CLI title was applied) keeps its name: the session is marked already titled (`cli_titled`), so neither the switch prompt, a line typed after an empty switch, nor the new CLI's session title renames the branch or replaces the display name. A task still on its draft branch has nothing to protect, so it is named the way New names it: from the switch prompt, or from the first line typed after an empty switch, and then once from the new CLI's own session title. This covers picking the wrong CLI in New and switching before typing anything. A manual name still wins over automatic display titles, and a branch already on a remote stays as it is.
 
 ## Where it lives
 
 | Piece | Location |
 | --- | --- |
-| Start the new PTY, then stop the old agent | `Core::session_switch_agent` in `crates/shika-core/src/lib.rs` |
+| Start the new PTY, then stop the old agent | `Core::session_switch_agent`, sharing `Core::open_agent` with New and the Lead, in `crates/shika-core/src/lib.rs` |
 | Keep branch, title, shells, owner; set `cli_titled` | `SessionStore::retarget_agent` in `crates/shika-core/src/session.rs` |
-| Dialog, menu, Cmd+Shift+A | `Overlay::Review`, `Shika::review_agent`, `confirm_review`, `install_switched_agent` in `crates/shika/src/main.rs` |
-| Empty prompt stays Waiting; a prompt submits and does not name the task | `switch_prompt`, `apply_switch_turn` (`HostState::seed_launch_prompt` with `name: false`, then `TitleWatch::finish`) |
+| Dialog, menu, Cmd+Shift+A | `Overlay::SwitchAgent`, `Shika::switch_agent`, `confirm_switch`, `install_switched_agent` in `crates/shika/src/main.rs` |
+| Replacement terminal while the process starts | `Card::next_agent`; the tick skips the card and `control_status` reports Starting |
+| Empty prompt stays Waiting; a prompt submits; only a draft task is named | `SessionStore::retarget_agent` decides `cli_titled`; `switch_prompt`, `apply_switch_turn` (`HostState::seed_launch_prompt` with `name` true only for a draft), then `TitleWatch::finish` or a fresh `TitleWatch` |
 | Reserved chord | `cmd-shift-a` in `crates/shika/src/shortcuts.rs` |
 
 ## Guardrails
@@ -36,7 +37,8 @@ The pinned agent tab stays the pinned agent tab. Its label becomes the new prese
 - Do not prefill a review sentence, and do not refuse an empty prompt. Empty is how New starts a CLI.
 - Do not call `hang_up` for the switch. That also stops shell PTYs. Close only the previous agent PTY, and only after the new one is open.
 - Do not replace the agent terminal view until the new process is running. A failed start drops the unused view and leaves the original pane in place.
-- Do not let the prompt, a line typed after an empty switch, or the new CLI title rename the branch or the display name. Mark `cli_titled`, finish the naming capture, and finish the title watch. `seed_launch_prompt(..., false)` does not set a card title, and it runs only when the prompt is non-empty.
+- Keep the replacement in `Card::next_agent` until it is installed. Core stops the old agent before the UI swaps panes, so the tick must not sample the card meanwhile: the old CLI's exit would read as a finished turn, post a Ready notification, and ring the Lead.
+- Do not let the prompt, a line typed after an empty switch, or the new CLI title rename a task that already has a name. For a named task, mark `cli_titled`, finish the naming capture, and finish the title watch. For a task still on `shika-draft-<id>`, leave all three open, as New does. `seed_launch_prompt` runs only when the prompt is non-empty.
 - Replace `Activity` with a fresh one. An exited activity ignores later submissions, so a switch after the CLI has exited would stay idle. An empty prompt leaves that activity Waiting. A prompt calls `hold_for_launch` and `advance` immediately.
 - Apply a prompted launch turn immediately and clear `launch_turn` on the new host, so the tick does not count the same submission twice.
 - Reuse the worker's existing control token. A new token would not be recognized by `shika report`.

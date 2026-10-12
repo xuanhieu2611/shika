@@ -435,7 +435,7 @@ Result 2026-10-09, fifth run (author, worker-report build, fresh disposable `tex
 
 ## Switch agent
 
-See [docs/agent-switch.md](docs/agent-switch.md). Unit tests cover the core switch (same worktree, unchanged branch, surviving shell, failed start, Lead refusal, worker control env), an empty prompt that starts the CLI with no positional argument and does not submit a turn, and a prompt that is a submission and does not name the task. They do not mark the native dialog, menu, or shortcut passed.
+See [docs/agent-switch.md](docs/agent-switch.md). Unit tests cover the core switch (same worktree, unchanged branch, surviving shell, failed start, Lead refusal, worker control env), an empty prompt that starts the CLI with no positional argument and does not submit a turn, a prompt that is a submission, and naming only for a task still on its draft branch. They do not mark the native dialog, menu, or shortcut passed.
 
 - [ ] From a Ready, Waiting, or exited ordinary task, Agent > Switch agent… and Cmd+Shift+A open the dialog. The prompt field starts empty, with no review sentence. Both do nothing while a dialog is open, while the app is busy, while the agent is Working or Asking, while setup is running, and while publishing.
 - [ ] Escape cancels and restores focus. The original agent process is still running.
@@ -443,5 +443,7 @@ See [docs/agent-switch.md](docs/agent-switch.md). Unit tests cover the core swit
 - [ ] A failed start leaves the original process running and shows the error in the dialog.
 - [ ] Unsent text in the agent terminal refuses the switch. Unsent text in a shell tab does not. Shell tabs are still there after a switch.
 - [ ] The Lead card refuses with "The Lead cannot switch agent." A worker the Lead started can switch, stays marked from that Lead, and `shika report` still works in the new agent. The prompt does not include the new-task report footer.
-- [ ] A draft branch is not renamed from the prompt, including when the field was empty and you type the first line afterward. A branch already on a remote stays. The new CLI's own session title does not rename the branch or replace the display name.
+- [ ] A named task keeps its branch and display name: the switch prompt, a line typed after an empty switch, and the new CLI's own session title rename nothing. A branch already on a remote stays.
+- [ ] A task still on `shika-draft-<id>` (New, then Switch agent before typing anything) reads "New <new CLI>", and is named as after New: from the switch prompt, or from the first line typed after an empty switch, then once from the new CLI's session title.
+- [ ] Switching from a Waiting card posts no Ready notification, shows no green dot, and does not ring the Lead for a worker.
 - [ ] Diff stat and the Changes panel still compare against the base the task started from.

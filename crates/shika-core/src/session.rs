@@ -334,10 +334,13 @@ impl SessionStore {
     }
 
     /// Point the session at a new agent process. The branch, title, worktree,
-    /// base ref, shells, and owner stay. `cli_titled` is set so a later CLI
-    /// title cannot rename the branch or replace the display name. Returns
-    /// the previous agent PTY so the caller can stop it after the new one is
-    /// running.
+    /// base ref, shells, and owner stay; an unnamed "New <CLI>" title takes
+    /// the new CLI's name. A task already named (its branch is no longer
+    /// `shika-draft-<id>`, or a CLI title was applied) gets `cli_titled`, so
+    /// neither the switch prompt nor the new CLI's title can rename it. A
+    /// task still on its draft branch keeps naming open, as New does.
+    /// Returns the previous agent PTY so the caller can stop it after the
+    /// new one is running.
     pub(crate) fn retarget_agent(
         &self,
         id: &str,
@@ -351,10 +354,16 @@ impl SessionStore {
             .find(|session| session.id == id)
             .ok_or(Error::UnknownSession)?;
         let old = session.pty;
+        // A task nobody has named yet still reads "New <CLI>": follow the CLI.
+        if !session.manual_title && session.title == format!("New {}", session.preset_name) {
+            session.title = format!("New {preset_name}");
+        }
+        if session.branch != format!("shika-draft-{}", session.id) {
+            session.cli_titled = true;
+        }
         session.preset_id = preset_id;
         session.preset_name = preset_name;
         session.pty = pty;
-        session.cli_titled = true;
         Ok((session.clone(), old))
     }
 

@@ -687,54 +687,17 @@ impl Core {
             report(PreparationEvent::StartingAgent);
             // Optional, session-owned shim. Installation failure keeps the
             // original native CLI launch, with no config changes.
-            let activity = (preset.id == "pi")
-                .then(activity::ActivityBridge::install)
-                .flatten();
             // Only a Lead-started worker's agent gets the control variables;
             // its shell tabs never do.
-            let (search_path, control_vars) = match &options.control {
-                Some(control) => (
-                    session::control_path(&control.bin_dir, env.path()),
-                    session::control_env(&control.socket, &control.token),
-                ),
-                None => (env.path().to_string(), Vec::new()),
-            };
-            let mut request = SpawnRequest {
+            let (pty, activity) = self.open_agent(
+                &preset,
                 program,
-                args: agents::launch_flags(&preset, &draft.path),
-                cwd: draft.path.clone(),
-                path: search_path,
+                &draft.path,
                 size,
-                env: control_vars,
-            };
-            if let Some(activity) = &activity {
-                activity.wire(&mut request);
-            }
-            // After the extension flags, so the prompt is the last argument.
-            request.args = match session::launch_args(
-                std::mem::take(&mut request.args),
+                options.control.as_ref(),
                 options.prompt.as_deref(),
-            ) {
-                Ok(args) => args,
-                Err(err) => {
-                    if let Some(activity) = &activity {
-                        activity.cleanup();
-                    }
-                    return Err(err);
-                }
-            };
-            let pty = match self
-                .ptys
-                .open(request, activity::activity_sink(activity.clone(), sink))
-            {
-                Ok(pty) => pty,
-                Err(err) => {
-                    if let Some(activity) = &activity {
-                        activity.cleanup();
-                    }
-                    return Err(err);
-                }
-            };
+                sink,
+            )?;
             if control.is_cancelled() {
                 self.ptys.close(pty);
                 if let Some(activity) = &activity {
@@ -884,35 +847,20 @@ impl Core {
                 (project.id.clone(), PreparationControl::default()),
             );
         let launched = (|| {
-            let activity = (preset.id == "pi")
-                .then(activity::ActivityBridge::install)
-                .flatten();
-            let search_path = session::control_path(&lead_env.bin_dir, env.path());
-            let mut request = SpawnRequest {
+            let control = WorkerEnv {
+                socket: lead_env.socket.clone(),
+                token: lead_env.token.clone(),
+                bin_dir: lead_env.bin_dir.clone(),
+            };
+            let (pty, activity) = self.open_agent(
+                &preset,
                 program,
-                args: agents::launch_flags(&preset, &path),
-                cwd: path.clone(),
-                path: search_path,
+                &path,
                 size,
-                env: session::control_env(&lead_env.socket, &lead_env.token),
-            };
-            if let Some(activity) = &activity {
-                activity.wire(&mut request);
-            }
-            request.args =
-                session::launch_args(std::mem::take(&mut request.args), Some(&lead_env.prompt))?;
-            let pty = match self
-                .ptys
-                .open(request, activity::activity_sink(activity.clone(), sink))
-            {
-                Ok(pty) => pty,
-                Err(err) => {
-                    if let Some(activity) = &activity {
-                        activity.cleanup();
-                    }
-                    return Err(err);
-                }
-            };
+                Some(&control),
+                Some(&lead_env.prompt),
+                sink,
+            )?;
             let session = Session {
                 id: id.clone(),
                 project_id: project.id.clone(),
@@ -1019,14 +967,75 @@ impl Core {
         Ok(())
     }
 
+    /// Opens an agent PTY for `preset` in `worktree`: the preset's launch
+    /// flags, Pi's activity extension, then `prompt` as the last positional
+    /// argument. `control` gives a Lead or a Lead-started worker its
+    /// `SHIKA_SOCKET`, `SHIKA_TOKEN`, and the `shika` command on `PATH`. On
+    /// failure the bridge is removed and nothing runs. Blocking: spawns a
+    /// process.
+    #[allow(clippy::too_many_arguments)]
+    fn open_agent(
+        &self,
+        preset: &CliPreset,
+        program: PathBuf,
+        worktree: &Path,
+        size: PtySize,
+        control: Option<&WorkerEnv>,
+        prompt: Option<&str>,
+        sink: impl PtySink,
+    ) -> Result<(PtyId, Option<activity::ActivityBridge>)> {
+        let env = self.path_env();
+        // Optional, session-owned shim. Installation failure keeps the
+        // original native CLI launch, with no config changes.
+        let activity = (preset.id == "pi")
+            .then(activity::ActivityBridge::install)
+            .flatten();
+        let (search_path, control_vars) = match control {
+            Some(control) => (
+                session::control_path(&control.bin_dir, env.path()),
+                session::control_env(&control.socket, &control.token),
+            ),
+            None => (env.path().to_string(), Vec::new()),
+        };
+        let mut request = SpawnRequest {
+            program,
+            args: agents::launch_flags(preset, worktree),
+            cwd: worktree.to_path_buf(),
+            path: search_path,
+            size,
+            env: control_vars,
+        };
+        if let Some(activity) = &activity {
+            activity.wire(&mut request);
+        }
+        // After the extension flags, so the prompt is the last argument.
+        let opened =
+            session::launch_args(std::mem::take(&mut request.args), prompt).and_then(|args| {
+                request.args = args;
+                self.ptys
+                    .open(request, activity::activity_sink(activity.clone(), sink))
+            });
+        match opened {
+            Ok(pty) => Ok((pty, activity)),
+            Err(err) => {
+                if let Some(activity) = &activity {
+                    activity.cleanup();
+                }
+                Err(err)
+            }
+        }
+    }
+
     /// Starts `preset_id` in this session's existing worktree. A prompt that
     /// has text is the CLI's single positional argument after the preset's
     /// launch flags. Empty or whitespace starts the CLI the way New does,
     /// with no positional argument. Only after that process is running does
     /// this stop the current agent PTY. Shell PTYs stay. The branch, title,
-    /// base ref, worktree, and `started_by` stay, and `cli_titled` is set so
-    /// this prompt and the new CLI's session title cannot rename the branch
-    /// or replace the display name. No preparation, commit, or push. A Lead
+    /// base ref, worktree, and `started_by` stay. A named task gets
+    /// `cli_titled`, so this prompt and the new CLI's session title cannot
+    /// rename the branch or replace the display name; a task still on its
+    /// draft branch is named later as New would name it (the returned
+    /// session's `cli_titled` says which). No preparation, commit, or push. A Lead
     /// is refused. `control` is the worker env for a Lead-started worker's
     /// new agent PTY, and None for a card the author created. If the start
     /// fails, the current agent keeps running. Blocking: spawns a process.
@@ -1039,13 +1048,10 @@ impl Core {
         sink: impl PtySink,
         control: Option<WorkerEnv>,
     ) -> Result<Session> {
-        let prompt = match prompt {
-            Some(prompt) if !prompt.trim().is_empty() => {
-                session::check_prompt(prompt)?;
-                Some(prompt)
-            }
-            _ => None,
-        };
+        let prompt = prompt.filter(|prompt| !prompt.trim().is_empty());
+        if let Some(prompt) = prompt {
+            session::check_prompt(prompt)?;
+        }
         let env = self.path_env();
         let _guard = self
             .operations
@@ -1061,48 +1067,15 @@ impl Core {
             .path
             .clone()
             .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
-        let activity = (preset.id == "pi")
-            .then(activity::ActivityBridge::install)
-            .flatten();
-        let (search_path, control_vars) = match &control {
-            Some(control) => (
-                session::control_path(&control.bin_dir, env.path()),
-                session::control_env(&control.socket, &control.token),
-            ),
-            None => (env.path().to_string(), Vec::new()),
-        };
-        let mut request = SpawnRequest {
+        let (pty, activity) = self.open_agent(
+            &preset,
             program,
-            args: agents::launch_flags(&preset, &session.worktree),
-            cwd: session.worktree.clone(),
-            path: search_path,
+            &session.worktree,
             size,
-            env: control_vars,
-        };
-        if let Some(activity) = &activity {
-            activity.wire(&mut request);
-        }
-        request.args = match session::launch_args(std::mem::take(&mut request.args), prompt) {
-            Ok(args) => args,
-            Err(err) => {
-                if let Some(activity) = &activity {
-                    activity.cleanup();
-                }
-                return Err(err);
-            }
-        };
-        let pty = match self
-            .ptys
-            .open(request, activity::activity_sink(activity.clone(), sink))
-        {
-            Ok(pty) => pty,
-            Err(err) => {
-                if let Some(activity) = &activity {
-                    activity.cleanup();
-                }
-                return Err(err);
-            }
-        };
+            control.as_ref(),
+            prompt,
+            sink,
+        )?;
         let switched =
             self.sessions
                 .retarget_agent(id, preset.id.clone(), preset.name.clone(), pty);
@@ -3959,7 +3932,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_the_agent_keeps_the_worktree_branch_shells_and_name() {
+    fn switching_the_agent_keeps_the_worktree_branch_shells_and_naming() {
         let scratch = Scratch::new();
         let repo = scratch.repo("demo");
         let core = core_with_switch_clis(&scratch);
@@ -4025,9 +3998,12 @@ mod tests {
             branch
         );
         assert_eq!(switched.branch, branch);
-        assert_eq!(switched.title, title);
+        // Unnamed, the title follows the CLI; a named task keeps its own.
+        assert_eq!(title, "New Claude Code");
+        assert_eq!(switched.title, "New Cursor CLI");
         assert!(!switched.manual_title);
-        assert!(switched.cli_titled);
+        // Still on its draft branch, the task is named later as New would.
+        assert!(!switched.cli_titled);
         assert_eq!(switched.worktree, worktree);
         assert_eq!(switched.base_ref, base);
         assert_eq!(switched.started_by, None);
@@ -4049,13 +4025,6 @@ mod tests {
             .find(|entry| entry.path == worktree)
             .unwrap();
         assert_eq!(journal.branch, branch);
-        assert_eq!(
-            core.session_rename_from_prompt(&session.id, SWITCH_PROMPT)
-                .unwrap()
-                .branch,
-            branch
-        );
-        assert_eq!(core.session_apply_cli_title(&session.id).unwrap(), None);
 
         let cursor_pty = switched.pty;
         let (again, report) = switch_agent(&core, &session.id, "claude", Some(SWITCH_PROMPT), None);
@@ -4069,7 +4038,7 @@ mod tests {
         );
         assert_eq!(again.branch, branch);
         assert_eq!(again.title, title);
-        assert!(again.cli_titled);
+        assert!(!again.cli_titled);
         assert_eq!(again.preset_id, "claude");
         assert_ne!(again.pty, cursor_pty);
         assert_eq!(again.shell_ptys, vec![shell]);
@@ -4107,7 +4076,7 @@ mod tests {
         );
         assert_eq!(blank.branch, branch);
         assert_eq!(blank.title, title);
-        assert!(blank.cli_titled);
+        assert!(!blank.cli_titled);
         assert_eq!(blank.shell_ptys, vec![shell]);
 
         let (spaces, report) = switch_agent(&core, &session.id, "claude", Some("  \n"), None);
@@ -4118,7 +4087,22 @@ mod tests {
         );
         assert_eq!(spaces.branch, branch);
         assert_eq!(spaces.title, title);
-        assert!(spaces.cli_titled);
+        assert!(!spaces.cli_titled);
+
+        // The first line typed into the new CLI names the draft task.
+        let renamed = core
+            .session_rename_from_prompt(&session.id, "Add the export button")
+            .unwrap();
+        assert_ne!(renamed.branch, branch);
+        assert_eq!(renamed.title, "Add the export button");
+        assert_eq!(
+            git(&worktree, &["symbolic-ref", "--short", "HEAD"]).trim(),
+            renamed.branch
+        );
+        let (later, _) = switch_agent(&core, &session.id, "cursor", Some(SWITCH_PROMPT), None);
+        assert_eq!(later.branch, renamed.branch);
+        assert_eq!(later.title, renamed.title);
+        assert!(later.cli_titled);
 
         fs::remove_file(repo.join(preparation::CONFIG_PATH)).unwrap();
         let (sink, _rx) = channel_sink();

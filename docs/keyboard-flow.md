@@ -101,14 +101,14 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 
 | Piece | Symbols / location | Responsibility |
 | --- | --- | --- |
-| Action definitions | `gpui::actions!`, `SelectTerminal` | `NewAgent`, `CloseTask`, `ReviewAgent`, `NextAgent`, `PreviousAgent`, and the numbered tab jump |
+| Action definitions | `gpui::actions!`, `SelectTerminal` | `NewAgent`, `CloseTask`, `SwitchAgent`, `NextAgent`, `PreviousAgent`, and the numbered tab jump |
 | Shortcut registration | `main`, `cx.bind_keys` | Command bindings scoped to the `Shika` key context |
 | Action dispatch | `Shika::render`, root `.key_context("Shika")` and `.on_action` | Routes actions from cards or descendant terminal views; handlers guard busy/overlay state |
 | Existing keys | `Shika::key` | Plain-key navigation, overlay editing, and terminal `Ctrl+Q` escape hatch |
 | Navigation order | `rows`, `sorted_cards`, `adjacent_agent` | Project-grouped, status-sorted traversal; agent-only navigation skips headers |
 | Focus-preserving navigation | `move_agent`, `focus_terminal` | Changes selection and, only when needed, focuses the destination task's shown terminal |
 | Overlay restoration | `overlay_return_focus`, `restore_overlay_focus` | Stores a `FocusHandle`, restores it once, defaults to card focus when none was saved |
-| Overlay entry/exit | `picker`, `picker_for`, `open_settings`, `open_base`, `cancel_overlay`, `apply_base`, `launch`, `review_agent`, `confirm_review` | Captures focus before opening; restores on dismissal; launch and a confirmed switch intentionally clear restoration |
+| Overlay entry/exit | `picker`, `picker_for`, `open_settings`, `open_base`, `cancel_overlay`, `apply_base`, `launch`, `switch_agent`, `confirm_switch` | Captures focus before opening; restores on dismissal; launch and a confirmed switch intentionally clear restoration |
 | Terminal switching | `toggle`, `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `Card::active_pane` | Task-local tabs, pinned agent, independent shells, selected-view focus and asynchronous PTY teardown |
 | Shell startup | `Pane::new`, `bind_host`, `Host::write` | Queues startup input; binds/resizes PTY and drains queued bytes in order |
 | Tab navigation | `model::adjacent_tab`, `model::tab_after_close`, `Card::tab_scroll` | Wrap navigation, preserve selection on removal, reveal selected tab horizontally |

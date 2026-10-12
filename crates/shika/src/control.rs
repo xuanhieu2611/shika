@@ -822,6 +822,10 @@ impl Card {
                 TaskStatus::Starting
             };
         }
+        // Switch agent stops the old CLI; that exit is not the task's.
+        if self.next_agent.is_some() {
+            return TaskStatus::Starting;
+        }
         let host = lock(&self.agent.state);
         if host.exited {
             TaskStatus::Exited
