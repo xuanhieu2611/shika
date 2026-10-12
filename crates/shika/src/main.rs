@@ -26,6 +26,7 @@ use shika_core::{
     JournalEntry, KeyOverrides, KnownBranches, LaunchOptions, LeadEnv, PreparationConfig,
     PreparationControl, PreparationEvent, Project, ProjectBase, PtyEvent, PtyId, PtySize,
     PublishPreview, Session, SessionGitState, Settings, ThemeMode, ThemeSettings, Translucency,
+    UsageReport,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalEvent, TerminalOptions,
@@ -59,7 +60,8 @@ gpui::actions!(
         NextAgent,
         PreviousAgent,
         ToggleColumn,
-        ToggleChanges
+        ToggleChanges,
+        ShowUsage
     ]
 );
 
@@ -383,6 +385,9 @@ struct Card {
     /// Close is stopping its terminals and removing its worktree: the card
     /// dims and says so, and its terminal fades behind "Closing...".
     closing: bool,
+    /// The CLI exit was already handed to the token read. A later Ready
+    /// still reads on its own.
+    usage_exit_seen: bool,
 }
 /// A closed card on its way out. It is no longer in `cards`, so nothing can
 /// select, count, or act on it; it only paints until its exit has played.
@@ -555,6 +560,8 @@ enum Overlay {
         choices: Option<KnownBranches>,
         highlight: Option<usize>,
     },
+    /// Snapshot of `usage.json` taken when the dialog opened.
+    Usage(UsageReport),
 }
 impl Overlay {
     /// How a refusal names this overlay to a Lead.
@@ -571,6 +578,7 @@ impl Overlay {
             Self::RemoveProject(_) => "the Remove project dialog",
             Self::Settings { .. } => "Settings",
             Self::Base { .. } => "the Base branch dialog",
+            Self::Usage(_) => "the Usage dialog",
         }
     }
 }
@@ -1506,6 +1514,7 @@ impl Shika {
             launch_error: None,
             stage: "Creating worktree...".into(),
             closing: false,
+            usage_exit_seen: false,
         });
         if author {
             self.selection = Some(Selection::Card(index));
@@ -1953,6 +1962,8 @@ impl Shika {
         let mut rename = vec![];
         // Sessions whose card just turned Ready, for a fresh diff stat.
         let mut ready = vec![];
+        // Claude Code and Codex totals to read once, off the UI thread.
+        let mut usage_reads = vec![];
         if now.duration_since(self.clock) >= Duration::from_secs(1) {
             self.clock = now;
             changed = self.cards.iter().any(|c| c.status == Status::Working);
@@ -2102,6 +2113,19 @@ impl Shika {
             card.status = card.activity.status;
             card.since = card.activity.since;
             changed |= transition.changed;
+            let exited_now = state.exited && !card.usage_exit_seen;
+            if state.exited {
+                card.usage_exit_seen = true;
+            }
+            if matches!(card.launch_preset.as_str(), "claude" | "codex")
+                && (transition.ready || exited_now)
+                && let Some(worktree) = card
+                    .session
+                    .as_ref()
+                    .map(|session| session.worktree.clone())
+            {
+                usage_reads.push((card.launch_preset.clone(), worktree));
+            }
             if let Some(session) = &card.session {
                 // The Lead has no diff to count.
                 if transition.ready && card.lead.is_none() {
@@ -2176,6 +2200,16 @@ impl Shika {
                 self.fetch_changes(cx);
             }
             self.fetch_diff_stat(id, cx);
+        }
+        if !usage_reads.is_empty() {
+            let core = self.core.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    for (preset, worktree) in usage_reads {
+                        core.record_token_usage(&preset, &worktree);
+                    }
+                })
+                .detach();
         }
         self.watch_checks(now, cx);
         for (id, title) in rename {
@@ -3122,6 +3156,17 @@ impl Shika {
         })
         .detach();
     }
+    /// View > Usage. The snapshot is `usage.json` only; CLI files stay closed.
+    fn show_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let report = self.core.token_usage();
+        self.overlay_return_focus = window.focused(cx);
+        self.overlay = Some(Overlay::Usage(report));
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;
@@ -3801,6 +3846,11 @@ impl Shika {
                             self.select_setting((at + SETTING_ROWS - 1) % SETTING_ROWS, window, cx)
                         }
                         _ => {}
+                    }
+                }
+                Some(Overlay::Usage(_)) => {
+                    if key == "escape" {
+                        self.cancel_overlay(window, cx);
                     }
                 }
                 // Typed into above, before the modifier check.
@@ -6261,6 +6311,41 @@ impl Shika {
             .child(dialog_buttons().child(self.cancel_button("Done", chrome, cx)))
     }
 
+    /// Usage, from the snapshot taken when the dialog opened.
+    fn usage_panel(
+        &self,
+        report: &UsageReport,
+        chrome: &Chrome,
+        max_h: Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let mut panel = dialog(chrome, max_h)
+            .child(dialog_title(div()).child("Usage"))
+            .child(
+                dialog_text(chrome)
+                    .child("Tokens from Claude Code and Codex in Shika. Not a bill."),
+            );
+        if report.empty {
+            panel = panel.child(dialog_text(chrome).child("No tokens recorded yet."));
+        } else {
+            panel = panel.child(usage_group(
+                "This week",
+                &[("Claude Code", report.claude), ("Codex", report.codex)],
+                false,
+                chrome,
+            ));
+            for day in &report.days {
+                panel = panel.child(usage_group(
+                    &day.label,
+                    &[("Claude Code", day.claude), ("Codex", day.codex)],
+                    true,
+                    chrome,
+                ));
+            }
+        }
+        panel.child(dialog_buttons().child(self.cancel_button("Close", chrome, cx)))
+    }
+
     /// The pointer menu, or the picker/dialogs near the top. No overlay dims
     /// the window: Settings previews opacity and blur on it, and the rest match.
     fn overlay_view(
@@ -6885,6 +6970,7 @@ impl Shika {
             Overlay::Settings { section, row, .. } => {
                 self.settings_panel(*section, *row, max_h, chrome, home, cx)
             }
+            Overlay::Usage(report) => self.usage_panel(report, chrome, max_h, cx),
         };
         div()
             .absolute()
@@ -7557,6 +7643,35 @@ fn dialog_buttons() -> gpui::Div {
     div().flex().justify_end().gap(px(8.)).mt(px(10.))
 }
 
+fn usage_group(heading: &str, rows: &[(&str, u64)], skip_zero: bool, chrome: &Chrome) -> gpui::Div {
+    let mut group = div().flex().flex_col().gap(px(2.)).child(
+        div()
+            .text_size(px(13.))
+            .line_height(px(19.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(chrome.ink_1)
+            .child(heading.to_string()),
+    );
+    for (label, amount) in rows {
+        if skip_zero && *amount == 0 {
+            continue;
+        }
+        group = group.child(
+            div()
+                .flex()
+                .justify_between()
+                .gap(px(12.))
+                .child(dialog_text(chrome).child((*label).to_string()))
+                .child(
+                    dialog_text(chrome)
+                        .font_family(MONO)
+                        .child(shika_core::format_tokens(*amount)),
+                ),
+        );
+    }
+    group
+}
+
 /// `$HOME`, to write paths with `~`.
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
@@ -7658,6 +7773,7 @@ impl Render for Shika {
             .on_action(
                 cx.listener(|this, _: &ToggleChanges, window, cx| this.toggle_changes(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_usage(window, cx)))
             .on_action(cx.listener(|this, _: &CreatePr, window, cx| this.create_pr(window, cx)))
             .on_drag_move(cx.listener(
                 |this, event: &gpui::DragMoveEvent<ColumnDrag>, window, cx| {
@@ -7796,6 +7912,8 @@ fn install_menus(cx: &mut App) {
         gpui::Menu::new("View").items([
             gpui::MenuItem::action("Hide or show agent column", ToggleColumn),
             gpui::MenuItem::action("Hide or show changes", ToggleChanges),
+            gpui::MenuItem::separator(),
+            gpui::MenuItem::action("Usage", ShowUsage),
         ]),
     ]);
 }

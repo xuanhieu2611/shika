@@ -432,3 +432,9 @@ Result 2026-10-09, fifth run (author, worker-report build, fresh disposable `tex
 - [ ] When a Lead-started worker runs `shika report "..."`, the text appears under its task line in the Lead's `shika wait`, `status`, and `tasks`, and the doorbell line reads `... is ready (reported)` without the text. A worker that finishes without reporting shows no report. After the Lead `send`s the worker a new instruction, the old report is gone until it reports again.
 - [ ] `echo $SHIKA_TOKEN` in a Lead-started worker's agent terminal (ask the CLI to run it) is set, and is empty in that worker's shell tabs and in any card the author created with Cmd+N. In the worker, `shika tasks` and `shika read <id>` print `refused: Workers can only run shika report.` (exit 1), and `shika help` prints three lines. A Lead running `shika report x` is refused.
 - [ ] The Lead's default check is the worker's report plus `shika diff <task> --stat`: it does not read the full diff or the screen unless the report is missing or the stat looks wrong. If the report omits test results, the Lead asks the worker with `shika send` to run them and report. Its final summary says what each worker reported and what nobody verified.
+
+## Token usage
+
+See [docs/token-usage.md](docs/token-usage.md). Unit tests cover the Claude tail read, the single Codex query, an increase recorded once, a repeat that adds nothing, a failed read that leaves the file unchanged, and the week sum. They do not exercise the native dialog. Do not mark the check below passed from those tests.
+
+- [ ] View > Usage opens the dialog, Escape closes it and restores the focus that opened it, and a Claude Code or Codex card that turns Ready or whose CLI exits increases the shown total once. Opening Usage again after the same cumulative total does not add more. A failed CLI read leaves the previous totals. Cursor and Pi do not change the file. The week total matches that week's days. No dollar amount is shown.

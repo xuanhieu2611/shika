@@ -38,7 +38,7 @@ It is not:
 
 `Core::operations` is one mutex that serializes everything that changes worktrees, branches, the journal, or the live session list: creating and removing worktrees, close, discard, push, rename, publish, and `remove_project`. Take it for any new method that mutates those. Two kinds of work deliberately stay outside it:
 
-- **Reads** that must not hold up Close: `session_diff_stat`, `session_diff`, `session_file_diff`, `session_pr_checks`, `session_pushed_head`, `session_activity`. They use `GIT_OPTIONAL_LOCKS=0` (see [Invariants](#invariants)).
+- **Reads** that must not hold up Close: `session_diff_stat`, `session_diff`, `session_file_diff`, `session_pr_checks`, `session_pushed_head`, `session_activity`, `record_token_usage`, and `token_usage`. Diffs use `GIT_OPTIONAL_LOCKS=0` (see [Invariants](#invariants)). Token totals use their own file lock around `usage.json` and never the operations lock.
 - **Slow preparation.** Setup commands run outside the lock so Close and Discard stay responsive. The worktree is journaled first, and `Core::preparing` keeps leftovers from offering a tree that has an active writer. In-app configuration saves also validate copy-source metadata/ignore rules outside the lock; only the project/config recheck and atomic write/removal hold it. Settings saves do not grant consent. First-New's explicit `save_and_approve_project_preparation` also records consent for the reread parsed value, but allocates no task or command; normal launch still rechecks it. `skip_preparation_onboarding` refuses an appeared config and stores only the local per-project `worktreeSetupReviewed` preference, never permission.
 
 A poisoned lock is recovered with `unwrap_or_else(|e| e.into_inner())`; keep that pattern.
@@ -60,7 +60,8 @@ All modules are private except `control`. The crate root re-exports the public s
 | `settings` | `settings.json`: theme, appearance, font size, branch prefix, sound, column, Changes width. Missing fields take defaults. | `Settings`, `ThemeSettings`, `ThemeMode`, `Appearance`, `Translucency`, `FontSize`, `Column`, `Changes` |
 | `preparation` | Opt-in `.shika/worktrees.json`: parse, Settings/first-New metadata suggestions, validated atomic save/disable, approval comparison, rooted file copy, setup commands in process groups, two-slot limiter, cancel. | `PreparationConfig`, `PreparationDraft`, `PreparationControl`, `PreparationEvent` |
 | `activity` | Pi lifecycle bridge: a private directory and extension that report Idle or Working through a small file. No terminal bytes. | `AgentActivity`, `AgentActivityState` |
-| `cli_title` | Read-only access to the session title each CLI keeps in its own private files. | internal `CliHome` |
+| `cli_title` | Read-only access to the session title each CLI keeps in its own private files. Shared lookup for token usage: project directory, newest `.jsonl`, newest `state_<n>.sqlite`. | internal `CliHome` |
+| `usage` | Claude Code tail read and one Codex query. Daily totals and per-session baselines in `usage.json`. | `UsageReport`, `UsageDay`, `format_tokens`; `Core::record_token_usage`, `Core::token_usage` |
 | `diff` | Parses git's unified patch into UI-free types with caps. | `SessionDiff`, `FileDiff`, `Hunk`, `DiffLine`, `FileKey`, `FileStatus`, `Collapse`, `LineKind`, `ModeChange` |
 | `publish` | Confirmed commit, push, and `gh pr create`, plus the PR checks read. | `PublishPreview`, `PublishedPr`, `PrChecks`, `ChecksState` |
 | `error` | The one `Error` enum. `Display` is the sentence the app shows. | `Error`, `Result` |
@@ -71,11 +72,12 @@ All modules are private except `control`. The crate root re-exports the public s
 
 ### Data files
 
-`Core::open(dir)` creates `dir` and reads three files lazily. The app passes `app_data_dir()`, `~/Library/Application Support/com.hieule.shika`, the directory the earlier Tauri build used. Tests pass a temporary directory and `--data-dir` does the same for the app.
+`Core::open(dir)` creates `dir` and reads three files lazily. `usage.json` is not one of them; it is read when a token total is recorded or Usage opens. The app passes `app_data_dir()`, `~/Library/Application Support/com.hieule.shika`, the directory the earlier Tauri build used. Tests pass a temporary directory and `--data-dir` does the same for the app.
 
 - `projects.json`: `{ id, name, path, baseBranch?, approvedPreparation? }` per project. The id is time-derived; the name is the folder name; a nested folder is stored as its repository root. `approvedPreparation` is the parsed setup config the author consented to, compared by equality.
 - `worktrees.json`: the journal, one `{ projectId, branch, path, baseRef? }` per worktree Shika created. It is written before a CLI starts and removed after the tree is gone. It is the only source for leftovers. `branch` is empty for a Lead.
 - `settings.json`: see `settings::Settings`. A missing file or field takes its default. An unknown theme id is kept on disk until the user picks again.
+- `usage.json`: daily Claude Code and Codex token totals, plus the last cumulative value per session. Written when a card turns Ready or its CLI exits. A missing day is a gap. The Usage dialog reads this file and no CLI file. See [token-usage.md](../../docs/token-usage.md).
 
 Files are written through a temp file and `rename`. Each has its own small mutex.
 

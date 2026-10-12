@@ -15,6 +15,7 @@
 //!   [`Core::session_diff_stat`], [`Core::session_diff`], [`Core::session_file_diff`],
 //!   [`Core::session_publish_preview`], [`Core::session_publish`],
 //!   [`Core::session_rename_from_prompt`], [`Core::session_apply_cli_title`],
+//!   [`Core::record_token_usage`],
 //!   [`Core::session_discard`],
 //!   [`Core::session_push_and_close`], [`Core::session_close`], [`Core::leftover_remove`],
 //!   [`Core::remove_project`], [`Core::project_base`], [`Core::project_branches`],
@@ -30,7 +31,7 @@
 //!   [`Core::save_settings`],
 //!   [`Core::worktree_journal`], [`Core::leftovers_list`],
 //!   [`Core::sessions`], [`Core::session`], [`Core::lead_for_project`],
-//!   [`Core::workers_of`], [`Core::write`], and [`Core::resize`]. They read a
+//!   [`Core::workers_of`], [`Core::token_usage`], [`Core::write`], and [`Core::resize`]. They read a
 //!   small JSON file, take a short lock, or queue bytes, and are fine on the main thread. `write` never blocks on
 //!   the PTY: each PTY has its own writer thread.
 //!
@@ -63,6 +64,7 @@ mod pty;
 mod publish;
 mod session;
 mod settings;
+mod usage;
 mod worktree;
 
 use std::collections::HashMap;
@@ -89,6 +91,7 @@ pub use settings::{
     AgentSettings, Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize,
     KeyOverrides, Settings, ThemeMode, ThemeSettings, Translucency,
 };
+pub use usage::{UsageDay, UsageReport, format_tokens};
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 pub use worktree::{JournalEntry, KnownBranches};
 
@@ -1247,6 +1250,26 @@ impl Core {
             &session.worktree,
             session.base_ref.as_deref(),
         )
+    }
+
+    /// Blocking. Reads the Claude Code or Codex cumulative token total for
+    /// `worktree` and adds the increase since the last read of that session
+    /// to `usage.json`. Cursor, Pi, a missing total, and a failed read do
+    /// nothing, and the usage file is left unchanged. Takes the usage file's
+    /// own lock, not the operations lock. Call from a background executor.
+    pub fn record_token_usage(&self, preset_id: &str, worktree: &Path) {
+        let Some(home) = &self.cli_home else {
+            return;
+        };
+        let Some(today) = usage::local_today() else {
+            return;
+        };
+        usage::record(&self.data_dir, home, preset_id, worktree, today);
+    }
+
+    /// Saved token totals for the Usage dialog. Reads `usage.json` only.
+    pub fn token_usage(&self) -> UsageReport {
+        usage::report(&self.data_dir, usage::local_today())
     }
 
     /// Blocking. The task's whole change for the Changes panel: every file's
