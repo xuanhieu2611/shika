@@ -1797,7 +1797,7 @@ pub(super) fn report(dir: &Path, today: Option<Date>) -> UsageReport {
                 "SELECT day,cli,tokens FROM days WHERE day>=date(?1,?2) AND day<date(?1,?3) ORDER BY day DESC",
             )?;
             let low = format!("-{} days", 51 * 7 + today.weekday());
-            let high = format!("+{} days", 7 - today.weekday());
+            let high = "+1 day";
             let rows = stmt.query_map(params![today.iso(), low, high], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -1866,7 +1866,7 @@ fn add_day(
     if let (Some(calendar), Some(today)) = (&mut report.calendar, today) {
         calendar.add(today, date, cli, total);
     }
-    if !today.is_some_and(|today| today.same_week(date)) {
+    if !today.is_some_and(|today| date <= today && today.same_week(date)) {
         return Ok(());
     }
     let label = date.label();

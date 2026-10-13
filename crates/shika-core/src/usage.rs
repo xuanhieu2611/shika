@@ -13,8 +13,10 @@ pub struct UsageReport {
     /// A source failed or still has an unfinished record. Totals are retained.
     pub pending: bool,
     pub empty: bool,
+    /// Compatibility weekly totals: local Monday through the snapshot's today.
     pub claude: u64,
     pub codex: u64,
+    /// Compatibility nonzero days in that same week-through-today range.
     pub days: Vec<UsageDay>,
     /// Monday-first, 52-column calendar ending on the snapshot's local today.
     pub calendar: Option<UsageCalendar>,

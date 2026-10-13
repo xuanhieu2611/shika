@@ -635,6 +635,7 @@ enum Overlay {
         request: Arc<()>,
         report: Option<UsageReport>,
         filter: UsageFilter,
+        grid: Option<Entity<usage_dashboard::UsageGrid>>,
     },
 }
 impl Overlay {
@@ -3493,6 +3494,7 @@ impl Shika {
             request: request.clone(),
             report: None,
             filter: UsageFilter::All,
+            grid: None,
         });
         window.focus(&self.focus, cx);
         cx.notify();
@@ -3505,14 +3507,21 @@ impl Shika {
                     core.token_usage()
                 })
                 .await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
+                let chrome = this.chrome(window);
                 if let Some(Overlay::Usage {
                     request: current,
                     report: snapshot,
-                    ..
+                    filter,
+                    grid,
                 }) = &mut this.overlay
                     && Arc::ptr_eq(current, &request)
                 {
+                    *grid = report.calendar.as_ref().map(|calendar| {
+                        cx.new(|_| {
+                            usage_dashboard::UsageGrid::new(calendar.clone(), *filter, &chrome)
+                        })
+                    });
                     *snapshot = Some(report);
                     cx.notify();
                 }
@@ -3786,8 +3795,16 @@ impl Shika {
             self.reduce_transparency,
         )
     }
-    /// Give every live terminal view the current theme's palette and alpha.
+    /// Give every live terminal view the current theme's palette and alpha,
+    /// and invalidate the open dashboard's cached calendar before rendering.
     fn push_terminal_theme(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(Overlay::Usage {
+            grid: Some(grid), ..
+        }) = &self.overlay
+        {
+            let chrome = self.chrome(window);
+            grid.update(cx, |grid, cx| grid.set_chrome(&chrome, cx));
+        }
         let opacity = self.terminal_opacity();
         let palette = self.terminal_palette(window);
         for card in &self.cards {
@@ -4272,9 +4289,13 @@ impl Shika {
                         _ => {}
                     }
                 }
-                Some(Overlay::Usage { filter, .. }) => match key {
-                    "h" | "left" => *filter = filter.step(-1),
-                    "l" | "right" => *filter = filter.step(1),
+                Some(Overlay::Usage { filter, grid, .. }) => match key {
+                    "h" | "left" | "l" | "right" => {
+                        *filter = filter.step(if matches!(key, "h" | "left") { -1 } else { 1 });
+                        if let Some(grid) = grid {
+                            grid.update(cx, |grid, cx| grid.set_filter(*filter, cx));
+                        }
+                    }
                     "escape" => self.cancel_overlay(window, cx),
                     _ => {}
                 },
@@ -6867,12 +6888,12 @@ impl Shika {
         &self,
         report: Option<&UsageReport>,
         filter: UsageFilter,
+        grid: Option<&Entity<usage_dashboard::UsageGrid>>,
         chrome: &Chrome,
-        width: f32,
-        max_h: Pixels,
+        bounds: gpui::Size<Pixels>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let mut panel = dialog_shell(width, max_h, chrome)
+        let mut panel = dialog_shell(f32::from(bounds.width), bounds.height, chrome)
             .pt(px(20.))
             .px(px(20.))
             .pb(px(16.))
@@ -6911,8 +6932,12 @@ impl Shika {
                         })
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
-                                if let Some(Overlay::Usage { filter, .. }) = &mut this.overlay {
+                                if let Some(Overlay::Usage { filter, grid, .. }) = &mut this.overlay
+                                {
                                     *filter = choice;
+                                    if let Some(grid) = grid {
+                                        grid.update(cx, |grid, cx| grid.set_filter(choice, cx));
+                                    }
                                 }
                                 window.focus(&this.focus, cx);
                                 cx.notify();
@@ -6932,7 +6957,9 @@ impl Shika {
                         )
                         .child(segments),
                 );
-                panel = panel.child(usage_dashboard::heatmap(calendar, filter, chrome));
+                if let Some(grid) = grid {
+                    panel = panel.child(usage_dashboard::heatmap(calendar, filter, chrome, grid));
+                }
                 if calendar.totals.combined() == 0 {
                     panel = panel.child(dialog_text(chrome).child(if report.empty {
                         "No tokens recorded yet."
@@ -7589,12 +7616,20 @@ impl Shika {
             Overlay::Settings { section, row, .. } => {
                 self.settings_panel(*section, *row, max_h, chrome, home, cx)
             }
-            Overlay::Usage { report, filter, .. } => self.usage_panel(
+            Overlay::Usage {
+                report,
+                filter,
+                grid,
+                ..
+            } => self.usage_panel(
                 report.as_ref(),
                 *filter,
+                grid.as_ref(),
                 chrome,
-                f32::from((window.viewport_size().width - px(40.)).min(px(880.))),
-                max_h,
+                gpui::size(
+                    (window.viewport_size().width - px(40.)).min(px(880.)),
+                    max_h,
+                ),
                 cx,
             ),
         };

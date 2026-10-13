@@ -2,8 +2,9 @@
 
 use crate::{MONO, UI_FONT, appearance::Chrome, dialog_text};
 use gpui::{
-    AppContext, Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    Render, Rgba, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
+    prelude::FluentBuilder, px,
 };
 use shika_core::{UsageCalendar, UsageCalendarDay, UsageTotals, format_tokens};
 
@@ -166,9 +167,80 @@ const CELL: f32 = 12.;
 const GAP: f32 = 2.;
 const GUTTER: f32 = 32.;
 
-pub fn heatmap(calendar: &UsageCalendar, filter: UsageFilter, chrome: &Chrome) -> gpui::Div {
+// The calendar has a definite size, so GPUI can reuse its rendered subtree
+// across unrelated card/timer redraws. One entity lives only as long as the
+// dashboard snapshot; hover, filter and theme changes invalidate its cache.
+const GRID_WIDTH: f32 = GUTTER + GAP + 52. * (CELL + GAP) - GAP;
+const GRID_HEIGHT: f32 = 16. + 6. + 7. * (CELL + GAP) - GAP;
+
+#[derive(Clone, Copy, PartialEq)]
+struct GridStyle {
+    colors: [Rgba; 5],
+    label: Rgba,
+    border: Rgba,
+    hover: Rgba,
+    tooltip_background: Rgba,
+    tooltip_ink: Rgba,
+}
+
+impl GridStyle {
+    fn from_chrome(chrome: &Chrome) -> Self {
+        Self {
+            colors: chrome.usage_intensities(),
+            label: chrome.ink_3,
+            border: chrome.line_control,
+            hover: chrome.focus,
+            tooltip_background: chrome.overlay,
+            tooltip_ink: chrome.ink_1,
+        }
+    }
+}
+
+pub struct UsageGrid {
+    calendar: UsageCalendar,
+    filter: UsageFilter,
+    style: GridStyle,
+}
+
+impl UsageGrid {
+    pub fn new(calendar: UsageCalendar, filter: UsageFilter, chrome: &Chrome) -> Self {
+        Self {
+            calendar,
+            filter,
+            style: GridStyle::from_chrome(chrome),
+        }
+    }
+
+    pub fn set_filter(&mut self, filter: UsageFilter, cx: &mut Context<Self>) {
+        if self.configure(filter, self.style) {
+            cx.notify();
+        }
+    }
+
+    pub fn set_chrome(&mut self, chrome: &Chrome, cx: &mut Context<Self>) {
+        if self.configure(self.filter, GridStyle::from_chrome(chrome)) {
+            cx.notify();
+        }
+    }
+
+    fn configure(&mut self, filter: UsageFilter, style: GridStyle) -> bool {
+        if self.filter == filter && self.style == style {
+            return false;
+        }
+        self.filter = filter;
+        self.style = style;
+        true
+    }
+}
+
+impl Render for UsageGrid {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        calendar_grid(&self.calendar, self.filter, self.style)
+    }
+}
+
+fn calendar_grid(calendar: &UsageCalendar, filter: UsageFilter, style: GridStyle) -> gpui::Div {
     let maximum = filter.maximum(calendar);
-    let colors = chrome.usage_intensities();
     let mut months = div().flex().gap(px(GAP)).ml(px(GUTTER + GAP));
     let mut columns = div().flex().gap(px(GAP));
     let mut weekdays = div()
@@ -183,7 +255,7 @@ pub fn heatmap(calendar: &UsageCalendar, filter: UsageFilter, chrome: &Chrome) -
                 .h(px(CELL))
                 .text_size(px(10.5))
                 .line_height(px(CELL))
-                .text_color(chrome.ink_3)
+                .text_color(style.label)
                 .child(name),
         );
     }
@@ -203,7 +275,7 @@ pub fn heatmap(calendar: &UsageCalendar, filter: UsageFilter, chrome: &Chrome) -
                             .left_0()
                             .w(px(40.))
                             .text_size(px(10.5))
-                            .text_color(chrome.ink_3)
+                            .text_color(style.label)
                             .child(label),
                     )
                 }),
@@ -215,16 +287,16 @@ pub fn heatmap(calendar: &UsageCalendar, filter: UsageFilter, chrome: &Chrome) -
                 None => cell.into_any_element(),
                 Some(day) => {
                     let tip_day = day.clone();
-                    let tip_chrome = *chrome;
                     cell.id(("usage-day", week_index * 7 + weekday))
-                        .bg(colors[bucket(filter.tokens(day.tokens), maximum)])
+                        .bg(style.colors[bucket(filter.tokens(day.tokens), maximum)])
                         .border_1()
-                        .border_color(chrome.line_control)
-                        .hover(|style| style.border_color(chrome.focus))
+                        .border_color(style.border)
+                        .hover(|s| s.border_color(style.hover))
                         .tooltip(move |_, cx| {
                             cx.new(|_| UsageTip {
                                 day: tip_day.clone(),
-                                chrome: tip_chrome,
+                                background: style.tooltip_background,
+                                ink: style.tooltip_ink,
                             })
                             .into()
                         })
@@ -234,6 +306,23 @@ pub fn heatmap(calendar: &UsageCalendar, filter: UsageFilter, chrome: &Chrome) -
         }
         columns = columns.child(column);
     }
+    div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(months)
+        .child(columns)
+}
+
+pub fn heatmap(
+    calendar: &UsageCalendar,
+    filter: UsageFilter,
+    chrome: &Chrome,
+    grid: &Entity<UsageGrid>,
+) -> gpui::Div {
+    let maximum = filter.maximum(calendar);
+    let colors = chrome.usage_intensities();
     let mut legend = div().flex().items_center().gap(px(GAP)).child(
         div()
             .text_size(px(10.5))
@@ -262,8 +351,14 @@ pub fn heatmap(calendar: &UsageCalendar, filter: UsageFilter, chrome: &Chrome) -
         .flex()
         .flex_col()
         .gap(px(6.))
-        .child(months)
-        .child(columns)
+        .child(
+            grid.clone().cached(
+                StyleRefinement::default()
+                    .w(px(GRID_WIDTH))
+                    .h(px(GRID_HEIGHT))
+                    .flex_none(),
+            ),
+        )
         .child(
             div()
                 .flex()
@@ -283,7 +378,8 @@ pub fn heatmap(calendar: &UsageCalendar, filter: UsageFilter, chrome: &Chrome) -
 
 struct UsageTip {
     day: UsageCalendarDay,
-    chrome: Chrome,
+    background: Rgba,
+    ink: Rgba,
 }
 
 impl Render for UsageTip {
@@ -292,8 +388,8 @@ impl Render for UsageTip {
             .px_2()
             .py_1()
             .rounded(px(6.))
-            .bg(self.chrome.overlay)
-            .text_color(self.chrome.ink_1)
+            .bg(self.background)
+            .text_color(self.ink)
             .text_size(px(12.))
             .font_family(UI_FONT)
             .flex()
@@ -407,6 +503,50 @@ mod tests {
         assert_eq!(UsageFilter::All.step(1), UsageFilter::Claude);
         assert_eq!(UsageFilter::Codex.step(1), UsageFilter::Codex);
         assert_eq!(UsageFilter::Codex.step(-1), UsageFilter::Claude);
+    }
+
+    #[test]
+    fn grid_cache_invalidates_only_for_filter_and_used_theme_tokens() {
+        use crate::appearance::chrome_for;
+        use shika_core::Appearance;
+        use shika_terminal::catalog;
+
+        let chrome = chrome_for(&Appearance::default(), &catalog::THEMES[0], false);
+        let calendar = UsageCalendar {
+            start: "2026-10-12".into(),
+            end: "2026-10-13".into(),
+            this_week: UsageTotals::default(),
+            totals: UsageTotals::default(),
+            weeks: Vec::new(),
+        };
+        let mut grid = UsageGrid::new(calendar, UsageFilter::All, &chrome);
+        let style = GridStyle::from_chrome(&chrome);
+        assert!(!grid.configure(UsageFilter::All, style));
+        assert!(grid.configure(UsageFilter::Claude, style));
+        assert!(!grid.configure(UsageFilter::Claude, style));
+
+        // Every color read by the grid or its tooltip participates in the
+        // cache key. Changing unrelated chrome must not wake this view.
+        let mut unrelated = chrome;
+        unrelated.working.dot.r = 1. - unrelated.working.dot.r;
+        assert!(!grid.configure(UsageFilter::Claude, GridStyle::from_chrome(&unrelated)));
+        for index in 0..10 {
+            let mut changed = style;
+            let color = match index {
+                0..=4 => &mut changed.colors[index],
+                5 => &mut changed.label,
+                6 => &mut changed.border,
+                7 => &mut changed.hover,
+                8 => &mut changed.tooltip_background,
+                _ => &mut changed.tooltip_ink,
+            };
+            color.r = if color.r < 0.5 { 1. } else { 0. };
+            assert!(grid.configure(UsageFilter::Claude, changed));
+            assert!(!grid.configure(UsageFilter::Claude, changed));
+            assert!(grid.configure(UsageFilter::Claude, style));
+        }
+        assert_eq!(GRID_WIDTH, 760.);
+        assert_eq!(GRID_HEIGHT, 118.);
     }
 
     #[test]

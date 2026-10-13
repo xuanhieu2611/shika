@@ -674,11 +674,11 @@ fn reports_are_read_only_and_week_totals_match_saved_days_across_year_boundary()
     }
     let before = fs::read(database(&scratch.data())).unwrap();
     let shown = report(&scratch.data(), Some(Date::parse("2026-01-01").unwrap()));
-    assert_eq!(shown.claude, 12);
+    assert_eq!(shown.claude, 9);
     assert_eq!(shown.codex, 7);
-    assert_eq!(shown.days.len(), 3);
-    assert_eq!(shown.days[0].label, "Sunday, Jan 4");
-    assert_eq!(shown.days[2].label, "Monday, Dec 29");
+    assert_eq!(shown.days.len(), 2);
+    assert_eq!(shown.days[0].label, "Thursday, Jan 1");
+    assert_eq!(shown.days[1].label, "Monday, Dec 29");
     assert_eq!(fs::read(database(&scratch.data())).unwrap(), before);
 }
 
@@ -712,6 +712,9 @@ fn dashboard_reads_bounded_indexed_days_without_receipts_and_preserves_gaps() {
     assert!(!shown.unreadable);
     assert!(shown.pending);
     let calendar = shown.calendar.unwrap();
+    assert_eq!(shown.claude, calendar.this_week.claude);
+    assert_eq!(shown.codex, calendar.this_week.codex);
+    assert_eq!(shown.days.len(), 2);
     assert_eq!(
         calendar.totals,
         super::super::UsageTotals {
@@ -737,7 +740,7 @@ fn dashboard_reads_bounded_indexed_days_without_receipts_and_preserves_gaps() {
     assert_eq!(fs::read(database(&scratch.data())).unwrap(), before);
     let plan: String = conn.query_row(
         "EXPLAIN QUERY PLAN SELECT day,cli,tokens FROM days WHERE day>=date(?1,?2) AND day<date(?1,?3) ORDER BY day DESC",
-        params![today.iso(), "-358 days", "+5 days"], |row| row.get(3),
+        params![today.iso(), "-358 days", "+1 day"], |row| row.get(3),
     ).unwrap();
     assert!(plan.contains("SEARCH days USING INDEX"), "{plan}");
 }
@@ -750,7 +753,8 @@ fn legacy_dashboard_matches_imported_calendar_and_retains_zero_days() {
         json!({
             "days": {
                 "2026-01-01": {"claude": 100, "codex": 30},
-                "2026-10-13": {"claude": 10, "codex": 20}
+                "2026-10-13": {"claude": 10, "codex": 20},
+                "2026-10-14": {"claude": 900, "codex": 800}
             }
         })
         .to_string(),
@@ -760,7 +764,10 @@ fn legacy_dashboard_matches_imported_calendar_and_retains_zero_days() {
     assert!(!before.unreadable);
     let _ = open_store(&scratch.data()).unwrap();
     let after = report(&scratch.data(), Some(Date::parse("2026-10-13").unwrap()));
-    assert_eq!(before.calendar, after.calendar);
+    assert_eq!(before, after);
+    assert_eq!(after.claude, 10);
+    assert_eq!(after.codex, 20);
+    assert_eq!(after.days.len(), 1);
     let calendar = after.calendar.unwrap();
     assert_eq!(calendar.totals.combined(), 160);
     assert_eq!(
