@@ -34,9 +34,9 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 These hold for every feature. A change to one is a decision for the maintainer, so open an issue first.
 
 - **A Mac app for coding-agent tasks.** It is not a terminal multiplexer, an editor, or a chat client. Pure Rust on GPUI, with no web view.
-- **Bring your own CLI.** Shika launches Claude Code, Codex, Cursor CLI, or Pi with the user's own login and plan. It does not call a model API.
+- **Bring your own CLI.** Shika launches Claude Code, Codex, Cursor CLI, Pi, or Kiro CLI with the user's own login and plan. It does not call a model API.
 - **The real terminal is the interface.** The user reads and answers the agent in the CLI's own UI. Shika does not draw a transcript or replace a CLI's question widgets.
-- **No per-tool approval prompts from Shika.** Each CLI starts in its automatic approval mode, using flags checked against its `--help` (see [AGENTS.md](AGENTS.md#clis-and-launch-arguments)). This does not waive explicit author confirmation for trusted repository setup, publishing, or destructive cleanup; Shika does not silently authorize those operations.
+- **No per-tool approval prompts from Shika.** Each CLI requests its automatic approval mode, using flags checked against its `--help` for the first four presets or official docs for Kiro (2026-10-13, unverified with a real binary) (see [AGENTS.md](AGENTS.md#clis-and-launch-arguments)). This does not waive explicit author confirmation for trusted repository setup, publishing, or destructive cleanup; Shika does not silently authorize those operations.
 - **One fresh worktree per task.** Tasks in a repository are independent. Shika does not reuse worktrees or merge between agents.
 - **The Lead is a manager, not a micromanager.** The author is the CEO, the Lead briefs workers and reads their own reports, and quality rests on the repository's CI and the author's testing. See [Lead agent](docs/lead-agent.md#the-lead-is-a-manager).
 - **The user owns git.** Shika never commits or pushes on its own. A push does not close a task, and Close asks before anything is lost. Create PR commits only after an explicit confirmation.

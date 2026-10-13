@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Shika - Run coding agents in parallel on your Mac</title>
-<meta name="description" content="Shika is a free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side. Every task gets its own git worktree and terminal, automatically.">
+<meta name="description" content="Shika is a free, open source Mac app for running Claude Code, Codex, Cursor CLI, Pi, and Kiro CLI side by side. Every task gets its own git worktree and terminal, automatically.">
 <meta name="theme-color" content="#eef0e7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#121511" media="(prefers-color-scheme: dark)">
 <link rel="canonical" href="https://useshika.com/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Shika">
 <meta property="og:title" content="Shika - Run your coding agents side by side.">
-<meta property="og:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side, each in its own git worktree.">
+<meta property="og:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, Pi, and Kiro CLI side by side, each in its own git worktree.">
 <meta property="og:url" content="https://useshika.com/">
 <meta property="og:image" content="https://useshika.com/img/og.png">
 <meta property="og:image:width" content="2800">
@@ -20,7 +20,7 @@
 <meta name="twitter:image:alt" content="Native Shika app with sample projects and simulated CLI output.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Shika - Run your coding agents side by side.">
-<meta name="twitter:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side, each in its own git worktree.">
+<meta name="twitter:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, Pi, and Kiro CLI side by side, each in its own git worktree.">
 <meta name="twitter:image" content="https://useshika.com/img/og.png">
 <link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png">
 <link rel="icon" type="image/png" sizes="64x64" href="img/favicon-64.png">
@@ -109,7 +109,7 @@
         <li class="reveal" style="--i:0">
           <span class="key" aria-label="Command N">⌘N</span>
           <h3>Start an agent</h3>
-          <p>Pick Claude Code, Codex, Cursor CLI, or Pi. Shika creates a worktree and starts the CLI inside it.</p>
+          <p>Pick Claude Code, Codex, Cursor CLI, Pi, or Kiro CLI. Shika creates a worktree and starts the CLI inside it.</p>
         </li>
         <li class="reveal" style="--i:1">
           <span class="key" aria-label="Enter key">↵</span>
@@ -297,7 +297,7 @@
         <p class="section-lede">Early-stage, macOS-only software. Download the signed and notarized app, or build it from source.</p>
         <ul class="reqs">
           <li><svg class="icon"><use href="#i-check"/></svg>Apple silicon Mac with macOS 13 or later</li>
-          <li><svg class="icon"><use href="#i-check"/></svg>Claude Code, Codex, Cursor CLI, or Pi, installed and signed in</li>
+          <li><svg class="icon"><use href="#i-check"/></svg>Claude Code, Codex, Cursor CLI, Pi, or Kiro CLI, installed and signed in</li>
           <li><svg class="icon"><use href="#i-check"/></svg>GitHub CLI, signed in, if you want Create PR</li>
         </ul>
         <div class="cta-row">
@@ -331,11 +331,11 @@
         </details>
         <details>
           <summary>Which coding agents does it run?</summary>
-          <p>Claude Code, Codex, Cursor CLI, and Pi. Shika starts the binary you already have, so your login, settings and plan come with it.</p>
+          <p>Claude Code, Codex, Cursor CLI, Pi, and Kiro CLI. Shika starts the binary you already have, so your login, settings and plan come with it. Kiro uses <code>kiro-cli chat --trust-all-tools</code> from <a href="https://kiro.dev/docs/reference/cli-commands/#kiro-cli-chat">official docs</a> checked 2026-10-13, without a real binary or <code>--help</code> check. Folder trust and live behavior are unverified; Kiro keeps prompt-named branches, uses generic activity fallback without blocker detection, and has no usage collection.</p>
         </details>
         <details>
           <summary>Will agents ask before running commands?</summary>
-          <p>Shika's presets use the CLIs' automatic approval modes. Claude Code, Codex, and Cursor CLI bypass permission prompts or sandboxing; Pi starts with <code>--approve</code>. Agents can execute commands with your user account's access. A worktree separates Git edits but does not restrict access to files, credentials, or the network. Run agents only in projects you trust. Shika separately asks for approval before running configured worktree setup commands.</p>
+          <p>Shika's presets use the CLIs' automatic approval modes. Claude Code, Codex, and Cursor CLI bypass permission prompts or sandboxing; Pi starts with <code>--approve</code>; Kiro requests tool trust with the documented, unverified <code>--trust-all-tools</code>. Agents can execute commands with your user account's access. A worktree separates Git edits but does not restrict access to files, credentials, or the network. Run agents only in projects you trust. Shika separately asks for approval before running configured worktree setup commands.</p>
         </details>
         <details>
           <summary>Does Shika send my code or prompts anywhere?</summary>

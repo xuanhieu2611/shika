@@ -32,7 +32,7 @@ Shika's version differs from those on purpose:
 | --- | --- |
 | The Lead is one of the author's CLIs in a real terminal | Bring your own CLI: Shika still calls no model API and draws no transcript. The Lead is a card like any other. |
 | Workers are ordinary cards | Nothing is hidden in a cloud thread. The author can open any worker, type into it, read its Changes panel, or close it. Auditability is the main complaint about hosted coordinators. |
-| A `shika` command over a local socket, not MCP | Every supported CLI can run a shell command, so one path serves Claude Code, Codex, Cursor CLI, and Pi with no per-CLI configuration injection (Cursor has no per-session MCP flag). It loads no tool schemas into context until the Lead runs `shika help`. The author can run the same commands in a shell. This is how Herdr exposes itself to agents and how firstmate drives it. |
+| A `shika` command over a local socket, not MCP | Every supported CLI can run a shell command, so one path serves Claude Code, Codex, Cursor CLI, Pi, and Kiro CLI with no per-CLI configuration injection (Cursor has no per-session MCP flag). It loads no tool schemas into context until the Lead runs `shika help`. The author can run the same commands in a shell. This is how Herdr exposes itself to agents and how firstmate drives it. |
 | Shika owns the mechanics, the Lead owns the judgment | Worktrees, PTYs, activity state, diffs, and publishing already exist in Rust. The Lead never re-derives them from files or screen parsing. firstmate needs about 114,000 lines of shell for this because it has no app; Shika does not. |
 | The Lead is a manager and workers are engineers who report | Matches how the author wants to work: a CEO with a manager, not a reviewer reading every diff. Results come from the workers' own reports; CI and the author are QA; PRs go to the task's base, never straight to production. |
 | Workers get a report-only token | The report is the one thing a worker must be able to say to the Lead. A token limited to `report` and `help` adds that without letting a worker start, read, or steer anything. No files are written into the repository and no CLI configuration is edited. |
@@ -64,7 +64,7 @@ The app binary doubles as the client. When its first argument is a command word 
 | --- | --- |
 | `shika help` | Prints the Lead guide: role, rules, commands, and a worked example. Versioned with the app. |
 | `shika tasks` | Lists the project's tasks: id, title, CLI, status, elapsed time, branch, diff stat, PR, and whether this Lead started it. |
-| `shika new --cli <claude\|codex\|cursor\|pi> [--base <branch>] <prompt>` | Starts a worker and prints its task id once the CLI is running. Refuses when preparation needs the author's approval, the CLI is missing, or the worker limit is reached. |
+| `shika new --cli <claude\|codex\|cursor\|pi\|kiro> [--base <branch>] <prompt>` | Starts a worker and prints its task id once the CLI is running. Refuses when preparation needs the author's approval, the CLI is missing, or the worker limit is reached. |
 | `shika status <task>` | One task's line from `tasks`. |
 | `shika wait [<task>...] [--timeout <seconds>]` | Blocks until one of the tasks (default: every live task this Lead started) is Ready, Asking, or exited, then prints which and why. Prints the still-working tasks on timeout. Default timeout 100 seconds, under the default command timeout of the CLIs. Waiting costs no tokens. The server caps it at 600 seconds. |
 | `shika read <task> [--lines <n>]` | The worker's agent terminal as plain text: the visible screen plus up to `n` lines of scrollback (default 0, max 2000). |
@@ -77,7 +77,7 @@ The app binary doubles as the client. When its first argument is a command word 
 
 Each task line ends with `path=`, the worker's worktree, which the Lead may read and must not edit.
 
-The prompt is passed to the worker CLI as its positional prompt. All four CLIs accept one (`claude [prompt]`, `codex [PROMPT]`, `agent [prompt...]`, `pi [messages...]`, checked from `--help` on 2026-10-09). Because nobody types it, Shika treats it as the first submission (see Positional prompts below): the card is named from its first line, the branch is renamed once through the existing first-prompt path, and the CLI's own title renames it later as usual.
+The prompt is passed to the worker CLI as its positional prompt. The original four CLIs accept one (`claude [prompt]`, `codex [PROMPT]`, `agent [prompt...]`, `pi [messages...]`, checked from `--help` on 2026-10-09). Kiro documents `kiro-cli chat [OPTIONS] [INPUT]` in its [command reference](https://kiro.dev/docs/reference/cli-commands/#kiro-cli-chat), checked 2026-10-13 without an installed binary or a real `--help` check. Its launch and Lead behavior remain unverified; activity uses the generic quiet/startup fallback, branch names stay prompt-based, and usage is not collected. Because nobody types it, Shika treats it as the first submission (see Positional prompts below): the card is named from its first line, the branch is renamed once through the existing first-prompt path, and the CLI's own title renames it later as usual.
 
 ### Scope and limits
 

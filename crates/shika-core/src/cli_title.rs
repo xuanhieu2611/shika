@@ -72,6 +72,8 @@ impl CliHome {
                 "codex" => self.codex(&cwd),
                 "cursor" => self.cursor(&cwd),
                 "pi" => self.pi(&cwd),
+                // No verified Kiro session-title format. Keep the prompt name.
+                "kiro" => None,
                 _ => None,
             })?;
         let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -433,12 +435,12 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_cli_has_no_title() {
+    fn kiro_and_unknown_clis_have_no_title_source() {
         let scratch = Scratch::new();
-        assert_eq!(
-            CliHome::at(scratch.0.clone()).read("kiro", Path::new(WORKTREE)),
-            None
-        );
+        let home = CliHome::at(scratch.0.clone());
+        for id in ["kiro", "unknown"] {
+            assert_eq!(home.read(id, Path::new(WORKTREE)), None);
+        }
     }
 
     fn codex_db(path: &Path, rows: &[(&str, &str, i64)]) {

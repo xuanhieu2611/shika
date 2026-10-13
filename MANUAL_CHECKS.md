@@ -2,6 +2,20 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Kiro CLI preset, 2026-10-13
+
+Kiro CLI was not installed on the development machine and was not installed for this change. The binary `kiro-cli` and interactive launch `chat --trust-all-tools` come from the [official command reference](https://kiro.dev/docs/reference/cli-commands/#kiro-cli-chat), checked 2026-10-13. NOT verified against a real `--help`, authenticated session, or native Kiro terminal. First-run folder trust is unverified. No screen patterns, title-status signals, lifecycle bridge, private session-title reader, or token usage collection were added for Kiro.
+
+`cargo test --workspace` passed: 550 passed, one existing ignored test. `cargo build -p shika`, `cargo fmt --all --check`, and `git diff --check` passed. A fake PTY test verifies argument delivery and prompt-branch fallback only; it does not establish Kiro acceptance.
+
+Pending with a real binary supplied by the author, using a disposable repo, local bare remote, and isolated `--data-dir`:
+
+- [ ] Record `kiro-cli --version` and `kiro-cli chat --help`; confirm interactive `chat [OPTIONS] [INPUT]` and `--trust-all-tools` match the docs and suppress tool approval as intended. Check first-run login/folder trust separately without editing global config.
+- [ ] Open the built `.app` with `open`, outside an inherited CLI environment. Kiro is fifth after Pi in Settings > Agents, shows `kiro-cli` on the login-shell PATH, and appears after Pi in New/Switch agent when found and On. A missing binary is absent from those pickers. Off persists across relaunch/discovery and On restores it. Check light/dark, a derived theme, and a short window without layout changes.
+- [ ] New opens the real interactive CLI in its own draft worktree. The first typed prompt names the card and branch; the prompt name stays even if Kiro names its session. Shell tabs, Close, and leftovers retain the existing ownership and safe-close behavior.
+- [ ] Submit real turns and compare notifications/timers to the terminal, including silent work, redraws, typed drafts, and a real blocker if available. Kiro deliberately has no Asking/Working screen detection; the generic quiet/startup fallback can finish a silent or blocked turn early. Record limitations without claiming provider-aware detection.
+- [ ] Check non-empty and empty Switch agent prompts, a Kiro Lead, and `shika new --cli kiro`: positional prompts reach the CLI, launch turns use the existing startup/quiet fallback, and the worker can `shika report`. No Kiro usage source or totals appear in View > Usage.
+
 ## Manual task names
 
 See [docs/task-names.md](docs/task-names.md) for the public FAQ and contributor contract. Workspace tests passed (375 passed, one existing ignored); formatting, strict Clippy, and dependency-notice regeneration passed.

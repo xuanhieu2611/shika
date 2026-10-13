@@ -24,7 +24,7 @@ Shika handles the worktrees, branches, and terminals. Every task isolated. Every
 
 ## What it is
 
-A keyboard-first Mac app for running Claude Code, Codex, Cursor CLI, and Pi at the same time. Press New, and Shika creates a Git worktree and opens the CLI you already use, with your existing login and plan. It does not wrap a model API.
+A keyboard-first Mac app for running Claude Code, Codex, Cursor CLI, Pi, and Kiro CLI at the same time. Press New, and Shika creates a Git worktree and opens the CLI you already use, with your existing login and plan. It does not wrap a model API.
 
 I built Shika to stop juggling worktrees and terminals when working with several coding agents. I use it every day, including to build Shika itself.
 
@@ -59,9 +59,12 @@ Shika finds each CLI through your login shell's PATH, including when launched fr
 | Codex | `codex` | `--dangerously-bypass-approvals-and-sandbox` |
 | Cursor CLI | `agent` | `--yolo --trust --sandbox disabled` |
 | Pi | `pi` | `--approve` |
+| Kiro CLI | `kiro-cli` | `chat --trust-all-tools` (docs only) |
+
+Kiro's arguments are from its [official command reference](https://kiro.dev/docs/reference/cli-commands/#kiro-cli-chat), checked 2026-10-13. Kiro was not installed or verified against a real `--help`. Folder trust and live behavior remain unverified. Kiro keeps prompt-named branches, uses the generic quiet/startup/exit activity fallback without blocker detection, and has no token usage collection. Real-binary checks are pending in [MANUAL_CHECKS.md](MANUAL_CHECKS.md#kiro-cli-preset-2026-10-13).
 
 > [!WARNING]
-> These presets launch each CLI in an automatic approval mode. Claude Code, Codex, and Cursor CLI bypass permission prompts or sandboxing, so agents can run commands with your user account's access. A worktree separates Git edits; it does not restrict access to files, credentials, or the network. Use Shika in projects you trust and review the agent's changes.
+> These presets request each CLI's automatic approval mode; Kiro's documented tool-trust mode is unverified with a real binary. Claude Code, Codex, and Cursor CLI bypass permission prompts or sandboxing, so agents can run commands with your user account's access. A worktree separates Git edits; it does not restrict access to files, credentials, or the network. Use Shika in projects you trust and review the agent's changes.
 
 Shika has no telemetry or model API integration. Your CLIs connect to their providers, Git fetch and push connect to your remotes, and approved setup commands can use the network.
 

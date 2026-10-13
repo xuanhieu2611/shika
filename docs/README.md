@@ -25,4 +25,6 @@ These guides explain why features exist, how they are implemented, and where to 
 | [Lead agent](lead-agent.md) | The decision and contract for one Lead per project that starts worker cards, waits for them, reads and steers them, and is woken by a doorbell, through the `shika` command |
 | [The `shika` command](shika-cli.md) | Reference for the Lead's control CLI: commands and exact output, exit codes, `wait` rules, wire protocol, token and scope, debugging recipes, and adding a command |
 
+Kiro CLI is the fifth preset, after Pi. Its launch args are from official docs only (2026-10-13), with no real-binary verification; see [Tasks and worktrees](tasks-and-worktrees.md#first-run-folder-trust). Kiro keeps prompt-named branches, uses generic activity fallback, and has no usage collection.
+
 [MANUAL_CHECKS.md](../MANUAL_CHECKS.md) and [terminal checks](../crates/shika-terminal/MANUAL_CHECKS.md) track acceptance evidence and remaining GUI checks. Passing unit tests is not proof that all native UI behavior has been exercised.

@@ -48,10 +48,10 @@ const MAX_SOCKET_PATH: usize = 103;
 pub const MAX_REPORT_BYTES: usize = 4096;
 
 /// The CLI ids `shika new --cli` accepts, the same as the preset ids.
-pub const CLI_IDS: [&str; 4] = ["claude", "codex", "cursor", "pi"];
+pub const CLI_IDS: [&str; 5] = ["claude", "codex", "cursor", "pi", "kiro"];
 
 /// Usage text for argument errors.
-pub const USAGE: &str = "usage: shika [--json] <command>\n  help\n  tasks\n  new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>\n  status <task>\n  wait [<task>...] [--timeout <seconds>]\n  read <task> [--lines <n>]\n  diff <task> [--stat]\n  send <task> [--no-enter] <text...>\n  key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)\n  pr <task>\n  close <task>
+pub const USAGE: &str = "usage: shika [--json] <command>\n  help\n  tasks\n  new --cli <claude|codex|cursor|pi|kiro> [--base <branch>] <prompt...>\n  status <task>\n  wait [<task>...] [--timeout <seconds>]\n  read <task> [--lines <n>]\n  diff <task> [--stat]\n  send <task> [--no-enter] <text...>\n  key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)\n  pr <task>\n  close <task>
   report <text...>   (workers only)";
 
 /// Why a control call failed. The client prints it and exits with status 2.
@@ -226,7 +226,7 @@ pub struct TaskInfo {
     /// The session id, the handle every command takes.
     pub id: String,
     pub title: String,
-    /// The CLI preset id: `claude`, `codex`, `cursor`, or `pi`.
+    /// The CLI preset id: `claude`, `codex`, `cursor`, `pi`, or `kiro`.
     pub cli: String,
     pub status: TaskStatus,
     /// Seconds into the current turn. None outside Working.
@@ -1173,6 +1173,32 @@ mod tests {
             2
         );
         assert_eq!(Reply::Help { text: "x".into() }.exit_code(), 0);
+    }
+
+    #[test]
+    fn new_accepts_every_catalog_preset_in_order() {
+        let env = crate::PathEnv::from_lookup(String::new(), None, &[]);
+        let presets = crate::agents::presets_from(&env);
+        assert_eq!(
+            CLI_IDS.as_slice(),
+            presets
+                .iter()
+                .map(|preset| preset.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        for id in CLI_IDS {
+            assert_eq!(
+                parse_args(&args(&format!("new --cli {id} fix the bug"))).unwrap(),
+                (
+                    Command::New {
+                        cli: id.into(),
+                        base: None,
+                        prompt: "fix the bug".into()
+                    },
+                    false
+                )
+            );
+        }
     }
 
     #[test]

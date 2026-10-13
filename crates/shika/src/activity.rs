@@ -20,6 +20,8 @@ pub enum Signal {
 /// Detect only anchored status chrome, not words in responses or draft input.
 /// Titles are used only for explicit dynamic state markers, not arbitrary text.
 pub fn detect(preset: &str, lines: &[String], title: Option<&str>) -> Signal {
+    // Kiro has no verified screen/title signals or lifecycle integration.
+    // It uses Unknown's existing submission, quiet, startup, and exit fallback.
     if !matches!(preset, "claude" | "codex" | "cursor" | "pi") {
         return Signal::Unknown;
     }
@@ -1039,6 +1041,19 @@ mod tests {
             assert_eq!(screen(preset, &[]), Signal::Unknown);
         }
         assert_eq!(screen("agent", &["ctrl+c to stop"]), Signal::Unknown);
+    }
+
+    #[test]
+    fn kiro_uses_unknown_even_for_another_clis_chrome_or_title() {
+        for rows in [
+            vec!["⠋ Working".to_string()],
+            vec![
+                "Allow command?".to_string(),
+                "Press enter to confirm or esc to cancel".to_string(),
+            ],
+        ] {
+            assert_eq!(detect("kiro", &rows, Some("Working")), Signal::Unknown);
+        }
     }
 
     #[test]

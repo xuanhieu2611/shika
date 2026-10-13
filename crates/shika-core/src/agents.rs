@@ -9,9 +9,9 @@ struct PresetSpec {
     args: &'static [&'static str],
 }
 
-// Flags checked from each binary's --help. Claude Code and Cursor CLI on
-// 2026-10-03. Codex CLI 0.160.0 and Pi 1.0.0 on 2026-10-05. The Codex
-// folder-trust override in `launch_flags` was verified in a real pty on
+// Flags for the first four presets checked from each binary's --help.
+// Claude Code and Cursor CLI on 2026-10-03. Codex CLI 0.160.0 and Pi 1.0.0
+// on 2026-10-05. The Codex folder-trust override in `launch_flags` was verified in a real pty on
 // 2026-10-09 with Codex CLI 0.161.0 (docs/tasks-and-worktrees.md).
 const PRESETS: &[PresetSpec] = &[
     PresetSpec {
@@ -37,6 +37,17 @@ const PRESETS: &[PresetSpec] = &[
         name: "Pi",
         binary: "pi",
         args: &["--approve"],
+    },
+    // Official command reference checked 2026-10-13:
+    // https://kiro.dev/docs/reference/cli-commands/#kiro-cli-chat
+    // Documents interactive `chat [OPTIONS] [INPUT]` and --trust-all-tools
+    // for tool use without confirmation. NOT verified against a real --help;
+    // Kiro CLI is not installed on this machine. Folder trust is unverified.
+    PresetSpec {
+        id: "kiro",
+        name: "Kiro CLI",
+        binary: "kiro-cli",
+        args: &["chat", "--trust-all-tools"],
     },
 ];
 
@@ -160,12 +171,13 @@ mod tests {
                 ("codex", Some(PathBuf::from("/tmp/bin/codex"))),
                 ("agent", None),
                 ("pi", Some(PathBuf::from("/tmp/bin/pi"))),
+                ("kiro-cli", None),
             ],
         );
 
         let presets = presets_from(&env);
 
-        assert_eq!(presets.len(), 4);
+        assert_eq!(presets.len(), 5);
         assert_eq!(presets[0].id, "claude");
         assert_eq!(presets[0].name, "Claude Code");
         assert_eq!(presets[0].binary, "claude");
@@ -197,7 +209,13 @@ mod tests {
         assert_eq!(presets[3].binary, "pi");
         assert_eq!(presets[3].args, ["--approve"]);
         assert!(presets[3].found());
-        assert_eq!(binaries(), ["claude", "codex", "agent", "pi"]);
+        assert_eq!(presets[4].id, "kiro");
+        assert_eq!(presets[4].name, "Kiro CLI");
+        assert_eq!(presets[4].binary, "kiro-cli");
+        assert_eq!(presets[4].args, ["chat", "--trust-all-tools"]);
+        assert_eq!(presets[4].path, None);
+        assert!(!presets[4].found());
+        assert_eq!(binaries(), ["claude", "codex", "agent", "pi", "kiro-cli"]);
 
         let offered = picker_presets(&presets, |id| id != "pi");
         assert_eq!(
@@ -206,6 +224,46 @@ mod tests {
                 .map(|preset| preset.id.as_str())
                 .collect::<Vec<_>>(),
             ["claude", "codex"]
+        );
+    }
+
+    #[test]
+    fn kiro_follows_pi_and_keeps_its_off_choice_when_discovered() {
+        let env = PathEnv::from_lookup(
+            "/tmp/bin".into(),
+            None,
+            &binaries()
+                .into_iter()
+                .map(|binary| (binary, Some(PathBuf::from("/tmp/bin").join(binary))))
+                .collect::<Vec<_>>(),
+        );
+        let presets = presets_from(&env);
+        let mut settings = crate::Settings::default();
+        let offered = |settings: &crate::Settings| {
+            picker_presets(&presets, |id| settings.agents.enabled(id))
+                .iter()
+                .map(|preset| preset.id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            offered(&settings),
+            ["claude", "codex", "cursor", "pi", "kiro"]
+        );
+
+        // Off can be chosen while the binary is missing, before discovery.
+        settings.agents.set_enabled("kiro", false);
+        let missing = presets_from(&PathEnv::from_lookup(String::new(), None, &[]));
+        assert!(picker_presets(&missing, |id| settings.agents.enabled(id)).is_empty());
+        assert_eq!(offered(&settings), ["claude", "codex", "cursor", "pi"]);
+        assert_eq!(
+            presets[4].path.as_deref(),
+            Some(Path::new("/tmp/bin/kiro-cli"))
+        );
+
+        settings.agents.set_enabled("kiro", true);
+        assert_eq!(
+            offered(&settings),
+            ["claude", "codex", "cursor", "pi", "kiro"]
         );
     }
 
@@ -228,7 +286,7 @@ mod tests {
                 r#"projects={"/no/such/repo/.worktrees/shika-draft-1"={trust_level="trusted"}}"#,
             ]
         );
-        for id in ["claude", "cursor", "pi"] {
+        for id in ["claude", "cursor", "pi", "kiro"] {
             let preset = preset(id);
             assert_eq!(launch_flags(&preset, path), preset.args, "{id}");
         }

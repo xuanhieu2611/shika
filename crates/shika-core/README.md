@@ -54,7 +54,7 @@ All modules are private except `control`. The crate root re-exports the public s
 | `session` | The in-memory session list (`SessionStore`), ids, launch argument rules, git facts for the close dialog, manual task names. | `Session`, `LaunchOptions`, `LeadEnv`, `SessionGitState`, `DiffStat`, `task_title` |
 | `worktree` | Everything that runs git for a task: creating drafts and Lead worktrees, base resolution, fetch, the journal, dirty and unpushed checks, branch renames, diff stat and diff, removal. | `JournalEntry`, `KnownBranches`, `normalize_prefix` (as `normalize_branch_prefix`); internally `create_draft`, `create_lead`, `resolve_base`, `git_cmd`, `read_only_git`, `GIT_REDIRECTS` |
 | `pty` | `portable-pty` wrapper: one reader thread and one writer thread per PTY, environment setup, exit events. | `PtyId`, `PtySize`, `PtyEvent`, `PtyExit`, `PtySink`; internally `PtyHub`, `SpawnRequest`, `CONTROL_VARS` |
-| `agents` | The four CLI presets and their launch flags. | `CliPreset`, `CliCatalog` |
+| `agents` | The five CLI presets and their launch flags. | `CliPreset`, `CliCatalog` |
 | `path_env` | The login-shell `PATH`, captured once, and the absolute CLI paths resolved from it. | `PathEnv`, `LoginShellError` |
 | `projects` | `projects.json`: add (git root lookup), remove, base branch, preparation approval and local onboarding decision. | `Project`, `ProjectAdded` |
 | `settings` | `settings.json`: theme, appearance, font size, branch prefix, sound, column, Changes width. Missing fields take defaults. | `Settings`, `ThemeSettings`, `ThemeMode`, `Appearance`, `Translucency`, `FontSize`, `Column`, `Changes` |
@@ -115,7 +115,7 @@ The first prompt line names the branch (`session_rename_from_prompt`), and a sec
 
 `LaunchOptions { prompt, started_by, base, control }`, with `Default` meaning the plain New flow.
 
-- `prompt` is passed to the CLI as its single positional argument after the preset's flags. All four CLIs accept one. `session::check_prompt` refuses a prompt that is empty or whitespace, starts with `-` (the CLI would read a flag), or contains a NUL byte, with `Error::InvalidPrompt`, before anything is created. Core does not rename the branch from the prompt; the caller does that, because no typed submission exists for the app to observe.
+- `prompt` is passed to the CLI as its single positional argument after the preset's flags. The first four accept one; Kiro documents `chat [OPTIONS] [INPUT]` (2026-10-13, not verified against a real binary). `session::check_prompt` refuses a prompt that is empty or whitespace, starts with `-` (the CLI would read a flag), or contains a NUL byte, with `Error::InvalidPrompt`, before anything is created. Core does not rename the branch from the prompt; the caller does that, because no typed submission exists for the app to observe.
 - `started_by` records the owning Lead's session id. Core stores it and does not enforce limits; the 4-worker limit lives in the app's control server.
 - `base` is the per-launch base described above.
 - `control: Option<WorkerEnv>` is set only for a worker a Lead starts. `WorkerEnv { socket, token, bin_dir }` gives that worker's **agent PTY** (never its shell tabs) `SHIKA_SOCKET`, its own `SHIKA_TOKEN`, and `bin_dir` first on `PATH`, so it can run `shika report`. The app maps the token to the worker and accepts only `report` and `help` from it. `None`, as for every card the author creates, means no `SHIKA_*` variables.
@@ -162,7 +162,7 @@ One terminal view per live PTY belongs to the app, not core. See [terminal-tabs.
 
 ### Activity bridge
 
-For Pi only, `create_session` and `create_lead` install an `ActivityBridge`: a private `0700` directory, a small extension passed to Pi, and a report file the extension rewrites atomically. `Core::session_activity` reads the latest report (at most 129 bytes) without any lock. The sink wrapper `activity_sink` cleans the directory up when the PTY exits. Other CLIs use the app's live-screen detection. Core never inspects terminal bytes. Model and traps: [agent-activity.md](../../docs/agent-activity.md).
+For Pi only, `create_session` and `create_lead` install an `ActivityBridge`: a private `0700` directory, a small extension passed to Pi, and a report file the extension rewrites atomically. `Core::session_activity` reads the latest report (at most 129 bytes) without any lock. The sink wrapper `activity_sink` cleans the directory up when the PTY exits. Claude Code, Codex, and Cursor CLI use the app's live-screen detection. Kiro has no verified lifecycle or screen rules and uses the existing quiet/startup/exit fallback; it has no session-title source or usage collection. Core never inspects terminal bytes. Model and traps: [agent-activity.md](../../docs/agent-activity.md).
 
 ### Diff and diff stat
 
@@ -204,7 +204,7 @@ The command reference, wire examples, `wait` semantics, security model, debuggin
 
 Do not break these. Each has a reason.
 
-- **Never pass a CLI's own worktree flag** (`agent --worktree`, `codex --worktree`). Shika creates the worktree so it can journal, base, track, and clean it. Do not invent launch flags; the table in AGENTS.md was taken from each binary's `--help`.
+- **Never pass a CLI's own worktree flag** (`agent --worktree`, `codex --worktree`). Shika creates the worktree so it can journal, base, track, and clean it. Do not invent launch flags; the first four presets in AGENTS.md were checked against real `--help`; Kiro's `kiro-cli chat --trust-all-tools` is from official docs only (2026-10-13), with no real-binary verification yet.
 - **Create worktrees with `--no-track`.** Otherwise a fresh card looks pushed and a plain `git push` targets the base.
 - **Never edit the user's `.gitignore`.** `.worktrees/` goes into the repository's `info/exclude` (`ensure_excluded`), which is local and invisible to the repo.
 - **Journal before you start, remove after the tree is gone.** A crash between the two leaves a leftover the author can see, never an invisible tree. Failure paths remove only provably untouched trees.

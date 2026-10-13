@@ -1,6 +1,6 @@
 # Token usage
 
-Local token usage from Claude Code and Codex launched in Shika, including their recorded subagents. Cursor and Pi are not collected. Counts are provider-reported traffic, not money, a subscription bill, or a quality score.
+Local token usage from Claude Code and Codex launched in Shika, including their recorded subagents. Cursor, Pi, and Kiro CLI are not collected. Kiro support adds no usage source or provider-file reader. Counts are provider-reported traffic, not money, a subscription bill, or a quality score.
 
 Read [AGENTS.md](../AGENTS.md) and [design/DESIGN.md](../design/DESIGN.md) before changing it. Native acceptance lives in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#token-usage), not inferences from unit tests.
 
