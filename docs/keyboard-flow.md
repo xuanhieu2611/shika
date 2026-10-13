@@ -159,6 +159,8 @@ During prepaint, `selection_reveal()` measures that row against the viewport. `r
 
 Do not run this on every redraw: terminal output and timer updates must not prevent the user from scrolling away from the selected card. The implementation currently keys reveal requests to selection identity, not status-driven reordering or window resizing.
 
+A successful Close records its replacement selection as already revealed. When a Lead's `shika close` returns selection to the Lead, the Lead is revealed as usual, because the dialog had scrolled to the worker. The exit only collapses that card's row and its leading gap; it does not reveal another row or reset manual scrolling. The scroll container still clamps its offset when the remaining content no longer fills the viewport.
+
 ## Debugging
 
 | Symptom | Start here |

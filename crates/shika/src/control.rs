@@ -1249,6 +1249,9 @@ impl Shika {
             && self.overlay.is_none()
         {
             self.selection = Some(Selection::Card(lead));
+            // The dialog scrolled to the worker, so bring the Lead back
+            // into view even when Close kept the scroll for its replacement.
+            self.last_revealed_selection = None;
             self.overlay_return_focus = None;
             self.focus_terminal(window, cx);
         }

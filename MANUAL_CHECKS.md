@@ -19,6 +19,21 @@ A scratch copy outside the repository, built as an ad hoc signed `.app` with GPU
 - [ ] Future Create PR previews prefill the new name; existing commits/PRs are unchanged. Preview/publish defaults and historical commit preservation are covered with real Git and fake gh.
 - [ ] Setup-running/failed Rename is disabled; disappearing target or lost opening focus falls back safely. Relaunch restores no sessions or manual names.
 
+## Card exit rendering repair, 2026-10-13
+
+Workspace tests passed (547 passed, one existing ignored), as did formatting, strict Clippy, `cargo build -p shika`, `./scripts/bundle-app.sh --debug`, and strict bundle signature verification. A unit test covers a row that retains its gap during shrink, collapses monotonically, and ends at exactly zero height and padding.
+
+The stock debug bundle was opened with a disposable `--data-dir` and disposable alpha/beta repositories. A separate scratch bundle outside the repository used a unique bundle id, hard-coded disposable Core data, fake Pi processes, actual worktrees, and a local bare remote. Its native GPU frames and measured row bounds exercised the production card renderer. GPU readback takes longer than the exit, so the exit clock was expanded tenfold only in the scratch copy for intermediate image inspection, then restored to the production 160ms shrink and 220ms collapse for a second matrix of layout samples. No fixture or timing change ships in the app.
+
+- PASS (reproduction): the old negative exit margin reduced a 237px project group to 22px during collapse, squeezed a surviving card to zero height, and jumped the next project header. Removing that margin alone stopped the group collapse but left the extra gap to jump on removal. The repaired row owns and collapses its leading gap.
+- PASS (native frames and production-time bounds): first, middle, last, only-card, and second-project closes affect only the departing face and its row. Every surviving face remains 65px high and full width. Rows above stay put; following cards and project headers move by exactly the departing 71px slot. Final removal causes no extra movement. Title-bar pixels stay identical across captured exit frames. Shika Light, Shika Dark, and Catppuccin Frappé were inspected.
+- PASS (native key): after raising and confirming the isolated Shika window, a synthetic Cmd+Shift+W closed the first card. Its exit frames, replacement selection, and card focus matched the direct close flow.
+- PASS (flow invocation): the scratch fixture invoked the card context menu's existing Close handler and the real Close dialog's Discard/Push handlers. Dirty work was discarded; an unpublished commit was pushed to the disposable bare remote. These paths produced the same exit. This verifies rendering and handler integration, not native mouse translation for those controls.
+- PASS (socket): a real `shika close` client closed a worker owned by a real detached Lead session, returned `closed`, and restored selection and terminal focus to the Lead. Ordinary close paths restored card focus as before.
+- PASS (scroll): closing an offscreen first card in a tall column retained the manually set -260px offset through shrink, collapse, and final removal, with the remaining cards still painted.
+- [ ] A Lead's `shika close` on a worker far from the Lead in a tall column scrolls the Lead back into view when focus returns to it. Fixed after the native pass above, not yet checked by hand.
+- [ ] Real-provider, normal-speed perceived smoothness, rapid repeated closes, glass, and Reduce Motion still need hands-on checks. The older progress/failure/terminal-grid checks below remain separate from this rendering repair.
+
 ## Close animation, 2026-10-09
 
 Workspace tests, formatting, and Clippy passed; the easing curve and exit timing are unit tested in `model.rs`. A browser prototype was used to choose the motion and was not committed. The GUI checks below are open.
