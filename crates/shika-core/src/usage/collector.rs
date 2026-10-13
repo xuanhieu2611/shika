@@ -15,7 +15,7 @@ use md5::{Digest, Md5};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 
-use super::{Date, UsageDay, UsageReport, local_today, recorded_date};
+use super::{Date, UsageCalendar, UsageDay, UsageReport, local_today, recorded_date};
 use crate::cli_title::{self, CliHome};
 
 const QUANTUM: u64 = 256 * 1024;
@@ -1744,8 +1744,12 @@ pub(super) fn report(dir: &Path, today: Option<Date>) -> UsageReport {
         claude: 0,
         codex: 0,
         days: Vec::new(),
+        calendar: today.and_then(UsageCalendar::new),
     };
     let result = (|| -> rusqlite::Result<()> {
+        if report.calendar.is_none() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
         if !database(dir).exists() {
             // Compatibility before the worker's first open. Never writes here.
             let legacy = match read_legacy(dir) {
@@ -1762,11 +1766,13 @@ pub(super) fn report(dir: &Path, today: Option<Date>) -> UsageReport {
             }
             return Ok(());
         }
-        let conn = Connection::open_with_flags(
+        let mut conn = Connection::open_with_flags(
             database(dir),
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.busy_timeout(BUSY)?;
+        // One consistent read snapshot for gaps, daily counts and both totals.
+        let conn = conn.transaction()?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version > 3 {
             return Err(rusqlite::Error::InvalidQuery);
@@ -1790,7 +1796,7 @@ pub(super) fn report(dir: &Path, today: Option<Date>) -> UsageReport {
             let mut stmt = conn.prepare(
                 "SELECT day,cli,tokens FROM days WHERE day>=date(?1,?2) AND day<date(?1,?3) ORDER BY day DESC",
             )?;
-            let low = format!("-{} days", today.weekday());
+            let low = format!("-{} days", 51 * 7 + today.weekday());
             let high = format!("+{} days", 7 - today.weekday());
             let rows = stmt.query_map(params![today.iso(), low, high], |r| {
                 Ok((
@@ -1850,10 +1856,16 @@ fn add_day(
 ) -> rusqlite::Result<()> {
     let date = Date::parse(date).ok_or(rusqlite::Error::InvalidQuery)?;
     let total = u64::try_from(total).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    if !matches!(cli, "claude" | "codex") {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     if total == 0 {
         return Ok(());
     }
     report.empty = false;
+    if let (Some(calendar), Some(today)) = (&mut report.calendar, today) {
+        calendar.add(today, date, cli, total);
+    }
     if !today.is_some_and(|today| today.same_week(date)) {
         return Ok(());
     }

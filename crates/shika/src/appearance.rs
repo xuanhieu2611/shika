@@ -200,6 +200,11 @@ pub struct Chrome {
 }
 
 impl Chrome {
+    /// Daily usage: neutral, opaque steps from the solid overlay toward ink.
+    /// Zero is a faint wash; nonzero buckets strengthen without status hues.
+    pub fn usage_intensities(&self) -> [Rgba; 5] {
+        [0.04, 0.18, 0.36, 0.58, 0.82].map(|amount| mix(self.overlay, self.ink_1, amount))
+    }
     /// File-card header wash, composed once into an opaque fill. Using a
     /// translucent wash over the frosted list would add a second alpha layer.
     pub fn diff_file_header(&self) -> Rgba {
@@ -890,6 +895,32 @@ fn set_blur_radius(_: &Window, _: u8) {}
 mod tests {
     use super::*;
     use shika_terminal::ThemeUi;
+
+    #[test]
+    fn usage_intensities_are_opaque_monotonic_in_every_catalog_theme() {
+        for theme in catalog::THEMES {
+            for opacity in [100, 60] {
+                let appearance = Appearance {
+                    opacity,
+                    ..Appearance::default()
+                };
+                let chrome = chrome_for(&appearance, theme, false);
+                let colors = chrome.usage_intensities();
+                let toward_ink = |color: Rgba| {
+                    (color.r - chrome.overlay.r).abs()
+                        + (color.g - chrome.overlay.g).abs()
+                        + (color.b - chrome.overlay.b).abs()
+                };
+                for color in colors {
+                    assert_eq!(color.a, 1.);
+                }
+                for pair in colors.windows(2) {
+                    assert!(toward_ink(pair[0]) < toward_ink(pair[1]), "{}", theme.id);
+                }
+                assert_eq!(colors[4], mix(chrome.overlay, chrome.ink_1, 0.82));
+            }
+        }
+    }
 
     #[test]
     fn sidebar_only_keeps_the_terminal_opaque() {

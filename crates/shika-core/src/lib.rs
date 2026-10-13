@@ -92,7 +92,9 @@ pub use settings::{
     AgentSettings, Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize,
     KeyOverrides, Settings, ThemeMode, ThemeSettings, Translucency,
 };
-pub use usage::{UsageDay, UsageReport, format_tokens};
+pub use usage::{
+    UsageCalendar, UsageCalendarDay, UsageDay, UsageReport, UsageTotals, UsageWeek, format_tokens,
+};
 pub use worktree::normalize_prefix as normalize_branch_prefix;
 pub use worktree::{JournalEntry, KnownBranches};
 
