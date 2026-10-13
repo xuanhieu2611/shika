@@ -45,7 +45,7 @@ Plain text output; add `--json` for one JSON object.
 
 - `shika help` prints this guide.
 - `shika tasks` lists tasks: id, status, CLI, title, branch, diff, time, PR, `by-lead` for yours, and a worker's report beneath it.
-- `shika new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt>` starts a worker and prints its id. Only installed CLIs succeed. Default base is the project's.
+- `shika new --cli <claude|codex|cursor|pi|kiro> [--base <branch>] <prompt>` starts a worker and prints its id. Only installed CLIs succeed. Default base is the project's.
 - `shika status <task>` shows one task and its report. `path=` is the worker's worktree: read it, never edit it.
 - `shika wait [<task>...] [--timeout <seconds>]` blocks until a worker is ready, asking, or exited, and prints which, with reports. No ids means all your workers. Each finish is reported once. Default 100 seconds, most 600.
 - `shika diff <task> [--stat]` prints a worker's changes; `--stat` is one line per file.

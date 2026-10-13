@@ -98,7 +98,7 @@
             <span class="step-mark"><kbd>⌘N</kbd></span>
             <div>
               <h3>Start an agent</h3>
-              <p>Pick Claude Code, Codex, Cursor CLI, or Pi. The list is the CLIs on your login-shell PATH that are turned on in Settings. When none are, Enter opens Settings on Agents. Shika creates a branch and a worktree, then starts that CLI inside it. The picker footer names the base branch this task will start from.</p>
+              <p>Pick Claude Code, Codex, Cursor CLI, Pi, or Kiro CLI. The list is the CLIs on your login-shell PATH that are turned on in Settings. When none are, Enter opens Settings on Agents. Shika creates a branch and a worktree, then starts that CLI inside it. The picker footer names the base branch this task will start from.</p>
             </div>
           </li>
           <li>
@@ -138,8 +138,9 @@
           </li>
         </ol>
         <aside class="note">
-          <p>The presets start Claude Code, Codex, and Cursor CLI with approval bypassed, and Pi with <code>--approve</code>. Agents can run commands with your user account's access. A worktree separates Git edits. Files, credentials, and the network stay reachable. Run agents in a project you trust. Shika asks separately before it runs worktree setup commands. Codex trusts the new worktree for that session. Claude Code may still ask once, the first time it sees that worktree.</p>
+          <p>The presets start Claude Code, Codex, and Cursor CLI with approval bypassed, Pi with <code>--approve</code>, and Kiro with the documented <code>chat --trust-all-tools</code>. Agents can run commands with your user account's access. A worktree separates Git edits. Files, credentials, and the network stay reachable. Run agents in a project you trust. Shika asks separately before it runs worktree setup commands. Codex trusts the new worktree for that session. Claude Code may still ask once, the first time it sees that worktree.</p>
         </aside>
+        <p>Kiro CLI support uses <a href="https://kiro.dev/docs/reference/cli-commands/#kiro-cli-chat">official docs</a> checked 2026-10-13, without an installed binary or a real <code>--help</code> check. Folder trust and live behavior remain unverified. Its branch stays prompt-named; activity uses generic quiet/startup/exit fallback without blocker detection, and token usage is not collected.</p>
       </section>
 
       <section class="guide-section" id="work">

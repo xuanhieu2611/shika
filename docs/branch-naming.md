@@ -10,7 +10,7 @@ For manual **Rename task**, see [task-names.md](task-names.md): it changes the c
 
 1. **New** creates `<repo>/.worktrees/shika-draft-<id>` on branch `shika-draft-<id>` and starts the CLI there.
 2. **First Enter.** The first line typed in the agent terminal names the card and renames the branch to a slug of that line, for example `okay-we-need-a-way-to-blur`.
-3. **About a second later.** The CLI's own session title replaces both, once: the card shows "Shika background opacity and blur" and the branch becomes `background-opacity-and-blur`.
+3. **About a second later, when a verified title source exists.** The CLI's own session title replaces both, once: the card shows "Shika background opacity and blur" and the branch becomes `background-opacity-and-blur`.
 4. **The author** commits and pushes in the card's shell as usual. `git push -u origin HEAD` pushes the clean name without typing it.
 
 The worktree **folder** keeps its `shika-draft-<id>` name. Only the branch is renamed. The folder is local and never reaches git history or the remote.
@@ -131,6 +131,10 @@ These are **private files, not a public API**. They were found by inspecting rea
 - One `<timestamp>_<session-id>.jsonl` per session. The name is a line like `{"type":"session_info","name":"Opacity and blur"}`.
 - Shika reads the newest `.jsonl` (by modified time) that has a `session_info` name, and takes the last one.
 
+### Kiro CLI
+
+Supported since 2026-10-13 with docs-only launch arguments, not verified against a real `--help` or installed binary. No private session-title format has been verified, so `CliHome::read("kiro", ...)` returns None without reading Kiro files. The first prompt names the branch and card; that prompt name stays unless the author manually renames the task or externally renames the branch. There is no automatic Kiro title refinement. Activity uses the generic quiet/startup/exit fallback, and Kiro usage is not collected.
+
 ### Paths
 
 The CLIs record the resolved working directory, so under `/tmp` they record `/private/tmp/...`. `cwd_forms` tries the worktree path as Shika has it and its canonical form. Codex matches `threads.cwd` against those forms. Pi encodes each form into its session folder name.
@@ -182,7 +186,7 @@ If these find nothing, check whether the CLI moved its files, then update `cli_t
 
 ## Tests
 
-- `cli_title.rs`: sample files for each CLI, no title yet, broken JSON or a broken database, wrong `cwd`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, Pi's session and agent directories, a symlinked worktree path, an unknown CLI.
+- `cli_title.rs`: sample files for verified title sources, no title yet, broken JSON or a broken database, wrong `cwd`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, Pi's session and agent directories, a symlinked worktree path, Kiro with no title source, an unknown CLI.
 - `worktree.rs`: slugs and word-boundary cuts, project-name removal, prefix cleanup checked against `git check-ref-format`, renames that skip local and remote names, `is_published`.
 - `lib.rs`: the full flow on real git repositories: prompt rename, then CLI title rename, once; journal kept in step; the prefix; a branch pushed without `-u` keeps its name; a switched worktree keeps its branch.
 - `model.rs`: `TitleWatch` timing (one check at a time, gives up), and Option+Backspace in `PromptCapture`, using the real typing that produced a doubled branch name.
@@ -193,7 +197,7 @@ Tests use a scratch `CliHome::at(...)` and never read the real `~/.claude`, `~/.
 
 ### Adding a CLI
 
-1. Find where the CLI stores its session title, with real data from the installed version. Do not guess a format.
+1. Find where the CLI stores its session title, with real data from the installed version. Do not guess a format. A launch preset can ship without a title reader, as Kiro does; return None and keep the prompt name until a source is verified.
 2. Add a reader to `CliHome` in `cli_title.rs` and match its preset id in `CliHome::read`. Keep it read-only and return None on anything unexpected.
 3. Add tests with sample files: title present, not yet named, broken file, a session for another folder.
 4. Record the location and the CLI version checked in this file.

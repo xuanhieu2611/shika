@@ -25,7 +25,7 @@ Before allocation, author New may offer [first-use setup review](worktree-prepar
 
    `--no-track` is required. Starting from `origin/dev` would otherwise make `origin/dev` the upstream, so a fresh card would look pushed and a plain `git push` would target `dev`.
 3. Journal ownership before optional approved [copy/setup](worktree-preparation.md#launch-lifecycle-and-lock-boundaries). If preparation is configured, it must finish successfully before the CLI starts; without configuration, no setup is inferred.
-4. Start the CLI in that folder with the login-shell `PATH`, `PWD` set to the worktree, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, and `GIT_OBJECT_DIRECTORY` removed. The launch arguments are in [AGENTS.md](../AGENTS.md#clis-and-launch-arguments).
+4. Start the CLI in that folder with the login-shell `PATH`, `PWD` set to the worktree, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, and `GIT_OBJECT_DIRECTORY` removed. The launch arguments are in [AGENTS.md](../AGENTS.md#clis-and-launch-arguments). Preset order is Claude Code, Codex, Cursor CLI, Pi, Kiro CLI in New, Switch agent, and Settings > Agents. Kiro uses the same login-shell PATH discovery and persisted Off/On choice; a missing choice defaults to On, and a missing binary is omitted from New.
 
 Shika creates the worktree. Never pass a CLI's own worktree flag, such as Cursor's or Codex's `--worktree`.
 
@@ -39,6 +39,8 @@ A fresh worktree is a folder the CLI has never seen, so some CLIs stop on a trus
 | Cursor CLI | 2026.10.01 | none | `--trust` is already passed |
 | Pi | 1.1.0 | none (a fresh repository has no project resources to approve) | `--approve` is already passed |
 | Claude Code | 2.1.296 | "Is this a project you created or one you trust?" | none. `--help` documents no interactive trust flag; only `-p` skips it. Shika passes nothing, and the dialog stays. |
+
+Kiro CLI is supported but was not installed or run for verification. Its [official command reference](https://kiro.dev/docs/reference/cli-commands/#kiro-cli-chat), checked 2026-10-13, documents `kiro-cli chat [OPTIONS] [INPUT]` and `--trust-all-tools` for tool use without confirmation. Shika launches `kiro-cli chat --trust-all-tools`, appending any launch prompt as the final argument. These args were NOT verified against a real `--help`; first-run folder trust and interactive behavior remain unverified, and no folder-trust flag is added. Kiro uses generic quiet/startup/exit activity fallback, keeps prompt-named branches, and has no usage collection. Verify with a real binary using the pending [Kiro checks](../MANUAL_CHECKS.md#kiro-cli-preset-2026-10-13).
 
 Codex notes. The override is a per-process config layer, so `~/.codex/config.toml` is never written (checked before and after every run). The dotted form `-c 'projects."<path>".trust_level="trusted"'` is silently ignored by 0.161.0; the inline table is required. Trusting the worktree path alone is enough, so the repository root is not trusted. The path is resolved with `canonicalize` first because Codex compares it with its working directory, and it is escaped as a TOML basic string. The arguments are built by `agents::launch_flags` for every Codex launch: author tasks, Lead workers, and the Lead. The prompt stays the last argument. Recheck the dialog and `--help` before changing this, because the `-c` key shape is not a documented contract.
 

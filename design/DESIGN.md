@@ -1,6 +1,6 @@
 # Shika design system
 
-Shika is a keyboard-first Mac app for running a few coding agents at once. It is named for Shikamaru: the one who keeps track of everyone on the field while you give directions. Shika creates a git worktree per task, starts the CLI the user already uses (Claude Code, Codex, Cursor CLI, Pi) in a real PTY, and notifies them when an agent needs attention or finishes a turn. Closing the task removes its worktree after the safe-close checks. A push keeps the task open. Kiro is planned.
+Shika is a keyboard-first Mac app for running a few coding agents at once. It is named for Shikamaru: the one who keeps track of everyone on the field while you give directions. Shika creates a git worktree per task, starts the CLI the user already uses (Claude Code, Codex, Cursor CLI, Pi, Kiro CLI) in a real PTY, and notifies them when an agent needs attention or finishes a turn. Closing the task removes its worktree after the safe-close checks. A push keeps the task open. Kiro uses generic activity fallback and prompt names until real-provider signals and session-title storage are verified.
 
 The user is a developer who does not watch agents work. They start a task, go to the browser, and come back on a notification. The UI is built around that: a wide column for tracking agents, a smaller terminal for the moments they need to read or answer, and, only when asked for, a read-only Changes panel for a quick look at what a turn changed.
 
@@ -44,7 +44,7 @@ Shika talks like a terse colleague. It reports facts and names consequences. It 
 - **Confirm dialogs ask a question about the specific task**, then list the facts: "Close “Fix flaky resize test”?" / "The worktree has 2 uncommitted files: src/cli.rs, src/layout.rs." / "This stops the session and force-removes .worktrees/fix-flaky-resize-test."
 - **Branch-switch close** uses the existing close dialog shell and tokens: "Close “{task}” after branch switch?", recorded/current branch facts in mono, publication and branch-preservation facts, and an active-agent warning when applicable. Cancel `esc` and the primary Close task `↵` are the only choices. Unsafe recovery shows an error instead of offering destructive actions. Both local branches stay; no ownership transfer. See `docs/branch-switch-close.md`.
 - **Toasts are past tense, one sentence:** "Pushed fix-flaky-resize-test. Card and worktree removed."
-- **Errors state the cause plainly:** "kiro not found on PATH". No "Oops".
+- **Errors state the cause plainly:** "kiro-cli not found on PATH". No "Oops".
 - **Use real developer nouns:** branch, worktree, PATH, push. Branch names and paths are always in mono.
 - **Key hints are lowercase verbs:** move, new, terminal, shell, close.
 - **No emoji. No exclamation marks. No marketing copy inside the app.**

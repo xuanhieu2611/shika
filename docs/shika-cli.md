@@ -91,7 +91,7 @@ $ shika status 18f3a9c2b7e0aa12
 
 Exactly one id. Refuses `No task <id> in this project.` for an unknown id, an id from another project, and the Lead's own id. JSON: `{"type":"status","task":{...}}`.
 
-### `shika new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>`
+### `shika new --cli <claude|codex|cursor|pi|kiro> [--base <branch>] <prompt...>`
 
 Starts a worker card, exactly as the author's New does: a fresh `shika-draft-<id>` worktree from the project's base (or `--base`), the preset's launch flags, the prompt as the CLI's positional argument, preparation if configured and approved, branch naming from the prompt and then the CLI's title. See [tasks-and-worktrees.md](tasks-and-worktrees.md).
 
@@ -102,7 +102,7 @@ started 18f3a9c2b7d4e601 working "New Codex" cli=codex branch=shika-draft-18f3a9
 
 The reply is built the moment the session exists. Its title is the one the card shows once the launch prompt is seeded (the first nonblank prompt line, whitespace collapsed, capped at 80 characters), not the `New <CLI name>` placeholder. The branch is whatever it is at that moment, usually still the draft name: the first-prompt and CLI-title renames follow within a second or so, so run `shika tasks` to see the settled branch. The id is the stable handle. JSON: `{"type":"started","task":{...}}`.
 
-Parsing (`parse_new`): flags come first. The first plain word starts the prompt, and everything from there on is the prompt, even words that look like flags (`new --cli claude explain --json output` has the prompt `explain --json output`). `--` also starts the prompt. The prompt words are joined with single spaces, so quote one argument to keep newlines. `--cli` is required and must be one of `claude`, `codex`, `cursor`, `pi` (`CLI_IDS`). An empty prompt is a usage error. A prompt that starts with `-` passes the parser after `--` but is refused by core (below).
+Parsing (`parse_new`): flags come first. The first plain word starts the prompt, and everything from there on is the prompt, even words that look like flags (`new --cli claude explain --json output` has the prompt `explain --json output`). `--` also starts the prompt. The prompt words are joined with single spaces, so quote one argument to keep newlines. `--cli` is required and must be one of `claude`, `codex`, `cursor`, `pi`, `kiro` (`CLI_IDS`). An empty prompt is a usage error. A prompt that starts with `-` passes the parser after `--` but is refused by core (below).
 
 The reply arrives after the CLI is running. When the project has an approved setup configuration, that includes the whole setup, and the card shows its progress.
 
@@ -342,7 +342,7 @@ Usage block (`USAGE`):
 usage: shika [--json] <command>
   help
   tasks
-  new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>
+  new --cli <claude|codex|cursor|pi|kiro> [--base <branch>] <prompt...>
   status <task>
   wait [<task>...] [--timeout <seconds>]
   read <task> [--lines <n>]

@@ -628,6 +628,7 @@ mod tests {
         let settings = Settings::default();
         assert!(settings.agents.enabled("claude"));
         assert!(settings.agents.enabled("pi"));
+        assert!(settings.agents.enabled("kiro"));
 
         let path = temp_file("agents");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -649,13 +650,19 @@ mod tests {
 
         let mut settings = Settings::default();
         settings.agents.set_enabled("cursor", false);
+        settings.agents.set_enabled("kiro", false);
         settings.agents.set_enabled("", false);
         let file = SettingsFile::open(path.clone());
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"cursor\": false"));
+        assert!(text.contains("\"kiro\": false"));
         assert!(!text.contains("\"claude\""));
         assert_eq!(file.load().unwrap().agents, settings.agents);
+        settings.agents.set_enabled("kiro", true);
+        file.save(&settings).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("\"kiro\""));
+        assert!(file.load().unwrap().agents.enabled("kiro"));
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

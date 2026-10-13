@@ -2090,6 +2090,42 @@ mod tests {
     }
 
     #[test]
+    fn kiro_launches_with_documented_args_and_keeps_the_prompt_branch() {
+        let scratch = Scratch::new();
+        let cli = fake_cli(&scratch.path);
+        let env = PathEnv::from_lookup("/usr/bin:/bin".into(), None, &[("kiro-cli", Some(cli))]);
+        let mut core = Core::open_with(scratch.path.join("data"), env).unwrap();
+        core.cli_home = Some(CliHome::at(scratch.path.join("cli-home")));
+        let project = core.add_project(&scratch.repo("demo")).unwrap().project;
+        let (sink, rx) = channel_sink();
+        let session = core
+            .create_session(
+                &project.id,
+                "kiro",
+                PtySize::default(),
+                sink,
+                LaunchOptions {
+                    prompt: Some("Fix the login bug".into()),
+                    ..LaunchOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(session.title, "New Kiro CLI");
+        let output = collect_until(&rx, "cwd:", Duration::from_secs(5));
+        assert!(
+            output.contains("args:chat --trust-all-tools Fix the login bug"),
+            "{output}"
+        );
+        let named = core
+            .session_rename_from_prompt(&session.id, "Fix the login bug")
+            .unwrap();
+        assert_eq!(named.branch, "fix-the-login-bug");
+        assert_eq!(core.session_apply_cli_title(&session.id).unwrap(), None);
+        assert_eq!(core.session(&session.id).unwrap().branch, named.branch);
+        core.session_discard(&session.id).unwrap();
+    }
+
+    #[test]
     fn a_missing_cli_or_project_creates_nothing() {
         let scratch = Scratch::new();
         let repo = scratch.repo("demo");
@@ -2113,6 +2149,18 @@ mod tests {
             core.create_session(
                 &added.project.id,
                 "kiro",
+                PtySize::default(),
+                sink,
+                LaunchOptions::default()
+            )
+            .unwrap_err(),
+            Error::CliNotFound("Kiro CLI".into())
+        );
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.create_session(
+                &added.project.id,
+                "unknown",
                 PtySize::default(),
                 sink,
                 LaunchOptions::default()
