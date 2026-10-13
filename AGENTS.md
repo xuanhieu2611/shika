@@ -142,3 +142,5 @@ Never test against normal app data. Use disposable git repositories and local ba
 Translucency uses GPUI's `Transparent` window background, not `Blurred`, because GPUI's blur has one fixed strength. The blur radius is set with the private `CGSSetWindowBackgroundBlurRadius` in `crates/shika/src/appearance.rs`, as Ghostty, WezTerm, and winit do. The terminal paints its default background with the configured alpha; its parent must not paint a second translucent fill under it.
 
 No em dashes in code, docs, or visible text.
+
+Card exits own their leading gap inside a nonnegative-height row. Do not collapse negative margins in the project flex column: GPUI's intrinsic group height can collapse too, squeezing surviving cards and jumping later headers. Card paint/status keys use the agent view's identity, never its vector index. Close retains manual sidebar scrolling.

@@ -3333,6 +3333,7 @@ impl Shika {
                     .cards
                     .iter()
                     .position(|c| c.session.as_ref().is_some_and(|s| s.id == task_id));
+                let closed = result.is_ok();
                 match result {
                     Ok(()) => {
                         this.lead_dialog_succeeded(&task_id, control::close_outcome(action).into());
@@ -3359,6 +3360,11 @@ impl Shika {
                     }
                 };
                 this.settle_lead_dialog(window, cx);
+                if closed {
+                    // Close changes selection in place. Revealing it again
+                    // would undo manual scrolling during the row's exit.
+                    this.last_revealed_selection = this.selection.clone();
+                }
                 cx.notify();
             });
         })
@@ -5148,7 +5154,10 @@ impl Shika {
             .iter()
             .filter(|d| d.card.project == id)
             .collect::<Vec<_>>();
-        let mut column = div().flex().flex_col().gap(px(CARD_GAP)).child(header);
+        // Each card owns its leading gap. Collapsing a negative margin in a
+        // gapped flex column corrupts GPUI's intrinsic group height, squeezing
+        // surviving cards and moving other project headers out of place.
+        let mut column = div().flex_none().flex().flex_col().child(header);
         let shown = indices
             .iter()
             .map(|&at| self.cards[at].agent.view.entity_id())
@@ -5159,8 +5168,11 @@ impl Shika {
             for leaving in departing.iter().filter(|d| d.before == Some(view)) {
                 column = column.child(self.departing_view(leaving, chrome, cx));
             }
-            let face = self.card_view(card, Some(at), chrome, cards_focused, reveal_selection, cx);
-            column = column.child(if card.closing {
+            let face = self
+                .card_view(card, Some(at), chrome, cards_focused, reveal_selection, cx)
+                .w_full()
+                .h(px(CARD_HEIGHT));
+            let face = if card.closing {
                 face.with_animation(
                     SharedString::from(format!("card-closing-{view}")),
                     gpui::Animation::new(model::CLOSING_FADE).with_easing(model::ease),
@@ -5169,7 +5181,8 @@ impl Shika {
                 .into_any_element()
             } else {
                 face.into_any_element()
-            });
+            };
+            column = column.child(card_row(0.).child(face));
         }
         // Cards whose follower is gone too leave from the end of the group.
         for leaving in departing
@@ -5201,11 +5214,7 @@ impl Shika {
             .card_view(&leaving.card, None, chrome, false, false, cx)
             .size_full();
         let exit = || gpui::Animation::new(model::EXIT);
-        div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
+        card_row(0.)
             .overflow_hidden()
             .child(div().child(face).with_animation(
                 SharedString::from(format!("{key}-shrink")),
@@ -5214,7 +5223,7 @@ impl Shika {
                     let (shrink, _) = model::card_exit(t);
                     let scale = 1. - (1. - EXIT_SCALE) * shrink;
                     d.w(gpui::relative(scale))
-                        .h(gpui::relative(scale))
+                        .h(px(CARD_HEIGHT * scale))
                         .opacity(from * (1. - shrink))
                 },
             ))
@@ -5223,8 +5232,8 @@ impl Shika {
                 exit(),
                 |d, t| {
                     let (_, collapse) = model::card_exit(t);
-                    d.h(px(CARD_HEIGHT * (1. - collapse)))
-                        .mb(px(-CARD_GAP * collapse))
+                    let (height, gap) = card_row_geometry(collapse);
+                    d.h(px(height)).pt(px(gap))
                 },
             )
     }
@@ -5245,10 +5254,7 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let selected = at.is_some() && self.selected_card() == at;
-        let key: SharedString = match at {
-            Some(i) => i.to_string().into(),
-            None => format!("departing-{}", card.agent.view.entity_id()).into(),
-        };
+        let key = card_key(card.agent.view.entity_id());
         let colors = chrome.status(card.status);
         let separator = || div().flex_none().text_color(chrome.ink_5).child("·");
         let hints: &[(&str, &str)] = if card.closing {
@@ -7566,6 +7572,32 @@ const CLOSING_TERMINAL_OPACITY: f32 = 0.06;
 const SIGNAL_SLOT: f32 = 14.;
 /// A closed card shrinks toward its center to this size as it fades out.
 const EXIT_SCALE: f32 = 0.94;
+
+/// The card and its leading gap occupy one nonnegative layout slot. At the
+/// end of the exit there is nothing left to remove, including on an otherwise
+/// empty project. The face's shrink is independent of this slot's collapse.
+fn card_row_geometry(collapse: f32) -> (f32, f32) {
+    let remaining = 1. - collapse.clamp(0., 1.);
+    ((CARD_HEIGHT + CARD_GAP) * remaining, CARD_GAP * remaining)
+}
+
+fn card_row(collapse: f32) -> gpui::Div {
+    let (height, gap) = card_row_geometry(collapse);
+    div()
+        .w_full()
+        .h(px(height))
+        .pt(px(gap))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+}
+
+/// A vector index belongs to a position, not a card. Keep the face and its
+/// status animation keyed to the same view when earlier cards leave.
+fn card_key(view: gpui::EntityId) -> SharedString {
+    view.to_string().into()
+}
 /// The narrowest column that fits the footer's key hints, without and with
 /// the Leftover worktrees button.
 const FOOTER_HINTS_FIT: f32 = 420.;
@@ -8611,6 +8643,48 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+
+    #[test]
+    fn card_keys_survive_closing_first_middle_last_and_other_project_cards() {
+        let views = (1..=5).map(gpui::EntityId::from).collect::<Vec<_>>();
+        let keys = views.iter().copied().map(card_key).collect::<Vec<_>>();
+        for closed in 0..views.len() {
+            let remaining = views
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(index, _)| *index != closed);
+            for (original_index, view) in remaining {
+                assert_eq!(card_key(view), keys[original_index]);
+                assert_ne!(card_key(view), keys[closed]);
+            }
+            // The departing face keeps that card's identity, too.
+            assert_eq!(card_key(views[closed]), keys[closed]);
+        }
+    }
+
+    #[test]
+    fn exiting_row_keeps_its_gap_until_collapse_and_leaves_no_final_jump() {
+        let full = CARD_HEIGHT + CARD_GAP;
+        let shrinking = model::EXIT_SHRINK.as_secs_f32() / model::EXIT.as_secs_f32();
+        assert_eq!(card_row_geometry(model::card_exit(0.).1), (full, CARD_GAP));
+        assert_eq!(
+            card_row_geometry(model::card_exit(shrinking).1),
+            (full, CARD_GAP)
+        );
+        let mut previous = full;
+        for step in 0..=100 {
+            let (_, collapse) = model::card_exit(step as f32 / 100.);
+            let (height, gap) = card_row_geometry(collapse);
+            assert!(height >= 0. && height <= previous);
+            assert!(gap >= 0. && gap <= height);
+            assert!((height / full - gap / CARD_GAP).abs() < 1e-6);
+            previous = height;
+        }
+        // Removing this slot does not move a follower or a later project
+        // header, and an only-card project returns to its header's height.
+        assert_eq!(card_row_geometry(model::card_exit(1.).1), (0., 0.));
+    }
 
     #[test]
     fn settings_projects_is_a_separate_section_and_navigation_wraps() {
