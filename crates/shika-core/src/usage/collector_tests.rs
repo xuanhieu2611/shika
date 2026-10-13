@@ -674,12 +674,110 @@ fn reports_are_read_only_and_week_totals_match_saved_days_across_year_boundary()
     }
     let before = fs::read(database(&scratch.data())).unwrap();
     let shown = report(&scratch.data(), Some(Date::parse("2026-01-01").unwrap()));
-    assert_eq!(shown.claude, 12);
+    assert_eq!(shown.claude, 9);
     assert_eq!(shown.codex, 7);
-    assert_eq!(shown.days.len(), 3);
-    assert_eq!(shown.days[0].label, "Sunday, Jan 4");
-    assert_eq!(shown.days[2].label, "Monday, Dec 29");
+    assert_eq!(shown.days.len(), 2);
+    assert_eq!(shown.days[0].label, "Thursday, Jan 1");
+    assert_eq!(shown.days[1].label, "Monday, Dec 29");
     assert_eq!(fs::read(database(&scratch.data())).unwrap(), before);
+}
+
+#[test]
+fn dashboard_reads_bounded_indexed_days_without_receipts_and_preserves_gaps() {
+    let scratch = Scratch::new();
+    let conn = open_store(&scratch.data()).unwrap();
+    let today = Date::parse("2026-10-13").unwrap();
+    let first = Date::parse(&UsageCalendar::new(today).unwrap().start).unwrap();
+    for (date, cli, total) in [
+        (first.offset(-1).unwrap(), "claude", 999),
+        (first, "claude", 11),
+        (today.offset(-1).unwrap(), "claude", 20),
+        (today, "claude", 5),
+        (today, "codex", 7),
+        (today.offset(1).unwrap(), "codex", 888),
+    ] {
+        conn.execute(
+            "INSERT INTO days VALUES (?1,?2,?3)",
+            params![date.iso(), cli, total],
+        )
+        .unwrap();
+    }
+    conn.execute("INSERT INTO issues VALUES ('test')", [])
+        .unwrap();
+    // A dashboard needs neither receipt history nor file checkpoints.
+    conn.execute_batch("DROP TABLE receipts; DROP TABLE files;")
+        .unwrap();
+    let before = fs::read(database(&scratch.data())).unwrap();
+    let shown = report(&scratch.data(), Some(today));
+    assert!(!shown.unreadable);
+    assert!(shown.pending);
+    let calendar = shown.calendar.unwrap();
+    assert_eq!(shown.claude, calendar.this_week.claude);
+    assert_eq!(shown.codex, calendar.this_week.codex);
+    assert_eq!(shown.days.len(), 2);
+    assert_eq!(
+        calendar.totals,
+        super::super::UsageTotals {
+            claude: 36,
+            codex: 7
+        }
+    );
+    assert_eq!(
+        calendar.this_week,
+        super::super::UsageTotals {
+            claude: 25,
+            codex: 7
+        }
+    );
+    assert_eq!(
+        calendar.weeks[51].days[1]
+            .as_ref()
+            .unwrap()
+            .tokens
+            .combined(),
+        12
+    );
+    assert_eq!(fs::read(database(&scratch.data())).unwrap(), before);
+    let plan: String = conn.query_row(
+        "EXPLAIN QUERY PLAN SELECT day,cli,tokens FROM days WHERE day>=date(?1,?2) AND day<date(?1,?3) ORDER BY day DESC",
+        params![today.iso(), "-358 days", "+1 day"], |row| row.get(3),
+    ).unwrap();
+    assert!(plan.contains("SEARCH days USING INDEX"), "{plan}");
+}
+
+#[test]
+fn legacy_dashboard_matches_imported_calendar_and_retains_zero_days() {
+    let scratch = Scratch::new();
+    fs::write(
+        scratch.data().join("usage.json"),
+        json!({
+            "days": {
+                "2026-01-01": {"claude": 100, "codex": 30},
+                "2026-10-13": {"claude": 10, "codex": 20},
+                "2026-10-14": {"claude": 900, "codex": 800}
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let before = report(&scratch.data(), Some(Date::parse("2026-10-13").unwrap()));
+    assert!(!before.unreadable);
+    let _ = open_store(&scratch.data()).unwrap();
+    let after = report(&scratch.data(), Some(Date::parse("2026-10-13").unwrap()));
+    assert_eq!(before, after);
+    assert_eq!(after.claude, 10);
+    assert_eq!(after.codex, 20);
+    assert_eq!(after.days.len(), 1);
+    let calendar = after.calendar.unwrap();
+    assert_eq!(calendar.totals.combined(), 160);
+    assert_eq!(
+        calendar.weeks[51].days[0]
+            .as_ref()
+            .unwrap()
+            .tokens
+            .combined(),
+        0
+    );
 }
 
 #[test]

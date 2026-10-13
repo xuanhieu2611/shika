@@ -13,9 +13,107 @@ pub struct UsageReport {
     /// A source failed or still has an unfinished record. Totals are retained.
     pub pending: bool,
     pub empty: bool,
+    /// Compatibility weekly totals: local Monday through the snapshot's today.
     pub claude: u64,
     pub codex: u64,
+    /// Compatibility nonzero days in that same week-through-today range.
     pub days: Vec<UsageDay>,
+    /// Monday-first, 52-column calendar ending on the snapshot's local today.
+    pub calendar: Option<UsageCalendar>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UsageTotals {
+    pub claude: u64,
+    pub codex: u64,
+}
+
+impl UsageTotals {
+    pub fn combined(self) -> u64 {
+        self.claude.saturating_add(self.codex)
+    }
+
+    fn add(&mut self, cli: &str, total: u64) {
+        let count = if cli == "claude" {
+            &mut self.claude
+        } else {
+            &mut self.codex
+        };
+        *count = count.saturating_add(total);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageCalendarDay {
+    pub date: String,
+    pub label: String,
+    pub tokens: UsageTotals,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageWeek {
+    /// Month label at its first Monday; the first partial month is unlabeled.
+    pub month: Option<String>,
+    /// Monday through Sunday. Future days in the last column are blank.
+    pub days: [Option<UsageCalendarDay>; 7],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageCalendar {
+    pub start: String,
+    pub end: String,
+    pub this_week: UsageTotals,
+    pub totals: UsageTotals,
+    pub weeks: Vec<UsageWeek>,
+}
+
+impl UsageCalendar {
+    fn new(today: Date) -> Option<Self> {
+        let start = today.offset(-(51 * 7 + today.weekday() as i64))?;
+        let weeks = (0..52)
+            .map(|week| {
+                let monday = start.offset(week * 7)?;
+                Some(UsageWeek {
+                    month: (monday.day <= 7).then(|| monday.month_label().to_string()),
+                    days: std::array::from_fn(|weekday| {
+                        let date = monday.offset(weekday as i64)?;
+                        (date <= today).then(|| UsageCalendarDay {
+                            date: date.iso(),
+                            label: format!("{}, {}", date.label(), date.year),
+                            tokens: UsageTotals::default(),
+                        })
+                    }),
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            start: start.iso(),
+            end: today.iso(),
+            this_week: UsageTotals::default(),
+            totals: UsageTotals::default(),
+            weeks,
+        })
+    }
+
+    fn add(&mut self, today: Date, date: Date, cli: &str, total: u64) {
+        let start = today.week_start() - 51 * 7;
+        let offset = date.epoch_days() - start;
+        if offset < 0 || date > today {
+            return;
+        }
+        let Some(day) = self
+            .weeks
+            .get_mut(offset as usize / 7)
+            .and_then(|week| week.days[offset as usize % 7].as_mut())
+        else {
+            return;
+        };
+        day.tokens.add(cli, total);
+        self.totals.add(cli, total);
+        if date.same_week(today) {
+            self.this_week.add(cli, total);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,15 +198,34 @@ impl Date {
             "Saturday",
             "Sunday",
         ];
-        const MONTHS: [&str; 12] = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ];
         format!(
             "{}, {} {}",
             WEEKDAYS[self.weekday()],
-            MONTHS[usize::from(self.month) - 1],
+            self.month_label(),
             self.day
         )
+    }
+
+    fn month_label(self) -> &'static str {
+        const MONTHS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        MONTHS[usize::from(self.month) - 1]
+    }
+
+    /// Calendar arithmetic, independent of 23/25-hour local DST days.
+    fn offset(self, days: i64) -> Option<Self> {
+        let z = self.epoch_days().checked_add(days)?.checked_add(719468)?;
+        let era = z.div_euclid(146097);
+        let doe = z.rem_euclid(146097);
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let mut year = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = mp + if mp < 10 { 3 } else { -9 };
+        year += i64::from(month <= 2);
+        Self::from_parts(i32::try_from(year).ok()?, month as u32, day as u32)
     }
 
     fn epoch_days(self) -> i64 {
@@ -214,6 +331,95 @@ pub(crate) fn report(data_dir: &Path, today: Option<Date>) -> UsageReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calendar_grid_is_monday_first_contiguous_and_ends_today() {
+        for text in [
+            "2026-10-12",
+            "2026-10-13",
+            "2026-10-18",
+            "2024-03-03",
+            "2026-01-01",
+        ] {
+            let today = Date::parse(text).unwrap();
+            let calendar = UsageCalendar::new(today).unwrap();
+            assert_eq!(calendar.weeks.len(), 52);
+            assert_eq!(calendar.end, text);
+            let start = Date::parse(&calendar.start).unwrap();
+            assert_eq!(start.weekday(), 0);
+            let mut count = 0;
+            for (week_index, week) in calendar.weeks.iter().enumerate() {
+                let monday = start.offset(week_index as i64 * 7).unwrap();
+                assert_eq!(
+                    week.month.as_deref(),
+                    (monday.day <= 7).then(|| monday.month_label())
+                );
+                for (weekday, day) in week.days.iter().enumerate() {
+                    let expected = monday.offset(weekday as i64).unwrap();
+                    if expected <= today {
+                        let day = day.as_ref().unwrap();
+                        assert_eq!(day.date, expected.iso());
+                        assert_eq!(expected.weekday(), weekday);
+                        count += 1;
+                    } else {
+                        assert!(day.is_none());
+                    }
+                }
+            }
+            assert_eq!(count, 51 * 7 + today.weekday() + 1);
+        }
+        let leap = Date::parse("2024-02-28").unwrap();
+        assert_eq!(leap.offset(1).unwrap().iso(), "2024-02-29");
+        assert_eq!(leap.offset(2).unwrap().iso(), "2024-03-01");
+        assert_eq!(leap.offset(-365).unwrap().offset(365), Some(leap));
+    }
+
+    #[test]
+    fn calendar_provider_totals_exclude_out_of_range_and_future_dates() {
+        let today = Date::parse("2026-10-13").unwrap();
+        let mut calendar = UsageCalendar::new(today).unwrap();
+        let first = Date::parse(&calendar.start).unwrap();
+        for (date, cli, amount) in [
+            (first.offset(-1).unwrap(), "claude", 900),
+            (first, "claude", 100),
+            (today.offset(-1).unwrap(), "claude", 20),
+            (today, "codex", 30),
+            (today.offset(1).unwrap(), "codex", 800),
+        ] {
+            calendar.add(today, date, cli, amount);
+        }
+        assert_eq!(
+            calendar.totals,
+            UsageTotals {
+                claude: 120,
+                codex: 30
+            }
+        );
+        assert_eq!(
+            calendar.this_week,
+            UsageTotals {
+                claude: 20,
+                codex: 30
+            }
+        );
+        assert_eq!(calendar.totals.combined(), 150);
+        assert_eq!(
+            calendar.weeks[0].days[0].as_ref().unwrap().tokens.claude,
+            100
+        );
+        assert_eq!(
+            calendar.weeks[51].days[1].as_ref().unwrap().tokens.codex,
+            30
+        );
+        assert_eq!(
+            UsageTotals {
+                claude: u64::MAX,
+                codex: 10
+            }
+            .combined(),
+            u64::MAX
+        );
+    }
 
     #[test]
     fn calendar_week_and_decimal_formatting() {

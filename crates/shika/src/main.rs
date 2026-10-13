@@ -10,6 +10,7 @@ mod name_input;
 mod notifications;
 mod shortcuts;
 mod updates;
+mod usage_dashboard;
 mod worktree_setup;
 
 use appearance::{Chrome, with_alpha};
@@ -38,6 +39,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use usage_dashboard::UsageFilter;
 
 gpui::actions!(
     shika,
@@ -632,6 +634,8 @@ enum Overlay {
     Usage {
         request: Arc<()>,
         report: Option<UsageReport>,
+        filter: UsageFilter,
+        grid: Option<Entity<usage_dashboard::UsageGrid>>,
     },
 }
 impl Overlay {
@@ -3489,6 +3493,8 @@ impl Shika {
         self.overlay = Some(Overlay::Usage {
             request: request.clone(),
             report: None,
+            filter: UsageFilter::All,
+            grid: None,
         });
         window.focus(&self.focus, cx);
         cx.notify();
@@ -3501,13 +3507,21 @@ impl Shika {
                     core.token_usage()
                 })
                 .await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
+                let chrome = this.chrome(window);
                 if let Some(Overlay::Usage {
                     request: current,
                     report: snapshot,
+                    filter,
+                    grid,
                 }) = &mut this.overlay
                     && Arc::ptr_eq(current, &request)
                 {
+                    *grid = report.calendar.as_ref().map(|calendar| {
+                        cx.new(|_| {
+                            usage_dashboard::UsageGrid::new(calendar.clone(), *filter, &chrome)
+                        })
+                    });
                     *snapshot = Some(report);
                     cx.notify();
                 }
@@ -3781,8 +3795,16 @@ impl Shika {
             self.reduce_transparency,
         )
     }
-    /// Give every live terminal view the current theme's palette and alpha.
+    /// Give every live terminal view the current theme's palette and alpha,
+    /// and invalidate the open dashboard's cached calendar before rendering.
     fn push_terminal_theme(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(Overlay::Usage {
+            grid: Some(grid), ..
+        }) = &self.overlay
+        {
+            let chrome = self.chrome(window);
+            grid.update(cx, |grid, cx| grid.set_chrome(&chrome, cx));
+        }
         let opacity = self.terminal_opacity();
         let palette = self.terminal_palette(window);
         for card in &self.cards {
@@ -4267,11 +4289,16 @@ impl Shika {
                         _ => {}
                     }
                 }
-                Some(Overlay::Usage { .. }) => {
-                    if key == "escape" {
-                        self.cancel_overlay(window, cx);
+                Some(Overlay::Usage { filter, grid, .. }) => match key {
+                    "h" | "left" | "l" | "right" => {
+                        *filter = filter.step(if matches!(key, "h" | "left") { -1 } else { 1 });
+                        if let Some(grid) = grid {
+                            grid.update(cx, |grid, cx| grid.set_filter(*filter, cx));
+                        }
                     }
-                }
+                    "escape" => self.cancel_overlay(window, cx),
+                    _ => {}
+                },
                 // Typed into above, before the modifier check.
                 Some(Overlay::WorktreeSetup(_))
                 | Some(Overlay::Base { .. })
@@ -6856,15 +6883,21 @@ impl Shika {
             )
     }
 
-    /// Usage, from the snapshot taken when the dialog opened.
+    /// Usage, from the snapshot taken when the dashboard opened.
     fn usage_panel(
         &self,
         report: Option<&UsageReport>,
+        filter: UsageFilter,
+        grid: Option<&Entity<usage_dashboard::UsageGrid>>,
         chrome: &Chrome,
-        max_h: Pixels,
+        bounds: gpui::Size<Pixels>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let mut panel = dialog(chrome, max_h)
+        let mut panel = dialog_shell(f32::from(bounds.width), bounds.height, chrome)
+            .pt(px(20.))
+            .px(px(20.))
+            .pb(px(16.))
+            .gap(px(12.))
             .child(dialog_title(div()).child("Usage"))
             .child(
                 dialog_text(chrome)
@@ -6873,22 +6906,66 @@ impl Shika {
         if let Some(report) = report {
             if report.unreadable {
                 panel = panel.child(dialog_text(chrome).child("Could not read usage."));
-            } else if report.empty {
-                panel = panel.child(dialog_text(chrome).child("No tokens recorded yet."));
-            } else {
-                panel = panel.child(usage_group(
-                    "This week",
-                    &[("Claude Code", report.claude), ("Codex", report.codex)],
-                    false,
-                    chrome,
-                ));
-                for day in &report.days {
-                    panel = panel.child(usage_group(
-                        &day.label,
-                        &[("Claude Code", day.claude), ("Codex", day.codex)],
-                        true,
-                        chrome,
-                    ));
+            } else if let Some(calendar) = &report.calendar {
+                panel = panel.child(usage_dashboard::totals(calendar, filter, chrome));
+                let mut segments = div()
+                    .flex()
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(px(7.))
+                    .bg(chrome.sunken);
+                for (index, choice) in UsageFilter::CHOICES.into_iter().enumerate() {
+                    segments = segments.child(
+                        segment(
+                            ("usage-filter", index),
+                            choice.label(),
+                            filter == choice,
+                            chrome.raised,
+                            chrome.ink_1,
+                            chrome.ink_3,
+                        )
+                        .when(filter == choice, |d| {
+                            d.shadow(vec![
+                                BoxShadow::new(px(0.), px(1.), chrome.control_shadow.into())
+                                    .blur_radius(px(1.)),
+                            ])
+                        })
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                if let Some(Overlay::Usage { filter, grid, .. }) = &mut this.overlay
+                                {
+                                    *filter = choice;
+                                    if let Some(grid) = grid {
+                                        grid.update(cx, |grid, cx| grid.set_filter(choice, cx));
+                                    }
+                                }
+                                window.focus(&this.focus, cx);
+                                cx.notify();
+                            },
+                        )),
+                    );
+                }
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .items_center()
+                        .child(
+                            dialog_text(chrome)
+                                .font_weight(FontWeight::MEDIUM)
+                                .child("Daily tokens"),
+                        )
+                        .child(segments),
+                );
+                if let Some(grid) = grid {
+                    panel = panel.child(usage_dashboard::heatmap(calendar, filter, chrome, grid));
+                }
+                if calendar.totals.combined() == 0 {
+                    panel = panel.child(dialog_text(chrome).child(if report.empty {
+                        "No tokens recorded yet."
+                    } else {
+                        "No tokens recorded in this range."
+                    }));
                 }
             }
             if report.pending {
@@ -6899,7 +6976,12 @@ impl Shika {
         } else {
             panel = panel.child(dialog_text(chrome).child("Reading usage..."));
         }
-        panel.child(dialog_buttons().child(self.cancel_button("Close", chrome, cx)))
+        panel.child(
+            dialog_buttons()
+                .justify_between()
+                .child(hint("h l / ← →", "filter", chrome))
+                .child(self.cancel_button("Close", chrome, cx)),
+        )
     }
 
     /// The pointer menu, or the picker/dialogs near the top. No overlay dims
@@ -6919,7 +7001,14 @@ impl Shika {
         }
         let height = window.viewport_size().height;
         let picker = matches!(overlay, Overlay::Picker { .. });
-        let top = height * if picker { 0.18 } else { 0.20 };
+        let top = height
+            * if picker {
+                0.18
+            } else if matches!(overlay, Overlay::Usage { .. }) {
+                0.10
+            } else {
+                0.20
+            };
         let max_h = (height - top - px(24.)).max(px(120.));
         let panel = match overlay {
             Overlay::CardMenu(_) => unreachable!("card menus render at the pointer"),
@@ -7527,7 +7616,22 @@ impl Shika {
             Overlay::Settings { section, row, .. } => {
                 self.settings_panel(*section, *row, max_h, chrome, home, cx)
             }
-            Overlay::Usage { report, .. } => self.usage_panel(report.as_ref(), chrome, max_h, cx),
+            Overlay::Usage {
+                report,
+                filter,
+                grid,
+                ..
+            } => self.usage_panel(
+                report.as_ref(),
+                *filter,
+                grid.as_ref(),
+                chrome,
+                gpui::size(
+                    (window.viewport_size().width - px(40.)).min(px(880.)),
+                    max_h,
+                ),
+                cx,
+            ),
         };
         div()
             .absolute()
@@ -8198,35 +8302,6 @@ fn dialog_text(chrome: &Chrome) -> gpui::Div {
 
 fn dialog_buttons() -> gpui::Div {
     div().flex().justify_end().gap(px(8.)).mt(px(10.))
-}
-
-fn usage_group(heading: &str, rows: &[(&str, u64)], skip_zero: bool, chrome: &Chrome) -> gpui::Div {
-    let mut group = div().flex().flex_col().gap(px(2.)).child(
-        div()
-            .text_size(px(13.))
-            .line_height(px(19.))
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(chrome.ink_1)
-            .child(heading.to_string()),
-    );
-    for (label, amount) in rows {
-        if skip_zero && *amount == 0 {
-            continue;
-        }
-        group = group.child(
-            div()
-                .flex()
-                .justify_between()
-                .gap(px(12.))
-                .child(dialog_text(chrome).child((*label).to_string()))
-                .child(
-                    dialog_text(chrome)
-                        .font_family(MONO)
-                        .child(shika_core::format_tokens(*amount)),
-                ),
-        );
-    }
-    group
 }
 
 /// `$HOME`, to write paths with `~`.
