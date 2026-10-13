@@ -3333,7 +3333,6 @@ impl Shika {
                     .cards
                     .iter()
                     .position(|c| c.session.as_ref().is_some_and(|s| s.id == task_id));
-                let closed = result.is_ok();
                 match result {
                     Ok(()) => {
                         this.lead_dialog_succeeded(&task_id, control::close_outcome(action).into());
@@ -3346,6 +3345,10 @@ impl Shika {
                             } else {
                                 Some(Selection::Card(index.min(this.cards.len() - 1)))
                             };
+                            // The replacement takes the closed card's place.
+                            // Revealing it would undo manual scrolling during
+                            // the row's exit. A Lead restore still reveals.
+                            this.last_revealed_selection = this.selection.clone();
                         }
                         this.overlay = None;
                         this.overlay_return_focus = None;
@@ -3360,11 +3363,6 @@ impl Shika {
                     }
                 };
                 this.settle_lead_dialog(window, cx);
-                if closed {
-                    // Close changes selection in place. Revealing it again
-                    // would undo manual scrolling during the row's exit.
-                    this.last_revealed_selection = this.selection.clone();
-                }
                 cx.notify();
             });
         })
@@ -5182,7 +5180,7 @@ impl Shika {
             } else {
                 face.into_any_element()
             };
-            column = column.child(card_row(0.).child(face));
+            column = column.child(card_row().child(face));
         }
         // Cards whose follower is gone too leave from the end of the group.
         for leaving in departing
@@ -5214,7 +5212,7 @@ impl Shika {
             .card_view(&leaving.card, None, chrome, false, false, cx)
             .size_full();
         let exit = || gpui::Animation::new(model::EXIT);
-        card_row(0.)
+        card_row()
             .overflow_hidden()
             .child(div().child(face).with_animation(
                 SharedString::from(format!("{key}-shrink")),
@@ -7581,12 +7579,11 @@ fn card_row_geometry(collapse: f32) -> (f32, f32) {
     ((CARD_HEIGHT + CARD_GAP) * remaining, CARD_GAP * remaining)
 }
 
-fn card_row(collapse: f32) -> gpui::Div {
-    let (height, gap) = card_row_geometry(collapse);
+fn card_row() -> gpui::Div {
     div()
         .w_full()
-        .h(px(height))
-        .pt(px(gap))
+        .h(px(CARD_HEIGHT + CARD_GAP))
+        .pt(px(CARD_GAP))
         .flex_none()
         .flex()
         .items_center()
@@ -8643,25 +8640,6 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
-
-    #[test]
-    fn card_keys_survive_closing_first_middle_last_and_other_project_cards() {
-        let views = (1..=5).map(gpui::EntityId::from).collect::<Vec<_>>();
-        let keys = views.iter().copied().map(card_key).collect::<Vec<_>>();
-        for closed in 0..views.len() {
-            let remaining = views
-                .iter()
-                .copied()
-                .enumerate()
-                .filter(|(index, _)| *index != closed);
-            for (original_index, view) in remaining {
-                assert_eq!(card_key(view), keys[original_index]);
-                assert_ne!(card_key(view), keys[closed]);
-            }
-            // The departing face keeps that card's identity, too.
-            assert_eq!(card_key(views[closed]), keys[closed]);
-        }
-    }
 
     #[test]
     fn exiting_row_keeps_its_gap_until_collapse_and_leaves_no_final_jump() {

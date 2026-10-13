@@ -21,7 +21,7 @@ A scratch copy outside the repository, built as an ad hoc signed `.app` with GPU
 
 ## Card exit rendering repair, 2026-10-13
 
-Workspace tests passed (548 passed, one existing ignored), as did formatting, strict Clippy, `cargo build -p shika`, `./scripts/bundle-app.sh --debug`, and strict bundle signature verification. Unit tests cover stable card keys after first/middle/last/other-project removal and a row that retains its gap during shrink, collapses monotonically, and ends at exactly zero height and padding.
+Workspace tests passed (547 passed, one existing ignored), as did formatting, strict Clippy, `cargo build -p shika`, `./scripts/bundle-app.sh --debug`, and strict bundle signature verification. A unit test covers a row that retains its gap during shrink, collapses monotonically, and ends at exactly zero height and padding.
 
 The stock debug bundle was opened with a disposable `--data-dir` and disposable alpha/beta repositories. A separate scratch bundle outside the repository used a unique bundle id, hard-coded disposable Core data, fake Pi processes, actual worktrees, and a local bare remote. Its native GPU frames and measured row bounds exercised the production card renderer. GPU readback takes longer than the exit, so the exit clock was expanded tenfold only in the scratch copy for intermediate image inspection, then restored to the production 160ms shrink and 220ms collapse for a second matrix of layout samples. No fixture or timing change ships in the app.
 
@@ -31,6 +31,7 @@ The stock debug bundle was opened with a disposable `--data-dir` and disposable 
 - PASS (flow invocation): the scratch fixture invoked the card context menu's existing Close handler and the real Close dialog's Discard/Push handlers. Dirty work was discarded; an unpublished commit was pushed to the disposable bare remote. These paths produced the same exit. This verifies rendering and handler integration, not native mouse translation for those controls.
 - PASS (socket): a real `shika close` client closed a worker owned by a real detached Lead session, returned `closed`, and restored selection and terminal focus to the Lead. Ordinary close paths restored card focus as before.
 - PASS (scroll): closing an offscreen first card in a tall column retained the manually set -260px offset through shrink, collapse, and final removal, with the remaining cards still painted.
+- [ ] A Lead's `shika close` on a worker far from the Lead in a tall column scrolls the Lead back into view when focus returns to it. Fixed after the native pass above, not yet checked by hand.
 - [ ] Real-provider, normal-speed perceived smoothness, rapid repeated closes, glass, and Reduce Motion still need hands-on checks. The older progress/failure/terminal-grid checks below remain separate from this rendering repair.
 
 ## Close animation, 2026-10-09
