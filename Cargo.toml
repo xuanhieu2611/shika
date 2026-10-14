@@ -23,7 +23,7 @@ strip = true
 # To move to a newer Zed stable tag:
 #   1. If that tag already contains the upstream fix, point both entries back
 #      at https://github.com/zed-industries/zed at the tag's commit and stop
-#      here; the fork is no longer needed.
+#      here. Keep the fork anyway: past Shika commits still build from it.
 #   2. Otherwise, in the fork, cherry-pick the shika-glass-blend commit onto
 #      the new tag, push it as a new branch shika-glass-blend-<tag>, and set
 #      both revs below to the new commit. Never move or delete an older fork
