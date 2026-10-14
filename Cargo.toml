@@ -16,10 +16,15 @@ strip = true
 # gpui_platform on macOS from this commit: they cover tree-sitter, livekit,
 # Windows capture, and Linux calloop, which these two crates do not pull in
 # here. async-task resolves from crates.io and builds as is.
+# The git source is Shika's fork: one commit (branch shika-glass-blend) on top
+# of that tag, so translucent fills composite with source-over alpha instead
+# of adding alpha, and washes in glass let the desktop show through. Rebase
+# that commit when moving to a new tag. Return to zed-industries/zed once the
+# fix is upstream.
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "76659a55a8c10ed355a070f8764a0b1733e3c115" }
+gpui = { git = "https://github.com/xuanhieu2611/zed", rev = "b215cb4bc081b4a35c62aedda6b1c4b5c4ab5381" }
 # Compile Metal shaders when the app starts, so builds need full Xcode but
 # do not also require the separate Metal Toolchain component. Keep this
 # feature for local and release builds unless the toolchain is changed
 # deliberately and both build and startup are verified.
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "76659a55a8c10ed355a070f8764a0b1733e3c115", features = ["font-kit", "runtime_shaders"] }
+gpui_platform = { git = "https://github.com/xuanhieu2611/zed", rev = "b215cb4bc081b4a35c62aedda6b1c4b5c4ab5381", features = ["font-kit", "runtime_shaders"] }

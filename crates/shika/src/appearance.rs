@@ -382,9 +382,9 @@ fn shika_chrome(frame: &Frame, dark: bool) -> Chrome {
         focus: if dark { rgb(0xE8EBE3) } else { rgb(0x2F332C) },
         card_selected: pick(
             tint(0x141E0A, 0.10),
-            tint(0xFFFFFF, 0.11),
+            tint(0xFFFFFF, 0.18),
             tint(0x28341E, 0.12),
-            tint(0xFFFFFF, 0.12),
+            tint(0xFFFFFF, 0.20),
         ),
         row_selected: if dark { rgb(0x363A33) } else { rgb(0xE8EBE2) },
         // Solid in glass too. The window-server blur only reaches the desktop
@@ -592,7 +592,7 @@ fn derived_chrome(frame: &Frame, theme: &Theme) -> Chrome {
         ink_4,
         ink_5,
         focus: fg,
-        card_selected: ink(side(0.10, 0.11)),
+        card_selected: ink(side(0.10, 0.18)),
         row_selected: mix(surface, fg, 0.09),
         // Solid in glass too, like Shika's: GPUI has no backdrop blur.
         overlay: surface,
@@ -996,7 +996,7 @@ mod tests {
             },
             rgb(0xF6F8F2)
         );
-        assert!(chrome.card_selected.a > chrome.hover.a && chrome.card_selected.a < 0.2);
+        assert!(chrome.card_selected.a > chrome.hover.a && chrome.card_selected.a < 0.25);
         let dark = chrome_for(&appearance, shika_theme(true), false);
         assert_eq!(
             Rgba {
@@ -1005,7 +1005,7 @@ mod tests {
             },
             rgb(0x181A17)
         );
-        assert!(dark.card_selected.a > dark.hover.a && dark.card_selected.a < 0.2);
+        assert!(dark.card_selected.a > dark.hover.a && dark.card_selected.a < 0.25);
     }
 
     #[test]

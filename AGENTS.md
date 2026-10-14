@@ -15,7 +15,7 @@ Each rule lives with the feature it governs: the guides in `docs/` (start at `do
 In particular:
 
 - Desktop app, pure Rust on GPUI, Mac only. No kanban, no flat session list, no project tabs, no splits beyond the resizable agent column and the read-only Changes panel, no second visible terminal, no editor, no conversation history.
-- GPUI comes from the `zed-industries/zed` git repo at one pinned `rev`. The terminal engine is `alacritty_terminal`, and its types stay inside one module of `shika-terminal`. Never copy from Zed's `terminal` or `terminal_view` crates; they are GPL-3.0. Check GPUI names against the pinned `rev`, not against docs for another version.
+- GPUI comes from Shika's fork `xuanhieu2611/zed` at one pinned `rev`: a Zed stable tag plus one commit (branch `shika-glass-blend`) that makes translucent fills composite with source-over alpha, so washes in glass show the desktop. Rebase that commit when moving to a new tag; go back to `zed-industries/zed` once it is upstream. Do not add other changes to the fork. The terminal engine is `alacritty_terminal`, and its types stay inside one module of `shika-terminal`. Never copy from Zed's `terminal` or `terminal_view` crates; they are GPL-3.0. Check GPUI names against the pinned `rev`, not against docs for another version.
 - The chrome uses the system font. The terminal uses the bundled JetBrains Mono, with Menlo as the fallback. Not SF Mono: GPUI loads only its regular weight.
 - This build launches Claude Code, Codex, Cursor CLI, and Pi. Kiro waits.
 - Shika creates the worktree. Never pass Cursor's `--worktree`. Do not invent a CLI flag; the launch args below were taken from each binary's `--help`.
