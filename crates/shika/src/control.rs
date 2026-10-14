@@ -25,7 +25,7 @@ use shika_terminal::input::{Key, KeyMods, encode_key, encode_paste};
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -48,13 +48,40 @@ const KEY_DELAY: Duration = Duration::from_millis(40);
 
 /// Appended to the prompt of every worker a Lead starts with `shika new`,
 /// after a blank line. Not added by `send`.
-pub const WORKER_FOOTER: &str = "When you finish or get blocked, run: shika report \"<what you changed, the tests you ran and their result, your commit>\". Do not push.";
+pub const WORKER_FOOTER: &str = "When you finish or get blocked, run: {command} report \"<what you changed, the tests you ran and their result, your commit>\". Wait for it to print reported. If reporting fails, retry after correcting the error, or include the exact failure in your final response. Do not push.";
+
+/// Shell-quoted absolute executable: a provider's login shell may reset PATH.
+/// Never put credentials in a prompt.
+pub fn command_path(bin_dir: &Path) -> String {
+    format!(
+        "'{}'",
+        bin_dir
+            .join("shika")
+            .to_string_lossy()
+            .replace('\'', "'\"'\"'")
+    )
+}
+
+pub fn lead_prompt(project: &str, bin_dir: &Path) -> String {
+    format!(
+        "You are the Lead agent for the \"{project}\" project in Shika. Run {} help and follow it, then ask the author what they want done.",
+        command_path(bin_dir)
+    )
+}
+
+fn lead_guide(bin_dir: &Path) -> String {
+    format!(
+        "Shika command for this session: {}. In every shell command below, replace `shika` with this absolute executable path. Do not rely on PATH: a CLI's login shell can reset it.\n\n{LEAD_GUIDE}",
+        command_path(bin_dir)
+    )
+}
 
 /// The prompt a Lead-started worker receives: the Lead's text, then the
 /// report instruction. The first line, which names the card and branch, is
 /// still the Lead's.
-pub fn worker_prompt(prompt: &str) -> String {
-    format!("{}\n\n{WORKER_FOOTER}", prompt.trim_end())
+pub fn worker_prompt(prompt: &str, bin_dir: &Path) -> String {
+    let footer = WORKER_FOOTER.replace("{command}", &command_path(bin_dir));
+    format!("{}\n\n{footer}", prompt.trim_end())
 }
 
 /// What `shika help` prints.
@@ -229,6 +256,21 @@ fn serve(stream: UnixStream, requests: &Sender<Incoming>) {
 pub struct WorkerReport {
     pub text: String,
     pub turn: Option<Instant>,
+    /// A changed report is a new event even if Ready was already delivered.
+    pub received: Instant,
+}
+
+impl WorkerReport {
+    fn record(self, current: &mut Option<Self>) {
+        // Retrying an identical report is idempotent, including a retry
+        // after the worker lost the acknowledgement.
+        if !current
+            .as_ref()
+            .is_some_and(|old| old.turn == self.turn && old.text == self.text)
+        {
+            *current = Some(self);
+        }
+    }
 }
 
 /// The reply to a worker's command, and the report it stores. A worker may
@@ -246,7 +288,11 @@ pub fn worker_command(command: Command, turn: Option<Instant>) -> (Reply, Option
                 Reply::Done {
                     message: "reported".into(),
                 },
-                Some(WorkerReport { text, turn }),
+                Some(WorkerReport {
+                    text,
+                    turn,
+                    received: Instant::now(),
+                }),
             ),
             Err(reason) => (refused(reason), None),
         },
@@ -279,12 +325,20 @@ impl LeadState {
 pub struct Observed {
     pub info: TaskInfo,
     pub turn: Option<Instant>,
+    pub report_received: Option<Instant>,
 }
 
-/// A settlement already reported to the Lead: the task, the state it settled
-/// in, and the turn. A task that works again and settles again is a new turn,
-/// so it is reported again; the same settlement is never reported twice.
-type Settlement = (TaskStatus, Option<Instant>);
+impl Observed {
+    fn settlement(&self) -> Settlement {
+        (self.info.status, self.turn, self.report_received)
+    }
+}
+
+/// A settlement already reported to the Lead: status, turn, and current report
+/// receipt. A new turn or changed report is a new event, so a report arriving
+/// after a delivered Ready event cannot disappear. Identical retries keep the
+/// receipt, so they do not repeatedly wake the Lead.
+type Settlement = (TaskStatus, Option<Instant>, Option<Instant>);
 
 #[derive(Default)]
 pub struct Ledger {
@@ -293,7 +347,7 @@ pub struct Ledger {
 
 impl Ledger {
     fn is_reported(&self, task: &Observed) -> bool {
-        self.reported.get(&task.info.id) == Some(&(task.info.status, task.turn))
+        self.reported.get(&task.info.id) == Some(&task.settlement())
     }
 
     fn mark(&mut self, marks: Vec<(String, Settlement)>) {
@@ -373,12 +427,12 @@ impl Doorbell {
     }
 
     /// The caller is ringing for these: never again for the same
-    /// (task, status, turn).
+    /// (task, status, turn, report).
     pub fn rang(&mut self, tasks: &[&Observed]) {
         self.rung.mark(
             tasks
                 .iter()
-                .map(|task| (task.info.id.clone(), (task.info.status, task.turn)))
+                .map(|task| (task.info.id.clone(), task.settlement()))
                 .collect(),
         );
         self.since = None;
@@ -608,7 +662,7 @@ pub fn resolve(
     Some(Resolved {
         marks: events
             .iter()
-            .map(|task| (task.info.id.clone(), (task.info.status, task.turn)))
+            .map(|task| (task.info.id.clone(), task.settlement()))
             .collect(),
         reply: Reply::Waited {
             events: events
@@ -678,6 +732,14 @@ struct Waiter {
     deadline: Instant,
     reply: Sender<Reply>,
     delivered: Receiver<bool>,
+}
+
+impl Waiter {
+    /// The connection thread drops this channel when the client leaves.
+    /// An abandoned wait must not keep the doorbell gate closed.
+    fn connected(&self) -> bool {
+        matches!(self.delivered.try_recv(), Err(TryRecvError::Empty))
+    }
 }
 
 /// Sends the answer to a `shika new`, if one is waiting for it.
@@ -841,6 +903,16 @@ impl Card {
         }
     }
 
+    fn control_turn(&self) -> Option<Instant> {
+        lock(&self.agent.state).report_turn(&self.activity, self.submitted)
+    }
+
+    fn current_report(&self) -> Option<&WorkerReport> {
+        self.report
+            .as_ref()
+            .filter(|report| report.turn == self.control_turn())
+    }
+
     /// None while the card has no session: it has no id the Lead could name.
     fn task_info(&self, lead_id: &str) -> Option<TaskInfo> {
         let session = self.session.as_ref()?;
@@ -866,18 +938,15 @@ impl Card {
             pr: self.pr.as_ref().map(|watch| watch.number),
             started_by_lead: self.started_by.as_deref() == Some(lead_id),
             path: session.worktree.display().to_string(),
-            report: self
-                .report
-                .as_ref()
-                .filter(|report| report.turn == self.activity.turn_started)
-                .map(|report| report.text.clone()),
+            report: self.current_report().map(|report| report.text.clone()),
         })
     }
 
     fn observed(&self, lead_id: &str) -> Option<Observed> {
         Some(Observed {
             info: self.task_info(lead_id)?,
-            turn: self.activity.turn_started,
+            turn: self.control_turn(),
+            report_received: self.current_report().map(|report| report.received),
         })
     }
 
@@ -942,7 +1011,11 @@ impl Shika {
         let project = self.cards[lead].project.clone();
         let answer = match command {
             Command::Help => Reply::Help {
-                text: LEAD_GUIDE.to_string(),
+                text: self
+                    .control
+                    .as_ref()
+                    .map(|server| lead_guide(&server.bin_dir()))
+                    .unwrap_or_else(|| LEAD_GUIDE.to_string()),
             },
             Command::Report { .. } => refused("Only workers can run shika report."),
             Command::Tasks => Reply::Tasks {
@@ -1069,9 +1142,9 @@ impl Shika {
         else {
             return refused("This worker is no longer in Shika.");
         };
-        let (reply, report) = worker_command(command, card.activity.turn_started);
-        if report.is_some() {
-            card.report = report;
+        let (reply, report) = worker_command(command, card.control_turn());
+        if let Some(report) = report {
+            report.record(&mut card.report);
         }
         reply
     }
@@ -1447,14 +1520,17 @@ impl Shika {
             let ids: Vec<String> = due.iter().map(|task| task.info.id.clone()).collect();
             doorbell.rang(&due);
             self.type_into(
-                lead_id,
+                lead_id.clone(),
                 paste_steps(&line, true, &modes),
                 window,
                 cx,
                 Box::new(move |this, result| {
                     if result.is_err()
-                        && let Some(state) =
-                            this.cards.get_mut(lead).and_then(|card| card.lead.as_mut())
+                        && let Some(state) = this
+                            .cards
+                            .iter_mut()
+                            .find(|card| card.session.as_ref().is_some_and(|s| s.id == lead_id))
+                            .and_then(|card| card.lead.as_mut())
                     {
                         state.doorbell.forget(&ids);
                     }
@@ -1511,6 +1587,7 @@ impl Shika {
                 continue;
             };
             apply_confirmations(&mut state.ledger, &mut state.unconfirmed);
+            state.waiters.retain(Waiter::connected);
             if state.waiters.is_empty() {
                 continue;
             }
@@ -1637,7 +1714,7 @@ impl Shika {
                             return;
                         };
                         let options = LaunchOptions {
-                            prompt: Some(worker_prompt(&prompt)),
+                            prompt: Some(worker_prompt(&prompt, &server.bin_dir())),
                             started_by: Some(lead_id),
                             base,
                             control: Some(WorkerEnv {
@@ -1691,6 +1768,19 @@ impl Shika {
 }
 
 impl HostState {
+    /// A fast worker can report before the tick consumes its launch/send
+    /// submission. Use the epoch Activity will start, not the previous turn.
+    /// Input during an active turn retains the existing epoch.
+    fn report_turn(&self, activity: &crate::activity::Activity, submitted: u64) -> Option<Instant> {
+        if self.submission != submitted
+            && matches!(activity.status, Status::Waiting | Status::Ready)
+        {
+            self.last_submission.or(activity.turn_started)
+        } else {
+            activity.turn_started
+        }
+    }
+
     /// Writes a step the Lead sent. It leaves `last_typed` alone, so the
     /// author-typing guards see only the author, and a step marked `count`
     /// goes through the capture that typed input does. Refused when the CLI
@@ -1760,6 +1850,7 @@ mod tests {
         Observed {
             info: task(id, status),
             turn,
+            report_received: None,
         }
     }
 
@@ -1834,6 +1925,174 @@ mod tests {
         ];
         let (events, ..) = waited(resolve(&ledger, &tasks, t0, deadline));
         assert_eq!(events, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn three_workers_finishing_together_deliver_every_report_once() {
+        let t0 = Instant::now();
+        let mut tasks: Vec<_> = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| {
+                let mut task = observed(id, TaskStatus::Ready, Some(t0));
+                task.info.report = Some(format!("{id}: tests pass"));
+                task.report_received = Some(at(t0, 1.0));
+                task
+            })
+            .collect();
+        let mut ledger = Ledger::default();
+        let mut bell = Doorbell::default();
+        assert!(bell.due(&ledger, &tasks, &gate(), t0).is_empty());
+        let due = bell.due(&ledger, &tasks, &gate(), at(t0, 2.0));
+        assert_eq!(ids(&due), ["a", "b", "c"]);
+        bell.rang(&due);
+        let resolved = resolve(&ledger, &tasks, at(t0, 2.0), at(t0, 10.0)).unwrap();
+        let Reply::Waited { events, .. } = &resolved.reply else {
+            panic!("expected wait")
+        };
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| e.task.report.is_some()));
+        ledger.mark(resolved.marks);
+        assert!(bell.due(&ledger, &tasks, &gate(), at(t0, 3.0)).is_empty());
+        assert!(
+            waited(resolve(&ledger, &tasks, at(t0, 3.0), at(t0, 10.0)))
+                .0
+                .is_empty()
+        );
+
+        // Ready was delivered before an updated/late report. The same turn
+        // must wake the Lead again, but only for that worker.
+        tasks[1].info.report = Some("b: updated tests pass".into());
+        tasks[1].report_received = Some(at(t0, 4.0));
+        assert!(bell.due(&ledger, &tasks, &gate(), at(t0, 4.0)).is_empty());
+        assert_eq!(ids(&bell.due(&ledger, &tasks, &gate(), at(t0, 5.6))), ["b"]);
+        let (events, _, _, resolved) = waited(resolve(&ledger, &tasks, at(t0, 5.6), at(t0, 10.0)));
+        assert_eq!(events, ["b"]);
+        ledger.mark(resolved.marks);
+        assert!(bell.due(&ledger, &tasks, &gate(), at(t0, 7.0)).is_empty());
+    }
+
+    #[test]
+    fn a_report_after_a_delivered_ready_without_a_report_is_not_lost() {
+        let t0 = Instant::now();
+        let mut task = observed("a", TaskStatus::Ready, Some(t0));
+        let mut ledger = Ledger::default();
+        let resolved = resolve(&ledger, std::slice::from_ref(&task), t0, t0).unwrap();
+        ledger.mark(resolved.marks);
+        task.info.report = Some("Finished; tests pass".into());
+        task.report_received = Some(at(t0, 1.0));
+        let (events, _, _, _) = waited(resolve(&ledger, &[task], at(t0, 1.0), t0));
+        assert_eq!(events, ["a"]);
+    }
+
+    #[test]
+    fn report_retries_are_idempotent_but_new_turns_and_edits_are_not() {
+        let t0 = Instant::now();
+        let mut report = None;
+        let make = |text: &str, turn, received| WorkerReport {
+            text: text.into(),
+            turn,
+            received,
+        };
+        make("Done", Some(t0), t0).record(&mut report);
+        make("Done", Some(t0), at(t0, 1.0)).record(&mut report);
+        assert_eq!(report.as_ref().unwrap().received, t0);
+        make("Tests passed", Some(t0), at(t0, 2.0)).record(&mut report);
+        assert_eq!(report.as_ref().unwrap().received, at(t0, 2.0));
+        make("Tests passed", Some(at(t0, 3.0)), at(t0, 4.0)).record(&mut report);
+        assert_eq!(report.as_ref().unwrap().received, at(t0, 4.0));
+    }
+
+    #[test]
+    fn fast_reports_belong_to_the_pending_submission_not_the_previous_turn() {
+        use crate::activity::{Activity, Signal};
+        let t0 = Instant::now();
+        let mut activity = Activity::new(t0);
+        let mut host = HostState::default();
+        host.seed_launch_prompt("Do the work", true, t0);
+        let (_, report) = worker_command(
+            Command::Report {
+                text: "Fast result".into(),
+            },
+            host.report_turn(&activity, 0),
+        );
+        activity.hold_for_launch();
+        activity.advance(Signal::Working, host.last_submission, None, t0, false);
+        assert_eq!(report.unwrap().turn, activity.turn_started);
+
+        // A send from Ready starts a fresh report epoch before the next tick.
+        activity.advance(Signal::Idle, None, None, at(t0, 1.0), false);
+        activity.advance(Signal::Idle, None, None, at(t0, 2.0), false);
+        assert_eq!(activity.status, Status::Ready);
+        host.capture_typed(b"More work\r", at(t0, 3.0));
+        assert_eq!(host.report_turn(&activity, 1), Some(at(t0, 3.0)));
+        activity.advance(
+            Signal::Working,
+            host.last_submission,
+            None,
+            at(t0, 3.0),
+            false,
+        );
+        assert_eq!(host.report_turn(&activity, 2), activity.turn_started);
+        // Input during Working is not a fresh epoch.
+        host.capture_typed(b"Continue\r", at(t0, 4.0));
+        assert_eq!(host.report_turn(&activity, 2), Some(at(t0, 3.0)));
+    }
+
+    #[test]
+    fn an_abandoned_wait_releases_the_doorbell_gate_before_its_deadline() {
+        let t0 = Instant::now();
+        let mut lead = LeadState::new("synthetic".into());
+        let (reply, _answer) = mpsc::channel();
+        let (confirm, delivered) = mpsc::channel();
+        lead.waiters.push(Waiter {
+            named: vec![],
+            deadline: at(t0, 600.0),
+            reply,
+            delivered,
+        });
+        let tasks = [observed("a", TaskStatus::Ready, Some(t0))];
+        let closed = Gate {
+            waiting: !lead.waiters.is_empty(),
+            ..gate()
+        };
+        lead.doorbell.due(&lead.ledger, &tasks, &closed, t0);
+        assert!(
+            lead.doorbell
+                .due(&lead.ledger, &tasks, &closed, at(t0, 2.0))
+                .is_empty()
+        );
+        assert!(lead.waiters[0].connected());
+        drop(confirm); // the connection thread noticed EOF
+        lead.waiters.retain(Waiter::connected);
+        assert!(lead.waiters.is_empty());
+        let open = Gate {
+            waiting: !lead.waiters.is_empty(),
+            ..gate()
+        };
+        assert_eq!(
+            ids(&lead.doorbell.due(&lead.ledger, &tasks, &open, at(t0, 2.1))),
+            ["a"]
+        );
+        assert!(!lead.ledger.is_reported(&tasks[0]));
+    }
+
+    #[test]
+    fn control_commands_use_a_shell_safe_absolute_path_in_all_prompts() {
+        let dir = Path::new("/tmp/control space'quote/bin");
+        let command = command_path(dir);
+        assert_eq!(command, "'/tmp/control space'\"'\"'quote/bin/shika'");
+        let echoed = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("printf '%s' {command}")])
+            .output()
+            .unwrap();
+        assert!(echoed.status.success());
+        assert_eq!(
+            String::from_utf8(echoed.stdout).unwrap(),
+            dir.join("shika").display().to_string()
+        );
+        assert!(lead_prompt("Test", dir).contains(&format!("Run {command} help")));
+        assert!(lead_guide(dir).contains(&command));
+        assert!(worker_prompt("Test", dir).contains(&format!("run: {command} report")));
     }
 
     #[test]
@@ -2217,7 +2476,7 @@ mod tests {
         let t0 = Instant::now();
         let turn = Some(t0);
         let mut reported = Ledger::default();
-        reported.mark(vec![("a".into(), (TaskStatus::Ready, turn))]);
+        reported.mark(vec![("a".into(), (TaskStatus::Ready, turn, None))]);
         let mut bell = Doorbell::default();
         let tasks = [
             observed("a", TaskStatus::Ready, turn),
@@ -2399,18 +2658,19 @@ mod tests {
 
     #[test]
     fn the_worker_footer_follows_the_prompt_and_leaves_its_first_line_alone() {
-        let prompt = worker_prompt("Fix the login bug\n\nScope: auth only.\n");
-        assert_eq!(
-            prompt,
-            format!("Fix the login bug\n\nScope: auth only.\n\n{WORKER_FOOTER}")
+        let bin_dir = Path::new("/tmp/control/bin");
+        let prompt = worker_prompt("Fix the login bug\n\nScope: auth only.\n", bin_dir);
+        assert!(prompt.starts_with("Fix the login bug\n\nScope: auth only.\n\nWhen you finish"));
+        assert!(
+            prompt.contains("'/tmp/control/bin/shika' report") && prompt.contains("Do not push")
         );
-        assert!(WORKER_FOOTER.contains("shika report") && WORKER_FOOTER.contains("Do not push"));
+        assert!(prompt.contains("Wait for it to print reported"));
         assert_eq!(
             crate::model::prompt_title(&prompt).as_deref(),
             Some("Fix the login bug")
         );
         // Still a valid positional prompt: it does not start with a dash.
-        assert!(!worker_prompt("ok").starts_with('-'));
+        assert!(!worker_prompt("ok", bin_dir).starts_with('-'));
     }
 
     #[test]

@@ -1189,9 +1189,7 @@ impl Shika {
             socket: server.socket(),
             token: shika_core::control::new_token(),
             bin_dir: server.bin_dir(),
-            prompt: format!(
-                "You are the Lead agent for the \"{name}\" project in Shika. Run `shika help` and follow it, then ask the author what they want done."
-            ),
+            prompt: control::lead_prompt(&name, &server.bin_dir()),
         };
         self.begin_launch(
             project,
