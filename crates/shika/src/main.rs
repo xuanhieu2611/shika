@@ -5281,7 +5281,14 @@ impl Shika {
         let selected = at.is_some() && self.selected_card() == at;
         let key = card_key(card.agent.view.entity_id());
         let colors = chrome.status(card.status);
-        let separator = || div().flex_none().text_color(chrome.ink_5).child("·");
+        // The quiet meta steps one ink brighter on the selected card, as the
+        // title does, so it stays readable on the lighter wash.
+        let (quiet, quiet_separator) = if selected {
+            (chrome.ink_3, chrome.ink_4)
+        } else {
+            (chrome.ink_4, chrome.ink_5)
+        };
+        let separator = || div().flex_none().text_color(quiet_separator).child("·");
         let hints: &[(&str, &str)] = if card.closing {
             &[]
         } else if card.creating {
@@ -5360,16 +5367,12 @@ impl Shika {
             .line_height(px(16.))
             // The CLI and branch sit back so the task reads first. Results
             // (the diff stat, the PR mark, the hints) stay a step brighter.
-            .text_color(chrome.ink_4)
+            .text_color(quiet)
             .child(div().flex_none().child(card.preset.clone()))
             // Where the task came from, quiet: not a status.
             .when(card.started_by.is_some(), |d| {
-                d.child(separator()).child(
-                    div()
-                        .flex_none()
-                        .text_color(chrome.ink_4)
-                        .child("from Lead"),
-                )
+                d.child(separator())
+                    .child(div().flex_none().text_color(quiet).child("from Lead"))
             })
             .when(card.lead.is_some(), |d| {
                 d.child(separator()).child(
