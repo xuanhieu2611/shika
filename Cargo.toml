@@ -18,9 +18,19 @@ strip = true
 # here. async-task resolves from crates.io and builds as is.
 # The git source is Shika's fork: one commit (branch shika-glass-blend) on top
 # of that tag, so translucent fills composite with source-over alpha instead
-# of adding alpha, and washes in glass let the desktop show through. Rebase
-# that commit when moving to a new tag. Return to zed-industries/zed once the
-# fix is upstream.
+# of adding alpha, and washes in glass let the desktop show through. The same
+# fix is proposed upstream in https://github.com/zed-industries/zed/pull/65571.
+# To move to a newer Zed stable tag:
+#   1. If that tag already contains the upstream fix, point both entries back
+#      at https://github.com/zed-industries/zed at the tag's commit and stop
+#      here; the fork is no longer needed.
+#   2. Otherwise, in the fork, cherry-pick the shika-glass-blend commit onto
+#      the new tag, push it as a new branch shika-glass-blend-<tag>, and set
+#      both revs below to the new commit. Never move or delete an older fork
+#      branch: past Shika commits pin its rev and would stop building.
+#   3. Run cargo update -w, the workspace tests, and check glass washes (the
+#      selected card over a bright wallpaper) in a built app.
+# Do not add other changes to the fork.
 [workspace.dependencies]
 gpui = { git = "https://github.com/xuanhieu2611/zed", rev = "b215cb4bc081b4a35c62aedda6b1c4b5c4ab5381" }
 # Compile Metal shaders when the app starts, so builds need full Xcode but
