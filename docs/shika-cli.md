@@ -29,7 +29,7 @@ Run anywhere else, it prints `shika commands run inside a Shika Lead or Lead-sta
 
 `<tmp>` is the canonicalized temp directory (on macOS, under `/private/var/folders/...`). The Lead's `PATH`, and the agent PTY's of each worker it starts, is `<that>/bin:` followed by the login-shell `PATH`. Consequences:
 
-- `shika` is always the same build as the app that started the Lead, whether it came from `cargo run` or a `.app` bundle.
+- The bootstrap, help preamble, and worker report footer provide the shell-quoted absolute `<control dir>/bin/shika` path. Use it instead of an unqualified `shika`: a provider's login shell (reproduced with Codex 0.162.1) can reset PATH. It always invokes the same build as the app. No shell startup files or provider configuration are changed.
 - The bundle's `Contents/MacOS` is deliberately not put on `PATH`. The bundle binary is `Shika`; a `shika` name in the same directory would collide with it on a case-insensitive volume (macOS defaults to one). The separate `bin/` directory holds only the symlink.
 - The socket path must fit `sockaddr_un.sun_path` (104 bytes on macOS, 103 usable). `ControlDir::create` fails with `Could not set up the control directory` when it would not. Keep the directory name short.
 
@@ -302,8 +302,8 @@ reported
 Rules (`worker_command`, `clean_report`):
 
 - The text is trimmed; tabs become spaces; control characters other than line breaks are dropped. Empty after that: `refused: The report is empty.` More than 4096 bytes (`MAX_REPORT_BYTES`): `refused: The report is N bytes; the most is 4096. Shorten it.`
-- The report is tagged with the worker's current turn (`Activity::turn_started`) and replaces the earlier one. `TaskInfo::report` holds it only while that turn is current: a new turn (a typed line, or a `send` with Enter) starts with none.
-- It changes no status and ends no turn. `wait`, the doorbell, and settlement still come from activity. The doorbell line only marks the task `(reported)`; it never carries the text.
+- The report is tagged with the worker's current turn (`Card::control_turn`, including a submission not yet consumed by the tick) and replaces the earlier one. `TaskInfo::report` holds it only while that turn is current: a new turn (a typed line, or a `send` with Enter) starts with none.
+- It changes no status and ends no turn. Settlement still comes from activity. A late or changed report on a settled task is a fresh event for `wait` and the doorbell, even if that status/turn was delivered already. Identical text retried in the same turn keeps its receipt and does not create another event. The doorbell line only marks the task `(reported)`; it never carries the text.
 - Memory only, and it dies with the card.
 
 Parsing (`parse_report`): flags first (`--json`); the first plain word starts the text; `--` also starts it, for text beginning with a dash. The words are joined with single spaces.
@@ -313,10 +313,10 @@ A worker's token may run only `report` and `help`. `help` prints three lines (`W
 **The footer.** `shika new` appends this to the Lead's prompt, after a blank line (`worker_prompt`, `WORKER_FOOTER`); `send` never does:
 
 ```text
-When you finish or get blocked, run: shika report "<what you changed, the tests you ran and their result, your commit>". Do not push.
+When you finish or get blocked, run: '<control dir>/bin/shika' report "<what you changed, the tests you ran and their result, your commit>". Wait for it to print reported. If reporting fails, retry after correcting the error, or include the exact failure in your final response. Do not push.
 ```
 
-Branch and card naming read the first nonblank prompt line, which is still the Lead's. The combined prompt does not start with `-`, so it passes the positional-prompt rules unchanged.
+The actual executable path is substituted and shell-quoted, including spaces and single quotes. Credentials stay in the environment, never the prompt. Branch and card naming read the first nonblank prompt line, which is still the Lead's. The combined prompt does not start with `-`, so it passes the positional-prompt rules unchanged.
 
 ### How `pr` and `close` resolve
 
@@ -391,11 +391,11 @@ The design goal is a local helper that can drive one project's workers and canno
 
 Because of step 2 a `wait` returns immediately when everything is `waiting` or already reported. The Lead should treat `nothing to wait for` as "nothing more will finish on its own", and then report to the author.
 
-**Report once.** Each Lead has a ledger (`Ledger`) of the last settlement reported per task, keyed by `(status, turn)`, where turn is the card's `Activity::turn_started`. A settlement is reported at most once. A task that works again and settles again has a new turn, so it is reported again. A task that goes `asking` and then `ready` within one turn is reported twice, because the status differs. Two concurrent `wait` commands share the ledger: the first resolved reports the event; the second keeps waiting. The ledger lives and dies with the Lead's card.
+**Report once.** Each Lead has a ledger (`Ledger`) of the last settlement reported per task, keyed by `(status, turn, report receipt)`, where turn is the card's current/pending turn epoch. A late or changed report is a new event even for the same status and turn; an identical retry is not. A settlement is reported at most once. A task that works again and settles again has a new turn, so it is reported again. A task that goes `asking` and then `ready` within one turn is reported twice, because the status differs. Two concurrent `wait` commands share the ledger: the first resolved reports the event; the second keeps waiting. The ledger lives and dies with the Lead's card.
 
 **Delivery before marking.** The ledger is updated only after the connection thread confirms it wrote the reply. The app thread hands the reply over and keeps its settlements as `Unconfirmed`; the connection thread sends `true` on the request's `delivered` channel after a successful `write_reply`, or `false` after a failed one, and the tick applies the marks (`apply_confirmations`). A failed write, or a connection thread that is gone, drops the marks, so the next `wait` returns the events again. The trade-off is a possible duplicate in place of a loss: a second `wait` that resolves before the confirmation lands (a tick or so), or a client that received the reply and died before acting on it, sees the same event again. A repeated event is harmless; a lost one is not.
 
-**Client disconnect.** While it waits, the connection thread wakes every 500 ms and checks whether the client closed the socket (`peer_closed`, an EOF read). If so it drops its reply channel and exits without writing; the waiter's later send fails and nothing is marked. A client that leaves after the reply was handed over fails the write, the connection thread reports `false`, and the events stay unreported (see Delivery before marking).
+**Client disconnect.** While it waits, the connection thread wakes every 500 ms and checks whether the client closed the socket (`peer_closed`, an EOF read). If so it drops its reply and delivery channels and exits without writing. The next tick prunes the waiter using that disconnected delivery channel, so it cannot block the doorbell until its original deadline. Nothing is marked. A client that leaves after the reply was handed over fails the write, the connection thread reports `false`, and the events stay unreported (see Delivery before marking).
 
 **Timeout.** The client sends `timeout_secs` as given. The server waits `min(timeout_secs, 600)` seconds. The client's own read timeout is `timeout_secs + 30` seconds (60 for every other command, none for `new`, `pr`, and `close`). `--timeout 0` answers on the first evaluation: events if any, else `nothing to wait for`, else `timed out`. The default 100 seconds is chosen to stay under the default command timeout of the supported CLIs; a Lead that raises it above its CLI's tool timeout is killed by that CLI, not by Shika.
 
@@ -411,7 +411,7 @@ A Lead that ends its turn cannot notice workers finishing. Shika rings for it: i
 
 The Lead's guide says a `[shika]` line comes from Shika, not the author, and to run `shika wait` on it. The doorbell is on for every Lead; there is no setting.
 
-**What rings.** A worker this Lead started has settled (`ready`, `asking`, or `exited`), the settlement has not been reported by a `wait` (the `Ledger`), and it has not been rung before. The key is the same as `wait`'s: (task, status, turn). A task that asks and then becomes ready in one turn rings twice; a task that works again rings again. Titles are cut to 28 characters; the line names each changed task by its full id.
+**What rings.** A worker this Lead started has settled (`ready`, `asking`, or `exited`), the settlement has not been reported by a `wait` (the `Ledger`), and it has not been rung before. The key is the same as `wait`'s: (task, status, turn, report receipt). A task that asks and then becomes ready in one turn rings twice; a task that works again rings again. A late or changed report on a settled task rings again; identical report retries do not. Titles are cut to 28 characters; the line names each changed task by its full id.
 
 **When it rings (`Gate`, all must hold).**
 
@@ -497,6 +497,7 @@ A `wait` request over `nc` blocks until the reply, up to the server timeout, lik
 | What you see | Meaning and fix |
 | --- | --- |
 | `shika commands run inside a Shika Lead or Lead-started worker terminal.` (stderr, exit 2) | `SHIKA_SOCKET` or `SHIKA_TOKEN` is missing. You are not in a Lead or Lead-started worker agent terminal: you are in a shell tab, or a card the author created. |
+| `command not found: shika` in the provider's shell tool | The login shell reset PATH. Use the absolute command from the bootstrap/help preamble or worker footer, not a different installation. |
 | `refused: Workers can only run shika report.` | A worker ran a Lead command. |
 | `refused: Only workers can run shika report.` | A Lead ran `report`. |
 | `refused: The report is empty.` / `The report is N bytes; the most is 4096. ...` | The text was empty after cleaning, or too long. Shorten it. |
@@ -511,6 +512,16 @@ A `wait` request over `nc` blocks until the reply, up to the server timeout, lik
 | `The Lead needs Shika's control socket: Could not set up the control directory: ...` (toast in the app when starting a Lead) | The app could not create the control directory or bind the socket at startup (path over the 103-byte limit, unwritable temp directory). The app runs without a control server and no Lead can start until it is relaunched. |
 | `Unknown command <word>.` plus the usage (stderr, exit 2) | The first word is not a command. Typically a typo. Not a protocol error. |
 | `Missing command.` plus the usage (stderr, exit 2) | A bare `shika` in a Lead terminal. With `SHIKA_SOCKET` or `SHIKA_TOKEN` set the binary never starts the app, so this and any mistyped or app-flag invocation are usage errors. Outside a Lead terminal a bare `shika` is the app itself, as for a Finder launch. |
+
+### A finished worker did not reach the Lead
+
+Ask the Lead to run `status` or `tasks` using the absolute command from its help preamble. A present `report` means Shika received it; a missing report is not proof that the worker tried to send one. Use `read <task> --lines 60` only for the affected worker: a reporting command error identifies a send failure, while no reporting attempt suggests the worker ignored its footer. Ask that finished worker to report with the absolute command and check for `reported`.
+
+If the report is present but the Lead did not act, check whether it already consumed the event in `wait`, is still Working/Asking, has an author draft, or has a live pending wait. Those gates intentionally prevent terminal injection. A disconnected wait now releases its gate on the next tick; late reports create fresh events. Screen-based activity can still misclassify unfamiliar provider chrome. A stuck status requires a sanitized live-screen fixture, not a longer quiet timeout or typing into a busy Lead.
+
+### Isolated Codex report check
+
+Run `python3 scripts/check-lead-reports.py /absolute/path/to/shika [codex]` to reproduce the login-shell PATH failure and verify three concurrent absolute-path reports through the real client. It uses a local synthetic Responses server and disposable HOME/CODEX_HOME/repository, with no paid model request or normal Shika app data. It does not exercise the GUI or a real Lead's reasoning.
 
 ### See what the server did
 
@@ -546,11 +557,11 @@ Follow this order. The compiler enforces some of it (the `match` on `Command` in
 Guardrails (from [lead-agent.md](lead-agent.md)):
 
 - Do not let the Lead publish, close dirty work, merge, push, or force anything without the author's confirmation in the app.
-- Do not edit any CLI's global or project configuration to teach it `shika`. The command reaches the Lead through `PATH` and the first prompt only.
+- Do not edit any CLI's global or project configuration to teach it `shika`. The command reaches the Lead through `PATH` plus its absolute executable in the first prompt and help preamble.
 - Do not add a model API call. Shika launches the author's CLI and nothing else.
 - Keep the client free of GPUI, settings, and app data (`control_client::run` runs before any of them).
 - Keep the socket directory `0700` and the token out of logs, notifications, window titles, and files.
-- Never give workers the token or socket.
+- Never give workers a Lead token. Their own report-only token and socket belong only to the agent PTY, never shell tabs.
 
 ## Code map
 

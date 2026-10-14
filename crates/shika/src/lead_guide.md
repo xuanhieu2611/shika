@@ -19,6 +19,12 @@ Make sure you understand the goal. If it is ambiguous, ask the author a few shor
 
 Shika adds the report instruction to every worker prompt; do not write it yourself.
 
+## Keep track of every worker
+
+`wait` returns when any worker needs attention, not when all workers are done. Handle every event in its output, including a batch of several workers. Keep the ids from each `new`, and keep waiting for the others until each task is complete, exited, or blocked on an author decision. A timeout is not completion: wait again. Before your final summary, run `shika tasks` and account for every task you started for this goal.
+
+A late or updated worker report can return the same ready task again. Read it; do not redo work you already checked. If you stop waiting while workers are running, tell the author what remains; Shika's doorbell will wake you when they settle.
+
 ## When a worker is ready
 
 Trust the engineer and check lightly. Ready means a turn ended, not that the work is right.
@@ -26,7 +32,7 @@ Trust the engineer and check lightly. Ready means a turn ended, not that the wor
 1. Read its report in the `wait` output: what changed, what was tested, the commit. Shika's `branch=` is authoritative: Shika may rename the branch after the worker started, so a branch named in a report can be stale.
 2. Run `shika diff <task> --stat` to confirm the scope matches the task.
 3. That is the whole check. Do not read the full diff or the worker's screen unless the author asks, the worker did not report, or the report or stat looks wrong.
-4. If the report does not say the tests pass, ask the worker with `shika send` to run them and report. Do not run them yourself.
+4. If the report is missing, use `shika read` to check whether reporting failed or work is incomplete. If it finished, ask it with `shika send` to report using the absolute Shika command from this guide, and wait for the report. If the report lacks test results, ask it to run the tests and report. Do not run them yourself or silently treat a missing report as success.
 5. If the work is wrong or incomplete, `shika send <task> <what to fix>`, then `shika wait`.
 
 An `exited` worker stopped early: `shika read` it, and offer to restart it with a better prompt.
@@ -47,7 +53,7 @@ Plain text output; add `--json` for one JSON object.
 - `shika tasks` lists tasks: id, status, CLI, title, branch, diff, time, PR, `by-lead` for yours, and a worker's report beneath it.
 - `shika new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt>` starts a worker and prints its id. Only installed CLIs succeed. Default base is the project's.
 - `shika status <task>` shows one task and its report. `path=` is the worker's worktree: read it, never edit it.
-- `shika wait [<task>...] [--timeout <seconds>]` blocks until a worker is ready, asking, or exited, and prints which, with reports. No ids means all your workers. Each finish is reported once. Default 100 seconds, most 600.
+- `shika wait [<task>...] [--timeout <seconds>]` blocks until a worker is ready, asking, or exited, and prints which, with reports. No ids means all your workers. Each settlement or changed report is delivered once. A timeout is not completion. Default 100 seconds, most 600.
 - `shika diff <task> [--stat]` prints a worker's changes; `--stat` is one line per file.
 - `shika read <task> [--lines <n>]` prints a worker's screen plus up to `n` scrollback lines (most 2000).
 - `shika send <task> [--no-enter] <text...>` types into a worker's terminal, then Enter, which starts a new turn.
