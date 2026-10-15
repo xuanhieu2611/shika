@@ -12,7 +12,9 @@ struct PresetSpec {
 // Flags checked from each binary's --help. Claude Code and Cursor CLI on
 // 2026-10-03. Codex CLI 0.160.0 and Pi 1.0.0 on 2026-10-05. The Codex
 // folder-trust override in `launch_flags` was verified in a real pty on
-// 2026-10-09 with Codex CLI 0.161.0 (docs/tasks-and-worktrees.md).
+// 2026-10-09 with Codex CLI 0.161.0 (docs/tasks-and-worktrees.md). The Lead
+// flags in `lead_flags` were checked on 2026-10-15 with Claude Code 2.1.300,
+// Codex CLI 0.162.1, Cursor CLI 2026.10.01, and Pi 1.1.0 (docs/lead-agent.md).
 const PRESETS: &[PresetSpec] = &[
     PresetSpec {
         id: "claude",
@@ -91,6 +93,88 @@ pub(crate) fn launch_flags(preset: &CliPreset, worktree: &Path) -> Vec<String> {
         args.push(codex_trust_override(worktree));
     }
     args
+}
+
+/// How one Lead start addresses its conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Conversation {
+    /// A new conversation. `id` is the one Shika chose for Claude Code, Pi,
+    /// and Cursor. None when the CLI picks it (Codex) or Cursor's
+    /// `create-chat` failed.
+    Fresh { id: Option<String> },
+    /// Continue the stored conversation `id`.
+    Resume { id: String },
+}
+
+/// The arguments a Lead starts with: the preset's launch flags, the Lead
+/// instructions as the CLI's system prompt, and the conversation id. The
+/// instructions go on every start, fresh or resumed. A Lead gets no positional
+/// prompt here; Cursor's fresh-start bootstrap is appended by the caller.
+///
+/// | CLI | Instructions | Conversation |
+/// | --- | --- | --- |
+/// | Claude Code | `--append-system-prompt <text>` | `--session-id <uuid>`, then `--resume <uuid>` |
+/// | Pi | `--append-system-prompt <text>` | `--session-id <id>` both times |
+/// | Codex | `-c developer_instructions="<text>"` | none; `resume <id>` (a subcommand, so first) |
+/// | Cursor CLI | none (the bootstrap prompt) | `--resume <id>` |
+///
+/// Codex's `developer_instructions` adds a developer message next to its
+/// built-in instructions; `additional_developer_instructions` is ignored as an
+/// unrecognized key (observed against a synthetic Responses server on
+/// 2026-10-15, Codex CLI 0.162.1).
+pub(crate) fn lead_flags(
+    preset: &CliPreset,
+    worktree: &Path,
+    instructions: &str,
+    conversation: &Conversation,
+) -> Vec<String> {
+    let mut args = launch_flags(preset, worktree);
+    let mut push = |flag: &str, value: &str| {
+        args.push(flag.to_string());
+        args.push(value.to_string());
+    };
+    match (preset.id.as_str(), conversation) {
+        ("claude" | "pi", Conversation::Fresh { id }) => {
+            if let Some(id) = id {
+                push("--session-id", id);
+            }
+            push("--append-system-prompt", instructions);
+        }
+        ("claude", Conversation::Resume { id }) => {
+            push("--resume", id);
+            push("--append-system-prompt", instructions);
+        }
+        ("pi", Conversation::Resume { id }) => {
+            push("--session-id", id);
+            push("--append-system-prompt", instructions);
+        }
+        ("codex", conversation) => {
+            push(
+                "-c",
+                &format!("developer_instructions={}", toml_basic_string(instructions)),
+            );
+            if let Conversation::Resume { id } = conversation {
+                args.insert(0, "resume".to_string());
+                args.push(id.clone());
+            }
+        }
+        ("cursor", Conversation::Fresh { id: Some(id) } | Conversation::Resume { id }) => {
+            push("--resume", id);
+        }
+        _ => {}
+    }
+    args
+}
+
+/// Whether `id` is safe to pass as a conversation id argument: it comes from
+/// a CLI or a file the user can edit, and must never read as a flag.
+pub(crate) fn valid_conversation_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with('-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// `projects={"<path>"={trust_level="trusted"}}`, the path as a TOML basic
@@ -231,6 +315,117 @@ mod tests {
         for id in ["claude", "cursor", "pi"] {
             let preset = preset(id);
             assert_eq!(launch_flags(&preset, path), preset.args, "{id}");
+        }
+    }
+
+    const INSTRUCTIONS: &str = "You lead.\nRun \"shika help\".";
+    const WORKTREE: &str = "/no/such/repo/.worktrees/shika-lead";
+
+    fn lead(id: &str, conversation: Conversation) -> Vec<String> {
+        lead_flags(
+            &preset(id),
+            Path::new(WORKTREE),
+            INSTRUCTIONS,
+            &conversation,
+        )
+    }
+
+    fn fresh(id: Option<&str>) -> Conversation {
+        Conversation::Fresh {
+            id: id.map(str::to_string),
+        }
+    }
+
+    fn resume(id: &str) -> Conversation {
+        Conversation::Resume { id: id.into() }
+    }
+
+    #[test]
+    fn claude_leads_get_a_session_id_then_resume_it_with_the_instructions_each_time() {
+        let flags = ["--dangerously-skip-permissions"];
+        let tail = ["--append-system-prompt", INSTRUCTIONS];
+        assert_eq!(
+            lead("claude", fresh(Some("uuid-1"))),
+            [flags[0], "--session-id", "uuid-1", tail[0], tail[1]]
+        );
+        assert_eq!(
+            lead("claude", resume("uuid-1")),
+            [flags[0], "--resume", "uuid-1", tail[0], tail[1]]
+        );
+        // No positional prompt: the Lead starts idle.
+        assert_eq!(lead("claude", fresh(None)).last().unwrap(), INSTRUCTIONS);
+    }
+
+    #[test]
+    fn pi_leads_use_the_same_session_id_flag_fresh_and_resumed() {
+        let expected = [
+            "--approve",
+            "--session-id",
+            "id-7",
+            "--append-system-prompt",
+            INSTRUCTIONS,
+        ];
+        assert_eq!(lead("pi", fresh(Some("id-7"))), expected);
+        assert_eq!(lead("pi", resume("id-7")), expected);
+    }
+
+    #[test]
+    fn codex_leads_append_developer_instructions_and_resume_with_a_subcommand() {
+        let trust = codex_trust_override(Path::new(WORKTREE));
+        let instructions = r#"developer_instructions="You lead.\nRun \"shika help\".""#;
+        assert_eq!(
+            lead("codex", fresh(None)),
+            [
+                "--dangerously-bypass-approvals-and-sandbox",
+                "-c",
+                &trust,
+                "-c",
+                instructions,
+            ]
+        );
+        // `resume` is a subcommand, so it comes first; the id is last.
+        assert_eq!(
+            lead("codex", resume("019f-abc")),
+            [
+                "resume",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "-c",
+                &trust,
+                "-c",
+                instructions,
+                "019f-abc",
+            ]
+        );
+    }
+
+    #[test]
+    fn cursor_leads_carry_only_a_chat_id_because_the_instructions_are_a_prompt() {
+        let flags = ["--yolo", "--trust", "--sandbox", "disabled"];
+        let with = |extra: &[&str]| {
+            flags
+                .iter()
+                .chain(extra)
+                .map(|arg| arg.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            lead("cursor", fresh(Some("chat-1"))),
+            with(&["--resume", "chat-1"])
+        );
+        assert_eq!(lead("cursor", fresh(None)), with(&[]));
+        assert_eq!(
+            lead("cursor", resume("chat-1")),
+            with(&["--resume", "chat-1"])
+        );
+    }
+
+    #[test]
+    fn conversation_ids_cannot_read_as_flags() {
+        for ok in ["0198f2a4-7a3e-7b0c-9a54-3f1f1b1b1b1b", "a_b.c-1", "x"] {
+            assert!(valid_conversation_id(ok), "{ok}");
+        }
+        for bad in ["", "-x", "--resume", "a b", "a\nb", "a/b", &"x".repeat(129)] {
+            assert!(!valid_conversation_id(bad), "{bad:?}");
         }
     }
 

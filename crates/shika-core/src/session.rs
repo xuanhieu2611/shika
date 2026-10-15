@@ -93,19 +93,6 @@ pub(crate) fn control_path(bin_dir: &Path, path: &str) -> String {
     }
 }
 
-/// What a Lead is launched with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeadEnv {
-    /// Exported to the Lead as `SHIKA_SOCKET`.
-    pub socket: PathBuf,
-    /// Exported to the Lead as `SHIKA_TOKEN`.
-    pub token: String,
-    /// Prepended to the Lead's `PATH`; holds the `shika` command.
-    pub bin_dir: PathBuf,
-    /// The Lead's positional prompt, validated like [`LaunchOptions::prompt`].
-    pub prompt: String,
-}
-
 /// Launch arguments: the preset's flags, then the prompt as the last,
 /// positional argument. Every supported CLI accepts one (`claude [prompt]`,
 /// `codex [PROMPT]`, `agent [prompt...]`, `pi [messages...]`, checked from

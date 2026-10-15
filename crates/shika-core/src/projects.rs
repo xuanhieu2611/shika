@@ -29,6 +29,28 @@ pub struct Project {
     /// next author-created New may offer setup once for this project.
     #[serde(default, skip_serializing_if = "is_false")]
     pub worktree_setup_reviewed: bool,
+    /// The project's saved Lead, so a relaunch can resume its conversation.
+    /// Missing means no Lead has been started or it was forgotten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<SavedLead>,
+}
+
+/// What a project remembers about its Lead between launches: which CLI it ran
+/// in and the id of its conversation. Never a transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedLead {
+    /// The CLI preset id the conversation belongs to (`claude`, `codex`, ...).
+    pub cli: String,
+    /// The conversation id. Missing while Codex's has not been discovered yet,
+    /// or when Cursor's `create-chat` failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Worktrees of workers this Lead started before a relaunch that the
+    /// restart summary already named, so a later relaunch does not repeat
+    /// them. Pruned when the worktree no longer exists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reported_workers: Vec<PathBuf>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -97,6 +119,7 @@ impl ProjectDb {
             base_branch: None,
             approved_preparation: None,
             worktree_setup_reviewed: false,
+            lead: None,
         };
         projects.push(project.clone());
         save(&self.path, &projects)?;
@@ -142,6 +165,65 @@ impl ProjectDb {
             return Ok(());
         }
         project.worktree_setup_reviewed = true;
+        save(&self.path, &projects)
+    }
+
+    /// Replaces the project's saved Lead, or removes it with None.
+    pub fn set_lead(&self, id: &str, lead: Option<SavedLead>) -> Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut projects = load(&self.path)?;
+        let project = projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .ok_or(Error::UnknownProject)?;
+        if project.lead == lead {
+            return Ok(());
+        }
+        project.lead = lead;
+        save(&self.path, &projects)
+    }
+
+    /// Records worktrees the restart summary named, and drops earlier ones
+    /// whose folder is gone. [`Error::NoSavedLead`] without a saved Lead.
+    pub fn mark_workers_reported(&self, id: &str, paths: &[PathBuf]) -> Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut projects = load(&self.path)?;
+        let lead = projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .ok_or(Error::UnknownProject)?
+            .lead
+            .as_mut()
+            .ok_or(Error::NoSavedLead)?;
+        let mut reported = lead.reported_workers.clone();
+        for path in paths {
+            if !reported.contains(path) {
+                reported.push(path.clone());
+            }
+        }
+        reported.retain(|path| path.exists());
+        if lead.reported_workers == reported {
+            return Ok(());
+        }
+        lead.reported_workers = reported;
+        save(&self.path, &projects)
+    }
+
+    /// Sets or clears the saved Lead's conversation id.
+    pub fn set_lead_session(&self, id: &str, session_id: Option<String>) -> Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut projects = load(&self.path)?;
+        let lead = projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .ok_or(Error::UnknownProject)?
+            .lead
+            .as_mut()
+            .ok_or(Error::NoSavedLead)?;
+        if lead.session_id == session_id {
+            return Ok(());
+        }
+        lead.session_id = session_id;
         save(&self.path, &projects)
     }
 
@@ -483,6 +565,129 @@ mod tests {
         assert!(!read.preparation_onboarding_pending());
         assert!(read.approved_preparation.is_none());
         assert_eq!(db.review_preparation("missing"), Err(Error::UnknownProject));
+    }
+
+    #[test]
+    fn a_saved_lead_round_trips_and_files_without_one_still_load() {
+        let scratch = Scratch::new();
+        let file = scratch.path.join("projects.json");
+        fs::write(
+            &file,
+            r#"[{"id":"a","name":"demo","path":"/x/demo","futureField":1}]"#,
+        )
+        .unwrap();
+        let db = ProjectDb::open(file.clone());
+        assert_eq!(db.get("a").unwrap().lead, None);
+        db.set_lead("a", None).unwrap();
+        assert!(!fs::read_to_string(&file).unwrap().contains("lead"));
+
+        let saved = SavedLead {
+            cli: "claude".into(),
+            session_id: Some("0198f2a4-7a3e".into()),
+            reported_workers: Vec::new(),
+        };
+        db.set_lead("a", Some(saved.clone())).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.contains("\"lead\": {"), "{text}");
+        assert!(text.contains("\"cli\": \"claude\""), "{text}");
+        assert!(text.contains("\"sessionId\": \"0198f2a4-7a3e\""), "{text}");
+        assert_eq!(
+            ProjectDb::open(file.clone()).get("a").unwrap().lead,
+            Some(saved)
+        );
+
+        // A record without an id (Codex before its first message) is valid.
+        let hand_written = r#"[{"id":"a","name":"demo","path":"/x/demo","lead":{"cli":"codex"}}]"#;
+        fs::write(&file, hand_written).unwrap();
+        assert_eq!(
+            db.get("a").unwrap().lead,
+            Some(SavedLead {
+                cli: "codex".into(),
+                session_id: None,
+                reported_workers: Vec::new(),
+            })
+        );
+        db.set_lead_session("a", Some("thread-1".into())).unwrap();
+        assert_eq!(
+            db.get("a").unwrap().lead.unwrap().session_id.as_deref(),
+            Some("thread-1")
+        );
+        db.set_lead_session("a", None).unwrap();
+        assert!(!fs::read_to_string(&file).unwrap().contains("sessionId"));
+        assert_eq!(
+            db.set_lead_session("missing", None),
+            Err(Error::UnknownProject)
+        );
+        db.set_lead("a", None).unwrap();
+        assert_eq!(db.set_lead_session("a", None), Err(Error::NoSavedLead));
+        assert_eq!(db.set_lead("missing", None), Err(Error::UnknownProject));
+    }
+
+    #[test]
+    fn reported_workers_accumulate_dedupe_and_drop_vanished_folders() {
+        let scratch = Scratch::new();
+        let file = scratch.path.join("projects.json");
+        let db = ProjectDb::open(file.clone());
+        fs::write(&file, r#"[{"id":"a","name":"demo","path":"/x/demo"}]"#).unwrap();
+        let (one, two) = (scratch.path.join("one"), scratch.path.join("two"));
+        fs::create_dir(&one).unwrap();
+        fs::create_dir(&two).unwrap();
+        assert_eq!(
+            db.mark_workers_reported("a", std::slice::from_ref(&one)),
+            Err(Error::NoSavedLead)
+        );
+        db.set_lead(
+            "a",
+            Some(SavedLead {
+                cli: "claude".into(),
+                session_id: None,
+                reported_workers: Vec::new(),
+            }),
+        )
+        .unwrap();
+        db.mark_workers_reported("a", std::slice::from_ref(&one))
+            .unwrap();
+        db.mark_workers_reported("a", &[one.clone(), two.clone()])
+            .unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.contains("reportedWorkers"), "{text}");
+        assert_eq!(
+            db.get("a").unwrap().lead.unwrap().reported_workers,
+            [one.clone(), two.clone()]
+        );
+        fs::remove_dir(&one).unwrap();
+        db.mark_workers_reported("a", &[]).unwrap();
+        assert_eq!(
+            db.get("a").unwrap().lead.unwrap().reported_workers,
+            std::slice::from_ref(&two)
+        );
+        fs::remove_dir(&two).unwrap();
+        db.mark_workers_reported("a", &[]).unwrap();
+        assert!(
+            !fs::read_to_string(&file)
+                .unwrap()
+                .contains("reportedWorkers")
+        );
+    }
+
+    #[test]
+    fn removing_a_project_drops_its_saved_lead() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let file = scratch.path.join("projects.json");
+        let db = ProjectDb::open(file.clone());
+        let project = add(&db, &repo).unwrap().project;
+        db.set_lead(
+            &project.id,
+            Some(SavedLead {
+                cli: "pi".into(),
+                session_id: None,
+                reported_workers: Vec::new(),
+            }),
+        )
+        .unwrap();
+        db.remove(&project.id).unwrap();
+        assert!(!fs::read_to_string(&file).unwrap().contains("lead"));
     }
 
     #[test]

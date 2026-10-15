@@ -24,9 +24,11 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::memory::MemoryNote;
+
 /// Bumped when a request or reply changes shape. The server refuses a request
 /// with another version, so a stale `shika` never misreads a newer app.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The longest request line the server reads. A longer one is rejected.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -52,6 +54,9 @@ pub const CLI_IDS: [&str; 4] = ["claude", "codex", "cursor", "pi"];
 
 /// Usage text for argument errors.
 pub const USAGE: &str = "usage: shika [--json] <command>\n  help\n  tasks\n  new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>\n  status <task>\n  wait [<task>...] [--timeout <seconds>]\n  read <task> [--lines <n>]\n  diff <task> [--stat]\n  send <task> [--no-enter] <text...>\n  key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)\n  pr <task>\n  close <task>
+  memory
+  remember <text...>
+  forget <n>
   report <text...>   (workers only)";
 
 /// Why a control call failed. The client prints it and exits with status 2.
@@ -158,6 +163,12 @@ pub enum Command {
     /// Close a worker this Lead started: at once when Close needs no
     /// confirmation, otherwise through the close dialog. Blocks until done.
     Close { task: String },
+    /// The project's Lead memory notes, numbered from 1.
+    Memory,
+    /// Save one note in the project's Lead memory.
+    Remember { text: String },
+    /// Remove note `note` (1-based) from the project's Lead memory.
+    Forget { note: usize },
     /// A worker's own account of its turn. Only a worker's token may send
     /// it, and only it may send anything else than `Help`.
     Report { text: String },
@@ -275,6 +286,8 @@ pub enum Reply {
         still_working: Vec<TaskInfo>,
         timed_out: bool,
     },
+    /// The project's Lead memory notes, oldest first.
+    Memory { notes: Vec<MemoryNote> },
     /// The request was understood and declined, with a one-line reason.
     Refused { reason: String },
     /// The request failed.
@@ -422,6 +435,13 @@ pub fn render_text(reply: &Reply) -> String {
             }
             lines.join("\n")
         }
+        Reply::Memory { notes } if notes.is_empty() => "No notes.".to_string(),
+        Reply::Memory { notes } => notes
+            .iter()
+            .enumerate()
+            .map(|(index, note)| format!("{}. {}", index + 1, note.text))
+            .collect::<Vec<_>>()
+            .join("\n"),
         Reply::Refused { reason } => format!("refused: {reason}"),
         Reply::Error { message } => format!("error: {message}"),
     }
@@ -444,6 +464,9 @@ pub fn is_command(word: &str) -> bool {
             | "key"
             | "pr"
             | "close"
+            | "memory"
+            | "remember"
+            | "forget"
             | "report"
     )
 }
@@ -491,7 +514,7 @@ pub fn parse_args(args: &[String]) -> Result<(Command, bool), String> {
         return Err(usage_error("Missing command."));
     };
     let command = match word.as_str() {
-        "help" | "tasks" => {
+        "help" | "tasks" | "memory" => {
             let mut extra = Vec::new();
             for arg in rest {
                 if arg == "--json" {
@@ -503,10 +526,10 @@ pub fn parse_args(args: &[String]) -> Result<(Command, bool), String> {
             if !extra.is_empty() {
                 return Err(usage_error(&format!("{word} takes no arguments.")));
             }
-            if word == "help" {
-                Command::Help
-            } else {
-                Command::Tasks
+            match word.as_str() {
+                "help" => Command::Help,
+                "tasks" => Command::Tasks,
+                _ => Command::Memory,
             }
         }
         "new" => parse_new(rest, &mut json)?,
@@ -554,7 +577,13 @@ pub fn parse_args(args: &[String]) -> Result<(Command, bool), String> {
         "diff" => parse_diff(rest, &mut json)?,
         "send" => parse_send(rest, &mut json)?,
         "key" => parse_key(rest, &mut json)?,
-        "report" => parse_report(rest, &mut json)?,
+        "report" => Command::Report {
+            text: parse_text(word, rest, &mut json)?,
+        },
+        "remember" => Command::Remember {
+            text: parse_text(word, rest, &mut json)?,
+        },
+        "forget" => parse_forget(rest, &mut json)?,
         "pr" | "close" => {
             let mut tasks = Vec::new();
             for arg in rest {
@@ -713,9 +742,10 @@ fn parse_send(args: &[String], json: &mut bool) -> Result<Command, String> {
     Ok(Command::Send { task, text, enter })
 }
 
-/// `report <text...>`: flags come first and the first plain word starts the
-/// text. `--` also starts it, for a report that begins with a dash.
-fn parse_report(args: &[String], json: &mut bool) -> Result<Command, String> {
+/// `report <text...>` and `remember <text...>`: flags come first and the first
+/// plain word starts the text. `--` also starts it, for text that begins with
+/// a dash.
+fn parse_text(word: &str, args: &[String], json: &mut bool) -> Result<String, String> {
     let mut index = 0;
     while let Some(arg) = args.get(index) {
         match arg.as_str() {
@@ -733,9 +763,30 @@ fn parse_report(args: &[String], json: &mut bool) -> Result<Command, String> {
     }
     let text = args[index.min(args.len())..].join(" ");
     if text.trim().is_empty() {
-        return Err(usage_error("report needs text."));
+        return Err(usage_error(&format!("{word} needs text.")));
     }
-    Ok(Command::Report { text })
+    Ok(text)
+}
+
+/// `forget <n>`: one note number, 1 or more.
+fn parse_forget(args: &[String], json: &mut bool) -> Result<Command, String> {
+    let mut words = Vec::new();
+    for arg in args {
+        if arg == "--json" {
+            *json = true;
+        } else if arg.starts_with('-') {
+            return Err(usage_error(&format!("Unknown option {arg}.")));
+        } else {
+            words.push(arg.as_str());
+        }
+    }
+    match words.as_slice() {
+        [word] => match word.parse::<usize>() {
+            Ok(note) if note >= 1 => Ok(Command::Forget { note }),
+            _ => Err(usage_error("forget needs a note number, 1 or more.")),
+        },
+        _ => Err(usage_error("forget takes exactly one note number.")),
+    }
 }
 
 fn parse_key(args: &[String], json: &mut bool) -> Result<Command, String> {
@@ -853,7 +904,7 @@ pub fn write_reply(mut stream: impl Write, reply: &Reply) -> Result<()> {
         .map_err(|err| io_error(&err))
 }
 
-fn random_bytes<const N: usize>() -> std::io::Result<[u8; N]> {
+pub(crate) fn random_bytes<const N: usize>() -> std::io::Result<[u8; N]> {
     let mut bytes = [0u8; N];
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes)
@@ -870,25 +921,62 @@ pub fn new_token() -> String {
     hex(&random_bytes::<16>().expect("could not read /dev/urandom"))
 }
 
-/// The per-run directory holding the socket and the `shika` command:
+/// Where the `shika` command lives: `<data_dir>/bin/shika`, a symlink to the
+/// running executable. The path is the same on every launch, because a Lead's
+/// recorded conversation names it and a resumed Lead must find it again. Each
+/// call replaces the link atomically (a temporary link, then `rename`), so a
+/// concurrent reader sees the old target or the new one, never a gap. The
+/// directory is `0700`. Returns `<data_dir>/bin`.
+///
+/// Two Shika processes sharing one data directory share the link; the one
+/// started last wins. Nothing removes it on quit: a dangling or stale link
+/// only matters while a process that wants it is running.
+pub fn install_command(data_dir: &Path) -> Result<PathBuf, ControlError> {
+    let setup = |err: std::io::Error| ControlError::Setup(err.to_string());
+    let bin = std::path::absolute(data_dir).map_err(setup)?.join("bin");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&bin)
+        .map_err(setup)?;
+    let exe = std::env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .map_err(setup)?;
+    // A name nobody else is using, so concurrent installs cannot trip over
+    // each other's temporary link.
+    let nonce = hex(&random_bytes::<4>().map_err(setup)?);
+    let temp = bin.join(format!(".shika-{}-{nonce}.tmp", std::process::id()));
+    symlink(&exe, &temp).map_err(setup)?;
+    if let Err(err) = fs::rename(&temp, bin.join("shika")) {
+        let _ = fs::remove_file(&temp);
+        return Err(setup(err));
+    }
+    Ok(bin)
+}
+
+/// The per-run directory holding the socket, plus the stable command
+/// directory from [`install_command`]:
 ///
 /// ```text
-/// <tmp>/shika-control-<pid>-<nonce>/   0700
+/// <tmp>/shika-control-<pid>-<nonce>/   0700, removed on drop
 ///   sock                               bound by the server
-///   bin/shika                          symlink to the running executable
+/// <data_dir>/bin/shika                 symlink to the running executable
 /// ```
 ///
-/// The Lead's `PATH` gets [`ControlDir::bin_dir`] first, so `shika` is always
-/// the same build as the app. The directory is removed on drop.
+/// The socket path appears only in the environment of processes started by
+/// this run, so it may change every launch. The command path is written into
+/// conversations, so it may not.
 #[derive(Debug)]
 pub struct ControlDir {
     root: PathBuf,
+    bin_dir: PathBuf,
 }
 
 impl ControlDir {
-    /// Creates the directory and the symlink. Fails when the socket path
-    /// would not fit in `sockaddr_un` (103 bytes).
-    pub fn create() -> Result<Self> {
+    /// Creates the socket directory and installs the command under
+    /// `data_dir`. Fails when the socket path would not fit in `sockaddr_un`
+    /// (103 bytes).
+    pub fn create(data_dir: &Path) -> Result<Self> {
         let setup = |err: std::io::Error| ControlError::Setup(err.to_string());
         // Bind the real path: on macOS the temp dir is under /private/var.
         let base = std::env::temp_dir().canonicalize().map_err(setup)?;
@@ -901,22 +989,14 @@ impl ControlDir {
                 socket.display()
             )));
         }
-        let exe = std::env::current_exe()
-            .and_then(|exe| exe.canonicalize())
-            .map_err(setup)?;
+        let bin_dir = install_command(data_dir)?;
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&root)
             .map_err(setup)?;
         // Dropping removes the directory if anything below fails.
-        let dir = Self { root };
+        let dir = Self { root, bin_dir };
         fs::set_permissions(&dir.root, fs::Permissions::from_mode(0o700)).map_err(setup)?;
-        let bin = dir.bin_dir();
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&bin)
-            .map_err(setup)?;
-        symlink(&exe, bin.join("shika")).map_err(setup)?;
         Ok(dir)
     }
 
@@ -925,9 +1005,10 @@ impl ControlDir {
         self.root.join("sock")
     }
 
-    /// The directory to put first on the Lead's `PATH`.
+    /// The directory holding the `shika` command, for a Lead's or worker's
+    /// `PATH` and for the absolute command path in prompts.
     pub fn bin_dir(&self) -> PathBuf {
-        self.root.join("bin")
+        self.bin_dir.clone()
     }
 }
 
@@ -1000,6 +1081,11 @@ mod tests {
             },
             Command::Pr { task: "a".into() },
             Command::Close { task: "a".into() },
+            Command::Memory,
+            Command::Remember {
+                text: "Use \"pnpm\"".into(),
+            },
+            Command::Forget { note: 2 },
             Command::Report {
                 text: "Fixed it.\n\"tests\" pass".into(),
             },
@@ -1034,6 +1120,12 @@ mod tests {
             Reply::Done {
                 message: "sent".into(),
             },
+            Reply::Memory {
+                notes: vec![MemoryNote {
+                    text: "Use pnpm.".into(),
+                    created: 1,
+                }],
+            },
             Reply::Refused {
                 reason: "no".into(),
             },
@@ -1047,7 +1139,7 @@ mod tests {
         }
         assert_eq!(
             serde_json::to_string(&Request::new("t", Command::Tasks)).unwrap(),
-            r#"{"version":4,"token":"t","command":{"type":"tasks"}}"#
+            r#"{"version":5,"token":"t","command":{"type":"tasks"}}"#
         );
     }
 
@@ -1098,6 +1190,72 @@ mod tests {
             })
             .contains("report")
         );
+    }
+
+    #[test]
+    fn memory_commands_parse_and_render() {
+        let parse = |words: &str| parse_args(&args(words));
+        assert_eq!(parse("memory"), Ok((Command::Memory, false)));
+        assert_eq!(parse("memory --json"), Ok((Command::Memory, true)));
+        assert_eq!(
+            parse("remember Use pnpm, not npm"),
+            Ok((
+                Command::Remember {
+                    text: "Use pnpm, not npm".into()
+                },
+                false
+            ))
+        );
+        assert_eq!(
+            parse("--json remember -- --force is banned"),
+            Ok((
+                Command::Remember {
+                    text: "--force is banned".into()
+                },
+                true
+            ))
+        );
+        assert_eq!(parse("forget 3"), Ok((Command::Forget { note: 3 }, false)));
+        assert_eq!(
+            parse("forget --json 12"),
+            Ok((Command::Forget { note: 12 }, true))
+        );
+        assert!(
+            parse("remember")
+                .unwrap_err()
+                .contains("remember needs text")
+        );
+        assert!(parse("forget 0").unwrap_err().contains("1 or more"));
+
+        let notes = |texts: &[&str]| Reply::Memory {
+            notes: texts
+                .iter()
+                .map(|text| MemoryNote {
+                    text: (*text).into(),
+                    created: 0,
+                })
+                .collect(),
+        };
+        assert_eq!(render_text(&notes(&[])), "No notes.");
+        assert_eq!(
+            render_text(&notes(&["Use pnpm.", "No mocks."])),
+            "1. Use pnpm.\n2. No mocks."
+        );
+        let done = |message: &str| Reply::Done {
+            message: message.into(),
+        };
+        assert_eq!(render_text(&done("remembered 3")), "remembered 3");
+        assert_eq!(render_text(&done("forgot 2")), "forgot 2");
+        let full = Reply::Refused {
+            reason: "Memory is full (16,000 bytes). Forget a note first.".into(),
+        };
+        assert_eq!(
+            render_text(&full),
+            "refused: Memory is full (16,000 bytes). Forget a note first."
+        );
+        assert_eq!(full.exit_code(), 1);
+        assert_eq!(notes(&[]).exit_code(), 0);
+        assert!(USAGE.contains("remember <text...>") && USAGE.contains("forget <n>"));
     }
 
     #[test]
@@ -1381,6 +1539,15 @@ mod tests {
             "key a f13",
             "key a enter --nope",
             "key a ab",
+            "memory extra",
+            "remember",
+            "remember --bogus x",
+            "forget",
+            "forget 0",
+            "forget -1",
+            "forget two",
+            "forget 1 2",
+            "forget --nope 1",
             "pr",
             "pr a b",
             "pr --nope",
@@ -1401,6 +1568,7 @@ mod tests {
     fn command_words_decide_client_mode() {
         for word in [
             "help", "tasks", "new", "status", "wait", "read", "diff", "send", "key", "pr", "close",
+            "memory", "remember", "forget",
         ] {
             assert!(is_command(word));
         }
@@ -1429,9 +1597,40 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    /// A data directory reserved with `create_dir`, never adopted, and removed
+    /// on drop.
+    struct Data(PathBuf);
+
+    impl Data {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            loop {
+                let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+                let path = std::env::temp_dir().join(format!(
+                    "shika-control-test-{}-{}-{n}",
+                    std::process::id(),
+                    new_token()
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(err) => panic!("could not reserve a data directory: {err}"),
+                }
+            }
+        }
+    }
+
+    impl Drop for Data {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
-    fn the_control_directory_is_private_linked_and_removed() {
-        let dir = ControlDir::create().unwrap();
+    fn the_socket_directory_is_private_and_removed_and_the_command_is_stable() {
+        let data = Data::new();
+        let dir = ControlDir::create(&data.0).unwrap();
         let root = dir.socket_path().parent().unwrap().to_path_buf();
         assert!(root.is_absolute());
         assert_eq!(root, root.canonicalize().unwrap());
@@ -1446,22 +1645,74 @@ mod tests {
             0o700
         );
         assert!(dir.socket_path().as_os_str().len() <= MAX_SOCKET_PATH);
+        // The command lives under the data directory, not the temp one.
+        assert_eq!(dir.bin_dir(), data.0.join("bin"));
         let link = dir.bin_dir().join("shika");
         assert_eq!(
             fs::read_link(&link).unwrap(),
             std::env::current_exe().unwrap().canonicalize().unwrap()
         );
         assert!(link.exists());
-        let other = ControlDir::create().unwrap();
+        assert!(!root.join("bin").exists());
+        let other = ControlDir::create(&data.0).unwrap();
         assert_ne!(other.socket_path(), dir.socket_path());
+        assert_eq!(other.bin_dir(), dir.bin_dir());
         drop(dir);
         assert!(!root.exists());
-        assert!(other.bin_dir().exists());
+        // Quitting leaves the command: a resumed Lead may still name it.
+        assert!(other.bin_dir().join("shika").exists());
+    }
+
+    #[test]
+    fn installing_the_command_replaces_a_stale_link_and_leaves_no_temporary_one() {
+        let data = Data::new();
+        let bin = data.0.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        symlink("/nonexistent/old/shika", bin.join("shika")).unwrap();
+        assert_eq!(install_command(&data.0).unwrap(), bin);
+        let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+        assert_eq!(fs::read_link(bin.join("shika")).unwrap(), exe);
+        let names: Vec<_> = fs::read_dir(&bin)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["shika"], "no temporary link is left behind");
+        assert_eq!(install_command(&data.0).unwrap(), bin);
+        assert_eq!(fs::read_link(bin.join("shika")).unwrap(), exe);
+
+        // Concurrent installs (parallel tests, or two apps) never fail, and
+        // the link is always there for a reader.
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..25 {
+                        install_command(&data.0).unwrap();
+                        assert!(bin.join("shika").exists());
+                    }
+                });
+            }
+        });
+        let names: Vec<_> = fs::read_dir(&bin).unwrap().collect();
+        assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn the_command_path_follows_a_data_dir_with_spaces() {
+        let data = Data::new();
+        let spaced = data.0.join("Application Support").join("com.example.app");
+        let bin = install_command(&spaced).unwrap();
+        assert_eq!(bin, spaced.join("bin"));
+        assert!(bin.join("shika").exists());
+        assert_eq!(
+            fs::metadata(&bin).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 
     #[test]
     fn a_socket_round_trip_carries_one_request_and_one_reply() {
-        let dir = ControlDir::create().unwrap();
+        let data = Data::new();
+        let dir = ControlDir::create(&data.0).unwrap();
         let listener = UnixListener::bind(dir.socket_path()).unwrap();
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();

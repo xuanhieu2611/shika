@@ -4,12 +4,16 @@
 //!
 //! A card's worktree is new, so the only sessions stored for that folder are
 //! the card's own.
+//!
+//! The same readers answer two questions a Lead needs: whether a stored
+//! conversation id still exists ([`CliHome::session_exists`]), and which
+//! Codex conversation a fresh Lead started ([`CliHome::codex_session_since`]).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use md5::{Digest, Md5};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 
 /// Where the CLIs keep their data. The home directory in the app, a scratch
@@ -156,17 +160,21 @@ impl CliHome {
     }
 
     /// `PI_CODING_AGENT_SESSION_DIR`, or `<PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions`.
-    /// Pi writes a name only when `/name`, `--name`, or an extension sets one:
-    /// `{"type":"session_info","name":"..."}`. Checked against Pi 1.0.0 on 2026-10-05.
-    fn pi(&self, cwd: &Path) -> Option<String> {
-        let root = if let Some(dir) = &self.pi_session_dir {
+    fn pi_root(&self) -> PathBuf {
+        if let Some(dir) = &self.pi_session_dir {
             dir.clone()
         } else {
             self.pi_agent_dir
                 .clone()
                 .unwrap_or_else(|| self.home.join(".pi").join("agent"))
                 .join("sessions")
-        };
+        }
+    }
+
+    /// Pi writes a name only when `/name`, `--name`, or an extension sets one:
+    /// `{"type":"session_info","name":"..."}`. Checked against Pi 1.0.0 on 2026-10-05.
+    fn pi(&self, cwd: &Path) -> Option<String> {
+        let root = self.pi_root();
         let mut sessions: Vec<_> = fs::read_dir(root.join(pi_session_folder(cwd)))
             .ok()?
             .filter_map(|entry| entry.ok())
@@ -183,6 +191,120 @@ impl CliHome {
                 .filter(|record| record["type"] == "session_info")
                 .filter_map(|record| record["name"].as_str().map(str::to_string))
                 .next_back()
+        })
+    }
+}
+
+impl CliHome {
+    /// Whether the preset's CLI still stores conversation `id` that was started
+    /// in `cwd`. None when the CLI keeps nothing Shika can read (Cursor) or the
+    /// preset is unknown; callers then assume it exists. Read-only.
+    ///
+    /// - Claude Code: `<config>/projects/*/<id>.jsonl`. Any project folder, so a
+    ///   long path whose folder name Claude shortens still matches.
+    /// - Pi: `<sessions>/<cwd folder>/<timestamp>_<id>.jsonl`.
+    /// - Codex: an unarchived `threads` row, else a `rollout-*-<id>.jsonl[.zst]`
+    ///   file under `sessions/`.
+    pub(crate) fn session_exists(&self, preset_id: &str, id: &str, cwd: &Path) -> Option<bool> {
+        match preset_id {
+            "claude" => Some(self.claude_has(id)),
+            "pi" => Some(cwd_forms(cwd).iter().any(|cwd| self.pi_has(cwd, id))),
+            "codex" => Some(self.codex_has(id)),
+            _ => None,
+        }
+    }
+
+    fn claude_has(&self, id: &str) -> bool {
+        let file = format!("{id}.jsonl");
+        fs::read_dir(self.claude_root().join("projects"))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.path().join(&file).is_file())
+    }
+
+    fn pi_has(&self, cwd: &Path, id: &str) -> bool {
+        let suffix = format!("_{id}.jsonl");
+        fs::read_dir(self.pi_root().join(pi_session_folder(cwd)))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(&suffix))
+    }
+
+    fn codex_has(&self, id: &str) -> bool {
+        let in_db = newest_state_db(&self.codex_root())
+            .and_then(|db| Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok())
+            .and_then(|conn| {
+                conn.query_row(
+                    "SELECT 1 FROM threads WHERE id = ?1 AND archived = 0",
+                    [id],
+                    |_| Ok(()),
+                )
+                .ok()
+            })
+            .is_some();
+        in_db || self.codex_rollout_exists(id)
+    }
+
+    /// `sessions/<yyyy>/<mm>/<dd>/rollout-<time>-<id>.jsonl`, possibly
+    /// compressed. Walks the three date levels; no file is opened.
+    fn codex_rollout_exists(&self, id: &str) -> bool {
+        fn dirs(path: &Path) -> Vec<PathBuf> {
+            fs::read_dir(path)
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .collect()
+        }
+        let ends = [format!("-{id}.jsonl"), format!("-{id}.jsonl.zst")];
+        dirs(&self.codex_root().join("sessions"))
+            .into_iter()
+            .flat_map(|year| dirs(&year))
+            .flat_map(|month| dirs(&month))
+            .any(|day| {
+                fs::read_dir(day)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| entry.ok())
+                    .any(|entry| {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        name.starts_with("rollout-") && ends.iter().any(|end| name.ends_with(end))
+                    })
+            })
+    }
+
+    /// The newest Codex conversation that was started in `worktree` at or after
+    /// `since_ms` (milliseconds since the Unix epoch), if any. Subagent threads
+    /// are skipped where the database says which they are, so a Lead's helpers
+    /// are never mistaken for the Lead. Read-only; `Core` polls it after a
+    /// launch because Codex chooses its own conversation id.
+    pub(crate) fn codex_session_since(&self, worktree: &Path, since_ms: i64) -> Option<String> {
+        let db = newest_state_db(&self.codex_root())?;
+        let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+        // `agent_role` is null for a user-started thread. An older database
+        // without the column still answers, with the subagent filter dropped.
+        const SELECT: &str = "SELECT id FROM threads
+             WHERE cwd = ?1 AND archived = 0
+               AND COALESCE(created_at_ms, created_at * 1000) >= ?2";
+        const NEWEST: &str = "ORDER BY COALESCE(created_at_ms, created_at * 1000) DESC LIMIT 1";
+        cwd_forms(worktree).into_iter().find_map(|cwd| {
+            let cwd = cwd.to_string_lossy().into_owned();
+            let ask = |filter: &str| {
+                conn.query_row(
+                    &format!("{SELECT} {filter} {NEWEST}"),
+                    (&cwd, since_ms),
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+            };
+            match ask("AND agent_role IS NULL") {
+                Ok(found) => found,
+                // No such column: an older database cannot tell subagents.
+                Err(_) => ask("").ok().flatten(),
+            }
         })
     }
 }
@@ -598,6 +720,159 @@ mod tests {
             home.read("pi", Path::new(WORKTREE)).as_deref(),
             Some("Agent home")
         );
+    }
+
+    #[test]
+    fn claude_conversations_are_found_by_id_in_any_project_folder() {
+        let scratch = Scratch::new();
+        let home = CliHome::at(scratch.0.clone());
+        let cwd = Path::new(WORKTREE);
+        assert_eq!(home.session_exists("claude", "abc-1", cwd), Some(false));
+        let dir = claude_dir(&scratch.0);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("abc-1.jsonl"), "{}\n").unwrap();
+        assert_eq!(home.session_exists("claude", "abc-1", cwd), Some(true));
+        assert_eq!(home.session_exists("claude", "abc-2", cwd), Some(false));
+        // A shortened folder name for a long path still matches by id.
+        let other = scratch.0.join(".claude/projects/-very-long-0123abcd");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("abc-2.jsonl"), "{}\n").unwrap();
+        assert_eq!(home.session_exists("claude", "abc-2", cwd), Some(true));
+        // A folder that is not a file does not count.
+        fs::create_dir(other.join("abc-3.jsonl")).unwrap();
+        assert_eq!(home.session_exists("claude", "abc-3", cwd), Some(false));
+    }
+
+    #[test]
+    fn pi_conversations_are_found_by_the_id_suffix_in_the_cwd_folder() {
+        let scratch = Scratch::new();
+        let home = CliHome::at(scratch.0.clone());
+        let cwd = Path::new(WORKTREE);
+        assert_eq!(home.session_exists("pi", "id-9", cwd), Some(false));
+        let dir = pi_folder(&scratch.0.join(".pi/agent/sessions"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("2026-10-15T18-05-14-237Z_id-9.jsonl"), "{}\n").unwrap();
+        fs::write(dir.join("2026-10-15T18-05-14-237Z_xid-9.jsonl"), "{}\n").unwrap();
+        assert_eq!(home.session_exists("pi", "id-9", cwd), Some(true));
+        assert_eq!(home.session_exists("pi", "d-9", cwd), Some(false));
+        assert_eq!(
+            home.session_exists("pi", "id-9", Path::new("/elsewhere")),
+            Some(false)
+        );
+    }
+
+    fn codex_threads(path: &Path, rows: &[(&str, &str, i64, i64, Option<&str>)]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                cwd TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT 0,
+                created_at_ms INTEGER,
+                archived INTEGER NOT NULL DEFAULT 0,
+                agent_role TEXT
+            );",
+        )
+        .unwrap();
+        for (id, cwd, created_ms, archived, role) in rows {
+            conn.execute(
+                "INSERT INTO threads (id, cwd, created_at, created_at_ms, archived, agent_role)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (id, cwd, created_ms / 1000, created_ms, archived, role),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn codex_conversations_exist_in_the_database_or_as_a_rollout_file() {
+        let scratch = Scratch::new();
+        let home = CliHome::at(scratch.0.clone());
+        let cwd = Path::new(WORKTREE);
+        assert_eq!(home.session_exists("codex", "t-1", cwd), Some(false));
+        codex_threads(
+            &scratch.0.join(".codex/state_5.sqlite"),
+            &[
+                ("t-1", WORKTREE, 1_000, 0, None),
+                ("t-archived", WORKTREE, 1_000, 1, None),
+            ],
+        );
+        assert_eq!(home.session_exists("codex", "t-1", cwd), Some(true));
+        assert_eq!(home.session_exists("codex", "t-archived", cwd), Some(false));
+        let day = scratch.0.join(".codex/sessions/2026/10/15");
+        fs::create_dir_all(&day).unwrap();
+        fs::write(day.join("rollout-2026-10-15T18-05-14-t-file.jsonl"), "{}\n").unwrap();
+        fs::write(day.join("rollout-2026-10-15T18-05-14-t-zst.jsonl.zst"), "x").unwrap();
+        assert_eq!(home.session_exists("codex", "t-file", cwd), Some(true));
+        assert_eq!(home.session_exists("codex", "t-zst", cwd), Some(true));
+        assert_eq!(home.session_exists("codex", "ile", cwd), Some(false));
+    }
+
+    #[test]
+    fn cursor_and_unknown_clis_have_nothing_to_check() {
+        let scratch = Scratch::new();
+        let home = CliHome::at(scratch.0.clone());
+        assert_eq!(
+            home.session_exists("cursor", "c", Path::new(WORKTREE)),
+            None
+        );
+        assert_eq!(home.session_exists("other", "c", Path::new(WORKTREE)), None);
+    }
+
+    #[test]
+    fn the_newest_codex_thread_since_launch_in_the_worktree_wins_and_helpers_do_not() {
+        let scratch = Scratch::new();
+        let home = CliHome::at(scratch.0.clone());
+        let cwd = Path::new(WORKTREE);
+        assert_eq!(home.codex_session_since(cwd, 0), None);
+        codex_threads(
+            &scratch.0.join(".codex/state_5.sqlite"),
+            &[
+                ("before", WORKTREE, 9_000, 0, None),
+                ("first", WORKTREE, 10_000, 0, None),
+                ("newest", WORKTREE, 12_000, 0, None),
+                ("helper", WORKTREE, 13_000, 0, Some("explorer")),
+                ("archived", WORKTREE, 14_000, 1, None),
+                ("elsewhere", "/Users/x/other", 15_000, 0, None),
+            ],
+        );
+        assert_eq!(
+            home.codex_session_since(cwd, 10_000).as_deref(),
+            Some("newest")
+        );
+        assert_eq!(
+            home.codex_session_since(cwd, 9_000).as_deref(),
+            Some("newest")
+        );
+        assert_eq!(home.codex_session_since(cwd, 12_001), None);
+        assert_eq!(home.codex_session_since(Path::new("/nowhere"), 0), None);
+    }
+
+    #[test]
+    fn a_resolved_worktree_path_finds_the_codex_thread_too_and_an_old_database_still_answers() {
+        let scratch = Scratch::new();
+        let real = scratch.0.join("real");
+        fs::create_dir_all(&real).unwrap();
+        let link = scratch.0.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let home = CliHome::at(scratch.0.clone());
+        let resolved = real.canonicalize().unwrap();
+        // Codex records the resolved path, with no `agent_role` column.
+        let db = scratch.0.join(".codex/state_5.sqlite");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (id TEXT, cwd TEXT, created_at INTEGER, created_at_ms INTEGER, archived INTEGER);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads VALUES ('t', ?1, 5, 5000, 0)",
+            [resolved.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        drop(conn);
+        assert_eq!(home.codex_session_since(&link, 0).as_deref(), Some("t"));
     }
 
     fn filetime(path: &Path, secs: u64) {
