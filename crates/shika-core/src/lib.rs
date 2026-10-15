@@ -11,7 +11,7 @@
 //! - **Blocking.** [`Core::add_project`], [`Core::project_preparation_draft`],
 //!   [`Core::save_project_preparation`], [`Core::create_session`],
 //!   [`Core::create_session_with_preparation`], [`Core::start_lead`],
-//!   [`Core::forget_lead`], [`Core::discover_lead_session`],
+//!   [`Core::forget_lead`], [`Core::discover_lead_session`], [`Core::set_lead_session`],
 //!   [`Core::open_shell`], [`Core::session_dirty`], [`Core::session_git_state`],
 //!   [`Core::session_diff_stat`], [`Core::session_diff`], [`Core::session_file_diff`],
 //!   [`Core::session_publish_preview`], [`Core::session_publish`],
@@ -32,7 +32,7 @@
 //!   [`Core::save_settings`],
 //!   [`Core::worktree_journal`], [`Core::leftovers_list`],
 //!   [`Core::sessions`], [`Core::session`], [`Core::lead_for_project`],
-//!   [`Core::workers_of`], [`Core::saved_lead`], [`Core::set_lead_session`], [`Core::lost_workers`], [`Core::mark_workers_reported`], [`Core::lead_has_changes`], [`Core::lead_loss`], [`Core::saved_lead_session_exists`], [`Core::start_usage_collection`], [`Core::record_token_usage`], [`Core::recover_token_usage`],
+//!   [`Core::workers_of`], [`Core::saved_lead`], [`Core::lost_workers`], [`Core::mark_workers_reported`], [`Core::lead_has_changes`], [`Core::lead_loss`], [`Core::saved_lead_session_exists`], [`Core::start_usage_collection`], [`Core::record_token_usage`], [`Core::recover_token_usage`],
 //!   [`Core::write`], and [`Core::resize`]. They read a
 //!   small JSON file, take a short lock, or queue bytes, and are fine on the main thread. `write` never blocks on
 //!   the PTY: each PTY has its own writer thread.
@@ -1380,17 +1380,16 @@ impl Core {
         Ok(())
     }
 
-    /// Explicitly confirmed discard. Stops both PTYs, then deletes the tree
-    /// and local branch. No commit is created. Blocking.
+    /// Explicitly confirmed task discard. Stops all task PTYs, then deletes
+    /// the tree and local branch. Leads are refused: use [`Core::stop_lead`]
+    /// and [`Core::forget_lead`]. No commit is created. Blocking.
     pub fn session_discard(&self, id: &str) -> Result<()> {
         let _guard = self
             .operations
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        if session.lead {
-            return self.close_lead(&session, false, true);
-        }
+        refuse_lead(&session)?;
         let session = self.ensure_session_branch(&session)?;
         self.hang_up(&session);
         let session = self.ensure_session_branch(&session)?;
@@ -1449,16 +1448,15 @@ impl Core {
     }
 
     /// Close only when nothing can be lost. A pushed branch stays; an empty
-    /// task branch is deleted. The app asks on CloseNeedsConfirmation. Blocking.
+    /// task branch is deleted. Leads are refused: use [`Core::stop_lead`] and
+    /// [`Core::forget_lead`]. The app asks on CloseNeedsConfirmation. Blocking.
     pub fn session_close(&self, id: &str, agent_working: bool) -> Result<()> {
         let _guard = self
             .operations
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        if session.lead {
-            return self.close_lead(&session, agent_working, false);
-        }
+        refuse_lead(&session)?;
         let state = self.session_git_state_locked(id, agent_working)?;
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
         if state.dirty {
@@ -1492,37 +1490,6 @@ impl Core {
             )?;
         }
         self.forget_session(&session)
-    }
-
-    /// Called under the operations lock. A Lead has no branch to keep or push:
-    /// closing it stops its PTY, removes the detached worktree, and forgets
-    /// the saved Lead, because a record without its tree would promise a
-    /// conversation in a folder that is gone. Without `discard`, edits or a
-    /// working agent need confirmation first. Commits made on the detached
-    /// HEAD are not preserved; the Lead never codes. [`Core::stop_lead`] is
-    /// the way to stop a Lead and keep all of that.
-    fn close_lead(&self, lead: &Session, agent_working: bool, discard: bool) -> Result<()> {
-        let git = self.git()?;
-        let path = self.path_env().path();
-        if !discard {
-            if worktree::is_dirty(&git, path, &lead.worktree)? {
-                return Err(Error::WorktreeHasChanges(None));
-            }
-            if agent_working {
-                return Err(Error::CloseNeedsConfirmation);
-            }
-        }
-        self.hang_up(lead);
-        if !discard && worktree::is_dirty(&git, path, &lead.worktree)? {
-            return Err(Error::WorktreeHasChanges(None));
-        }
-        worktree::remove_worktree(&git, path, &lead.repo, &lead.worktree, discard)?;
-        self.forget_session(lead)?;
-        match self.projects.set_lead(&lead.project_id, None) {
-            // The project is already gone, and its record with it.
-            Err(Error::UnknownProject) => Ok(()),
-            other => other,
-        }
     }
 
     /// Compatibility helper: confirmation is explicitly a discard choice.
@@ -3493,6 +3460,99 @@ mod tests {
         core.session_discard(&session.id).unwrap();
     }
 
+    #[test]
+    fn a_broken_lead_gitfile_never_refreshes_or_discards_the_main_checkout() {
+        let scratch = Scratch::new();
+        let core = core_with_reporting_cli(&scratch);
+        let repo = scratch.repo("demo");
+        let project = core.add_project(&repo).unwrap().project;
+        git(&repo, &["branch", "dev"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "main only"]);
+        core.set_project_base(&project.id, "dev").unwrap();
+        let (lead, _) = start_lead(&core, &scratch, &project.id);
+        core.stop_lead(&lead.id).unwrap();
+        fs::remove_file(lead.worktree.join(".git")).unwrap();
+        let before = git(&repo, &["rev-parse", "HEAD"]);
+        let saved = core.saved_lead(&project.id).unwrap();
+        let (sink, _) = channel_sink();
+        assert_eq!(
+            core.start_lead(
+                &project.id,
+                "claude",
+                PtySize::default(),
+                sink,
+                lead_launch(&scratch)
+            ),
+            Err(Error::LeadWorktreeInvalid(lead.worktree.clone()))
+        );
+        assert_eq!(core.saved_lead(&project.id).unwrap(), saved);
+        assert_eq!(core.lead_loss(&project.id), Ok(LeadLoss::default()));
+        // Forget clears only the saved record and journal, not the broken
+        // folder or anything in the main checkout around it.
+        fs::write(lead.worktree.join("keep.txt"), "keep\n").unwrap();
+        core.forget_lead(&project.id, true).unwrap();
+        assert!(lead.worktree.join("keep.txt").exists());
+        assert_eq!(git(&repo, &["rev-parse", "HEAD"]), before);
+        assert_eq!(
+            git(&repo, &["symbolic-ref", "--short", "HEAD"]).trim(),
+            "main"
+        );
+    }
+
+    #[test]
+    fn stale_codex_discovery_cannot_write_after_stop_forget_or_replacement() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_reporting_cli(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (first, _) = start_lead_with(&core, &scratch, &project.id, "codex");
+        let late_result = || core.save_discovered_lead_session(&first.session, "old-thread".into());
+        core.stop_lead(&first.session.id).unwrap();
+        assert_eq!(late_result(), Ok(None));
+        core.forget_lead(&project.id, false).unwrap();
+        assert_eq!(late_result(), Ok(None));
+        assert_eq!(core.saved_lead(&project.id).unwrap(), None);
+
+        let (second, _) = start_lead_with(&core, &scratch, &project.id, "codex");
+        assert_eq!(late_result(), Ok(None));
+        assert_eq!(
+            core.discover_lead_session(&first.session.id, first.started_at),
+            Ok(None)
+        );
+        assert_eq!(
+            core.saved_lead(&project.id).unwrap().unwrap().session_id,
+            None
+        );
+        assert_eq!(
+            core.save_discovered_lead_session(&second.session, "new-thread".into()),
+            Ok(Some("new-thread".into()))
+        );
+        assert_eq!(
+            core.save_discovered_lead_session(&second.session, "duplicate-result".into()),
+            Ok(Some("new-thread".into()))
+        );
+        assert_eq!(late_result(), Ok(None));
+        assert_eq!(
+            core.saved_lead(&project.id)
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("new-thread")
+        );
+        core.stop_lead(&second.session.id).unwrap();
+
+        let (third, _) = start_lead_with(&core, &scratch, &project.id, "claude");
+        let saved = core.saved_lead(&project.id).unwrap();
+        assert_eq!(late_result(), Ok(None));
+        assert_eq!(
+            core.save_discovered_lead_session(&second.session, "old-codex".into()),
+            Ok(None)
+        );
+        assert_eq!(core.saved_lead(&project.id).unwrap(), saved);
+        core.stop_lead(&third.session.id).unwrap();
+    }
+
     const LEAD_INSTRUCTIONS: &str = "You lead this project. Run \"shika help\" first.";
     const LEAD_BOOTSTRAP: &str = "Bootstrap: you are the Lead; read the guide.";
 
@@ -3903,50 +3963,49 @@ mod tests {
     }
 
     #[test]
-    fn closing_a_lead_removes_the_tree_and_leaves_branches_alone() {
+    fn leads_can_only_be_stopped_and_forgotten_through_the_lead_lifecycle() {
         let scratch = Scratch::new();
         let repo = scratch.repo("demo");
         let core = core_with_reporting_cli(&scratch);
         let project = core.add_project(&repo).unwrap().project;
         let (lead, _) = start_lead(&core, &scratch, &project.id);
         let before = branches(&repo);
-
-        let state = core.session_git_state(&lead.id, true).unwrap();
-        assert!(!state.dirty && !state.unpushed && !state.pushed && state.agent_working);
+        let saved = core.saved_lead(&project.id).unwrap();
         assert_eq!(core.session_diff_stat(&lead.id), Ok(DiffStat::default()));
         assert_eq!(core.session_pushed_head(&lead.id), Ok(None));
         assert_eq!(core.session_refresh_branch(&lead.id).unwrap(), lead);
 
+        // Neither a clean tree, uncommitted work, nor detached commits may
+        // take the old task-close shortcut past Forget's safety checks.
+        for state in ["clean", "dirty", "committed"] {
+            if state == "dirty" {
+                fs::write(lead.worktree.join("edit.txt"), "x\n").unwrap();
+            } else if state == "committed" {
+                git(&lead.worktree, &["add", "edit.txt"]);
+                git(&lead.worktree, &["commit", "-m", "keep this"]);
+            }
+            for working in [false, true] {
+                assert_eq!(
+                    core.session_close(&lead.id, working),
+                    Err(Error::LeadUnsupported)
+                );
+                assert_eq!(
+                    core.close_session(&lead.id, working),
+                    Err(Error::LeadUnsupported)
+                );
+            }
+            assert_eq!(core.session_discard(&lead.id), Err(Error::LeadUnsupported));
+            assert_eq!(core.session(&lead.id), Some(lead.clone()));
+            assert_eq!(core.saved_lead(&project.id).unwrap(), saved);
+            assert!(lead.worktree.exists());
+        }
+        core.stop_lead(&lead.id).unwrap();
         assert_eq!(
-            core.session_close(&lead.id, true),
-            Err(Error::CloseNeedsConfirmation)
-        );
-        fs::write(lead.worktree.join("edit.txt"), "x\n").unwrap();
-        assert_eq!(core.session_dirty(&lead.id), Ok(true));
-        assert_eq!(
-            core.session_close(&lead.id, false),
+            core.forget_lead(&project.id, false),
             Err(Error::WorktreeHasChanges(None))
         );
-        assert!(lead.worktree.exists());
-        assert_eq!(core.sessions().len(), 1);
-
-        fs::remove_file(lead.worktree.join("edit.txt")).unwrap();
-        core.session_close(&lead.id, false).unwrap();
+        core.forget_lead(&project.id, true).unwrap();
         assert!(!lead.worktree.exists());
-        assert!(core.sessions().is_empty());
-        assert!(core.worktree_journal().unwrap().is_empty());
-        assert_eq!(branches(&repo), before);
-        assert!(core.lead_for_project(&project.id).is_none());
-        assert!(!git(&repo, &["worktree", "list"]).contains("shika-lead"));
-        // Closing forgets the saved Lead too: its folder is gone.
-        assert_eq!(core.saved_lead(&project.id).unwrap(), None);
-
-        // A new Lead may start once the old one is gone; discard removes
-        // even a dirty tree.
-        let (again, _) = start_lead(&core, &scratch, &project.id);
-        fs::write(again.worktree.join("edit.txt"), "x\n").unwrap();
-        core.session_discard(&again.id).unwrap();
-        assert!(!again.worktree.exists());
         assert!(core.worktree_journal().unwrap().is_empty());
         assert_eq!(core.saved_lead(&project.id).unwrap(), None);
         assert_eq!(branches(&repo), before);
@@ -4233,7 +4292,7 @@ mod tests {
         );
         // Nothing to find until Codex writes the conversation at the first message.
         assert_eq!(
-            core.discover_lead_session(&project.id, first.started_at),
+            core.discover_lead_session(&first.session.id, first.started_at),
             Ok(None)
         );
         let launched_ms = first
@@ -4263,7 +4322,7 @@ mod tests {
         }
         drop(conn);
         assert_eq!(
-            core.discover_lead_session(&project.id, first.started_at),
+            core.discover_lead_session(&first.session.id, first.started_at),
             Ok(Some("this-run".to_string()))
         );
         assert_eq!(
@@ -4276,7 +4335,7 @@ mod tests {
         );
         // Once saved, the answer is the saved id.
         assert_eq!(
-            core.discover_lead_session(&project.id, SystemTime::now()),
+            core.discover_lead_session(&first.session.id, SystemTime::now()),
             Ok(Some("this-run".to_string()))
         );
         core.stop_lead(&first.session.id).unwrap();
@@ -4294,24 +4353,21 @@ mod tests {
     }
 
     #[test]
-    fn discovery_needs_a_saved_lead_and_ignores_clis_whose_id_shika_chose() {
+    fn discovery_ignores_stale_leads_and_clis_whose_id_shika_chose() {
         let scratch = Scratch::new();
         let repo = scratch.repo("demo");
         let core = core_with_reporting_cli(&scratch);
         let project = core.add_project(&repo).unwrap().project;
-        assert_eq!(
-            core.discover_lead_session(&project.id, UNIX_EPOCH),
-            Err(Error::NoSavedLead)
-        );
+        assert_eq!(core.discover_lead_session("missing", UNIX_EPOCH), Ok(None));
         let (start, report) = start_lead_with(&core, &scratch, &project.id, "claude");
         let id = conversation_arg(&report, "--session-id");
         assert_eq!(
-            core.discover_lead_session(&project.id, start.started_at),
+            core.discover_lead_session(&start.session.id, start.started_at),
             Ok(Some(id))
         );
         core.set_lead_session(&project.id, None).unwrap();
         assert_eq!(
-            core.discover_lead_session(&project.id, start.started_at),
+            core.discover_lead_session(&start.session.id, start.started_at),
             Ok(None)
         );
         assert!(matches!(

@@ -412,7 +412,8 @@ impl Core {
     }
 
     /// Sets or clears the saved Lead's conversation id. [`Error::NoSavedLead`]
-    /// without a saved Lead. Quick.
+    /// without a saved Lead. Blocking: waits for the operations lock so it
+    /// cannot race the commit of an in-flight conversation discovery.
     pub fn set_lead_session(&self, project_id: &str, session_id: Option<&str>) -> Result<()> {
         if let Some(id) = session_id
             && !agents::valid_conversation_id(id)
@@ -421,12 +422,14 @@ impl Core {
                 "That conversation id is not valid.".into(),
             ));
         }
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
         self.projects
             .set_lead_session(project_id, session_id.map(str::to_string))
     }
 
-    /// Finds the conversation id of a Lead whose CLI chooses its own (Codex)
-    /// and saves it. Returns the saved id at once if there is one, `None` for
+    /// Finds the conversation id of the live Lead `lead_id` whose CLI chooses
+    /// its own (Codex) and saves it. Returns `None` for a stopped or replaced
+    /// Lead, the saved id at once if there is one, `None` for
     /// a CLI whose id Shika chose or cannot find, and `None` until Codex has
     /// written the conversation: Codex creates it when the first message is
     /// submitted, not at launch, so poll this (every few seconds, off the UI
@@ -436,10 +439,13 @@ impl Core {
     /// reads Codex's database.
     pub fn discover_lead_session(
         &self,
-        project_id: &str,
+        lead_id: &str,
         since: SystemTime,
     ) -> Result<Option<String>> {
-        let project = self.projects.get(project_id)?;
+        let Some(lead) = self.sessions.get(lead_id).filter(|session| session.lead) else {
+            return Ok(None);
+        };
+        let project = self.projects.get(&lead.project_id)?;
         let saved = project.lead.ok_or(Error::NoSavedLead)?;
         if saved.session_id.is_some() {
             return Ok(saved.session_id);
@@ -457,8 +463,32 @@ impl Core {
         else {
             return Ok(None);
         };
+        self.save_discovered_lead_session(&lead, id)
+    }
+
+    /// Commit a lookup only while its exact live Lead still owns the saved
+    /// record. Never hold the operations lock across the provider read:
+    /// SQLite may be busy while the author stops or replaces the Lead.
+    pub(super) fn save_discovered_lead_session(
+        &self,
+        lead: &Session,
+        id: String,
+    ) -> Result<Option<String>> {
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        if self.sessions.get(&lead.id).as_ref() != Some(lead) {
+            return Ok(None);
+        }
+        let Some(saved) = self.projects.get(&lead.project_id)?.lead else {
+            return Ok(None);
+        };
+        if saved.cli != lead.preset_id {
+            return Ok(None);
+        }
+        if let Some(id) = saved.session_id {
+            return Ok(Some(id));
+        }
         self.projects
-            .set_lead_session(project_id, Some(id.clone()))?;
+            .set_lead_session(&lead.project_id, Some(id.clone()))?;
         Ok(Some(id))
     }
 
@@ -642,10 +672,10 @@ impl Core {
 }
 
 /// Whether the fixed Lead path is the Lead's worktree: a real directory (not a
-/// symbolic link) that `git worktree list` names. Anything else is not the
-/// Lead's and is never read, refreshed, or removed.
+/// symbolic link), registered in the repository, with valid Git discovery
+/// and matching repository identity. Anything else is never read or removed.
 fn lead_tree_present(git: &Path, path_env: &str, repo: &Path, path: &Path) -> Result<bool> {
-    Ok(worktree::is_real_dir(path) && worktree::is_registered_worktree(git, path_env, repo, path)?)
+    worktree::is_verified_worktree(git, path_env, repo, path)
 }
 
 fn lead_tree_loss(git: &Path, path_env: &str, path: &Path) -> Result<LeadLoss> {

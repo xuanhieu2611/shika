@@ -230,6 +230,12 @@ impl PtyHost for Host {
     }
 }
 impl HostState {
+    /// Keep the agent's fixed title without seeding a turn. Leads call this
+    /// before any startup typeahead or injected summary can be captured.
+    fn keep_title(&mut self) {
+        self.prompt.finish();
+    }
+
     /// Feeds typed bytes to the naming and submission capture. A nonempty
     /// submitted line is a candidate turn; embedded paste newlines, reports,
     /// and query replies are not.
@@ -1792,7 +1798,13 @@ impl Shika {
         );
         let terminal = pane.terminal.clone();
         let state = pane.state.clone();
-        lock(&state).preparing = configured;
+        {
+            let mut host = lock(&state);
+            host.preparing = configured;
+            if lead.is_some() {
+                host.keep_title();
+            }
+        }
         if configured || !author {
             // A second launch can hide this pane before its first layout, and
             // a worker's pane is never shown until the author picks it. Give
@@ -2272,7 +2284,7 @@ impl Shika {
                 && find.due(now, card.submitted > 0)
             {
                 find.started();
-                reads.push((session.id.clone(), card.project.clone(), find.since));
+                reads.push((session.id.clone(), find.since));
             }
             if early.is_none()
                 && let Some(exit @ (model::ResumeExit::Missing | model::ResumeExit::Kept)) =
@@ -2303,12 +2315,13 @@ impl Shika {
             })
             .detach();
         }
-        for (id, project, since) in reads {
+        for (id, since) in reads {
             let core = self.core.clone();
+            let lookup = id.clone();
             cx.spawn(async move |this, cx| {
                 let found = cx
                     .background_executor()
-                    .spawn(async move { core.discover_lead_session(&project, since) })
+                    .spawn(async move { core.discover_lead_session(&lookup, since) })
                     .await;
                 let _ = this.update(cx, |this, _| {
                     let Some(run) = this
@@ -2437,8 +2450,8 @@ impl Shika {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    core.set_lead_session(&lead_project, None)?;
-                    core.stop_lead(&lead_id)
+                    core.stop_lead(&lead_id)?;
+                    core.set_lead_session(&lead_project, None)
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -10153,6 +10166,54 @@ mod host_tests {
         drop(host);
         drop(core);
         std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn idle_leads_keep_their_title_without_losing_first_submissions() {
+        let now = Instant::now();
+        // Fresh Claude/Codex/Pi, and resumed Leads, start without a prompt.
+        // Disable naming before startup typeahead can reach the host.
+        for first in [
+            "Please implement login",
+            "[shika] Shika restarted. Workers are not running.",
+        ] {
+            let mut host = HostState::default();
+            host.keep_title();
+            assert_eq!(host.submission, 0);
+            assert!(host.last_submission.is_none());
+            assert!(!host.launch_turn);
+            host.capture_typed(first.as_bytes(), now);
+            assert!(host.has_draft());
+            host.capture_typed(b"\r", now);
+            assert!(host.title.is_none());
+            assert_eq!(host.submission, 1);
+            assert_eq!(host.last_submission, Some(now));
+            assert!(!host.has_draft());
+            let mut activity = activity::Activity::new(now);
+            activity.advance(
+                activity::Signal::Unknown,
+                host.last_submission,
+                None,
+                now,
+                false,
+            );
+            assert_eq!(activity.status, Status::Working);
+            host.capture_typed(b"A second goal\r", now);
+            assert!(host.title.is_none());
+            assert_eq!(host.submission, 2);
+        }
+        // Cursor still counts its fresh bootstrap once, without naming.
+        let mut cursor = HostState::default();
+        cursor.keep_title();
+        cursor.seed_launch_prompt("You are the Lead", false, now);
+        cursor.capture_typed(b"Please implement login\r", now);
+        assert!(cursor.title.is_none());
+        assert_eq!(cursor.submission, 2);
+
+        // Ordinary tasks retain first-prompt naming.
+        let mut task = HostState::default();
+        task.capture_typed(b"Please implement login\r", now);
+        assert_eq!(task.title.as_deref(), Some("Please implement login"));
     }
 
     #[test]

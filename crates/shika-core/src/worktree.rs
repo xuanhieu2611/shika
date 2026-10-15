@@ -217,7 +217,7 @@ pub fn prepare_lead_worktree(
         Err(_) => Err(Error::LeadWorktreeInvalid(path)),
         Ok(meta) => {
             // `symlink_metadata`: a link to a directory is not a directory.
-            if !meta.is_dir() || !is_registered_worktree(git, path_env, repo, &path)? {
+            if !meta.is_dir() || !is_verified_worktree(git, path_env, repo, &path)? {
                 return Err(Error::LeadWorktreeInvalid(path));
             }
             Ok(refresh_lead_worktree(git, path_env, &path, &target))
@@ -250,6 +250,10 @@ fn refresh_lead_worktree(git: &Path, path_env: &str, path: &Path, target: &str) 
         return LeadWorktree::Unchanged;
     }
     match git_cmd(git, path_env, path)
+        // Never discover an ancestor repository if the gitfile disappears
+        // after validation. Git accepts a linked worktree's gitfile here.
+        .arg("--git-dir")
+        .arg(path.join(".git"))
         .args(["checkout", "--detach", "--quiet", target])
         .output()
     {
@@ -302,6 +306,59 @@ pub fn is_registered_worktree(
             (Some(wanted), Ok(listed)) => *wanted == listed,
             _ => Path::new(listed) == path,
         }))
+}
+
+/// A real, registered worktree whose own Git discovery resolves to this
+/// directory and this repository. Registration alone survives a deleted or
+/// replaced `.git` file and is not proof that commands act on this tree.
+/// Invalid paths are left untouched by Lead refresh and Forget.
+pub(crate) fn is_verified_worktree(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    path: &Path,
+) -> Result<bool> {
+    if !is_real_dir(path)
+        || !fs::symlink_metadata(path.join(".git")).is_ok_and(|meta| meta.is_file())
+        || !is_registered_worktree(git, path_env, repo, path)?
+        || check_worktree(git, path_env, path).is_err()
+    {
+        return Ok(false);
+    }
+    let git_path = |mut cmd: Command, field: &str| {
+        let output = cmd
+            .args(["rev-parse", "--path-format=absolute", field])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let raw = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+        fs::canonicalize(OsStr::from_bytes(raw)).ok()
+    };
+    if !matches!(
+        (
+            git_path(git_cmd(git, path_env, repo), "--git-common-dir"),
+            git_path(read_only_git(git, path_env, path), "--git-common-dir"),
+        ),
+        (Some(expected), Some(found)) if expected == found
+    ) {
+        return Ok(false);
+    }
+    // A replaced gitfile could point at the main checkout's index, or at
+    // another linked worktree in the same repository. Require the admin
+    // directory to point back at this exact gitfile as well.
+    let Some(admin) = git_path(read_only_git(git, path_env, path), "--absolute-git-dir") else {
+        return Ok(false);
+    };
+    let backlink = fs::read(admin.join("gitdir")).ok().and_then(|raw| {
+        let raw = raw.strip_suffix(b"\n").unwrap_or(&raw);
+        fs::canonicalize(OsStr::from_bytes(raw)).ok()
+    });
+    Ok(matches!(
+        (backlink, fs::canonicalize(path.join(".git"))),
+        (Some(found), Ok(expected)) if found == expected
+    ))
 }
 
 /// Where New starts a task branch.
@@ -1718,6 +1775,74 @@ mod tests {
         ));
         assert!(path.join(".git").exists());
         assert!(foreign.exists());
+    }
+
+    #[test]
+    fn stale_lead_registration_never_authorizes_git_in_another_checkout() {
+        for damage in [
+            "missing", "garbage", "main", "foreign", "sibling", "symlink",
+        ] {
+            let scratch = Scratch::new();
+            // A colon makes GIT_CEILING_DIRECTORIES insufficient by itself.
+            let repo = scratch.repo("demo:lead");
+            git_ok(&repo, &["branch", "dev"]);
+            git_ok(&repo, &["commit", "--allow-empty", "-m", "main only"]);
+            prepare_lead_worktree(&git(), "", &repo, "dev").unwrap();
+            let path = lead_worktree_path(&repo);
+            let gitfile = path.join(".git");
+            let sibling = scratch.path.join("sibling");
+            git_ok(
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    sibling.to_str().unwrap(),
+                    "main",
+                ],
+            );
+            let foreign = scratch.repo("foreign");
+            let before = rev(&repo, "HEAD");
+            let sibling_before = rev(&sibling, "HEAD");
+            let foreign_before = rev(&foreign, "HEAD");
+            fs::remove_file(&gitfile).unwrap();
+            match damage {
+                "missing" => {}
+                "garbage" => fs::write(&gitfile, "not a gitfile\n").unwrap(),
+                "main" => fs::write(
+                    &gitfile,
+                    format!("gitdir: {}\n", repo.join(".git").display()),
+                )
+                .unwrap(),
+                "foreign" => fs::write(
+                    &gitfile,
+                    format!("gitdir: {}\n", foreign.join(".git").display()),
+                )
+                .unwrap(),
+                "sibling" => fs::write(&gitfile, fs::read(sibling.join(".git")).unwrap()).unwrap(),
+                "symlink" => std::os::unix::fs::symlink(sibling.join(".git"), &gitfile).unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(is_registered_worktree(&git(), "", &repo, &path).unwrap());
+            assert!(
+                !is_verified_worktree(&git(), "", &repo, &path).unwrap(),
+                "{damage}"
+            );
+            assert_eq!(
+                prepare_lead_worktree(&git(), "", &repo, "dev"),
+                Err(Error::LeadWorktreeInvalid(path.clone())),
+                "{damage}"
+            );
+            assert!(path.exists());
+            assert_eq!(rev(&repo, "HEAD"), before, "{damage}");
+            assert_eq!(
+                head_branch(&git(), "", &repo).unwrap().as_deref(),
+                Some("main"),
+                "{damage}"
+            );
+            assert_eq!(rev(&sibling, "HEAD"), sibling_before, "{damage}");
+            assert_eq!(rev(&foreign, "HEAD"), foreign_before, "{damage}");
+        }
     }
 
     #[test]
