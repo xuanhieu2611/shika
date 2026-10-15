@@ -21,6 +21,483 @@ pub fn adjacent_tab(active: usize, shells: usize, forward: bool) -> usize {
     }
 }
 
+/// What the column's ordering needs to know about one card.
+pub struct Placement<'a> {
+    pub project: &'a str,
+    /// [`Status::rank`]: lower sorts first.
+    pub rank: u8,
+    /// A Lead card.
+    pub lead: bool,
+    /// The card's own session id, once it has one.
+    pub session: Option<&'a str>,
+    /// The Lead session that started this card.
+    pub started_by: Option<&'a str>,
+}
+
+/// A project whose Lead is saved but not running.
+pub struct Resting<'a> {
+    pub project: &'a str,
+    /// The CLI's display name, for the row's second line.
+    pub cli: &'a str,
+}
+
+/// What a row of the Leads section stands for. Entries are keyed by project
+/// and carry their own source, so the walk order does not care which kind a
+/// row is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeadKind {
+    /// A live Lead: an index into the cards.
+    Running { card: usize },
+    /// A saved Lead with no card and no PTY. Selecting it and pressing Enter
+    /// resumes it. It has no workers: those of a stopped Lead are ordinary
+    /// cards of their project.
+    Resting { cli: String },
+}
+
+/// One Lead and the workers it started, which sit directly under it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeadEntry {
+    pub project: String,
+    pub kind: LeadKind,
+    /// Card indices, sorted by attention.
+    pub workers: Vec<usize>,
+}
+
+impl LeadEntry {
+    /// The entry's cards in walking order: the Lead, then its workers. A
+    /// resting Lead has none.
+    pub fn cards(&self) -> Vec<usize> {
+        match self.kind {
+            LeadKind::Running { card } => std::iter::once(card)
+                .chain(self.workers.iter().copied())
+                .collect(),
+            LeadKind::Resting { .. } => Vec::new(),
+        }
+    }
+}
+
+/// A project's own cards, sorted by attention.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectEntry {
+    pub project: String,
+    pub cards: Vec<usize>,
+}
+
+/// The column: Leads first, then every project. A worker belongs to its
+/// Lead's entry while that Lead is live; otherwise it is an ordinary card of
+/// its project. A project with a saved Lead and no live one has a resting
+/// entry, in project order with the live ones.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ColumnLayout {
+    pub leads: Vec<LeadEntry>,
+    pub projects: Vec<ProjectEntry>,
+}
+
+impl ColumnLayout {
+    pub fn new(projects: &[&str], cards: &[Placement], resting: &[Resting]) -> Self {
+        let by_attention = |indices: &mut Vec<usize>| indices.sort_by_key(|&i| cards[i].rank);
+        let mut leads = Vec::new();
+        let mut led = vec![false; cards.len()];
+        for project in projects {
+            let before = leads.len();
+            for (lead, card) in cards.iter().enumerate() {
+                if !card.lead || card.project != *project {
+                    continue;
+                }
+                let mut workers = match card.session {
+                    Some(id) => (0..cards.len())
+                        .filter(|&i| cards[i].started_by == Some(id))
+                        .collect::<Vec<_>>(),
+                    None => Vec::new(),
+                };
+                by_attention(&mut workers);
+                for &worker in &workers {
+                    led[worker] = true;
+                }
+                led[lead] = true;
+                leads.push(LeadEntry {
+                    project: (*project).to_string(),
+                    kind: LeadKind::Running { card: lead },
+                    workers,
+                });
+            }
+            if leads.len() == before
+                && let Some(saved) = resting.iter().find(|saved| saved.project == *project)
+            {
+                leads.push(LeadEntry {
+                    project: (*project).to_string(),
+                    kind: LeadKind::Resting {
+                        cli: saved.cli.to_string(),
+                    },
+                    workers: Vec::new(),
+                });
+            }
+        }
+        let projects = projects
+            .iter()
+            .map(|project| {
+                let mut owned = (0..cards.len())
+                    .filter(|&i| !led[i] && cards[i].project == *project)
+                    .collect::<Vec<_>>();
+                by_attention(&mut owned);
+                ProjectEntry {
+                    project: (*project).to_string(),
+                    cards: owned,
+                }
+            })
+            .collect();
+        Self { leads, projects }
+    }
+}
+
+/// A resumed Lead that exits this soon after launch did not take its
+/// conversation: the CLI refused the saved id.
+pub const RESUME_GRACE: Duration = Duration::from_secs(5);
+
+/// Whether a Lead launched on a saved conversation at `launched` and found
+/// exited at `now` failed to resume. It is then started once more, fresh.
+pub fn resume_failed(launched: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(launched) < RESUME_GRACE
+}
+
+/// What became of a resumed Lead that exited within [`RESUME_GRACE`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeExit {
+    /// Core is being asked whether the CLI still stores the conversation.
+    Checking,
+    /// It is known to be gone: forget the id and start fresh, once.
+    Missing,
+    /// It exists or cannot be told: keep the id and let the Lead rest, so
+    /// the author can try again or forget it.
+    Kept,
+}
+
+impl ResumeExit {
+    /// The answer of [`shika_core::Core::saved_lead_session_exists`].
+    pub fn from_exists(exists: Option<bool>) -> Self {
+        if exists == Some(false) {
+            Self::Missing
+        } else {
+            Self::Kept
+        }
+    }
+}
+
+/// The toast when a resumed Lead's CLI quit at once but its conversation is
+/// still there.
+pub const RESUME_EXIT_KEPT: &str = "The Lead's CLI exited right after resuming. Select it to try again, or Forget it to start a new conversation.";
+
+/// How often Codex's conversation id is looked for while it is unknown.
+pub const DISCOVER_EVERY: Duration = Duration::from_secs(2);
+
+/// The wait for a Lead's conversation id that its CLI picks (Codex: it exists
+/// only after the first submitted message). At most one read is in flight and
+/// nothing runs once the id is found, so an idle app has no poller.
+pub struct Discovery {
+    /// [`shika_core::LeadStart::started_at`]: only a newer conversation counts.
+    pub since: std::time::SystemTime,
+    next: Instant,
+    reading: bool,
+}
+
+impl Discovery {
+    pub fn new(since: std::time::SystemTime, now: Instant) -> Self {
+        Self {
+            since,
+            next: now + DISCOVER_EVERY,
+            reading: false,
+        }
+    }
+
+    /// Whether a read should start now. Call [`Discovery::started`] when it
+    /// does. `submitted`: the Lead has had its first submission; Codex creates
+    /// its conversation only then, so an idle Lead is never polled.
+    pub fn due(&self, now: Instant, submitted: bool) -> bool {
+        submitted && !self.reading && now >= self.next
+    }
+
+    pub fn started(&mut self) {
+        self.reading = true;
+    }
+
+    /// The read came back without an id (or failed): look again later.
+    pub fn missed(&mut self, now: Instant) {
+        self.reading = false;
+        self.next = now + DISCOVER_EVERY;
+    }
+}
+
+/// The one line typed into a restarted Lead when there is news: workers that
+/// stopped with the app, or a checkout that was not moved. None when there is
+/// nothing to say; an ordinary move to the latest base is not news. One line,
+/// because it is a paste: nothing from Git's text may break it.
+pub fn restart_summary(
+    branches: &[String],
+    worktree: &shika_core::LeadWorktree,
+    base: &str,
+) -> Option<String> {
+    use shika_core::LeadWorktree;
+    let base = if base.is_empty() { "base" } else { base };
+    let mut parts = Vec::new();
+    if !branches.is_empty() {
+        let list = branches
+            .iter()
+            .map(|branch| format!("{} (worktree kept)", one_line(branch, 80)))
+            .collect::<Vec<_>>()
+            .join("; ");
+        parts.push(format!(
+            "Workers you started before are not running: {list}."
+        ));
+    }
+    match worktree {
+        LeadWorktree::KeptDirty => parts.push(format!(
+            "Your checkout has local changes, so it was not moved to the latest {base}."
+        )),
+        LeadWorktree::KeptCommits => parts.push(format!(
+            "Your checkout has commits that are on no branch, so it was not moved to the latest {base}."
+        )),
+        LeadWorktree::RefreshFailed(why) => parts.push(format!(
+            "Your checkout could not be moved to the latest {base}: {}.",
+            one_line(why, 100).trim_end_matches('.')
+        )),
+        _ => {}
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "[shika] Shika restarted. {} Tell the author briefly and ask how to continue.",
+        parts.join(" ")
+    ))
+}
+
+/// `text` on one line: the first non-empty line, control characters dropped,
+/// cut to `max` characters.
+fn one_line(text: &str, max: usize) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    let clean: String = line.chars().filter(|c| !c.is_control()).collect();
+    if clean.chars().count() > max {
+        format!(
+            "{}...",
+            clean.chars().take(max - 3).collect::<String>().trim_end()
+        )
+    } else {
+        clean
+    }
+}
+
+/// What the Lead's close dialog says. Stop keeps the conversation; Forget
+/// deletes the worktree and the link to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeadClose {
+    /// A live Lead. `working`: a turn is active or blocked on a dialog.
+    /// `loss`: what its worktree holds that only Forget discards.
+    Stop {
+        working: bool,
+        loss: shika_core::LeadLoss,
+    },
+    /// `working` is carried from the Stop step it came from.
+    Forget {
+        working: bool,
+        loss: shika_core::LeadLoss,
+    },
+}
+
+impl LeadClose {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::Stop { .. } => "Stop the Lead?",
+            Self::Forget { .. } => "Forget the Lead?",
+        }
+    }
+
+    /// The dialog's paragraphs, in order.
+    pub fn facts(&self) -> Vec<&'static str> {
+        match *self {
+            Self::Stop { working, .. } => {
+                let mut facts = Vec::new();
+                if working {
+                    facts.push("The agent is still working.");
+                }
+                facts.push(
+                    "Its conversation is kept. Select it to resume. Workers it started stay as your tasks.",
+                );
+                facts
+            }
+            Self::Forget { working, loss } => {
+                let mut facts = Vec::new();
+                if working {
+                    facts.push("The agent is still working.");
+                }
+                facts.push(
+                    "Forget deletes the Lead's worktree and Shika's link to its conversation. The CLI keeps its own history. Its memory notes stay for the next Lead.",
+                );
+                if loss.uncommitted {
+                    facts.push("Its worktree has uncommitted changes, which will be discarded.");
+                }
+                if loss.unreferenced_commits {
+                    facts.push(
+                        "Its worktree has commits that are on no branch, which will be lost.",
+                    );
+                }
+                facts
+            }
+        }
+    }
+
+    /// The step Forget moves a Stop dialog to.
+    pub fn forget(&self) -> Self {
+        match *self {
+            Self::Stop { working, loss } | Self::Forget { working, loss } => {
+                Self::Forget { working, loss }
+            }
+        }
+    }
+
+    /// Whether Forget needs the author's agreement to lose something.
+    pub fn discards(&self) -> bool {
+        match *self {
+            Self::Stop { loss, .. } | Self::Forget { loss, .. } => loss.any(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    fn task(project: &str, rank: u8) -> Placement<'_> {
+        Placement {
+            project,
+            rank,
+            lead: false,
+            session: None,
+            started_by: None,
+        }
+    }
+    fn lead<'a>(project: &'a str, session: Option<&'a str>, rank: u8) -> Placement<'a> {
+        Placement {
+            project,
+            rank,
+            lead: true,
+            session,
+            started_by: None,
+        }
+    }
+    fn worker<'a>(project: &'a str, by: &'a str, rank: u8) -> Placement<'a> {
+        Placement {
+            project,
+            rank,
+            lead: false,
+            session: None,
+            started_by: Some(by),
+        }
+    }
+
+    #[test]
+    fn without_a_lead_projects_sort_by_attention() {
+        let cards = [task("a", 3), task("b", 0), task("a", 1)];
+        let layout = ColumnLayout::new(&["a", "b"], &cards, &[]);
+        assert!(layout.leads.is_empty());
+        assert_eq!(layout.projects[0].cards, vec![2, 0]);
+        assert_eq!(layout.projects[1].cards, vec![1]);
+    }
+
+    #[test]
+    fn leads_come_first_with_their_workers_under_them() {
+        let cards = [
+            task("a", 0),
+            worker("b", "lb", 3),
+            lead("b", Some("lb"), 2),
+            worker("b", "lb", 1),
+            lead("a", Some("la"), 3),
+            worker("a", "la", 2),
+            task("b", 0),
+        ];
+        let layout = ColumnLayout::new(&["a", "b"], &cards, &[]);
+        assert_eq!(layout.leads.len(), 2);
+        assert_eq!(layout.leads[0].project, "a");
+        assert_eq!(layout.leads[0].kind, LeadKind::Running { card: 4 });
+        assert_eq!(layout.leads[0].workers, vec![5]);
+        assert_eq!(layout.leads[1].kind, LeadKind::Running { card: 2 });
+        assert_eq!(layout.leads[1].workers, vec![3, 1]);
+        assert_eq!(layout.projects[0].cards, vec![0]);
+        assert_eq!(layout.projects[1].cards, vec![6]);
+        assert_eq!(layout.leads[0].cards(), vec![4, 5]);
+        assert_eq!(layout.leads[1].cards(), vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn workers_of_a_closed_lead_become_ordinary_cards() {
+        let cards = [worker("a", "gone", 2), task("a", 1)];
+        let layout = ColumnLayout::new(&["a"], &cards, &[]);
+        assert!(layout.leads.is_empty());
+        assert_eq!(layout.projects[0].cards, vec![1, 0]);
+    }
+
+    #[test]
+    fn a_lead_still_starting_has_a_row_and_no_workers() {
+        let cards = [lead("a", None, 3), task("a", 0)];
+        let layout = ColumnLayout::new(&["a"], &cards, &[]);
+        assert!(layout.leads[0].workers.is_empty());
+        assert_eq!(layout.projects[0].cards, vec![1]);
+        assert_eq!(layout.leads[0].cards(), vec![0]);
+    }
+
+    #[test]
+    fn a_saved_lead_rests_in_project_order_unless_one_is_live() {
+        let cards = [lead("b", Some("lb"), 2), worker("a", "gone", 1)];
+        let saved = [
+            Resting {
+                project: "a",
+                cli: "Codex",
+            },
+            Resting {
+                project: "b",
+                cli: "Claude Code",
+            },
+            Resting {
+                project: "c",
+                cli: "Pi",
+            },
+        ];
+        let layout = ColumnLayout::new(&["a", "b", "c"], &cards, &saved);
+        let kinds: Vec<_> = layout
+            .leads
+            .iter()
+            .map(|entry| (entry.project.as_str(), entry.kind.clone()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (
+                    "a",
+                    LeadKind::Resting {
+                        cli: "Codex".into()
+                    }
+                ),
+                ("b", LeadKind::Running { card: 0 }),
+                ("c", LeadKind::Resting { cli: "Pi".into() }),
+            ]
+        );
+        // A resting Lead has no cards and no workers: the stopped Lead's
+        // worker is an ordinary card of its project.
+        assert!(layout.leads[0].cards().is_empty());
+        assert_eq!(layout.projects[0].cards, vec![1]);
+    }
+
+    #[test]
+    fn an_empty_project_keeps_its_entry() {
+        let cards = [lead("a", Some("la"), 3)];
+        let layout = ColumnLayout::new(&["a"], &cards, &[]);
+        assert!(layout.projects[0].cards.is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tab_tests {
     use super::*;
@@ -762,5 +1239,193 @@ mod tests {
             c.feed(b"\x1b[1;2R\x1b]10;rgb:ffff/ffff/ffff\x1b\\fix\r"),
             Some("fix".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod lead_tests {
+    use super::*;
+    use shika_core::LeadWorktree;
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn the_restart_summary_names_only_what_is_news() {
+        let moved = LeadWorktree::Refreshed {
+            from: "a1".into(),
+            to: "b2".into(),
+        };
+        for tree in [LeadWorktree::Created, LeadWorktree::Unchanged, moved] {
+            assert_eq!(restart_summary(&[], &tree, "origin/main"), None);
+        }
+        assert_eq!(
+            restart_summary(
+                &names(&["fix-a", "fix-b"]),
+                &LeadWorktree::Unchanged,
+                "origin/main"
+            )
+            .as_deref(),
+            Some(
+                "[shika] Shika restarted. Workers you started before are not running: fix-a (worktree kept); fix-b (worktree kept). Tell the author briefly and ask how to continue."
+            )
+        );
+        assert_eq!(
+            restart_summary(&[], &LeadWorktree::KeptDirty, "origin/dev").as_deref(),
+            Some(
+                "[shika] Shika restarted. Your checkout has local changes, so it was not moved to the latest origin/dev. Tell the author briefly and ask how to continue."
+            )
+        );
+        let both =
+            restart_summary(&names(&["fix-a"]), &LeadWorktree::KeptDirty, "origin/main").unwrap();
+        assert!(both.contains("fix-a (worktree kept). Your checkout has local changes"));
+    }
+
+    #[test]
+    fn a_failed_move_is_one_short_line() {
+        let why = "fatal: unable to read tree\n  second line\u{7}\n";
+        let line =
+            restart_summary(&[], &LeadWorktree::RefreshFailed(why.into()), "origin/main").unwrap();
+        assert!(
+            !line.contains('\n') && !line.chars().any(char::is_control),
+            "{line}"
+        );
+        assert!(
+            line.contains(
+                "could not be moved to the latest origin/main: fatal: unable to read tree."
+            ),
+            "{line}"
+        );
+        assert!(!line.contains("second line"));
+        let long = "x".repeat(500);
+        let line = restart_summary(&[], &LeadWorktree::RefreshFailed(long), "").unwrap();
+        assert!(line.len() < 300 && line.contains("latest base:"), "{line}");
+    }
+
+    #[test]
+    fn a_checkout_with_unreferenced_commits_is_named_in_the_restart_summary() {
+        let line = restart_summary(&[], &LeadWorktree::KeptCommits, "origin/main").unwrap();
+        assert!(line.contains(
+            "Your checkout has commits that are on no branch, so it was not moved to the latest origin/main."
+        ));
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn a_resume_that_exits_within_five_seconds_failed() {
+        let t0 = Instant::now();
+        assert!(resume_failed(t0, t0 + Duration::from_millis(900)));
+        assert!(resume_failed(t0, t0 + Duration::from_millis(4900)));
+        assert!(!resume_failed(t0, t0 + RESUME_GRACE));
+        assert!(!resume_failed(t0, t0 + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn discovery_reads_every_two_seconds_one_at_a_time() {
+        let t0 = Instant::now();
+        let mut find = Discovery::new(std::time::SystemTime::now(), t0);
+        assert!(!find.due(t0 + Duration::from_millis(1900), true));
+        assert!(find.due(t0 + DISCOVER_EVERY, true));
+        find.started();
+        assert!(!find.due(t0 + Duration::from_secs(30), true));
+        let later = t0 + Duration::from_secs(3);
+        find.missed(later);
+        assert!(!find.due(later + Duration::from_millis(1900), true));
+        assert!(find.due(later + DISCOVER_EVERY, true));
+    }
+
+    #[test]
+    fn the_lead_close_dialog_stops_first_and_forgets_on_request() {
+        let loss = shika_core::LeadLoss {
+            uncommitted: true,
+            unreferenced_commits: false,
+        };
+        let stop = LeadClose::Stop {
+            working: false,
+            loss,
+        };
+        assert_eq!(stop.title(), "Stop the Lead?");
+        assert_eq!(
+            stop.facts(),
+            vec![
+                "Its conversation is kept. Select it to resume. Workers it started stay as your tasks."
+            ]
+        );
+        let busy = LeadClose::Stop {
+            working: true,
+            loss: Default::default(),
+        };
+        assert_eq!(busy.facts()[0], "The agent is still working.");
+        assert_eq!(busy.facts().len(), 2);
+
+        let forget = stop.forget();
+        assert_eq!(
+            forget,
+            LeadClose::Forget {
+                working: false,
+                loss
+            }
+        );
+        assert_eq!(forget.title(), "Forget the Lead?");
+        assert_eq!(
+            forget.facts(),
+            vec![
+                "Forget deletes the Lead's worktree and Shika's link to its conversation. The CLI keeps its own history. Its memory notes stay for the next Lead.",
+                "Its worktree has uncommitted changes, which will be discarded.",
+            ]
+        );
+        assert!(forget.discards());
+        let clean = LeadClose::Forget {
+            working: false,
+            loss: Default::default(),
+        };
+        assert_eq!(clean.facts().len(), 1);
+        assert!(!clean.discards());
+        assert_eq!(forget.forget(), forget);
+    }
+
+    #[test]
+    fn the_forget_step_keeps_the_working_line_and_names_unreferenced_commits() {
+        let step = LeadClose::Stop {
+            working: true,
+            loss: shika_core::LeadLoss {
+                uncommitted: true,
+                unreferenced_commits: true,
+            },
+        }
+        .forget();
+        let facts = step.facts();
+        assert_eq!(facts[0], "The agent is still working.");
+        assert_eq!(facts.len(), 4);
+        assert_eq!(
+            facts[3],
+            "Its worktree has commits that are on no branch, which will be lost."
+        );
+        let commits_only = LeadClose::Forget {
+            working: false,
+            loss: shika_core::LeadLoss {
+                uncommitted: false,
+                unreferenced_commits: true,
+            },
+        };
+        assert!(commits_only.discards());
+        assert_eq!(commits_only.facts().len(), 2);
+    }
+
+    #[test]
+    fn an_early_exit_restarts_only_when_the_conversation_is_known_missing() {
+        assert_eq!(ResumeExit::from_exists(Some(false)), ResumeExit::Missing);
+        assert_eq!(ResumeExit::from_exists(Some(true)), ResumeExit::Kept);
+        assert_eq!(ResumeExit::from_exists(None), ResumeExit::Kept);
+        assert!(RESUME_EXIT_KEPT.contains("Select it to try again"));
+    }
+
+    #[test]
+    fn discovery_waits_for_the_first_submission() {
+        let t0 = Instant::now();
+        let find = Discovery::new(std::time::SystemTime::now(), t0);
+        assert!(!find.due(t0 + Duration::from_secs(600), false));
+        assert!(find.due(t0 + Duration::from_secs(600), true));
     }
 }

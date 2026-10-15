@@ -9,7 +9,7 @@ Start here for keyboard-related contributions. This document holds the keyboard 
 Previously, working in a terminal meant returning to the cards for most app actions:
 
 - Switch to shell: `Ctrl+Q`, `g`, `Enter`.
-- Switch agents: `Ctrl+Q`, `j`/`k`, `Enter`. `j`/`k` moves from card to card and skips project headers.
+- Switch agents: `Ctrl+Q`, `j`/`k`, `Enter`. `j`/`k` moves from card to card, Leads section first, and skips project headers.
 - Create another agent: `Ctrl+Q`, `n`, choose a CLI.
 
 The card-navigation model is still available. A small native shortcut layer now makes these transitions directly:
@@ -29,9 +29,9 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+B` | Hide or show the agent column | Unchanged; with the column hidden, `j`/`k` from cards still change the agent on screen |
 | `Cmd+Option+B` | Open or close the read-only Changes panel | Opening focuses the panel; closing from the panel restores the focus saved when it opened; closing from elsewhere moves no focus |
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
-| `Cmd+L` | Start the selected project's Lead (Agent > New Lead…), or show it when the project already has one | Picker in Lead mode (same keys as New; Tab changes project); the Lead card is selected and its terminal focused. When one exists, its terminal is focused at once. See [lead-agent.md](lead-agent.md) |
+| `Cmd+L` | Start the selected project's Lead (Agent > New Lead…), show it when the project already has one, or resume its saved one | Picker in Lead mode only when the project has no saved Lead (same keys as New; Tab changes project). A live Lead is selected and its terminal focused at once. A saved (resting) Lead starts in its saved CLI with no picker, and its new card is selected with the terminal focused; if that CLI is missing or off in Settings, the picker opens instead. See [lead-agent.md](lead-agent.md) |
 
-These are the defaults. Settings, Keyboard, can change Hide or show changes, Go to agent 1 through 9, and Go to tab 1 through 9. A new Command chord replaces the old one. Go to agent N selects the Nth card in the column, skipping project headers, and does nothing when that card is not there. Agent rows start with no chord. The other shortcuts in this table stay fixed.
+These are the defaults. Settings, Keyboard, can change Hide or show changes, Go to agent 1 through 9, and Go to tab 1 through 9. A new Command chord replaces the old one. Go to agent N selects the Nth card in the column (Leads section first, then the projects), skipping project headers, and does nothing when that card is not there. Agent rows start with no chord. The other shortcuts in this table stay fixed.
 
 Next/previous agent skips project headers, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
 
@@ -105,7 +105,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 | Shortcut registration | `main`, `cx.bind_keys` | Command bindings scoped to the `Shika` key context |
 | Action dispatch | `Shika::render`, root `.key_context("Shika")` and `.on_action` | Routes actions from cards or descendant terminal views; handlers guard busy/overlay state |
 | Existing keys | `Shika::key` | Plain-key navigation, overlay editing, and terminal `Ctrl+Q` escape hatch |
-| Navigation order | `rows`, `sorted_cards`, `adjacent_agent` | Project-grouped, status-sorted traversal; agent-only navigation skips headers |
+| Navigation order | `column_layout`, `rows`, `adjacent_agent`, `model::ColumnLayout` | Leads section first (each Lead, then its workers), then project-grouped, status-sorted traversal; agent-only navigation skips headers |
 | Focus-preserving navigation | `move_agent`, `focus_terminal` | Changes selection and, only when needed, focuses the destination task's shown terminal |
 | Overlay restoration | `overlay_return_focus`, `restore_overlay_focus` | Stores a `FocusHandle`, restores it once, defaults to card focus when none was saved |
 | Overlay entry/exit | `picker`, `picker_for`, `open_settings`, `open_base`, `cancel_overlay`, `apply_base`, `launch`, `switch_agent`, `confirm_switch` | Captures focus before opening; restores on dismissal; launch and a confirmed switch intentionally clear restoration |
@@ -121,7 +121,9 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 
 ### Agent navigation
 
-`rows()` includes project headers and every card. `adjacent_agent()` walks that order in the requested direction until it finds a card. `move_selection()` uses it for `j`/`k` and the arrows, so those keys never land on a header. `move_agent()` uses the same walk for Cmd+] / Cmd+[, guards overlay/busy state, records whether cards had focus, selects the result, and focuses its terminal only if the user was already in a terminal.
+A resting Lead (a saved Lead with no process) is a row in the Leads section and a stop for `j`/`k`, Cmd+] / Cmd+[, and Go to agent N (`Selection::Resting`). It has no terminal: moving onto it from a terminal with Cmd+] lands on the cards, and moving off it with the cards focused keeps them. **Enter** on a selected resting Lead (cards focused), a click on the row, and a click on the resting terminal area resume it (`resume_lead`); the new Lead card is selected and its terminal focused. **Cmd+Shift+W** on a selected Lead opens "Stop the Lead?" (Enter stops, `f` goes to Forget, Escape cancels); on a selected resting Lead it opens "Forget the Lead?" directly (Enter forgets). Right-click or Control-click on a resting row opens a one-item menu, Forget Lead `⌘⇧W`. Rename (`⌘⇧R`) does nothing for a Lead. These keys do nothing while a dialog is open.
+
+`rows()` follows the column from top to bottom, from `column_layout()` (pure ordering in `model::ColumnLayout`). When a project has a live or resting Lead, the Leads section comes first: for each such project in project order, the Lead card and then the workers it started, sorted by attention (a resting Lead is one row with no workers). It has no headers. The Projects section follows: each project's header, then its own cards (not Leads, not workers of a live Lead), sorted by attention. When a Lead closes, its workers return to their project's list at once. With no Lead the order is the project list alone. `adjacent_agent()` walks that order in the requested direction until it finds a card. `move_selection()` uses it for `j`/`k` and the arrows, so those keys never land on a header. `move_agent()` uses the same walk for Cmd+] / Cmd+[, guards overlay/busy state, records whether cards had focus, selects the result, and focuses its terminal only if the user was already in a terminal.
 
 The selected task's `active_tab` determines which terminal receives focus (zero is the pinned agent; shell indices start at one). Do not force every destination to the agent view: returning to a task should preserve where the user was working. Every card is painted. When the list is taller than the column, the sidebar scroll brings the selected card into view.
 

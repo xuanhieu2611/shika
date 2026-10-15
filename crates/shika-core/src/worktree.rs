@@ -43,6 +43,14 @@ pub struct JournalEntry {
     /// Missing in entries written before it was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
+    /// A Lead started this worker, so a later Lead start can report it when
+    /// its session did not survive. Missing in older entries means false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub started_by_lead: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 pub struct Journal {
@@ -79,6 +87,24 @@ impl Journal {
             .ok_or(Error::ReadJournal)?;
         entry.branch = branch.to_string();
         save(&self.path, &entries)
+    }
+
+    /// Points the entry for `path` at another project. A path with no entry
+    /// is left alone. Atomic like every journal write.
+    pub fn set_project(&self, path: &Path, project_id: &str) -> Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut entries = load(&self.path)?;
+        let mut changed = false;
+        for entry in entries.iter_mut().filter(|entry| entry.path == path) {
+            if entry.project_id != project_id {
+                entry.project_id = project_id.to_string();
+                changed = true;
+            }
+        }
+        if changed {
+            save(&self.path, &entries)?;
+        }
+        Ok(())
     }
 
     pub fn remove_path(&self, path: &Path) -> Result<()> {
@@ -120,33 +146,162 @@ pub fn create_draft(
     Ok(Draft { branch, path })
 }
 
-/// Creates `<repo>/.worktrees/shika-lead-<id>` as a detached checkout of
-/// `start`, for a project's Lead. No branch is created, so nothing the Lead
-/// does can move a task branch or the main checkout. Returns the path.
-pub fn create_lead(
+/// The folder name of a project's one Lead worktree, under `.worktrees/`.
+pub const LEAD_WORKTREE: &str = "shika-lead";
+
+/// `<repo>/.worktrees/shika-lead`, where the project's Lead always runs.
+pub fn lead_worktree_path(repo: &Path) -> PathBuf {
+    repo.join(".worktrees").join(LEAD_WORKTREE)
+}
+
+/// What a Lead start did to the project's fixed worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeadWorktree {
+    /// There was none; it is now a detached checkout of the base.
+    Created,
+    /// It was clean and already at the base.
+    Unchanged,
+    /// It was clean and moved to the latest base. Short commit ids.
+    Refreshed { from: String, to: String },
+    /// It has uncommitted changes, so it was left exactly as it was.
+    KeptDirty,
+    /// Its HEAD has commits that are on no branch, tag, or remote-tracking
+    /// ref, so moving it would orphan them. Left exactly as it was.
+    KeptCommits,
+    /// It could not be checked or moved; it was left as it was. Git's reason.
+    RefreshFailed(String),
+}
+
+/// Whether `path` is a real directory. A symbolic link is not, even to a
+/// directory: the Lead's fixed path must be the worktree itself, or Forget and
+/// refresh would act on whatever the link points at.
+pub fn is_real_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+}
+
+/// Makes `<repo>/.worktrees/shika-lead` ready for a Lead. Missing: a detached
+/// checkout of `start` (`git worktree add --detach`, no branch). Present, a
+/// registered worktree of this repository, and clean (no uncommitted changes
+/// and no commits that are on no ref): moved to `start`. Present and dirty,
+/// or holding unreferenced commits: left alone. Present but not a real
+/// directory that is a worktree of this repository (a symbolic link, a file,
+/// a folder): [`Error::LeadWorktreeInvalid`], and nothing is deleted.
+/// `start` is a ref or `HEAD` of the main checkout; it is resolved to a commit
+/// first, so the Lead's own `HEAD` is never the answer.
+pub fn prepare_lead_worktree(
     git: &Path,
     path_env: &str,
     repo: &Path,
-    id: &str,
     start: &str,
-) -> Result<PathBuf> {
+) -> Result<LeadWorktree> {
     ensure_excluded(git, path_env, repo)?;
-    let path = repo.join(".worktrees").join(format!("shika-lead-{id}"));
-    if path.exists() {
-        return Err(Error::DraftExists);
+    let path = lead_worktree_path(repo);
+    let target = rev_parse(git, path_env, repo, &format!("{start}^{{commit}}"))
+        .map_err(Error::CreateWorktree)?;
+    match fs::symlink_metadata(&path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir_all(repo.join(".worktrees")).map_err(|_| Error::CreateWorktree(None))?;
+            // `--force` also reuses a registration whose folder was deleted.
+            let output = git_cmd(git, path_env, repo)
+                .args(["worktree", "add", "--detach", "--force"])
+                .arg(&path)
+                .arg(&target)
+                .output()
+                .map_err(|_| Error::CreateWorktree(None))?;
+            if !output.status.success() {
+                let _ = fs::remove_dir(repo.join(".worktrees"));
+                return Err(Error::CreateWorktree(first_line(&output.stderr)));
+            }
+            Ok(LeadWorktree::Created)
+        }
+        Err(_) => Err(Error::LeadWorktreeInvalid(path)),
+        Ok(meta) => {
+            // `symlink_metadata`: a link to a directory is not a directory.
+            if !meta.is_dir() || !is_registered_worktree(git, path_env, repo, &path)? {
+                return Err(Error::LeadWorktreeInvalid(path));
+            }
+            Ok(refresh_lead_worktree(git, path_env, &path, &target))
+        }
     }
-    fs::create_dir_all(repo.join(".worktrees")).map_err(|_| Error::CreateWorktree(None))?;
-    let output = git_cmd(git, path_env, repo)
-        .args(["worktree", "add", "--detach"])
-        .arg(&path)
-        .arg(start)
+}
+
+/// Moves a registered, existing Lead worktree to `target` when it is clean.
+fn refresh_lead_worktree(git: &Path, path_env: &str, path: &Path, target: &str) -> LeadWorktree {
+    let reason = |line: Option<String>| {
+        LeadWorktree::RefreshFailed(line.unwrap_or_else(|| "git failed".to_string()))
+    };
+    match is_dirty(git, path_env, path) {
+        Ok(true) => return LeadWorktree::KeptDirty,
+        Ok(false) => {}
+        Err(Error::GitStatus(line)) => return reason(line),
+        Err(err) => return reason(Some(err.to_string())),
+    }
+    match has_unreferenced_commits(git, path_env, path) {
+        Ok(true) => return LeadWorktree::KeptCommits,
+        Ok(false) => {}
+        Err(Error::GitStatus(line)) => return reason(line),
+        Err(err) => return reason(Some(err.to_string())),
+    }
+    let current = match rev_parse(git, path_env, path, "HEAD") {
+        Ok(current) => current,
+        Err(line) => return reason(line),
+    };
+    if current == target {
+        return LeadWorktree::Unchanged;
+    }
+    match git_cmd(git, path_env, path)
+        .args(["checkout", "--detach", "--quiet", target])
         .output()
-        .map_err(|_| Error::CreateWorktree(None))?;
-    if !output.status.success() {
-        let _ = fs::remove_dir(repo.join(".worktrees"));
-        return Err(Error::CreateWorktree(first_line(&output.stderr)));
+    {
+        Ok(output) if output.status.success() => LeadWorktree::Refreshed {
+            from: short_commit(&current),
+            to: short_commit(target),
+        },
+        Ok(output) => reason(first_line(&output.stderr)),
+        Err(_) => reason(None),
     }
-    Ok(path)
+}
+
+fn short_commit(commit: &str) -> String {
+    commit.chars().take(10).collect()
+}
+
+/// One line of `git rev-parse --verify <rev>`, or git's first error line.
+fn rev_parse(git: &Path, path_env: &str, dir: &Path, rev: &str) -> Result<String, Option<String>> {
+    let output = git_cmd(git, path_env, dir)
+        .args(["rev-parse", "--verify", "--quiet", rev])
+        .output()
+        .map_err(|_| None)?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || text.is_empty() {
+        return Err(first_line(&output.stderr));
+    }
+    Ok(text)
+}
+
+/// Whether `git worktree list` of `repo` names `path`, compared canonicalized
+/// so `/tmp` and `/private/tmp` agree.
+pub fn is_registered_worktree(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    path: &Path,
+) -> Result<bool> {
+    let output = git_cmd(git, path_env, repo)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .map_err(|_| Error::Git(None))?;
+    if !output.status.success() {
+        return Err(Error::Git(first_line(&output.stderr)));
+    }
+    let wanted = fs::canonicalize(path).ok();
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .any(|listed| match (&wanted, fs::canonicalize(listed)) {
+            (Some(wanted), Ok(listed)) => *wanted == listed,
+            _ => Path::new(listed) == path,
+        }))
 }
 
 /// Where New starts a task branch.
@@ -402,6 +557,30 @@ fn user_ssh_command(git: &Path, path_env: &str, repo: &Path) -> bool {
 pub fn is_dirty(git: &Path, path_env: &str, worktree: &Path) -> Result<bool> {
     let output = git_cmd(git, path_env, worktree)
         .args(["status", "--porcelain"])
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    if !output.status.success() {
+        return Err(Error::GitStatus(first_line(&output.stderr)));
+    }
+    Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
+/// Whether the worktree's HEAD has commits that no branch, tag, or
+/// remote-tracking ref reaches, which a checkout of another commit would leave
+/// with nothing pointing at them. `--all` is not used: it counts HEAD itself.
+/// Reads only (`GIT_OPTIONAL_LOCKS=0`).
+pub fn has_unreferenced_commits(git: &Path, path_env: &str, worktree: &Path) -> Result<bool> {
+    let output = git_cmd(git, path_env, worktree)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args([
+            "rev-list",
+            "--max-count=1",
+            "HEAD",
+            "--not",
+            "--branches",
+            "--tags",
+            "--remotes",
+        ])
         .output()
         .map_err(|_| Error::GitStatus(None))?;
     if !output.status.success() {
@@ -1393,6 +1572,179 @@ mod tests {
         assert!(!found.names.iter().any(|name| name == "HEAD"));
     }
 
+    fn rev(dir: &Path, rev: &str) -> String {
+        rev_parse(&git(), "", dir, rev).unwrap()
+    }
+
+    #[test]
+    fn a_missing_lead_worktree_is_created_detached_from_the_start() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let before = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["branch", "--format=%(refname)"])
+            .output()
+            .unwrap()
+            .stdout;
+
+        let outcome = prepare_lead_worktree(&git(), "", &repo, "main").unwrap();
+
+        assert_eq!(outcome, LeadWorktree::Created);
+        let path = lead_worktree_path(&repo);
+        assert_eq!(path, repo.join(".worktrees").join("shika-lead"));
+        assert_eq!(rev(&path, "HEAD"), rev(&repo, "main"));
+        assert_eq!(head_branch(&git(), "", &path).unwrap(), None);
+        let after = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["branch", "--format=%(refname)"])
+            .output()
+            .unwrap()
+            .stdout;
+        assert_eq!(before, after, "no branch is created");
+        // The start `HEAD` means the main checkout's, never the Lead's own.
+        git_ok(&repo, &["commit", "--allow-empty", "-m", "second"]);
+        assert!(matches!(
+            prepare_lead_worktree(&git(), "", &repo, "HEAD").unwrap(),
+            LeadWorktree::Refreshed { .. }
+        ));
+        assert_eq!(rev(&path, "HEAD"), rev(&repo, "HEAD"));
+    }
+
+    #[test]
+    fn a_clean_lead_worktree_moves_to_the_latest_base_and_says_from_and_to() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        prepare_lead_worktree(&git(), "", &repo, "main").unwrap();
+        let path = lead_worktree_path(&repo);
+        let first = rev(&repo, "main");
+        assert_eq!(
+            prepare_lead_worktree(&git(), "", &repo, "main").unwrap(),
+            LeadWorktree::Unchanged
+        );
+
+        git_ok(&repo, &["commit", "--allow-empty", "-m", "second"]);
+        let second = rev(&repo, "main");
+        assert_eq!(
+            prepare_lead_worktree(&git(), "", &repo, "main").unwrap(),
+            LeadWorktree::Refreshed {
+                from: first[..10].to_string(),
+                to: second[..10].to_string(),
+            }
+        );
+        assert_eq!(rev(&path, "HEAD"), second);
+        assert_eq!(head_branch(&git(), "", &path).unwrap(), None);
+    }
+
+    #[test]
+    fn a_dirty_lead_worktree_is_left_exactly_as_it_is() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        prepare_lead_worktree(&git(), "", &repo, "main").unwrap();
+        let path = lead_worktree_path(&repo);
+        let first = rev(&path, "HEAD");
+        git_ok(&repo, &["commit", "--allow-empty", "-m", "second"]);
+
+        for dirty in ["untracked.txt", "README"] {
+            fs::write(path.join(dirty), "notes\n").unwrap();
+            if dirty == "README" {
+                git_ok(&path, &["add", "README"]);
+            }
+            assert_eq!(
+                prepare_lead_worktree(&git(), "", &repo, "main").unwrap(),
+                LeadWorktree::KeptDirty,
+                "{dirty}"
+            );
+            assert_eq!(rev(&path, "HEAD"), first, "{dirty}");
+            assert!(path.join(dirty).exists(), "{dirty}");
+            git_ok(&path, &["reset", "-q"]);
+            fs::remove_file(path.join(dirty)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_lead_folder_that_is_not_this_repos_worktree_is_an_error_and_is_never_deleted() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let path = lead_worktree_path(&repo);
+
+        // A plain folder with work in it.
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("mine.txt"), "keep\n").unwrap();
+        assert_eq!(
+            prepare_lead_worktree(&git(), "", &repo, "main"),
+            Err(Error::LeadWorktreeInvalid(path.clone()))
+        );
+        assert!(path.join("mine.txt").exists());
+
+        // A file, a symlink to a real worktree, and another repo's worktree.
+        fs::remove_dir_all(&path).unwrap();
+        fs::write(&path, "a file").unwrap();
+        assert!(matches!(
+            prepare_lead_worktree(&git(), "", &repo, "main"),
+            Err(Error::LeadWorktreeInvalid(_))
+        ));
+        fs::remove_file(&path).unwrap();
+
+        let other = scratch.repo("other");
+        let foreign = scratch.path.join("foreign");
+        git_ok(
+            &other,
+            &["worktree", "add", "--detach", foreign.to_str().unwrap()],
+        );
+        std::os::unix::fs::symlink(&foreign, &path).unwrap();
+        assert!(matches!(
+            prepare_lead_worktree(&git(), "", &repo, "main"),
+            Err(Error::LeadWorktreeInvalid(_))
+        ));
+        fs::remove_file(&path).unwrap();
+        git_ok(&repo, &["worktree", "add", "--detach", "../real", "main"]);
+        std::os::unix::fs::symlink(scratch.path.join("real"), &path).unwrap();
+        assert!(matches!(
+            prepare_lead_worktree(&git(), "", &repo, "main"),
+            Err(Error::LeadWorktreeInvalid(_))
+        ));
+        fs::remove_file(&path).unwrap();
+        fs::create_dir_all(&path).unwrap();
+        fs::write(
+            path.join(".git"),
+            "gitdir: ../../../other/.git/worktrees/x\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            prepare_lead_worktree(&git(), "", &repo, "main"),
+            Err(Error::LeadWorktreeInvalid(_))
+        ));
+        assert!(path.join(".git").exists());
+        assert!(foreign.exists());
+    }
+
+    #[test]
+    fn a_lead_worktree_whose_folder_was_deleted_is_created_again() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        prepare_lead_worktree(&git(), "", &repo, "main").unwrap();
+        let path = lead_worktree_path(&repo);
+        fs::remove_dir_all(&path).unwrap();
+        assert_eq!(
+            prepare_lead_worktree(&git(), "", &repo, "main").unwrap(),
+            LeadWorktree::Created
+        );
+        assert!(path.join(".git").exists());
+    }
+
+    #[test]
+    fn a_start_that_does_not_resolve_creates_nothing() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        assert!(matches!(
+            prepare_lead_worktree(&git(), "", &repo, "refs/remotes/origin/gone"),
+            Err(Error::CreateWorktree(_))
+        ));
+        assert!(!lead_worktree_path(&repo).exists());
+    }
+
     #[test]
     fn head_branch_distinguishes_detached_head_from_git_failure() {
         let scratch = Scratch::new();
@@ -1740,6 +2092,7 @@ mod tests {
             branch: "shika-draft-one".into(),
             path: "/tmp/demo/.worktrees/shika-draft-one".into(),
             base_ref: Some("refs/remotes/origin/dev".into()),
+            started_by_lead: false,
         };
         journal.add(&entry).unwrap();
         let again = Journal::open(scratch.path.join("worktrees.json"));
@@ -1749,6 +2102,7 @@ mod tests {
                 branch: "shika-draft-two".into(),
                 path: "/tmp/demo/.worktrees/shika-draft-two".into(),
                 base_ref: None,
+                started_by_lead: true,
             })
             .unwrap();
         again.remove_path(&entry.path).unwrap();
@@ -1758,6 +2112,15 @@ mod tests {
         assert!(text.contains("\"projectId\": \"p1\""), "{text}");
         // No base recorded leaves the field out, as in older files.
         assert!(!text.contains("baseRef"), "{text}");
+        // Only a Lead-started worker writes the flag; older entries read false.
+        assert_eq!(text.matches("\"startedByLead\": true").count(), 1, "{text}");
+        assert_eq!(text.matches("startedByLead").count(), 1, "{text}");
+        assert!(again.list().unwrap()[0].started_by_lead);
+        let old: Vec<JournalEntry> = serde_json::from_str(
+            r#"[{"projectId":"p","branch":"b","path":"/tmp/x/.worktrees/b"}]"#,
+        )
+        .unwrap();
+        assert!(!old[0].started_by_lead);
         assert_eq!(again.list().unwrap().len(), 1);
         again.add(&entry).unwrap();
         let text = fs::read_to_string(scratch.path.join("worktrees.json")).unwrap();

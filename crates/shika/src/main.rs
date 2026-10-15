@@ -24,7 +24,7 @@ use model::{PromptCapture, Status, TitleWatch};
 use notifications::Notifications;
 use shika_core::{
     AgentSettings, Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize,
-    JournalEntry, KeyOverrides, KnownBranches, LaunchOptions, LeadEnv, PreparationConfig,
+    JournalEntry, KeyOverrides, KnownBranches, LaunchOptions, LeadLaunch, PreparationConfig,
     PreparationControl, PreparationEvent, Project, ProjectBase, PtyEvent, PtyId, PtySize,
     PublishPreview, Session, SessionGitState, Settings, ThemeMode, ThemeSettings, Translucency,
     UsageReport, WorkerEnv,
@@ -126,13 +126,13 @@ struct SelectTerminal(usize);
 #[action(namespace = shika, no_json)]
 struct SelectAgent(usize);
 
-/// Card traversal follows row order and skips project headers.
-/// `j` / `k` and Cmd+] / Cmd+[ both use it.
+/// Agent traversal follows row order and skips project headers. A resting
+/// Lead is an agent row. `j` / `k` and Cmd+] / Cmd+[ both use it.
 fn adjacent_agent(
     rows: &[Selection],
     selection: Option<&Selection>,
     delta: isize,
-) -> Option<usize> {
+) -> Option<Selection> {
     let at = selection.and_then(|selected| rows.iter().position(|row| row == selected));
     for step in 1..=rows.len() {
         let index = match at {
@@ -142,22 +142,20 @@ fn adjacent_agent(
             None if delta > 0 => step - 1,
             None => rows.len() - step,
         };
-        if let Selection::Card(i) = rows[index] {
-            return Some(i);
+        if !matches!(rows[index], Selection::Project(_)) {
+            return Some(rows[index].clone());
         }
     }
     None
 }
 
-/// The nth card in column order, skipping project headers. None when the
-/// column does not have that many cards.
-fn nth_card(rows: &[Selection], n: usize) -> Option<usize> {
+/// The nth agent in column order, skipping project headers. None when the
+/// column does not have that many.
+fn nth_agent(rows: &[Selection], n: usize) -> Option<Selection> {
     rows.iter()
-        .filter_map(|row| match row {
-            Selection::Card(index) => Some(*index),
-            Selection::Project(_) => None,
-        })
+        .filter(|row| !matches!(row, Selection::Project(_)))
         .nth(n)
+        .cloned()
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -386,7 +384,12 @@ enum Launch {
     /// not selected, because the author is typing elsewhere.
     Worker(LaunchOptions),
     /// The project's Lead, started by the author.
-    Lead(LeadEnv),
+    Lead(LeadLaunch),
+    /// The project's Lead, started again by the app after its resume was
+    /// refused. Not an author launch: it closes no overlay, takes no busy
+    /// hold, and the selection and focus only follow the old Lead's.
+    /// `focus`: the old Lead's terminal had focus.
+    LeadRestart { launch: LeadLaunch, focus: bool },
 }
 
 struct Card {
@@ -448,11 +451,83 @@ struct Card {
     /// The CLI exit was already handed to the token read. A later Ready
     /// still reads on its own.
     usage_exit_seen: bool,
+    /// What the app tracks for a Lead beyond the card, once it has started.
+    lead_run: Option<LeadRun>,
+}
+/// What stopping a Lead (and forgetting it) came to.
+enum LeadCloseOutcome {
+    /// Stopped, and forgotten if that was asked.
+    Done,
+    /// The Lead could not be stopped: it is still live.
+    NotStopped(shika_core::Error),
+    /// Stopped, but its worktree changed since the dialog opened.
+    Changed(shika_core::LeadLoss),
+    /// Stopped, but Forget failed.
+    ForgetFailed(shika_core::Error),
+}
+/// What the app tracks for a started Lead: what core said about the start
+/// and what is still to be done about it. Memory only.
+struct LeadRun {
+    /// When a launch that resumed the saved conversation completed. A CLI
+    /// that exits within [`model::RESUME_GRACE`] refused the saved id.
+    resumed_at: Option<Instant>,
+    /// What became of a resumed Lead that exited early (see
+    /// [`model::ResumeExit`]), until the app has acted on it.
+    resume_exit: Option<model::ResumeExit>,
+    /// Looking for the conversation id the CLI picks (Codex).
+    discovery: Option<model::Discovery>,
+    /// The restart summary, until it has been typed into the Lead.
+    summary: Option<RestartSummary>,
+}
+/// The `[shika]` line for a restarted Lead and the lost workers it names.
+#[derive(Clone)]
+struct RestartSummary {
+    line: String,
+    workers: Vec<std::path::PathBuf>,
+}
+impl LeadRun {
+    fn new(start: &shika_core::LeadStart, now: Instant) -> Self {
+        let resumed = start.conversation == shika_core::LeadConversation::Resumed;
+        let branches = start
+            .lost_workers
+            .iter()
+            .map(|worker| worker.branch.clone())
+            .collect::<Vec<_>>();
+        Self {
+            resumed_at: resumed.then_some(now),
+            resume_exit: None,
+            // Codex picks its own conversation id, and only once the first
+            // message is submitted.
+            discovery: (start.session.preset_id == "codex" && !resumed)
+                .then(|| model::Discovery::new(start.started_at, now)),
+            summary: model::restart_summary(
+                &branches,
+                &start.worktree,
+                start.session.base_ref.as_deref().unwrap_or_default(),
+            )
+            .map(|line| RestartSummary {
+                line,
+                workers: start
+                    .lost_workers
+                    .iter()
+                    .map(|worker| worker.path.clone())
+                    .collect(),
+            }),
+        }
+    }
+}
+/// The column group a card was shown in, by project id: the Leads section
+/// (a Lead and its workers) or the project's own cards.
+#[derive(Clone, PartialEq, Eq)]
+enum Home {
+    Leads(String),
+    Project(String),
 }
 /// A closed card on its way out. It is no longer in `cards`, so nothing can
 /// select, count, or act on it; it only paints until its exit has played.
 struct Departing {
     card: Card,
+    home: Home,
     /// Drawn before this card, the one that followed it in its group when it
     /// closed. `None` puts it at the end of its group.
     before: Option<gpui::EntityId>,
@@ -469,6 +544,10 @@ impl Card {
             host.exited,
             host.submission != self.submitted,
         )
+    }
+    /// Rename task is offered for a started task, never for a Lead.
+    fn renamable(&self) -> bool {
+        self.session.is_some() && self.lead.is_none()
     }
     fn active_pane(&self) -> &Pane {
         self.active_tab
@@ -499,6 +578,8 @@ impl Drop for Card {
 enum Selection {
     Project(String),
     Card(usize),
+    /// The saved, stopped Lead of this project. It has no card.
+    Resting(String),
 }
 enum CloseCheck {
     Normal(SessionGitState),
@@ -594,6 +675,18 @@ enum Overlay {
         index: usize,
         state: SessionGitState,
     },
+    /// The pointer menu of a resting Lead: Forget Lead.
+    RestingMenu {
+        project: String,
+        position: gpui::Point<Pixels>,
+    },
+    /// Stop a live Lead, or forget one. `session` is the live Lead's id,
+    /// None for a resting one.
+    LeadClose {
+        project: String,
+        session: Option<String>,
+        step: model::LeadClose,
+    },
     SwitchedClose {
         index: usize,
         preview: shika_core::SwitchedBranchClose,
@@ -649,6 +742,8 @@ impl Overlay {
             Self::SwitchAgent { .. } => "the Switch agent dialog",
             Self::Picker { .. } => "the New picker",
             Self::Close { .. } | Self::SwitchedClose { .. } => "the Close task dialog",
+            Self::RestingMenu { .. } => "a card menu",
+            Self::LeadClose { .. } => "the Lead's Stop dialog",
             Self::Preparation { .. } => "the setup approval dialog",
             Self::Leftovers | Self::RemoveLeftover(_) => "the leftovers list",
             Self::RemoveProject(_) => "the Remove project dialog",
@@ -773,7 +868,7 @@ impl Shika {
         let keys = settings.keys.clone();
         let column = settings.column;
         let changes = changes::Panel::new(settings.changes, cx.focus_handle(), diagnostics.clone());
-        let (control, control_error) = match control::Server::start() {
+        let (control, control_error) = match control::Server::start(core.data_dir()) {
             Ok(server) => (Some(server), None),
             Err(error) => (None, Some(error.to_string())),
         };
@@ -959,44 +1054,97 @@ impl Shika {
             _ => None,
         }
     }
+    /// The project whose resting Lead is selected.
+    fn selected_resting(&self) -> Option<&str> {
+        match &self.selection {
+            Some(Selection::Resting(project)) => Some(project),
+            _ => None,
+        }
+    }
+    /// Projects with a saved Lead and no live one, as (project id, CLI
+    /// preset id), in project order. A Lead that is still starting counts as
+    /// live.
+    fn resting_leads(&self) -> Vec<(&str, &str)> {
+        self.projects
+            .iter()
+            .filter(|p| self.lead_card(&p.id).is_none())
+            .filter_map(|p| Some((p.id.as_str(), p.lead.as_ref()?.cli.as_str())))
+            .collect()
+    }
+    /// The CLI's display name for a saved Lead. The catalog loads a moment
+    /// after launch; until then the preset id stands in.
+    fn cli_name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.catalog
+            .as_ref()
+            .and_then(|catalog| catalog.presets.iter().find(|p| p.id == id))
+            .map_or(id, |preset| preset.name.as_str())
+    }
     fn project_id(&self) -> Option<String> {
         match &self.selection {
-            Some(Selection::Project(p)) => Some(p.clone()),
+            Some(Selection::Project(p) | Selection::Resting(p)) => Some(p.clone()),
             Some(Selection::Card(i)) => self.cards.get(*i).map(|c| c.project.clone()),
             _ => self.projects.first().map(|p| p.id.clone()),
         }
     }
-    fn rows(&self) -> Vec<Selection> {
-        let mut rows = vec![];
-        for p in &self.projects {
-            rows.push(Selection::Project(p.id.clone()));
-            for i in self.sorted_cards(&p.id) {
-                rows.push(Selection::Card(i));
-            }
-        }
-        rows
-    }
-    fn sorted_cards(&self, project: &str) -> Vec<usize> {
-        let mut indices = self
+    /// The Leads section above the projects, each Lead followed by its
+    /// workers; then every project's own cards, sorted by attention.
+    fn column_layout(&self) -> model::ColumnLayout {
+        let placements = self
             .cards
             .iter()
-            .enumerate()
-            .filter(|(_, c)| c.project == project)
-            .map(|(i, _)| i)
+            .map(|c| model::Placement {
+                project: &c.project,
+                rank: c.status.rank(),
+                lead: c.lead.is_some(),
+                session: c.session.as_ref().map(|s| s.id.as_str()),
+                started_by: c.started_by.as_deref(),
+            })
             .collect::<Vec<_>>();
-        // The Lead leads its group; the rest sort by attention.
-        indices.sort_by_key(|i| (self.cards[*i].lead.is_none(), self.cards[*i].status.rank()));
-        indices
+        let projects = self
+            .projects
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>();
+        let resting = self
+            .resting_leads()
+            .into_iter()
+            .map(|(project, cli)| model::Resting {
+                project,
+                cli: self.cli_name(cli),
+            })
+            .collect::<Vec<_>>();
+        model::ColumnLayout::new(&projects, &placements, &resting)
+    }
+    /// Walking order for `j` / `k`, Cmd+] / Cmd+[ and Go to agent N: the Leads
+    /// section (no headers), then each project's header and cards.
+    fn rows(&self) -> Vec<Selection> {
+        let layout = self.column_layout();
+        let mut rows = vec![];
+        for entry in &layout.leads {
+            match entry.kind {
+                model::LeadKind::Running { .. } => {
+                    rows.extend(entry.cards().into_iter().map(Selection::Card))
+                }
+                model::LeadKind::Resting { .. } => {
+                    rows.push(Selection::Resting(entry.project.clone()))
+                }
+            }
+        }
+        for entry in &layout.projects {
+            rows.push(Selection::Project(entry.project.clone()));
+            rows.extend(entry.cards.iter().copied().map(Selection::Card));
+        }
+        rows
     }
     fn move_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
         // Headers, including a project with no cards, are not stops.
-        let Some(i) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) else {
+        let Some(row) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) else {
             return;
         };
-        self.selection = Some(Selection::Card(i));
+        self.selection = Some(row);
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1004,24 +1152,30 @@ impl Shika {
         if self.busy || self.overlay.is_some() {
             return;
         }
-        if let Some(i) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) {
-            self.select_card_keeping_surface(i, window, cx);
+        if let Some(row) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) {
+            self.select_agent_keeping_surface(row, window, cx);
         }
     }
-    /// Select a card and keep the surface that invoked it: a terminal stays
-    /// in the destination terminal, the Changes panel stays in the panel,
-    /// and the cards stay on the cards.
-    fn select_card_keeping_surface(
+    /// Select an agent row and keep the surface that invoked it: a terminal
+    /// stays in the destination terminal, the Changes panel stays in the
+    /// panel, and the cards stay on the cards. A resting Lead has no
+    /// terminal, so leaving a terminal for it lands on the cards.
+    fn select_agent_keeping_surface(
         &mut self,
-        index: usize,
+        row: Selection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let panel_focused = self.changes.open && self.changes.focus.is_focused(window);
         let terminal_focused = !self.focus.is_focused(window) && !panel_focused;
-        self.selection = Some(Selection::Card(index));
+        let card = matches!(row, Selection::Card(_));
+        self.selection = Some(row);
         if terminal_focused {
-            self.focus_terminal(window, cx);
+            if card {
+                self.focus_terminal(window, cx);
+            } else {
+                window.focus(&self.focus, cx);
+            }
         }
         cx.notify();
     }
@@ -1029,10 +1183,10 @@ impl Shika {
         if self.busy || self.overlay.is_some() {
             return;
         }
-        let Some(card) = nth_card(&self.rows(), index) else {
+        let Some(row) = nth_agent(&self.rows(), index) else {
             return;
         };
-        self.select_card_keeping_surface(card, window, cx);
+        self.select_agent_keeping_surface(row, window, cx);
     }
     fn restore_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focus = self
@@ -1158,7 +1312,32 @@ impl Shika {
             .collect()
     }
 
-    /// The picker's choice in Lead mode: the project's one Lead.
+    /// What a Lead is started with, or None (and a toast) without the control
+    /// socket it talks through.
+    fn lead_launch(&mut self, project: &str) -> Option<LeadLaunch> {
+        let Some(server) = &self.control else {
+            let why = self.control_error.clone().unwrap_or_default();
+            self.message(format!("The Lead needs Shika's control socket: {why}"));
+            return None;
+        };
+        let name = self
+            .projects
+            .iter()
+            .find(|p| p.id == project)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        Some(LeadLaunch {
+            socket: server.socket(),
+            token: shika_core::control::new_token(),
+            bin_dir: server.bin_dir(),
+            instructions: control::lead_guide(&server.bin_dir()),
+            cursor_bootstrap: Some(control::lead_prompt(&name, &server.bin_dir())),
+        })
+    }
+
+    /// The picker's choice in Lead mode: the project's one Lead, in this CLI.
+    /// A saved conversation of another CLI is not continued (core starts a
+    /// new one).
     fn start_lead(
         &mut self,
         project: String,
@@ -1172,28 +1351,14 @@ impl Shika {
             return;
         }
         // Tab can move the picker to a project that already has its Lead.
-        if self.show_lead(&project, window, cx) {
+        if self.show_live_lead(&project, window, cx) {
             self.overlay = None;
             self.overlay_return_focus = None;
             return;
         }
-        let Some(server) = &self.control else {
-            let why = self.control_error.clone().unwrap_or_default();
-            self.message(format!("The Lead needs Shika's control socket: {why}"));
+        let Some(env) = self.lead_launch(&project) else {
             cx.notify();
             return;
-        };
-        let name = self
-            .projects
-            .iter()
-            .find(|p| p.id == project)
-            .map(|p| p.name.clone())
-            .unwrap_or_default();
-        let env = LeadEnv {
-            socket: server.socket(),
-            token: shika_core::control::new_token(),
-            bin_dir: server.bin_dir(),
-            prompt: control::lead_prompt(&name, &server.bin_dir()),
         };
         self.begin_launch(
             project,
@@ -1207,8 +1372,9 @@ impl Shika {
         );
     }
 
-    /// Cmd+L and Agent > New Lead: the selected project's Lead, started or,
-    /// when it exists, shown with its terminal focused.
+    /// Cmd+L and Agent > New Lead: the selected project's Lead, shown when
+    /// live, resumed when saved, and chosen from the picker only when the
+    /// project has none.
     fn new_lead(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;
@@ -1218,9 +1384,13 @@ impl Shika {
             cx.notify();
             return;
         };
-        if self.show_lead(&project, window, cx) {
-            return;
+        if !self.show_lead(&project, window, cx) {
+            self.lead_picker(project, window, cx);
         }
+    }
+
+    /// The picker in Lead mode for `project`.
+    fn lead_picker(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.control.is_none() {
             let why = self.control_error.clone().unwrap_or_default();
             self.message(format!("The Lead needs Shika's control socket: {why}"));
@@ -1238,9 +1408,14 @@ impl Shika {
         cx.notify();
     }
 
-    /// Selects the project's Lead and focuses its terminal. False when it
-    /// has none.
-    fn show_lead(&mut self, project: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// Selects the project's live Lead and focuses its terminal. False when
+    /// it has none.
+    fn show_live_lead(
+        &mut self,
+        project: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(index) = self.lead_card(project) else {
             return false;
         };
@@ -1248,6 +1423,64 @@ impl Shika {
         self.focus_terminal(window, cx);
         cx.notify();
         true
+    }
+
+    /// Shows the project's Lead: the live one, else its saved one, resumed.
+    /// False when the project has neither.
+    fn show_lead(&mut self, project: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.show_live_lead(project, window, cx) {
+            return true;
+        }
+        if self.resting_leads().iter().any(|(id, _)| *id == project) {
+            self.resume_lead(project.to_string(), window, cx);
+            return true;
+        }
+        false
+    }
+
+    /// Starts a project's saved Lead in the CLI it ran in, with no picker.
+    /// When that CLI is not found or is turned off in Settings the picker
+    /// opens instead: another CLI starts a new conversation.
+    fn resume_lead(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        let Some(saved) = self
+            .projects
+            .iter()
+            .find(|p| p.id == project)
+            .and_then(|p| p.lead.as_ref())
+            .map(|lead| lead.cli.clone())
+        else {
+            return;
+        };
+        let Some(catalog) = &self.catalog else {
+            self.message("Still looking for your agents. Try again in a moment.".into());
+            cx.notify();
+            return;
+        };
+        let preset = catalog
+            .presets
+            .iter()
+            .find(|p| p.id == saved && p.found() && self.agents.enabled(&p.id))
+            .cloned();
+        match preset {
+            Some(preset) => self.start_lead(project, preset, window, cx),
+            None => {
+                self.message(format!(
+                    "{} is not available. Another agent starts a new conversation.",
+                    self.cli_name(&saved)
+                ));
+                self.lead_picker(project, window, cx);
+            }
+        }
+    }
+
+    /// Re-reads the saved projects, which hold each project's saved Lead.
+    fn reload_projects(&mut self) {
+        if let Ok(projects) = self.core.projects() {
+            self.projects = projects;
+        }
     }
 
     fn request_launch(
@@ -1449,8 +1682,26 @@ impl Shika {
     /// motion the card goes at once.
     fn depart(&mut self, index: usize, cx: &mut Context<Self>) {
         let project = self.cards[index].project.clone();
-        let before = self
-            .sorted_cards(&project)
+        // It leaves from the group it was shown in, before the card that
+        // followed it there.
+        let layout = self.column_layout();
+        let (home, group) = match layout
+            .leads
+            .iter()
+            .find(|entry| entry.cards().contains(&index))
+        {
+            Some(entry) => (Home::Leads(project), entry.cards()),
+            None => (
+                Home::Project(project.clone()),
+                layout
+                    .projects
+                    .iter()
+                    .find(|entry| entry.project == project)
+                    .map(|entry| entry.cards.clone())
+                    .unwrap_or_default(),
+            ),
+        };
+        let before = group
             .into_iter()
             .skip_while(|&i| i != index)
             .nth(1)
@@ -1462,7 +1713,12 @@ impl Shika {
         }
         self.departing_serial += 1;
         let key = self.departing_serial;
-        self.departing.push(Departing { card, before, key });
+        self.departing.push(Departing {
+            card,
+            home,
+            before,
+            key,
+        });
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(model::EXIT).await;
             let _ = this.update(cx, |this, cx| {
@@ -1502,14 +1758,16 @@ impl Shika {
             retried = true;
             self.remove_card(i);
         }
-        let author = retried || !matches!(launch, Launch::Worker(_));
+        let author = retried || !matches!(launch, Launch::Worker(_) | Launch::LeadRestart { .. });
         let worker_token = match &launch {
             Launch::Worker(options) => options.control.as_ref().map(|c| c.token.clone()),
             _ => None,
         };
         let (started_by, lead) = match &launch {
             Launch::Worker(options) => (options.started_by.clone(), None),
-            Launch::Lead(env) => (None, Some(control::LeadState::new(env.token.clone()))),
+            Launch::Lead(env) | Launch::LeadRestart { launch: env, .. } => {
+                (None, Some(control::LeadState::new(env.token.clone())))
+            }
             Launch::Task => (None, None),
         };
         if author {
@@ -1590,6 +1848,7 @@ impl Shika {
             closing: false,
             next_agent: None,
             usage_exit_seen: false,
+            lead_run: None,
         });
         if author {
             self.selection = Some(Selection::Card(index));
@@ -1598,6 +1857,9 @@ impl Shika {
         cx.notify();
         let core = self.core.clone();
         let finished = launch.clone();
+        // What core says about a Lead start, for the completion below.
+        let lead_start: Arc<Mutex<Option<shika_core::LeadStart>>> = Arc::default();
+        let started_lead = lead_start.clone();
         cx.spawn_in(window, async move |this, cx| {
             let measured = loop {
                 if let Some(size) = lock(&state).measured {
@@ -1642,9 +1904,13 @@ impl Shika {
                         }
                     };
                     let result = match launch {
-                        Launch::Lead(env) => {
-                            core.create_lead(&project, &preset.id, size, sink, env)
-                        }
+                        Launch::Lead(launch) | Launch::LeadRestart { launch, .. } => core
+                            .start_lead(&project, &preset.id, size, sink, launch)
+                            .map(|start| {
+                                let session = start.session.clone();
+                                *lock(&started_lead) = Some(start);
+                                session
+                            }),
                         Launch::Worker(options) => core.create_session_with_preparation(
                             &project, &preset.id, size, sink, options, control, report,
                         ),
@@ -1708,17 +1974,41 @@ impl Shika {
                                     prompt: Some(prompt),
                                     ..
                                 }) => host.seed_launch_prompt(prompt, true, now),
-                                Launch::Lead(env) => {
-                                    host.seed_launch_prompt(&env.prompt, false, now)
+                                // Only when core passed it: a fresh Cursor
+                                // start. Every other Lead waits for the author.
+                                Launch::Lead(LeadLaunch {
+                                    cursor_bootstrap: Some(prompt),
+                                    ..
+                                })
+                                | Launch::LeadRestart {
+                                    launch:
+                                        LeadLaunch {
+                                            cursor_bootstrap: Some(prompt),
+                                            ..
+                                        },
+                                    ..
+                                } if lock(&lead_start)
+                                    .as_ref()
+                                    .is_some_and(|start| start.bootstrap_sent) =>
+                                {
+                                    host.seed_launch_prompt(prompt, false, now)
                                 }
                                 _ => {}
                             }
+                        }
+                        if let Some(start) = lock(&lead_start).take() {
+                            this.cards[index].lead_run = Some(LeadRun::new(&start, Instant::now()));
+                            // The saved Lead is on disk now; a stop leaves
+                            // its resting row.
+                            this.reload_projects();
                         }
                         this.cards[index].session = Some(session);
                         this.cards[index].launch_control = None;
                         // Completion never steals focus from another card or
                         // an overlay opened while installation was running.
-                        if this.selection == Some(Selection::Card(index)) && this.overlay.is_none()
+                        if this.selection == Some(Selection::Card(index))
+                            && this.overlay.is_none()
+                            && !matches!(finished, Launch::LeadRestart { focus: false, .. })
                         {
                             this.focus_terminal(window, cx);
                         }
@@ -1955,6 +2245,242 @@ impl Shika {
         cx.notify();
     }
 
+    /// What a started Lead still needs: its conversation id when the CLI
+    /// picks it (Codex) once it has been used, and what to do about a resumed
+    /// CLI that exited at once. Nothing runs for a Lead that needs neither.
+    fn lead_upkeep(&mut self, now: Instant, window: &mut Window, cx: &mut Context<Self>) {
+        let mut reads = vec![];
+        let mut checks = vec![];
+        let mut early = None;
+        for card in &mut self.cards {
+            let (Some(run), Some(session)) = (&mut card.lead_run, &card.session) else {
+                continue;
+            };
+            let exited = lock(&card.agent.state).exited;
+            if let Some(launched) = run.resumed_at
+                && exited
+            {
+                run.resumed_at = None;
+                if model::resume_failed(launched, now) {
+                    // Did the CLI refuse the id, or quit for another reason?
+                    run.resume_exit = Some(model::ResumeExit::Checking);
+                    checks.push((session.id.clone(), card.project.clone()));
+                }
+            }
+            if !exited
+                && let Some(find) = &mut run.discovery
+                && find.due(now, card.submitted > 0)
+            {
+                find.started();
+                reads.push((session.id.clone(), card.project.clone(), find.since));
+            }
+            if early.is_none()
+                && let Some(exit @ (model::ResumeExit::Missing | model::ResumeExit::Kept)) =
+                    run.resume_exit
+            {
+                early = Some((session.id.clone(), exit));
+            }
+        }
+        for (id, project) in checks {
+            let core = self.core.clone();
+            cx.spawn(async move |this, cx| {
+                let exists = cx
+                    .background_executor()
+                    .spawn(async move { core.saved_lead_session_exists(&project) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(run) = this
+                        .cards
+                        .iter_mut()
+                        .find(|card| card.session.as_ref().is_some_and(|s| s.id == id))
+                        .and_then(|card| card.lead_run.as_mut())
+                    {
+                        run.resume_exit =
+                            Some(model::ResumeExit::from_exists(exists.ok().flatten()));
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        for (id, project, since) in reads {
+            let core = self.core.clone();
+            cx.spawn(async move |this, cx| {
+                let found = cx
+                    .background_executor()
+                    .spawn(async move { core.discover_lead_session(&project, since) })
+                    .await;
+                let _ = this.update(cx, |this, _| {
+                    let Some(run) = this
+                        .cards
+                        .iter_mut()
+                        .find(|card| card.session.as_ref().is_some_and(|s| s.id == id))
+                        .and_then(|card| card.lead_run.as_mut())
+                    else {
+                        return;
+                    };
+                    // Found: saved by core, nothing left to look for.
+                    if matches!(found, Ok(Some(_))) {
+                        run.discovery = None;
+                    } else if let Some(find) = &mut run.discovery {
+                        find.missed(Instant::now());
+                    }
+                });
+            })
+            .detach();
+        }
+        // A dialog or another launch in progress waits its turn.
+        if let Some((id, exit)) = early
+            && !self.busy
+            && self.overlay.is_none()
+        {
+            match exit {
+                model::ResumeExit::Missing => self.restart_lead_fresh(id, window, cx),
+                _ => self.rest_exited_lead(id, window, cx),
+            }
+        }
+    }
+
+    /// The card of a Lead by session id, and whether its terminal has focus.
+    fn lead_card_state(
+        &mut self,
+        id: &str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(usize, bool, bool)> {
+        let index = self
+            .cards
+            .iter()
+            .position(|card| card.session.as_ref().is_some_and(|s| s.id == id))?;
+        if let Some(run) = &mut self.cards[index].lead_run {
+            run.resume_exit = None;
+        }
+        let focused = self.cards[index]
+            .active_pane()
+            .view
+            .focus_handle(cx)
+            .is_focused(window);
+        Some((
+            index,
+            self.selection == Some(Selection::Card(index)),
+            focused,
+        ))
+    }
+
+    /// A resumed Lead whose CLI quit at once while its conversation is still
+    /// there (or cannot be checked): stop it and let it rest, keeping the
+    /// saved id. Selecting it tries again; Forget starts over.
+    fn rest_exited_lead(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, _, focused)) = self.lead_card_state(&id, window, cx) else {
+            return;
+        };
+        let Some(project) = self
+            .cards
+            .iter()
+            .find(|card| card.session.as_ref().is_some_and(|s| s.id == id))
+            .map(|card| card.project.clone())
+        else {
+            return;
+        };
+        let core = self.core.clone();
+        let lead_id = id.clone();
+        self.busy = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { core.stop_lead(&lead_id) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok(()) => {
+                        this.lead_departed(Some(&id), &project, false, cx);
+                        this.message(model::RESUME_EXIT_KEPT.into());
+                        if focused && this.overlay.is_none() {
+                            window.focus(&this.focus, cx);
+                        }
+                    }
+                    Err(e) => this.message(e.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// A Lead whose saved conversation the CLI no longer has (it exited at
+    /// once): forget the id, stop it, and start the same CLI once more, fresh.
+    /// The new Lead was not resumed, so this cannot repeat. The app, not the
+    /// author, starts it, so it touches no overlay and moves focus only if
+    /// the old Lead's terminal had it.
+    fn restart_lead_fresh(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((index, was_selected, had_focus)) = self.lead_card_state(&id, window, cx) else {
+            return;
+        };
+        let project = self.cards[index].project.clone();
+        let Some(preset) = self
+            .catalog
+            .as_ref()
+            .and_then(|c| {
+                c.presets
+                    .iter()
+                    .find(|p| p.id == self.cards[index].launch_preset)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let core = self.core.clone();
+        let (lead_project, lead_id) = (project.clone(), id.clone());
+        self.busy = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    core.set_lead_session(&lead_project, None)?;
+                    core.stop_lead(&lead_id)
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                if result.is_err()
+                    || !this
+                        .cards
+                        .iter()
+                        .any(|card| card.session.as_ref().is_some_and(|s| s.id == id))
+                {
+                    this.message("Could not restart the Lead.".into());
+                    cx.notify();
+                    return;
+                }
+                this.lead_departed(Some(&id), &project, false, cx);
+                this.message("Could not resume the Lead's conversation. Started a new one.".into());
+                if let Some(launch) = this.lead_launch(&project) {
+                    // The new card is pushed last; a selected old Lead hands
+                    // its selection over.
+                    if was_selected {
+                        this.selection = Some(Selection::Card(this.cards.len()));
+                    }
+                    this.begin_launch(
+                        project,
+                        preset,
+                        false,
+                        None,
+                        Launch::LeadRestart {
+                            launch,
+                            focus: had_focus,
+                        },
+                        None,
+                        window,
+                        cx,
+                    );
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.notifications.refresh_diagnostics();
         // A drag moves the column every frame; the file is written once it ends.
@@ -1980,6 +2506,7 @@ impl Shika {
         let mut changed = self.drain_update_notice(cx);
         // The Lead's shika commands run here, with the rest of the state.
         self.drain_control(window, cx);
+        self.lead_upkeep(now, window, cx);
         // Reconcile agent/shell branch renames independently of the one-shot
         // CLI title watch. Git runs off-thread, with only one batch in flight.
         if !self.branch_check_pending
@@ -3099,7 +3626,7 @@ impl Shika {
         self.overlay = Some(Overlay::CardMenu(CardMenu {
             target: card.agent.view.entity_id(),
             position,
-            action: if card.session.is_some() {
+            action: if card.renamable() {
                 CardMenuAction::Rename
             } else {
                 CardMenuAction::Close
@@ -3134,7 +3661,7 @@ impl Shika {
         let Some(card) = index.and_then(|index| self.cards.get(index)) else {
             return;
         };
-        let Some(session) = &card.session else {
+        let Some(session) = card.session.as_ref().filter(|_| card.lead.is_none()) else {
             return;
         };
         let target = card.agent.view.entity_id();
@@ -3221,6 +3748,10 @@ impl Shika {
         if self.busy {
             return;
         }
+        if let Some(project) = self.selected_resting().map(str::to_string) {
+            self.open_lead_close(project, None, window, cx);
+            return;
+        }
         let Some(index) = self.selected_card() else {
             return;
         };
@@ -3241,6 +3772,12 @@ impl Shika {
             return;
         };
         let id = session.id.clone();
+        if self.cards[index].lead.is_some() {
+            // A Lead is stopped, not closed: its conversation is kept.
+            let project = self.cards[index].project.clone();
+            self.open_lead_close(project, Some(id), window, cx);
+            return;
+        }
         let task_id = id.clone();
         let working = self.cards[index].running();
         let core = self.core.clone();
@@ -3287,6 +3824,235 @@ impl Shika {
         })
         .detach();
     }
+    /// Opens the Lead's close dialog: Stop for a live Lead (`session`), Forget
+    /// for a resting one. Reads whether its worktree has changes first.
+    fn open_lead_close(
+        &mut self,
+        project: String,
+        session: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        // The same test as Close: an active or blocked turn is stated.
+        let working = session.as_ref().is_some_and(|id| {
+            self.cards
+                .iter()
+                .any(|c| c.session.as_ref().is_some_and(|s| &s.id == id) && c.running())
+        });
+        self.overlay_return_focus = window.focused(cx);
+        self.busy = true;
+        let core = self.core.clone();
+        let lookup = project.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let loss = cx
+                .background_executor()
+                .spawn(async move { core.lead_loss(&lookup).unwrap_or_default() })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                let step = if session.is_some() {
+                    model::LeadClose::Stop { working, loss }
+                } else {
+                    model::LeadClose::Forget { working, loss }
+                };
+                this.overlay = Some(Overlay::LeadClose {
+                    project,
+                    session,
+                    step,
+                });
+                window.focus(&this.focus, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Stop (`forget` false) or Forget the Lead the dialog is about. Stop
+    /// ends its process and keeps the conversation, worktree, and record;
+    /// Forget also deletes the worktree and the link to the conversation.
+    ///
+    /// Once the Lead is stopped its card always leaves (the resting row
+    /// appears), whatever Forget then does: a Forget that fails is reported
+    /// after, and one that finds the worktree changed since the dialog opened
+    /// asks again with the new facts.
+    fn finish_lead_close(&mut self, forget: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(Overlay::LeadClose {
+            project,
+            session,
+            step,
+        }) = &self.overlay
+        else {
+            return;
+        };
+        let (project, session) = (project.clone(), session.clone());
+        // Discard only what the dialog said it would.
+        let discard = matches!(step, model::LeadClose::Forget { .. }) && step.discards();
+        let working = match step {
+            model::LeadClose::Stop { working, .. } | model::LeadClose::Forget { working, .. } => {
+                *working
+            }
+        };
+        if let Some(card) = self.cards.iter_mut().find(|c| {
+            c.session
+                .as_ref()
+                .is_some_and(|s| Some(&s.id) == session.as_ref())
+        }) {
+            card.closing = true;
+        }
+        let core = self.core.clone();
+        let (lead_project, lead_session) = (project.clone(), session.clone());
+        self.busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    if let Some(id) = &lead_session
+                        && let Err(e) = core.stop_lead(id)
+                    {
+                        return LeadCloseOutcome::NotStopped(e);
+                    }
+                    if !forget {
+                        return LeadCloseOutcome::Done;
+                    }
+                    if !discard {
+                        // The tree can change while the dialog is open.
+                        match core.lead_loss(&lead_project) {
+                            Ok(loss) if loss.any() => return LeadCloseOutcome::Changed(loss),
+                            Ok(_) => {}
+                            Err(e) => return LeadCloseOutcome::ForgetFailed(e),
+                        }
+                    }
+                    match core.forget_lead(&lead_project, discard) {
+                        Ok(()) => LeadCloseOutcome::Done,
+                        Err(e) => LeadCloseOutcome::ForgetFailed(e),
+                    }
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match outcome {
+                    LeadCloseOutcome::NotStopped(e) => {
+                        if let Some(card) = this.cards.iter_mut().find(|c| {
+                            c.session
+                                .as_ref()
+                                .is_some_and(|s| Some(&s.id) == session.as_ref())
+                        }) {
+                            card.closing = false;
+                        }
+                        this.message(e.to_string());
+                    }
+                    outcome => {
+                        let forgotten = matches!(outcome, LeadCloseOutcome::Done) && forget;
+                        this.lead_departed(session.as_deref(), &project, forgotten, cx);
+                        this.overlay = None;
+                        match outcome {
+                            LeadCloseOutcome::Changed(loss) => {
+                                this.overlay = Some(Overlay::LeadClose {
+                                    project,
+                                    session: None,
+                                    step: model::LeadClose::Forget { working, loss },
+                                });
+                            }
+                            LeadCloseOutcome::ForgetFailed(e) => {
+                                this.overlay_return_focus = None;
+                                this.message(e.to_string());
+                            }
+                            _ => this.overlay_return_focus = None,
+                        }
+                        window.focus(&this.focus, cx);
+                    }
+                }
+                this.settle_lead_dialog(window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// A stopped Lead leaves the column: its card departs and the selection
+    /// settles. Stop leaves a resting row in the same place. Forget leaves
+    /// none, so the next card takes the selection. Positions can change while
+    /// a stop runs, so the card is found again by session id.
+    fn lead_departed(
+        &mut self,
+        session: Option<&str>,
+        project: &str,
+        forgotten: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let index = session.and_then(|id| {
+            self.cards
+                .iter()
+                .position(|c| c.session.as_ref().is_some_and(|s| s.id == id))
+        });
+        self.reload_projects();
+        self.leftovers = self.core.leftovers_list().unwrap_or_default();
+        let before = self.selection.take();
+        let mine = match (&before, index) {
+            (Some(Selection::Card(at)), Some(index)) => *at == index,
+            (Some(Selection::Resting(p)), _) => p == project,
+            _ => false,
+        };
+        if let Some(index) = index {
+            self.depart(index, cx);
+        }
+        let shifted = match (before, index) {
+            (Some(Selection::Card(at)), Some(index)) if at > index => Some(Selection::Card(at - 1)),
+            (other, _) => other,
+        };
+        self.selection = if !mine {
+            shifted
+        } else if !forgotten {
+            Some(Selection::Resting(project.to_string()))
+        } else if self.cards.is_empty() {
+            Some(Selection::Project(project.to_string()))
+        } else {
+            Some(Selection::Card(
+                index.unwrap_or(0).min(self.cards.len() - 1),
+            ))
+        };
+        self.last_revealed_selection = self.selection.clone();
+    }
+
+    /// Right-click on a resting Lead: a menu with one item, Forget Lead.
+    fn open_resting_menu(
+        &mut self,
+        project: String,
+        position: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
+        self.overlay_return_focus = window.focused(cx);
+        self.overlay = Some(Overlay::RestingMenu { project, position });
+        // Do not select the row just to open a menu.
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// The menu's Forget Lead: the same dialog Cmd+Shift+W opens.
+    fn forget_from_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Overlay::RestingMenu { project, .. }) = &self.overlay else {
+            return;
+        };
+        let project = project.clone();
+        self.overlay = None;
+        let returns_to = self.overlay_return_focus.take();
+        self.open_lead_close(project, None, window, cx);
+        if self.busy {
+            self.overlay_return_focus = returns_to;
+        }
+    }
+
     fn finish_close(
         &mut self,
         index: usize,
@@ -3391,12 +4157,9 @@ impl Shika {
         self.key_recording = false;
         self.key_note = None;
         let shell = match &self.overlay {
-            // The Lead has no shell to commit in.
             // A Lead that asked for the dialog gets selection and focus back.
             Some(Overlay::Close { index, state })
-                if (state.dirty || state.unpushed)
-                    && self.cards[*index].lead.is_none()
-                    && !self.lead_dialog_is_for(*index) =>
+                if (state.dirty || state.unpushed) && !self.lead_dialog_is_for(*index) =>
             {
                 Some(*index)
             }
@@ -3870,7 +4633,7 @@ impl Shika {
                             menu.target_index(
                                 self.cards.iter().map(|card| card.agent.view.entity_id()),
                             )
-                            .is_some_and(|index| self.cards[index].session.is_some())
+                            .is_some_and(|index| self.cards[index].renamable())
                         } else {
                             false
                         };
@@ -4210,6 +4973,20 @@ impl Shika {
                         _ => {}
                     }
                 }
+                Some(Overlay::RestingMenu { .. }) => match key {
+                    "enter" => self.forget_from_menu(window, cx),
+                    "escape" => self.cancel_overlay(window, cx),
+                    _ => {}
+                },
+                Some(Overlay::LeadClose { step, .. }) => {
+                    let stopping = matches!(step, model::LeadClose::Stop { .. });
+                    match key {
+                        "enter" => self.finish_lead_close(!stopping, window, cx),
+                        "f" if stopping => *step = step.forget(),
+                        "escape" => self.cancel_overlay(window, cx),
+                        _ => {}
+                    }
+                }
                 Some(Overlay::SwitchedClose { index, .. }) => {
                     let i = *index;
                     match key {
@@ -4325,7 +5102,10 @@ impl Shika {
             "k" | "up" => self.move_selection(-1, window, cx),
             "a" => self.add_project(cx),
             "r" => self.retry_preparation(window, cx),
-            "enter" => self.focus_terminal(window, cx),
+            "enter" => match self.selection.clone() {
+                Some(Selection::Resting(project)) => self.resume_lead(project, window, cx),
+                _ => self.focus_terminal(window, cx),
+            },
             "b" => {
                 if self.busy || self.selection.is_none() {
                     return;
@@ -5026,10 +5806,13 @@ impl Shika {
         self.title_drag(row, cx)
     }
 
-    /// One project: its header, then every card.
+    /// One project: its header, then the author's own cards. `indices` is
+    /// that list: not a Lead, and not a worker of a live Lead.
+    #[allow(clippy::too_many_arguments)]
     fn project_group(
         &self,
         project: &Project,
+        indices: Vec<usize>,
         home: Option<&std::path::Path>,
         chrome: &Chrome,
         cards_focused: bool,
@@ -5038,7 +5821,6 @@ impl Shika {
     ) -> impl IntoElement {
         let id = project.id.clone();
         let selected = self.selection == Some(Selection::Project(id.clone()));
-        let indices = self.sorted_cards(&id);
         let group = SharedString::from(format!("project-group-{id}"));
         let hover = chrome.hover;
         let ink_1 = chrome.ink_1;
@@ -5172,15 +5954,203 @@ impl Shika {
                         this.picker_for(new_id.clone(), window, cx);
                     })),
             );
-        let departing = self
-            .departing
-            .iter()
-            .filter(|d| d.card.project == id)
-            .collect::<Vec<_>>();
         // Each card owns its leading gap. Collapsing a negative margin in a
         // gapped flex column corrupts GPUI's intrinsic group height, squeezing
         // surviving cards and moving other project headers out of place.
-        let mut column = div().flex_none().flex().flex_col().child(header);
+        let column = div().flex_none().flex().flex_col().child(header);
+        self.card_rows(
+            column,
+            indices,
+            &Home::Project(id),
+            chrome,
+            cards_focused,
+            reveal_selection,
+            cx,
+        )
+    }
+
+    /// The Leads section: a small label, then each Lead with its workers
+    /// under it. A project with a Lead leaving still draws its exit here
+    /// after the entry is gone.
+    fn leads_section(
+        &self,
+        layout: &model::ColumnLayout,
+        chrome: &Chrome,
+        cards_focused: bool,
+        reveal_selection: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut section = div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .child(section_label("Leads", chrome));
+        for project in &self.projects {
+            let entry = layout.leads.iter().find(|e| e.project == project.id);
+            let leaving = self
+                .departing
+                .iter()
+                .any(|d| d.home == Home::Leads(project.id.clone()));
+            if entry.is_none() && !leaving {
+                continue;
+            }
+            let indices = entry.map(|e| e.cards()).unwrap_or_default();
+            section = self.card_rows(
+                section,
+                indices,
+                &Home::Leads(project.id.clone()),
+                chrome,
+                cards_focused,
+                reveal_selection,
+                cx,
+            );
+            // A stopped Lead's row follows the exit of its card.
+            if let Some(model::LeadEntry {
+                kind: model::LeadKind::Resting { cli },
+                ..
+            }) = entry
+            {
+                section = section.child(
+                    card_row().child(
+                        self.resting_view(
+                            &project.id,
+                            &project.name,
+                            cli,
+                            chrome,
+                            cards_focused,
+                            reveal_selection,
+                            cx,
+                        )
+                        .w_full()
+                        .h(px(CARD_HEIGHT)),
+                    ),
+                );
+            }
+        }
+        section
+    }
+
+    /// A saved Lead that is not running. It reads like its live card, with
+    /// no signal, timer, or diff stat: the project, then the CLI and "Lead".
+    /// A click or Enter resumes it.
+    #[allow(clippy::too_many_arguments)]
+    fn resting_view(
+        &self,
+        project: &str,
+        name: &str,
+        cli: &str,
+        chrome: &Chrome,
+        cards_focused: bool,
+        reveal_selection: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let selected = self.selected_resting() == Some(project);
+        let (quiet, quiet_separator) = if selected {
+            (chrome.ink_3, chrome.ink_4)
+        } else {
+            (chrome.ink_4, chrome.ink_5)
+        };
+        let task = div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .min_w_0()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(if selected { chrome.ink_1 } else { chrome.ink_2 })
+                    .child(name.to_string()),
+            )
+            // The signal's place stays empty, so the name truncates where a
+            // live Lead's does.
+            .child(div().flex_none().w(px(SIGNAL_SLOT)));
+        let meta = div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .min_w_0()
+            .whitespace_nowrap()
+            .text_size(px(12.))
+            .line_height(px(16.))
+            .text_color(quiet)
+            .child(div().flex_none().child(cli.to_string()))
+            .child(div().flex_none().text_color(quiet_separator).child("·"))
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(chrome.ink_2)
+                    .child("Lead"),
+            )
+            .child(div().flex_1())
+            .when(selected && cards_focused, |d| {
+                d.child(row_hint("↵", "resume", chrome))
+            });
+        let (click, menu) = (project.to_string(), project.to_string());
+        let base = div()
+            .id(SharedString::from(format!("resting-lead-{project}")))
+            .relative()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .rounded(px(10.))
+            .pt(px(12.))
+            .px(px(14.))
+            .pb(px(11.))
+            .capture_any_mouse_down(cx.listener(
+                move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    if event.button == MouseButton::Right
+                        || (event.button == MouseButton::Left && event.modifiers.control)
+                    {
+                        cx.stop_propagation();
+                        this.open_resting_menu(menu.clone(), event.position, window, cx);
+                    }
+                },
+            ))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if this.busy || this.overlay.is_some() {
+                    return;
+                }
+                this.selection = Some(Selection::Resting(click.clone()));
+                this.resume_lead(click.clone(), window, cx);
+            }));
+        let base = if selected {
+            base.bg(chrome.card_selected)
+        } else {
+            base.overflow_hidden()
+        };
+        base.child(task)
+            .child(meta)
+            .when(selected && reveal_selection, |d| {
+                d.child(self.selection_reveal(cx))
+            })
+    }
+
+    /// The rows of one group: each card, with the exits of cards that left
+    /// it drawn where they were. A worker in the Leads section is indented
+    /// under its Lead.
+    #[allow(clippy::too_many_arguments)]
+    fn card_rows(
+        &self,
+        mut column: gpui::Div,
+        indices: Vec<usize>,
+        place: &Home,
+        chrome: &Chrome,
+        cards_focused: bool,
+        reveal_selection: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let departing = self
+            .departing
+            .iter()
+            .filter(|d| d.home == *place)
+            .collect::<Vec<_>>();
         let shown = indices
             .iter()
             .map(|&at| self.cards[at].agent.view.entity_id())
@@ -5205,7 +6175,12 @@ impl Shika {
             } else {
                 face.into_any_element()
             };
-            column = column.child(card_row().child(face));
+            let indent = matches!(place, Home::Leads(_)) && card.lead.is_none();
+            column = column.child(
+                card_row()
+                    .when(indent, |d| d.pl(px(WORKER_INDENT)))
+                    .child(face),
+            );
         }
         // Cards whose follower is gone too leave from the end of the group.
         for leaving in departing
@@ -5237,8 +6212,10 @@ impl Shika {
             .card_view(&leaving.card, None, chrome, false, false, cx)
             .size_full();
         let exit = || gpui::Animation::new(model::EXIT);
+        let indent = matches!(leaving.home, Home::Leads(_)) && leaving.card.lead.is_none();
         card_row()
             .overflow_hidden()
+            .when(indent, |d| d.pl(px(WORKER_INDENT)))
             .child(div().child(face).with_animation(
                 SharedString::from(format!("{key}-shrink")),
                 exit(),
@@ -5335,7 +6312,16 @@ impl Shika {
                     } else {
                         chrome.ink_2
                     })
-                    .child(card.title.clone()),
+                    // A Lead sits outside its project's group, so it names it.
+                    .child(
+                        match (
+                            &card.lead,
+                            self.projects.iter().find(|p| p.id == card.project),
+                        ) {
+                            (Some(_), Some(project)) => project.name.clone(),
+                            _ => card.title.clone(),
+                        },
+                    ),
             )
             .when(card.status == Status::Working && !card.closing, |d| {
                 d.child(
@@ -5367,18 +6353,13 @@ impl Shika {
             // (the diff stat, the PR mark, the hints) stay a step brighter.
             .text_color(quiet)
             .child(div().flex_none().child(card.preset.clone()))
-            // Where the task came from, quiet: not a status.
-            .when(card.started_by.is_some(), |d| {
-                d.child(separator())
-                    .child(div().flex_none().text_color(quiet).child("from Lead"))
-            })
             .when(card.lead.is_some(), |d| {
                 d.child(separator()).child(
                     div()
                         .flex_none()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(chrome.ink_2)
-                        .child("Project lead"),
+                        .child("Lead"),
                 )
             })
             .when_some(notice, |d, notice| {
@@ -5439,18 +6420,11 @@ impl Shika {
             })
             .child(div().flex_1())
             .when(selected && cards_focused, |d| {
-                d.children(hints.iter().map(|(key, label)| {
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .ml(px(6.))
-                        .text_size(px(11.))
-                        .text_color(chrome.ink_3)
-                        .child(kbd(*key, chrome.sunken, chrome.ink_2).py_0())
-                        .child(*label)
-                }))
+                d.children(
+                    hints
+                        .iter()
+                        .map(|(key, label)| row_hint(key, label, chrome)),
+                )
             });
         let base = div()
             .id(SharedString::from(format!("card-{key}")))
@@ -6046,8 +7020,29 @@ impl Shika {
                     .child(kbd(key, chrome.term_seg, chrome.term_dim))
                     .child(label)
             };
+            // A resting Lead says so, and a click on the area resumes it.
+            let resting = self.selected_resting().map(|project| {
+                let name = self
+                    .projects
+                    .iter()
+                    .find(|p| p.id == project)
+                    .map_or("The", |p| p.name.as_str());
+                (project.to_string(), format!("{name} Lead is not running"))
+            });
+            let (message, keys) = match &resting {
+                Some((_, message)) => (message.as_str(), key("\u{21b5}", "resume")),
+                None => (
+                    "No agent selected",
+                    div()
+                        .flex()
+                        .gap(px(14.))
+                        .child(key("j", "select"))
+                        .child(key("\u{2318}N", "new agent")),
+                ),
+            };
             right = right.child(
                 div()
+                    .id("terminal-empty")
                     .relative()
                     .flex_1()
                     .flex()
@@ -6055,6 +7050,13 @@ impl Shika {
                     .items_center()
                     .justify_center()
                     .gap(px(12.))
+                    .when_some(resting.as_ref(), |d, (project, _)| {
+                        let project = project.clone();
+                        d.cursor_pointer()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.resume_lead(project.clone(), window, cx)
+                            }))
+                    })
                     .bg(with_alpha(chrome.term_empty, chrome.term_empty_alpha))
                     .text_size(px(13.))
                     .text_color(chrome.term_faint)
@@ -6092,15 +7094,12 @@ impl Shika {
                         ),
                     )
                     .child(gpui::img(icon).size(px(64.)).mb(px(6.)))
-                    .child("No agent selected")
+                    .child(message.to_string())
                     .child(
                         div()
-                            .flex()
-                            .gap(px(14.))
                             .text_size(px(11.5))
                             .text_color(chrome.term_fainter)
-                            .child(key("j", "select"))
-                            .child(key("\u{2318}N", "new agent")),
+                            .child(keys),
                     ),
             );
         }
@@ -6203,7 +7202,7 @@ impl Shika {
         let hover = chrome.row_selected;
         let can_rename = menu
             .target_index(self.cards.iter().map(|card| card.agent.view.entity_id()))
-            .is_some_and(|index| self.cards[index].session.is_some());
+            .is_some_and(|index| self.cards[index].renamable());
         let panel = dialog_shell(400., window.viewport_size().height, chrome)
             .w_auto()
             .p(px(8.))
@@ -6269,6 +7268,50 @@ impl Shika {
             .child(gpui::deferred(
                 gpui::anchored()
                     .position(menu.position)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(panel),
+            ))
+    }
+
+    /// The resting Lead's pointer menu: one item, Forget Lead.
+    fn resting_menu_view(
+        &self,
+        position: gpui::Point<Pixels>,
+        chrome: &Chrome,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let hover = chrome.row_selected;
+        let panel = dialog_shell(400., window.viewport_size().height, chrome)
+            .w_auto()
+            .p(px(8.))
+            .occlude()
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            .child(
+                list_row(true, chrome)
+                    .id("resting-menu-forget")
+                    .gap(px(20.))
+                    .justify_between()
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .child("Forget Lead")
+                    .child(kbd("\u{2318}\u{21e7}W", chrome.sunken, chrome.ink_3))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.forget_from_menu(window, cx);
+                    })),
+            );
+        div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .on_any_mouse_down(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.cancel_overlay(window, cx);
+            }))
+            .child(gpui::deferred(
+                gpui::anchored()
+                    .position(position)
                     .snap_to_window_with_margin(px(8.))
                     .child(panel),
             ))
@@ -7004,6 +8047,11 @@ impl Shika {
                 .card_menu_view(menu, chrome, window, cx)
                 .into_any_element();
         }
+        if let Overlay::RestingMenu { position, .. } = overlay {
+            return self
+                .resting_menu_view(*position, chrome, window, cx)
+                .into_any_element();
+        }
         let height = window.viewport_size().height;
         let picker = matches!(overlay, Overlay::Picker { .. });
         let top = height
@@ -7016,7 +8064,43 @@ impl Shika {
             };
         let max_h = (height - top - px(24.)).max(px(120.));
         let panel = match overlay {
-            Overlay::CardMenu(_) => unreachable!("card menus render at the pointer"),
+            Overlay::CardMenu(_) | Overlay::RestingMenu { .. } => {
+                unreachable!("card menus render at the pointer")
+            }
+            Overlay::LeadClose { step, .. } => {
+                let stopping = matches!(step, model::LeadClose::Stop { .. });
+                let mut panel =
+                    dialog(chrome, max_h).child(dialog_title(div()).child(step.title()));
+                for fact in step.facts() {
+                    panel = panel.child(dialog_text(chrome).child(fact));
+                }
+                let buttons = dialog_buttons().child(self.cancel_button("Cancel", chrome, cx));
+                panel.child(if stopping {
+                    buttons
+                        .child(
+                            dialog_button("forget-lead", "Forget", "f", chrome).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    if let Some(Overlay::LeadClose { step, .. }) = &mut this.overlay
+                                    {
+                                        *step = step.forget();
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
+                        )
+                        .child(primary_button("stop-lead", "Stop", "↵", chrome).on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.finish_lead_close(false, window, cx)
+                            }),
+                        ))
+                } else {
+                    buttons.child(
+                        primary_button("forget-lead", "Forget", "↵", chrome).on_click(cx.listener(
+                            |this, _, window, cx| this.finish_lead_close(true, window, cx),
+                        )),
+                    )
+                })
+            }
             Overlay::WorktreeSetup(editor) => {
                 self.worktree_setup_view(editor, chrome, max_h, window, cx)
             }
@@ -7322,17 +8406,12 @@ impl Shika {
             Overlay::Close { index, state } => {
                 let i = *index;
                 let can_push = state.can_push();
-                let lead = self.cards[i].lead.is_some();
                 let mut panel = dialog(chrome, max_h)
                     .child(dialog_title(div()).child(format!("Close “{}”?", self.cards[i].title)));
                 if state.agent_working {
                     panel = panel.child(dialog_text(chrome).child("The agent is still working."));
                 }
-                if state.dirty && lead {
-                    panel = panel.child(dialog_text(chrome).child(
-                        "The Lead edited files in its worktree. It should never do that; its tasks belong to workers.",
-                    ));
-                } else if state.dirty {
+                if state.dirty {
                     panel = panel.child(dialog_text(chrome).child(
                         "The worktree has uncommitted changes. Commit in the shell or use Create PR before closing. Close does not commit.",
                     ));
@@ -7343,11 +8422,10 @@ impl Shika {
                             .child("The branch has commits that are not on the remote."),
                     );
                 }
-                panel = panel.child(dialog_text(chrome).child(if lead {
-                    "Discard stops the Lead and deletes its worktree. Its workers stay as ordinary cards."
-                } else {
-                    "Discard stops the session and deletes the worktree and local branch."
-                }));
+                panel =
+                    panel.child(dialog_text(chrome).child(
+                        "Discard stops the session and deletes the worktree and local branch.",
+                    ));
                 let discard =
                     cx.listener(move |this, _, window, cx| this.finish_close(i, 1, window, cx));
                 let buttons = dialog_buttons().child(self.cancel_button("Cancel", chrome, cx));
@@ -7675,6 +8753,35 @@ const CLOSING_TERMINAL_OPACITY: f32 = 0.06;
 const SIGNAL_SLOT: f32 = 14.;
 /// A closed card shrinks toward its center to this size as it fades out.
 const EXIT_SCALE: f32 = 0.94;
+
+/// A worker under its Lead sits this far in from the column's content edge.
+const WORKER_INDENT: f32 = 16.;
+
+/// One key hint at the right end of the selected row's second line.
+fn row_hint(key: &'static str, label: &'static str, chrome: &Chrome) -> gpui::Div {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .ml(px(6.))
+        .text_size(px(11.))
+        .text_color(chrome.ink_3)
+        .child(kbd(key, chrome.sunken, chrome.ink_2).py_0())
+        .child(label)
+}
+
+/// "Leads" or "Projects": a quiet sentence-case label, 11px medium ink-3,
+/// aligned with the project header's text.
+fn section_label(text: &'static str, chrome: &Chrome) -> gpui::Div {
+    div()
+        .px(px(8.))
+        .text_size(px(11.))
+        .line_height(px(16.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(chrome.ink_3)
+        .child(text)
+}
 
 /// The card and its leading gap occupy one nonnegative layout slot. At the
 /// end of the exit there is nothing left to remove, including on an otherwise
@@ -8362,9 +9469,28 @@ impl Render for Shika {
             .flex()
             .flex_col()
             .gap(px(20.));
-        for project in &self.projects {
-            projects = projects.child(self.project_group(
+        let layout = self.column_layout();
+        // The labels only name the two sections once a Lead exists. A Lead
+        // that is leaving keeps the section until its exit has played.
+        let leads_shown = !layout.leads.is_empty()
+            || self
+                .departing
+                .iter()
+                .any(|d| matches!(d.home, Home::Leads(_)));
+        if leads_shown {
+            projects = projects.child(self.leads_section(
+                &layout,
+                &chrome,
+                cards_focused,
+                reveal_selection,
+                cx,
+            ));
+        }
+        let mut groups = div().flex_none().flex().flex_col().gap(px(20.));
+        for (project, entry) in self.projects.iter().zip(&layout.projects) {
+            groups = groups.child(self.project_group(
                 project,
+                entry.cards.clone(),
                 home.as_deref(),
                 &chrome,
                 cards_focused,
@@ -8372,6 +9498,19 @@ impl Render for Shika {
                 cx,
             ));
         }
+        projects = if leads_shown {
+            projects.child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .gap(px(CARD_GAP))
+                    .child(section_label("Projects", &chrome))
+                    .child(groups),
+            )
+        } else {
+            projects.child(groups)
+        };
         let (column_width, changes_width) = self.pane_widths(window);
         let sidebar = column_width.map(|width| {
             div()
@@ -8405,6 +9544,8 @@ impl Render for Shika {
             .on_action(cx.listener(|this, _: &CloseTask, window, cx| {
                 if matches!(this.overlay, Some(Overlay::CardMenu(_))) {
                     this.close_from_card_menu(window, cx);
+                } else if matches!(this.overlay, Some(Overlay::RestingMenu { .. })) {
+                    this.forget_from_menu(window, cx);
                 } else if !this.busy && this.overlay.is_none() {
                     this.close(window, cx);
                 }
@@ -8822,37 +9963,71 @@ mod host_tests {
             Selection::Project("b".into()),
             Selection::Card(1),
         ];
-        assert_eq!(adjacent_agent(&rows, Some(&Selection::Card(0)), 1), Some(1));
-        assert_eq!(adjacent_agent(&rows, Some(&Selection::Card(1)), 1), Some(2));
+        let card = |i| Some(Selection::Card(i));
+        assert_eq!(adjacent_agent(&rows, Some(&Selection::Card(0)), 1), card(1));
+        assert_eq!(adjacent_agent(&rows, Some(&Selection::Card(1)), 1), card(2));
         assert_eq!(
             adjacent_agent(&rows, Some(&Selection::Card(2)), -1),
-            Some(1)
+            card(1)
         );
         assert_eq!(
             adjacent_agent(&rows, Some(&Selection::Project("b".into())), -1),
-            Some(0)
+            card(0)
         );
         assert_eq!(
             adjacent_agent(&rows, Some(&Selection::Project("b".into())), 1),
-            Some(1)
+            card(1)
         );
     }
 
     #[test]
+    fn a_resting_lead_is_an_agent_stop_in_row_order() {
+        let rows = vec![
+            Selection::Resting("a".into()),
+            Selection::Card(0),
+            Selection::Resting("c".into()),
+            Selection::Project("a".into()),
+            Selection::Card(1),
+        ];
+        let resting = |p: &str| Some(Selection::Resting(p.into()));
+        assert_eq!(
+            adjacent_agent(&rows, Some(&Selection::Resting("a".into())), 1),
+            Some(Selection::Card(0))
+        );
+        assert_eq!(
+            adjacent_agent(&rows, Some(&Selection::Card(0)), 1),
+            resting("c")
+        );
+        assert_eq!(
+            adjacent_agent(&rows, Some(&Selection::Resting("c".into())), 1),
+            Some(Selection::Card(1))
+        );
+        assert_eq!(
+            adjacent_agent(&rows, Some(&Selection::Resting("a".into())), -1),
+            Some(Selection::Card(1))
+        );
+        assert_eq!(nth_agent(&rows, 0), resting("a"));
+        assert_eq!(nth_agent(&rows, 2), resting("c"));
+        assert_eq!(nth_agent(&rows, 3), Some(Selection::Card(1)));
+        assert_eq!(nth_agent(&rows, 4), None);
+    }
+
+    #[test]
     fn agent_navigation_handles_empty_single_and_missing_selection() {
+        let card = |i| Some(Selection::Card(i));
         assert_eq!(adjacent_agent(&[], None, 1), None);
         let rows = vec![Selection::Project("a".into()), Selection::Card(0)];
-        assert_eq!(adjacent_agent(&rows, None, 1), Some(0));
-        assert_eq!(adjacent_agent(&rows, None, -1), Some(0));
-        assert_eq!(adjacent_agent(&rows, Some(&Selection::Card(0)), 1), Some(0));
+        assert_eq!(adjacent_agent(&rows, None, 1), card(0));
+        assert_eq!(adjacent_agent(&rows, None, -1), card(0));
+        assert_eq!(adjacent_agent(&rows, Some(&Selection::Card(0)), 1), card(0));
         assert_eq!(
             adjacent_agent(&rows, Some(&Selection::Card(0)), -1),
-            Some(0)
+            card(0)
         );
         assert_eq!(adjacent_agent(&rows[..1], None, 1), None);
         assert_eq!(
             adjacent_agent(&rows, Some(&Selection::Card(9)), -1),
-            Some(0)
+            card(0)
         );
     }
 
@@ -8865,12 +10040,12 @@ mod host_tests {
             Selection::Project("b".into()),
             Selection::Card(1),
         ];
-        assert_eq!(nth_card(&rows, 0), Some(2));
-        assert_eq!(nth_card(&rows, 1), Some(0));
-        assert_eq!(nth_card(&rows, 2), Some(1));
-        assert_eq!(nth_card(&rows, 3), None);
-        assert_eq!(nth_card(&rows, 8), None);
-        assert_eq!(nth_card(&[], 0), None);
+        assert_eq!(nth_agent(&rows, 0), Some(Selection::Card(2)));
+        assert_eq!(nth_agent(&rows, 1), Some(Selection::Card(0)));
+        assert_eq!(nth_agent(&rows, 2), Some(Selection::Card(1)));
+        assert_eq!(nth_agent(&rows, 3), None);
+        assert_eq!(nth_agent(&rows, 8), None);
+        assert_eq!(nth_agent(&[], 0), None);
     }
 
     #[test]

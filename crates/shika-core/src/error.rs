@@ -103,6 +103,27 @@ pub enum Error {
     InvalidPrompt(String),
     #[error("This project already has a Lead.")]
     LeadExists,
+    #[error("Stop the Lead before forgetting it.")]
+    LeadRunning,
+    #[error("That project has no saved Lead.")]
+    NoSavedLead,
+    /// A memory note or number Shika declined, with the reason.
+    #[error("{0}")]
+    MemoryRefused(String),
+    #[error(
+        "The Lead memory file {} cannot be read. Shika left it as it is; fix or delete it.",
+        .0.display()
+    )]
+    MemoryUnreadable(std::path::PathBuf),
+    #[error("Could not save the Lead memory file {}.", .0.display())]
+    MemoryUnwritable(std::path::PathBuf),
+    /// The Lead's fixed folder exists but git does not list it as a worktree
+    /// of this repository. Shika never deletes it.
+    #[error(
+        "{} exists but is not a worktree of this repository. Move or delete it, then start the Lead again.",
+        .0.display()
+    )]
+    LeadWorktreeInvalid(std::path::PathBuf),
     /// The Lead has no branch, no diff, and no shell tabs, so branch, diff,
     /// publish, shell, and agent-switch operations refuse it.
     #[error("The Lead works in a detached worktree and has no branch, so it cannot do that.")]

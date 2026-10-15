@@ -39,6 +39,10 @@ const BELL_BATCH: Duration = Duration::from_millis(1500);
 /// Lead's terminal.
 const BELL_TYPING_QUIET: Duration = Duration::from_secs(3);
 
+/// A restarted Lead's terminal must have been quiet this long before the
+/// summary is typed: the CLI has drawn its prompt and can take input.
+const SUMMARY_QUIET: Duration = Duration::from_millis(1500);
+
 /// Pause between a pasted line and its Enter. Some TUIs (Codex's paste-burst
 /// handling) read an Enter that arrives inside a paste burst as a newline.
 const ENTER_DELAY: Duration = Duration::from_millis(150);
@@ -64,12 +68,12 @@ pub fn command_path(bin_dir: &Path) -> String {
 
 pub fn lead_prompt(project: &str, bin_dir: &Path) -> String {
     format!(
-        "You are the Lead agent for the \"{project}\" project in Shika. Run {} help and follow it, then ask the author what they want done.",
+        "You are the Lead agent for the \"{project}\" project in Shika. Run {0} help and {0} memory, follow them, then ask the author what they want done.",
         command_path(bin_dir)
     )
 }
 
-fn lead_guide(bin_dir: &Path) -> String {
+pub fn lead_guide(bin_dir: &Path) -> String {
     format!(
         "Shika command for this session: {}. In every shell command below, replace `shika` with this absolute executable path. Do not rely on PATH: a CLI's login shell can reset it.\n\n{LEAD_GUIDE}",
         command_path(bin_dir)
@@ -116,8 +120,10 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn start() -> Result<Self, ControlError> {
-        let dir = ControlDir::create()?;
+    /// Binds the socket and installs the stable `shika` command under
+    /// `data_dir`.
+    pub fn start(data_dir: &Path) -> Result<Self, ControlError> {
+        let dir = ControlDir::create(data_dir)?;
         let listener = UnixListener::bind(dir.socket_path())
             .map_err(|err| ControlError::Setup(err.to_string()))?;
         let (sender, requests) = mpsc::channel();
@@ -383,6 +389,20 @@ impl Gate {
             && !self
                 .last_typed
                 .is_some_and(|at| now.duration_since(at) < BELL_TYPING_QUIET)
+    }
+}
+
+/// The Lead's [`Gate`] right now.
+fn lead_gate(card: &Card, state: &LeadState) -> Gate {
+    let host = lock(&card.agent.state);
+    Gate {
+        waiting: !state.waiters.is_empty() || !state.unconfirmed.is_empty(),
+        idle: !card.creating
+            && matches!(card.status, Status::Waiting | Status::Ready)
+            && host.submission == card.submitted,
+        draft: host.has_draft(),
+        last_typed: host.last_typed,
+        alive: !host.exited && !host.preparing && host.pty.is_some(),
     }
 }
 
@@ -761,6 +781,7 @@ pub fn failure_reply(error: &shika_core::Error) -> Reply {
     use shika_core::Error;
     match error {
         Error::InvalidPrompt(_)
+        | Error::MemoryRefused(_)
         | Error::NoSuchBranch(_)
         | Error::BaseBranchMissing(_)
         | Error::CliNotFound(_)
@@ -970,6 +991,7 @@ impl Shika {
         let now = Instant::now();
         self.resolve_waiters(now);
         self.ring_doorbells(now, window, cx);
+        self.deliver_restart_summaries(now, window, cx);
     }
 
     /// The Lead card for `project`, whether or not it is running yet.
@@ -1018,6 +1040,22 @@ impl Shika {
                     .unwrap_or_else(|| LEAD_GUIDE.to_string()),
             },
             Command::Report { .. } => refused("Only workers can run shika report."),
+            Command::Memory => match self.core.lead_memory(&project) {
+                Ok(notes) => Reply::Memory { notes },
+                Err(err) => failure_reply(&err),
+            },
+            Command::Remember { text } => match self.core.remember(&project, &text) {
+                Ok(number) => Reply::Done {
+                    message: format!("remembered {number}"),
+                },
+                Err(err) => failure_reply(&err),
+            },
+            Command::Forget { note } => match self.core.forget_note(&project, note) {
+                Ok(()) => Reply::Done {
+                    message: format!("forgot {note}"),
+                },
+                Err(err) => failure_reply(&err),
+            },
             Command::Tasks => Reply::Tasks {
                 tasks: self
                     .project_tasks(&project)
@@ -1495,18 +1533,7 @@ impl Shika {
                 continue;
             };
             let lead_id = session.id.clone();
-            let gate = {
-                let host = lock(&card.agent.state);
-                Gate {
-                    waiting: !state.waiters.is_empty() || !state.unconfirmed.is_empty(),
-                    idle: !card.creating
-                        && matches!(card.status, Status::Waiting | Status::Ready)
-                        && host.submission == card.submitted,
-                    draft: host.has_draft(),
-                    last_typed: host.last_typed,
-                    alive: !host.exited && !host.preparing && host.pty.is_some(),
-                }
-            };
+            let gate = lead_gate(card, state);
             let tasks = self.wait_set(lead, &[]);
             let modes = self.cards[lead].agent.terminal.modes();
             let Some(LeadState {
@@ -1536,6 +1563,73 @@ impl Shika {
                             .and_then(|card| card.lead.as_mut())
                     {
                         state.doorbell.forget(&ids);
+                    }
+                }),
+            );
+        }
+    }
+
+    /// Types a restarted Lead's one-line summary (`LeadRun::summary`) the way
+    /// the doorbell types its line, through the same [`Gate`], and only once
+    /// the CLI has drawn its prompt and gone quiet. It is typed once: the
+    /// workers it names are recorded as reported when it lands, and a line
+    /// that did not land is kept for the next tick.
+    fn deliver_restart_summaries(
+        &mut self,
+        now: Instant,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for lead in 0..self.cards.len() {
+            let card = &self.cards[lead];
+            let (Some(state), Some(session), Some(run)) =
+                (&card.lead, &card.session, &card.lead_run)
+            else {
+                continue;
+            };
+            if run.summary.is_none() {
+                continue;
+            }
+            let quiet = lock(&card.agent.state)
+                .last_output
+                .is_some_and(|at| now.duration_since(at) >= SUMMARY_QUIET);
+            if !quiet || !lead_gate(card, state).open(now) {
+                continue;
+            }
+            let (lead_id, project) = (session.id.clone(), card.project.clone());
+            let modes = card.agent.terminal.modes();
+            let Some(summary) = self.cards[lead]
+                .lead_run
+                .as_mut()
+                .and_then(|run| run.summary.take())
+            else {
+                continue;
+            };
+            let steps = paste_steps(&summary.line, true, &modes);
+            self.type_into(
+                lead_id.clone(),
+                steps,
+                window,
+                cx,
+                Box::new(move |this, result| match result {
+                    Ok(()) if summary.workers.is_empty() => {}
+                    Ok(()) => {
+                        // Named once: a later relaunch does not repeat them.
+                        if let Err(error) =
+                            this.core.mark_workers_reported(&project, &summary.workers)
+                        {
+                            this.message(error.to_string());
+                        }
+                    }
+                    Err(_) => {
+                        if let Some(run) = this
+                            .cards
+                            .iter_mut()
+                            .find(|card| card.session.as_ref().is_some_and(|s| s.id == lead_id))
+                            .and_then(|card| card.lead_run.as_mut())
+                        {
+                            run.summary = Some(summary);
+                        }
                     }
                 }),
             );
@@ -1833,6 +1927,23 @@ mod tests {
     use shika_core::control::{PROTOCOL_VERSION, Request, render_text, send};
     use std::sync::Mutex;
 
+    /// A server whose `shika` command lives in a per-process scratch data
+    /// directory, never the real one. Servers started in parallel share it,
+    /// which `install_command` allows.
+    fn start_server() -> Server {
+        let data = std::env::temp_dir().join(format!("shika-server-test-{}", std::process::id()));
+        std::fs::create_dir_all(&data).expect("scratch data directory");
+        Server::start(&data).expect("control server")
+    }
+
+    #[test]
+    fn the_lead_guide_stays_small() {
+        // It is the CLI's system prompt on every turn of every conversation.
+        let guide = lead_guide(Path::new("/x/bin"));
+        assert!(guide.len() <= 7500, "{} bytes", guide.len());
+        assert!(!guide.contains('\u{2014}'));
+    }
+
     fn task(id: &str, status: TaskStatus) -> TaskInfo {
         TaskInfo {
             id: id.into(),
@@ -2093,7 +2204,9 @@ mod tests {
             String::from_utf8(echoed.stdout).unwrap(),
             dir.join("shika").display().to_string()
         );
-        assert!(lead_prompt("Test", dir).contains(&format!("Run {command} help")));
+        assert!(
+            lead_prompt("Test", dir).contains(&format!("Run {command} help and {command} memory"))
+        );
         assert!(lead_guide(dir).contains(&command));
         assert!(worker_prompt("Test", dir).contains(&format!("run: {command} report")));
     }
@@ -2185,7 +2298,7 @@ mod tests {
 
     #[test]
     fn the_connection_thread_confirms_a_written_reply() {
-        let server = Server::start().expect("control server");
+        let server = start_server();
         let socket = server.socket();
         let (seen, confirmations) = mpsc::channel();
         let seen = Mutex::new(seen);
@@ -2212,7 +2325,7 @@ mod tests {
 
     #[test]
     fn requests_reach_the_ui_thread_and_replies_come_back() {
-        let server = Server::start().expect("control server");
+        let server = start_server();
         let socket = server.socket();
         assert!(server.bin_dir().join("shika").exists());
         answer_with(server, |incoming| {
@@ -2238,7 +2351,7 @@ mod tests {
 
     #[test]
     fn a_client_that_left_is_noticed_before_its_reply_is_sent() {
-        let server = Server::start().expect("control server");
+        let server = start_server();
         let socket = server.socket();
         let (arrived, request_seen) = mpsc::channel();
         let (go, proceed) = mpsc::channel::<()>();
@@ -2351,7 +2464,7 @@ mod tests {
 
     #[test]
     fn a_pr_or_close_waits_for_the_author_and_always_gets_an_answer() {
-        let server = Server::start().expect("control server");
+        let server = start_server();
         let socket = server.socket();
         answer_with(server, |incoming| {
             // The stand-in UI thread: the author decides a moment later.
@@ -2393,7 +2506,7 @@ mod tests {
 
     #[test]
     fn dropping_the_server_removes_its_directory() {
-        let server = Server::start().expect("control server");
+        let server = start_server();
         let socket = server.socket();
         assert!(socket.exists());
         drop(server);
@@ -2412,6 +2525,15 @@ mod tests {
             1
         );
         assert_eq!(failure_reply(&Error::UnknownCli).exit_code(), 2);
+        // A declined note is a refusal with its reason; a bad file is an
+        // error that names the file.
+        assert_eq!(
+            failure_reply(&Error::MemoryRefused("Memory is full.".into())),
+            refused("Memory is full.")
+        );
+        let unreadable = failure_reply(&Error::MemoryUnreadable("/d/leads/p/memory.json".into()));
+        assert_eq!(unreadable.exit_code(), 2);
+        assert!(render_text(&unreadable).contains("/d/leads/p/memory.json"));
     }
 
     fn gate() -> Gate {
@@ -2648,6 +2770,9 @@ mod tests {
             },
             Command::Pr { task: "a".into() },
             Command::Close { task: "a".into() },
+            Command::Memory,
+            Command::Remember { text: "x".into() },
+            Command::Forget { note: 1 },
         ] {
             let (reply, stored) = worker_command(command, turn);
             assert_eq!(
