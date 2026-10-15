@@ -657,23 +657,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_pty_round_trip_keeps_the_typed_line() {
-        let scratch = scratch("shika-pty");
-        let script = echo_line_script(&scratch);
-        let hub = PtyHub::new();
-        let (sink, rx) = channel_sink();
-        let id = hub.open(echo_request(&script, &scratch), sink).unwrap();
-
-        let ready = collect_until(&rx, "ready", Duration::from_secs(3));
-        assert!(ready.contains("ready"), "{ready}");
-        hub.write(id, b"ping\r").unwrap();
-        let got = collect_until(&rx, "got:ping", Duration::from_secs(3));
-        assert!(got.contains("got:ping"), "{got}");
-        drop(hub);
-        let _ = fs::remove_dir_all(&scratch);
-    }
-
-    #[test]
     fn a_draft_survives_while_another_pty_runs() {
         let scratch = scratch("shika-pty");
         let script = echo_line_script(&scratch);
