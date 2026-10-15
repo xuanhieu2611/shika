@@ -161,23 +161,34 @@ pub fn totals(calendar: &UsageCalendar, filter: UsageFilter, chrome: &Chrome) ->
     row
 }
 
-// 52 columns at 14px plus the weekday gutter fit the 880px dashboard even
-// at the app's 960px minimum window width. Future cells occupy space only.
+// GitHub's contribution graph: small rounded squares on an even 15px pitch,
+// a weekday gutter wide enough for "Wed", and month labels above. The grid
+// sets the dashboard's width, so the summary, filter, calendar and legend
+// share both edges. It fits the app's 960px minimum window.
 const CELL: f32 = 12.;
-const GAP: f32 = 2.;
-const GUTTER: f32 = 32.;
+const GAP: f32 = 3.;
+const RADIUS: f32 = 3.;
+const GUTTER: f32 = 28.;
+const MONTH_ROW: f32 = 16.;
+const MONTH_GAP: f32 = 4.;
+const LABEL: f32 = 10.5;
+const WEEKS: f32 = 52.;
 
 // The calendar has a definite size, so GPUI can reuse its rendered subtree
 // across unrelated card/timer redraws. One entity lives only as long as the
 // dashboard snapshot; hover, filter and theme changes invalidate its cache.
-const GRID_WIDTH: f32 = GUTTER + GAP + 52. * (CELL + GAP) - GAP;
-const GRID_HEIGHT: f32 = 16. + 6. + 7. * (CELL + GAP) - GAP;
+const GRID_WIDTH: f32 = GUTTER + GAP + WEEKS * (CELL + GAP) - GAP;
+const GRID_HEIGHT: f32 = MONTH_ROW + MONTH_GAP + 7. * (CELL + GAP) - GAP;
+
+/// The dialog's width: the calendar plus the dialog's 20px side padding.
+pub const WIDTH: f32 = GRID_WIDTH + 40.;
+// It fits the app's 960px minimum window with the dialog's 40px margin.
+const _: () = assert!(WIDTH <= 960. - 40.);
 
 #[derive(Clone, Copy, PartialEq)]
 struct GridStyle {
     colors: [Rgba; 5],
     label: Rgba,
-    border: Rgba,
     hover: Rgba,
     tooltip_background: Rgba,
     tooltip_ink: Rgba,
@@ -188,10 +199,9 @@ impl GridStyle {
         Self {
             colors: chrome.usage_intensities(),
             label: chrome.ink_3,
-            border: chrome.line_control,
             hover: chrome.focus,
-            tooltip_background: chrome.overlay,
-            tooltip_ink: chrome.ink_1,
+            tooltip_background: chrome.toast_bg,
+            tooltip_ink: chrome.toast_fg,
         }
     }
 }
@@ -239,9 +249,22 @@ impl Render for UsageGrid {
     }
 }
 
+/// One square of the calendar or the legend, without a border at rest.
+fn cell(color: Rgba) -> gpui::Div {
+    div()
+        .size(px(CELL))
+        .flex_none()
+        .rounded(px(RADIUS))
+        .bg(color)
+}
+
 fn calendar_grid(calendar: &UsageCalendar, filter: UsageFilter, style: GridStyle) -> gpui::Div {
     let maximum = filter.maximum(calendar);
-    let mut months = div().flex().gap(px(GAP)).ml(px(GUTTER + GAP));
+    let mut months = div()
+        .flex()
+        .gap(px(GAP))
+        .h(px(MONTH_ROW))
+        .ml(px(GUTTER + GAP));
     let mut columns = div().flex().gap(px(GAP));
     let mut weekdays = div()
         .w(px(GUTTER))
@@ -253,7 +276,7 @@ fn calendar_grid(calendar: &UsageCalendar, filter: UsageFilter, style: GridStyle
         weekdays = weekdays.child(
             div()
                 .h(px(CELL))
-                .text_size(px(10.5))
+                .text_size(px(LABEL))
                 .line_height(px(CELL))
                 .text_color(style.label)
                 .child(name),
@@ -265,7 +288,7 @@ fn calendar_grid(calendar: &UsageCalendar, filter: UsageFilter, style: GridStyle
             div()
                 .relative()
                 .w(px(CELL))
-                .h(px(16.))
+                .h(px(MONTH_ROW))
                 .flex_none()
                 .when_some(week.month.clone(), |d, label| {
                     d.child(
@@ -274,7 +297,9 @@ fn calendar_grid(calendar: &UsageCalendar, filter: UsageFilter, style: GridStyle
                             .top_0()
                             .left_0()
                             .w(px(40.))
-                            .text_size(px(10.5))
+                            .whitespace_nowrap()
+                            .text_size(px(LABEL))
+                            .line_height(px(MONTH_ROW))
                             .text_color(style.label)
                             .child(label),
                     )
@@ -282,15 +307,14 @@ fn calendar_grid(calendar: &UsageCalendar, filter: UsageFilter, style: GridStyle
         );
         let mut column = div().flex_none().flex().flex_col().gap(px(GAP));
         for (weekday, day) in week.days.iter().enumerate() {
-            let cell = div().w(px(CELL)).h(px(CELL)).flex_none().rounded(px(4.));
             column = column.child(match day {
-                None => cell.into_any_element(),
+                None => div().size(px(CELL)).flex_none().into_any_element(),
                 Some(day) => {
                     let tip_day = day.clone();
-                    cell.id(("usage-day", week_index * 7 + weekday))
-                        .bg(style.colors[bucket(filter.tokens(day.tokens), maximum)])
+                    cell(style.colors[bucket(filter.tokens(day.tokens), maximum)])
+                        .id(("usage-day", week_index * 7 + weekday))
                         .border_1()
-                        .border_color(style.border)
+                        .border_color(gpui::transparent_black())
                         .hover(|s| s.border_color(style.hover))
                         .tooltip(move |_, cx| {
                             cx.new(|_| UsageTip {
@@ -310,7 +334,7 @@ fn calendar_grid(calendar: &UsageCalendar, filter: UsageFilter, style: GridStyle
         .flex_none()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(px(MONTH_GAP))
         .child(months)
         .child(columns)
 }
@@ -322,35 +346,44 @@ pub fn heatmap(
     grid: &Entity<UsageGrid>,
 ) -> gpui::Div {
     let maximum = filter.maximum(calendar);
-    let colors = chrome.usage_intensities();
-    let mut legend = div().flex().items_center().gap(px(GAP)).child(
+    let label = |text: &'static str| {
         div()
-            .text_size(px(10.5))
+            .text_size(px(LABEL))
+            .line_height(px(CELL))
             .text_color(chrome.ink_3)
-            .mr(px(6.))
-            .child("Less"),
-    );
-    for color in colors {
-        legend = legend.child(
-            div()
-                .size(px(CELL))
-                .rounded(px(4.))
-                .bg(color)
-                .border_1()
-                .border_color(chrome.line_control),
-        );
+            .child(text)
+    };
+    let mut legend = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(GAP))
+        .child(label("Less").mr(px(4.)));
+    for color in chrome.usage_intensities() {
+        legend = legend.child(cell(color));
     }
-    legend = legend.child(
-        div()
-            .text_size(px(10.5))
-            .text_color(chrome.ink_3)
-            .ml(px(6.))
-            .child(format!("More · {} max/day", compact_tokens(maximum))),
-    );
+    legend = legend.child(label("More").ml(px(4.)));
+    let caption = div()
+        .flex()
+        .min_w_0()
+        .items_baseline()
+        .gap(px(6.))
+        .text_size(px(11.))
+        .text_color(chrome.ink_3)
+        .child(
+            div()
+                .font_family(MONO)
+                .child(format!("{} - {}", calendar.start, calendar.end)),
+        )
+        .when(maximum > 0, |d| {
+            d.child(div().text_color(chrome.ink_5).child("\u{b7}"))
+                .child(div().font_family(MONO).child(compact_tokens(maximum)))
+                .child("busiest day")
+        });
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(px(10.))
         .child(
             grid.clone().cached(
                 StyleRefinement::default()
@@ -361,17 +394,12 @@ pub fn heatmap(
         )
         .child(
             div()
+                .w(px(GRID_WIDTH))
                 .flex()
                 .justify_between()
                 .items_center()
-                .mt(px(6.))
-                .child(
-                    div()
-                        .font_family(MONO)
-                        .text_size(px(11.))
-                        .text_color(chrome.ink_3)
-                        .child(format!("{} - {}", calendar.start, calendar.end)),
-                )
+                .gap(px(12.))
+                .child(caption)
                 .child(legend),
         )
 }
@@ -530,14 +558,13 @@ mod tests {
         let mut unrelated = chrome;
         unrelated.working.dot.r = 1. - unrelated.working.dot.r;
         assert!(!grid.configure(UsageFilter::Claude, GridStyle::from_chrome(&unrelated)));
-        for index in 0..10 {
+        for index in 0..9 {
             let mut changed = style;
             let color = match index {
                 0..=4 => &mut changed.colors[index],
                 5 => &mut changed.label,
-                6 => &mut changed.border,
-                7 => &mut changed.hover,
-                8 => &mut changed.tooltip_background,
+                6 => &mut changed.hover,
+                7 => &mut changed.tooltip_background,
                 _ => &mut changed.tooltip_ink,
             };
             color.r = if color.r < 0.5 { 1. } else { 0. };
@@ -545,8 +572,9 @@ mod tests {
             assert!(!grid.configure(UsageFilter::Claude, changed));
             assert!(grid.configure(UsageFilter::Claude, style));
         }
-        assert_eq!(GRID_WIDTH, 760.);
-        assert_eq!(GRID_HEIGHT, 118.);
+        assert_eq!(GRID_WIDTH, 808.);
+        assert_eq!(GRID_HEIGHT, 122.);
+        assert_eq!(WIDTH, 848.);
     }
 
     #[test]

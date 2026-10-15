@@ -64,7 +64,7 @@ gpui::actions!(
         PreviousAgent,
         ToggleColumn,
         ToggleChanges,
-        ShowUsage
+        ToggleUsage
     ]
 );
 
@@ -4261,7 +4261,20 @@ impl Shika {
         })
         .detach();
     }
-    /// View > Usage. Reads the saved store; CLI files stay on the collector.
+    /// View > Usage and its shortcut (Cmd+Shift+U until Settings changes
+    /// it). An open dashboard closes and restores the focus that opened it;
+    /// any other overlay keeps the shortcut inert.
+    fn toggle_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        match self.overlay {
+            Some(Overlay::Usage { .. }) => self.cancel_overlay(window, cx),
+            Some(_) => {}
+            None => self.show_usage(window, cx),
+        }
+    }
+    /// Reads the saved store; CLI files stay on the collector.
     fn show_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;
@@ -8723,7 +8736,7 @@ impl Shika {
                 grid.as_ref(),
                 chrome,
                 gpui::size(
-                    (window.viewport_size().width - px(40.)).min(px(880.)),
+                    (window.viewport_size().width - px(40.)).min(px(usage_dashboard::WIDTH)),
                     max_h,
                 ),
                 cx,
@@ -9589,7 +9602,9 @@ impl Render for Shika {
             .on_action(
                 cx.listener(|this, _: &ToggleChanges, window, cx| this.toggle_changes(window, cx)),
             )
-            .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_usage(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ToggleUsage, window, cx| this.toggle_usage(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &CreatePr, window, cx| this.create_pr(window, cx)))
             .on_action(
                 cx.listener(|this, _: &SwitchAgent, window, cx| this.switch_agent(window, cx)),
@@ -9676,6 +9691,8 @@ fn install_keys(cx: &mut App, keys: &KeyOverrides) {
         };
         if binding.id == "toggleChanges" {
             bindings.push(gpui::KeyBinding::new(chord, ToggleChanges, Some("Shika")));
+        } else if binding.id == "toggleUsage" {
+            bindings.push(gpui::KeyBinding::new(chord, ToggleUsage, Some("Shika")));
         } else if let Some(index) = shortcuts::agent_slot(binding.id) {
             bindings.push(gpui::KeyBinding::new(
                 chord,
@@ -9734,7 +9751,7 @@ fn install_menus(cx: &mut App) {
             gpui::MenuItem::action("Hide or show agent column", ToggleColumn),
             gpui::MenuItem::action("Hide or show changes", ToggleChanges),
             gpui::MenuItem::separator(),
-            gpui::MenuItem::action("Usage", ShowUsage),
+            gpui::MenuItem::action("Usage", ToggleUsage),
         ]),
     ]);
 }

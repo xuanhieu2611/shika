@@ -201,9 +201,10 @@ pub struct Chrome {
 
 impl Chrome {
     /// Daily usage: neutral, opaque steps from the solid overlay toward ink.
-    /// Zero is a faint wash; nonzero buckets strengthen without status hues.
+    /// Zero is a faint wash that still marks the square without a border;
+    /// nonzero buckets strengthen in even steps without status hues.
     pub fn usage_intensities(&self) -> [Rgba; 5] {
-        [0.04, 0.18, 0.36, 0.58, 0.82].map(|amount| mix(self.overlay, self.ink_1, amount))
+        [0.08, 0.26, 0.46, 0.66, 0.86].map(|amount| mix(self.overlay, self.ink_1, amount))
     }
     /// File-card header wash, composed once into an opaque fill. Using a
     /// translucent wash over the frosted list would add a second alpha layer.
@@ -917,7 +918,10 @@ mod tests {
                 for pair in colors.windows(2) {
                     assert!(toward_ink(pair[0]) < toward_ink(pair[1]), "{}", theme.id);
                 }
-                assert_eq!(colors[4], mix(chrome.overlay, chrome.ink_1, 0.82));
+                assert_eq!(colors[0], mix(chrome.overlay, chrome.ink_1, 0.08));
+                assert_eq!(colors[4], mix(chrome.overlay, chrome.ink_1, 0.86));
+                // The empty square reads on the dialog without an outline.
+                assert!(toward_ink(colors[0]) > 0.03, "{}", theme.id);
             }
         }
     }

@@ -92,6 +92,7 @@ One terminal is visible at a time; hidden task terminals keep running. Projects 
 | Cmd+Shift+R | Rename the task (not its Git branch) |
 | Cmd+Shift+W | Close the task |
 | Cmd+B | Hide or show the column |
+| Cmd+Shift+U | Show or hide token usage |
 | Cmd+, | Settings |
 
 ### Renaming a task

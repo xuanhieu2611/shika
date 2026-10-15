@@ -14,13 +14,19 @@ pub struct Command {
     pub default: Option<&'static str>,
 }
 
-/// Hide or show changes, then go to agent 1 through 9, then go to tab 1
-/// through 9. Earlier rows win when two saved chords collide.
+/// Hide or show changes, show or hide usage, then go to agent 1 through 9,
+/// then go to tab 1 through 9. Earlier rows win when two saved chords
+/// collide.
 pub static COMMANDS: &[Command] = &[
     Command {
         id: "toggleChanges",
         label: "Hide or show changes",
         default: Some("cmd-alt-b"),
+    },
+    Command {
+        id: "toggleUsage",
+        label: "Show or hide usage",
+        default: Some("cmd-shift-u"),
     },
     Command {
         id: "selectAgent1",
@@ -378,11 +384,19 @@ mod tests {
     }
 
     #[test]
-    fn defaults_bind_changes_and_tabs_and_leave_agents_free() {
+    fn defaults_bind_changes_usage_and_tabs_and_leave_agents_free() {
         let overrides = KeyOverrides::default();
         assert_eq!(
             bound(&overrides, "toggleChanges").as_deref(),
             Some(chord("cmd-alt-b")).as_deref()
+        );
+        assert_eq!(
+            bound(&overrides, "toggleUsage").as_deref(),
+            Some(chord("cmd-shift-u")).as_deref()
+        );
+        assert_eq!(
+            bound_label(&overrides, "toggleUsage").as_deref(),
+            Some("\u{2318}\u{21e7}U")
         );
         assert_eq!(
             bound(&overrides, "selectTab1").as_deref(),
@@ -489,6 +503,46 @@ mod tests {
             chord_from_keystroke(&plain).unwrap_err(),
             "Use a Command shortcut."
         );
+    }
+
+    #[test]
+    fn the_usage_chord_can_move_and_be_cleared() {
+        let next = assign(
+            &KeyOverrides::default(),
+            "toggleUsage",
+            Some("cmd-y".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            bound(&next, "toggleUsage").as_deref(),
+            Some(chord("cmd-y")).as_deref()
+        );
+        let cleared = assign(&next, "toggleUsage", None).unwrap();
+        assert_eq!(bound(&cleared, "toggleUsage"), None);
+        assert_eq!(cleared.get("toggleUsage"), Some(""));
+        // Taking the usage default for an agent leaves usage unbound.
+        let moved = assign(
+            &KeyOverrides::default(),
+            "selectAgent2",
+            Some("cmd-shift-u".into()),
+        )
+        .unwrap();
+        assert_eq!(bound(&moved, "toggleUsage"), None);
+        assert_eq!(
+            bound(&moved, "selectAgent2").as_deref(),
+            Some(chord("cmd-shift-u")).as_deref()
+        );
+    }
+
+    #[test]
+    fn defaults_are_free_of_the_fixed_app_shortcuts_and_each_other() {
+        let mut seen = HashSet::new();
+        for command in COMMANDS {
+            if let Some(default) = command.default {
+                assert_eq!(reserved_name(default), None, "{}", command.id);
+                assert!(seen.insert(chord(default)), "{}", command.id);
+            }
+        }
     }
 
     #[test]
