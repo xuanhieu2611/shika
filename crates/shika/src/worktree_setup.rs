@@ -396,6 +396,7 @@ impl Shika {
                     section: SettingsSection::Projects,
                     row,
                     edit: None,
+                    usage: None,
                 });
                 self.settings_scroll.scroll_to_item(row);
             }
