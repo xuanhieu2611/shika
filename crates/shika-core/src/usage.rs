@@ -63,8 +63,14 @@ pub struct UsageCalendar {
     pub start: String,
     pub end: String,
     pub this_week: UsageTotals,
+    /// The local calendar month through today.
+    pub this_month: UsageTotals,
     pub totals: UsageTotals,
     pub weeks: Vec<UsageWeek>,
+    /// This month's 1st, counted in days from `start`, and the month's
+    /// length, including the days after today.
+    pub month_first: usize,
+    pub month_len: usize,
 }
 
 impl UsageCalendar {
@@ -90,9 +96,31 @@ impl UsageCalendar {
             start: start.iso(),
             end: today.iso(),
             this_week: UsageTotals::default(),
+            this_month: UsageTotals::default(),
             totals: UsageTotals::default(),
             weeks,
+            month_first: 51 * 7 + today.weekday() + 1 - usize::from(today.day),
+            month_len: days_in_month(today.year, today.month) as usize,
         })
+    }
+
+    /// This local week, Monday first. Days after today are None.
+    pub fn week(&self) -> Vec<Option<&UsageCalendarDay>> {
+        self.weeks
+            .last()
+            .map(|week| week.days.iter().map(Option::as_ref).collect())
+            .unwrap_or_default()
+    }
+
+    /// This local month from the 1st. Days after today are None.
+    pub fn month(&self) -> Vec<Option<&UsageCalendarDay>> {
+        (self.month_first..self.month_first + self.month_len)
+            .map(|index| {
+                self.weeks
+                    .get(index / 7)
+                    .and_then(|week| week.days[index % 7].as_ref())
+            })
+            .collect()
     }
 
     fn add(&mut self, today: Date, date: Date, cli: &str, total: u64) {
@@ -112,6 +140,9 @@ impl UsageCalendar {
         self.totals.add(cli, total);
         if date.same_week(today) {
             self.this_week.add(cli, total);
+        }
+        if (date.year, date.month) == (today.year, today.month) {
+            self.this_month.add(cli, total);
         }
     }
 }
@@ -367,6 +398,21 @@ mod tests {
                 }
             }
             assert_eq!(count, 51 * 7 + today.weekday() + 1);
+            let week = calendar.week();
+            assert_eq!(week.len(), 7);
+            for (weekday, day) in week.iter().enumerate() {
+                assert_eq!(day.is_some(), weekday <= today.weekday());
+            }
+            let month = calendar.month();
+            assert_eq!(month.len(), days_in_month(today.year, today.month) as usize);
+            for (index, day) in month.iter().enumerate() {
+                if index < usize::from(today.day) {
+                    let expected = today.offset(index as i64 + 1 - i64::from(today.day));
+                    assert_eq!(day.unwrap().date, expected.unwrap().iso());
+                } else {
+                    assert!(day.is_none());
+                }
+            }
         }
         let leap = Date::parse("2024-02-28").unwrap();
         assert_eq!(leap.offset(1).unwrap().iso(), "2024-02-29");
@@ -382,6 +428,8 @@ mod tests {
         for (date, cli, amount) in [
             (first.offset(-1).unwrap(), "claude", 900),
             (first, "claude", 100),
+            (Date::parse("2026-09-30").unwrap(), "codex", 7),
+            (Date::parse("2026-10-01").unwrap(), "codex", 5),
             (today.offset(-1).unwrap(), "claude", 20),
             (today, "codex", 30),
             (today.offset(1).unwrap(), "codex", 800),
@@ -392,7 +440,7 @@ mod tests {
             calendar.totals,
             UsageTotals {
                 claude: 120,
-                codex: 30
+                codex: 42
             }
         );
         assert_eq!(
@@ -402,7 +450,16 @@ mod tests {
                 codex: 30
             }
         );
-        assert_eq!(calendar.totals.combined(), 150);
+        assert_eq!(
+            calendar.this_month,
+            UsageTotals {
+                claude: 20,
+                codex: 35
+            }
+        );
+        assert_eq!(calendar.month()[0].unwrap().tokens.codex, 5);
+        assert_eq!(calendar.week()[1].unwrap().tokens.codex, 30);
+        assert_eq!(calendar.totals.combined(), 162);
         assert_eq!(
             calendar.weeks[0].days[0].as_ref().unwrap().tokens.claude,
             100
