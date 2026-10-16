@@ -33,14 +33,14 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 
 These hold for every feature. A change to one is a decision for the maintainer, so open an issue first.
 
-- **A Mac app for coding-agent tasks.** It is not a terminal multiplexer, an editor, or a chat client. Pure Rust on GPUI, with no web view.
+- **A Mac app for coding-agent tasks.** It is not a terminal multiplexer or an editor. The Lead-only chat is the approved messaging exception. Pure Rust on GPUI, with no web view.
 - **Bring your own CLI.** Shika launches Claude Code, Codex, Cursor CLI, or Pi with the user's own login and plan. It does not call a model API.
-- **The real terminal is the interface.** The user reads and answers the agent in the CLI's own UI. Shika does not draw a transcript or replace a CLI's question widgets.
+- **Workers use the real terminal.** Ordinary tasks and non-Claude Leads retain the CLI UI. Claude Code Leads use the approved final-only native chat and question channel; its lifetime history is the narrow exception described in [Lead chat](docs/lead-chat.md).
 - **No per-tool approval prompts from Shika.** Each CLI starts in its automatic approval mode, using flags checked against its `--help` (see [AGENTS.md](AGENTS.md#clis-and-launch-arguments)). This does not waive explicit author confirmation for trusted repository setup, publishing, or destructive cleanup; Shika does not silently authorize those operations.
 - **One fresh worktree per task.** Tasks in a repository are independent. Shika does not reuse worktrees or merge between agents.
 - **The Lead is a manager, not a micromanager.** The author is the CEO, the Lead briefs workers and reads their own reports, and quality rests on the repository's CI and the author's testing. See [Lead agent](docs/lead-agent.md#the-lead-is-a-manager).
 - **The user owns git.** Shika never commits or pushes on its own. A push does not close a task, and Close asks before anything is lost. Create PR commits only after an explicit confirmation.
-- **Grouped by project, one terminal on screen.** Projects and their task cards in one column, and the selected task's terminal beside it. On request, a read-only Changes panel shows that task's diff right of the terminal. It is for reading what an agent changed, not a second terminal or an editor.
+- **Grouped by project, one terminal on screen.** Projects and their task cards in one column, with the selected task's terminal or Claude Lead's chat beside it. On request, a read-only Changes panel shows that task's diff right of the terminal. It is for reading what an agent changed, not a second terminal or an editor.
 - **Keyboard first.** Every workflow works without the mouse, and typing in a terminal never triggers app keys.
 - **Nothing hidden.** No telemetry, no accounts, and no global hooks or edits to another tool's configuration.
 
@@ -52,12 +52,12 @@ Open an issue before working on any of these:
 - Accounts, sync, or telemetry.
 - Merging PRs, managing reviews, or review comments. The card's PR checks mark is read-only; listing, re-running, or cancelling checks is management.
 - Reusing or archiving worktrees, or a CLI's own worktree flag.
-- Conversation history or a browser of closed tasks.
+- Worker/closed-task conversation history or a browser of closed tasks. Lead lifetime chat is the approved exception.
 - More than one visible terminal, or splits between terminals.
 - A code editor.
 - Editing, staging, or reverting from the Changes panel.
 - Installing the CLIs.
-- A custom chat transcript or a per-CLI question parser.
+- Chat outside the approved Lead interface, or replacing worker CLI question widgets.
 - Closing a card automatically after `git push`.
 
 ## Development

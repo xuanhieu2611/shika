@@ -181,9 +181,9 @@ GPUI composites translucent fills with source-over alpha (Shika's fork; see `Car
 
 ---
 
-## Lead chat (proposal)
+## Lead chat
 
-**Status: reviewed design, not shipped.** This is a UI improvement for the Lead; today's lifecycle and behavior remain the contract, and workers keep their terminals. Behavior, transport evidence, persistence and the author's decisions are in [docs/lead-chat.md](../docs/lead-chat.md). The author approved the [geometry values](../docs/lead-chat.md#approved-design-values): 22px bubble radius, 24px composer radius, 80% bubble width cap, six-line composer and five-minute separators. All other values reuse this file's existing vocabulary. No Lead guide or prompt-content changes.
+**Status: implemented for Claude Code; Codex, Cursor CLI, and Pi Leads retain their terminals.** This is a UI improvement for the Lead; today's lifecycle and behavior remain the contract, and workers keep their terminals. Behavior, transport evidence, persistence and the author's decisions are in [docs/lead-chat.md](../docs/lead-chat.md). The author approved the [geometry values](../docs/lead-chat.md#approved-design-values): 22px bubble radius, 24px composer radius, 80% bubble width cap, six-line composer and five-minute separators. All other values reuse this file's existing vocabulary. No Lead guide or prompt-content changes.
 
 **Visual plates.** Conversation pane only, with the agent column unchanged off the left edge. These are static design references with sample copy and snapshots of the default themes' existing chrome values, not runtime color constants, native captures or acceptance evidence. Each author message is followed by one final Lead response; no intermediate assistant text is pictured. Each plate shows the quiet end of a turn; the activity line occupies the last empty gap only while running.
 

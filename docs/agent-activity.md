@@ -1,5 +1,7 @@
 # Agent activity and elapsed turns
 
+Claude Code Leads use the structured chat reducer `Activity::advance_chat`, with explicit terminal results and native/control blockers, without screen sampling, quiet fallback or idle debounce. They retain the same turn clock, Seen rule and notification budget. Workers and non-Claude Leads retain the terminal rules below. See [Lead chat](lead-chat.md).
+
 This guide explains the timer-reset bug, the replacement state model, and how to debug or extend it. Read it before changing agent status, timers, notifications, input capture, or activity-based Close checks.
 
 This guide records the product decision. [design/DESIGN.md](../design/DESIGN.md) defines the visible states. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#agent-activity-and-stable-turn-timer-2026-10-07) separates verified behavior from remaining native checks.
