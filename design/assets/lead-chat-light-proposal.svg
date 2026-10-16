@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="860" height="672" viewBox="0 0 860 672" role="img" aria-labelledby="title desc">
 <title id="title">Lead chat proposal - Shika Light</title>
-<desc id="desc">Static conversation pane design. Header with initial avatar and Lead name. Author bubble on the right, two Lead bubbles on the left, centered timestamps and a worker event, then a reply and a pill composer. Proposed geometry requires author approval in lead-chat.md question 3. Sample content only.</desc>
+<desc id="desc">Static conversation pane design. Header with initial avatar and Lead name. Two author messages on the right, each followed by only its final Lead response on the left. Centered timestamps and a worker event, then a pill composer. Geometry approved by the author. Colors are static snapshots of existing default-theme chrome, not runtime constants. Sample content only.</desc>
 <style>text {font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif;font-size:14px;font-weight:400} .meta {font-size:11.5px} .medium {font-weight:500} .bold {font-weight:600}</style>
 <rect width="860" height="640" fill="#F1F2EC"/>
 <rect width="860" height="48" fill="#E7E9E1"/>
@@ -14,10 +14,10 @@
 <rect x="426" y="116" width="324" height="44" rx="22" fill="#262824"/>
 <text x="446" y="144" fill="#F3F5EE">Plan the new onboarding flow.</text>
 <rect x="110" y="180" width="364" height="64" rx="22" fill="#FFFFFF"/>
-<text x="130" y="207" fill="#262824"><tspan x="130">I'll bring you a proposal with the key</tspan><tspan x="130" dy="20">decisions ready to review.</tspan></text>
-<rect x="110" y="250" width="396" height="44" rx="22" fill="#FFFFFF"/>
-<text x="130" y="278" fill="#262824">You can keep working while I put it together.</text>
-<text x="430" y="332" text-anchor="middle" fill="#6C7166" class="meta">12:33 PM</text>
+<text x="130" y="207" fill="#262824"><tspan x="130">I recommend one review page.</tspan><tspan x="130" dy="20">Existing projects can skip setup.</tspan></text>
+<text x="430" y="288" text-anchor="middle" fill="#6C7166" class="meta">12:33 PM</text>
+<rect x="426" y="308" width="324" height="44" rx="22" fill="#262824"/>
+<text x="446" y="336" fill="#F3F5EE">Keep the existing behavior.</text>
 <text x="430" y="368" text-anchor="middle" fill="#6C7166" class="meta">Review onboarding is ready to check</text>
 <rect x="110" y="390" width="436" height="104" rx="22" fill="#FFFFFF"/>
 <text x="130" y="418" fill="#262824" class="bold">The proposal is ready.</text>
@@ -28,5 +28,5 @@
 <text x="690" y="577" text-anchor="middle" fill="#F3F5EE" style="font-size:12.5px">Send ↵</text>
 <text x="430" y="620" text-anchor="middle" fill="#6C7166" class="meta">ctrl q back to cards</text>
 <rect y="640" width="860" height="32" fill="#FFFFFF"/>
-<text x="20" y="661" fill="#6C7166" class="meta">Proposal · sample content · pending geometry: lead-chat.md Q3 · conversation pane only</text>
+<text x="20" y="661" fill="#6C7166" class="meta">Reviewed design · final responses only · approved geometry · theme chrome snapshot</text>
 </svg>
