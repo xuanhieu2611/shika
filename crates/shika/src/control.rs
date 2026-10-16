@@ -306,6 +306,12 @@ pub fn worker_command(command: Command, turn: Option<Instant>) -> (Reply, Option
     }
 }
 
+/// Internal chat delivery is committed only after the pipe accepted the message.
+pub(super) enum ChatDelivery {
+    Bell(Vec<(String, Settlement)>),
+    Restart(super::RestartSummary),
+}
+
 /// Everything the Lead's card keeps for the control socket.
 pub struct LeadState {
     pub token: String,
@@ -316,6 +322,9 @@ pub struct LeadState {
 }
 
 impl LeadState {
+    pub(super) fn waiting(&self) -> bool {
+        !self.waiters.is_empty()
+    }
     pub fn new(token: String) -> Self {
         Self {
             token,
@@ -393,16 +402,22 @@ impl Gate {
 }
 
 /// The Lead's [`Gate`] right now.
-fn lead_gate(card: &Card, state: &LeadState) -> Gate {
+fn lead_gate(
+    card: &Card,
+    state: &LeadState,
+    chat: Option<&super::lead_chat::LeadChat>,
+    cx: &gpui::App,
+) -> Gate {
     let host = lock(&card.agent.state);
     Gate {
         waiting: !state.waiters.is_empty() || !state.unconfirmed.is_empty(),
         idle: !card.creating
             && matches!(card.status, Status::Waiting | Status::Ready)
-            && host.submission == card.submitted,
-        draft: host.has_draft(),
-        last_typed: host.last_typed,
-        alive: !host.exited && !host.preparing && host.pty.is_some(),
+            && host.submission == card.submitted
+            && chat.is_none_or(|chat| !chat.saving && !chat.busy && !chat.save_failed),
+        draft: chat.map_or_else(|| host.has_draft(), |chat| chat.has_draft(cx)),
+        last_typed: chat.map_or(host.last_typed, |chat| chat.last_typed),
+        alive: !host.exited && !host.preparing && chat.map_or(host.pty.is_some(), |chat| chat.live),
     }
 }
 
@@ -808,7 +823,7 @@ pub enum DialogKind {
 pub struct LeadDialog {
     kind: DialogKind,
     /// Session id of the Lead that asked.
-    lead_id: String,
+    pub(super) lead_id: String,
     /// Session id of the worker the dialog is about.
     task: String,
     reply: Sender<Reply>,
@@ -1526,6 +1541,35 @@ impl Shika {
     }
 
     /// Rings each Lead whose workers settled, when [`Gate`] is open.
+    pub(super) fn chat_delivery_finished(&mut self, index: usize, accepted: bool) {
+        let Some(delivery) = self.cards[index].chat_delivery.take() else {
+            return;
+        };
+        match delivery {
+            ChatDelivery::Bell(marks) if accepted => {
+                if let Some(state) = &mut self.cards[index].lead {
+                    state.doorbell.rung.mark(marks);
+                    state.doorbell.since = None;
+                }
+            }
+            ChatDelivery::Restart(summary) if accepted => {
+                if !summary.workers.is_empty()
+                    && let Err(error) = self
+                        .core
+                        .mark_workers_reported(&self.cards[index].project, &summary.workers)
+                {
+                    self.message(error.to_string());
+                }
+            }
+            ChatDelivery::Restart(summary) => {
+                if let Some(run) = &mut self.cards[index].lead_run {
+                    run.summary = Some(summary);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn ring_doorbells(&mut self, now: Instant, window: &mut Window, cx: &mut Context<Self>) {
         for lead in 0..self.cards.len() {
             let card = &self.cards[lead];
@@ -1533,7 +1577,16 @@ impl Shika {
                 continue;
             };
             let lead_id = session.id.clone();
-            let gate = lead_gate(card, state);
+            let chat = card.chat;
+            let gate = lead_gate(
+                card,
+                state,
+                self.lead_chats
+                    .get(&card.project)
+                    .filter(|_| card.chat)
+                    .map(|chat| chat.read(cx)),
+                cx,
+            );
             let tasks = self.wait_set(lead, &[]);
             let modes = self.cards[lead].agent.terminal.modes();
             let Some(LeadState {
@@ -1548,6 +1601,57 @@ impl Shika {
             }
             let line = doorbell_line(&due.iter().map(|task| &task.info).collect::<Vec<_>>());
             let ids: Vec<String> = due.iter().map(|task| task.info.id.clone()).collect();
+            if chat {
+                let events = due
+                    .iter()
+                    .map(|task| {
+                        let label = match task.info.status {
+                            TaskStatus::Asking => "is asking you",
+                            TaskStatus::Exited => "exited",
+                            _ => "is ready to check",
+                        };
+                        let updated = doorbell.rung.reported.get(&task.info.id).is_some_and(
+                            |(_, turn, receipt)| {
+                                *turn == task.turn
+                                    && *receipt != task.report_received
+                                    && task.report_received.is_some()
+                            },
+                        );
+                        let title = if tasks
+                            .iter()
+                            .filter(|other| other.info.title == task.info.title)
+                            .count()
+                            > 1
+                        {
+                            format!("{} ({})", task.info.title, task.info.cli)
+                        } else {
+                            task.info.title.clone()
+                        };
+                        (
+                            format!(
+                                "{title} {label}{}",
+                                if updated { " - Report updated" } else { "" }
+                            ),
+                            Some(format!("worker:{}:{:?}", task.info.id, task.turn)),
+                        )
+                    })
+                    .collect();
+                self.cards[lead].chat_delivery = Some(ChatDelivery::Bell(
+                    due.iter()
+                        .map(|task| (task.info.id.clone(), task.settlement()))
+                        .collect(),
+                ));
+                if !self.submit_lead_chat(
+                    lead,
+                    line,
+                    shika_core::ChatOrigin::ShikaEvent,
+                    events,
+                    cx,
+                ) {
+                    self.cards[lead].chat_delivery = None;
+                }
+                continue;
+            }
             doorbell.rang(&due);
             self.type_into(
                 lead_id.clone(),
@@ -1590,10 +1694,22 @@ impl Shika {
             if run.summary.is_none() {
                 continue;
             }
-            let quiet = lock(&card.agent.state)
-                .last_output
-                .is_some_and(|at| now.duration_since(at) >= SUMMARY_QUIET);
-            if !quiet || !lead_gate(card, state).open(now) {
+            let quiet = card.chat
+                || lock(&card.agent.state)
+                    .last_output
+                    .is_some_and(|at| now.duration_since(at) >= SUMMARY_QUIET);
+            if !quiet
+                || !lead_gate(
+                    card,
+                    state,
+                    self.lead_chats
+                        .get(&card.project)
+                        .filter(|_| card.chat)
+                        .map(|chat| chat.read(cx)),
+                    cx,
+                )
+                .open(now)
+            {
                 continue;
             }
             let (lead_id, project) = (session.id.clone(), card.project.clone());
@@ -1605,6 +1721,32 @@ impl Shika {
             else {
                 continue;
             };
+            if self.cards[lead].chat {
+                let mut events = vec![(
+                    "Shika restarted. Worker worktrees were kept.".to_string(),
+                    None,
+                )];
+                if summary.line.contains("checkout") {
+                    events.push((
+                        "The Lead checkout was kept without moving to the latest base.".into(),
+                        None,
+                    ));
+                }
+                self.cards[lead].chat_delivery = Some(ChatDelivery::Restart(summary.clone()));
+                if !self.submit_lead_chat(
+                    lead,
+                    summary.line.clone(),
+                    shika_core::ChatOrigin::ShikaEvent,
+                    events,
+                    cx,
+                ) {
+                    self.cards[lead].chat_delivery = None;
+                    if let Some(run) = &mut self.cards[lead].lead_run {
+                        run.summary = Some(summary);
+                    }
+                }
+                continue;
+            }
             let steps = paste_steps(&summary.line, true, &modes);
             self.type_into(
                 lead_id.clone(),

@@ -775,7 +775,7 @@ mod tests {
                 repo,
                 worktree,
                 base_ref: Some("refs/heads/dev".into()),
-                pty: crate::PtyId(1),
+                pty: Some(crate::PtyId(1)),
                 shell_ptys: vec![],
                 cli_titled: true,
                 lead: false,

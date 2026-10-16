@@ -4,8 +4,8 @@
 //! `<repo>/.worktrees/shika-lead`, and a saved record in `projects.json`
 //! (`lead`: the CLI preset and the CLI's own conversation id). The next
 //! [`Core::start_lead`] moves that worktree to the latest base when it is clean
-//! and resumes the conversation when the CLI still has it. Shika stores no
-//! transcript; the CLI does.
+//! and resumes the conversation when the CLI still has it. Claude Code chat
+//! additionally keeps final-only visible history in Shika; it is never replayed.
 //!
 //! The Lead instructions travel in the CLI's system prompt on every start
 //! (`agents::lead_flags`), so a resumed Lead reads the current text, and the
@@ -133,7 +133,7 @@ impl Core {
     ///   resumed when it names the same CLI, has an id, and the CLI still
     ///   stores that conversation; otherwise a new one starts and
     ///   [`LeadStart::conversation`] says why. The record is saved before this
-    ///   returns, with the id Shika chose (Claude Code, Pi, Cursor) or without
+    ///   returns, with the id Shika chose for terminal Leads (Claude Code, Pi, Cursor) or without
     ///   one (Codex; see [`Core::discover_lead_session`]).
     /// - **Arguments.** The preset's flags, the instructions (with the
     ///   project's memory notes appended, if it has any and the file reads) as
@@ -156,6 +156,32 @@ impl Core {
         size: PtySize,
         sink: impl PtySink,
         launch: LeadLaunch,
+    ) -> Result<LeadStart> {
+        self.start_lead_inner(project_id, preset_id, size, sink, launch, false)
+    }
+
+    /// Claude-only chat: the logical Lead has no PTY. Same worktree, guide,
+    /// conversation choice and control environment as a terminal Lead.
+    pub fn start_claude_lead(&self, project_id: &str, launch: LeadLaunch) -> Result<LeadStart> {
+        self.start_lead_inner(
+            project_id,
+            "claude",
+            PtySize::default(),
+            |_, _| {},
+            launch,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_lead_inner(
+        &self,
+        project_id: &str,
+        preset_id: &str,
+        size: PtySize,
+        sink: impl PtySink,
+        launch: LeadLaunch,
+        chat: bool,
     ) -> Result<LeadStart> {
         session::check_prompt(&launch.instructions)?;
         if let Some(bootstrap) = &launch.cursor_bootstrap {
@@ -248,22 +274,76 @@ impl Core {
                 _ => None,
             };
             bootstrap_sent = bootstrap.is_some();
-            let (pty, activity) = self.open_agent(
-                &preset,
-                program,
-                &path,
-                size,
-                Some(&control),
-                args,
-                bootstrap,
-                sink,
-            )?;
+            let chat_transport = if chat {
+                let conversation_id = match &conversation {
+                    Conversation::Fresh { id: Some(id) } | Conversation::Resume { id } => {
+                        id.clone()
+                    }
+                    _ => return Err(Error::UnknownCli),
+                };
+                Some(
+                    crate::lead_transport::ChatTransport::start(
+                        crate::lead_transport::ChatLaunch {
+                            usage: self
+                                .cli_home
+                                .as_ref()
+                                .and_then(|home| self.usage.get()?.register(home, "claude", &path)),
+                            program: program.clone(),
+                            cwd: path.clone(),
+                            path: session::control_path(&control.bin_dir, env.path()),
+                            env: session::control_env(&control.socket, &control.token),
+                            instructions: instructions.clone(),
+                            conversation: conversation_id,
+                            resumed: matches!(conversation, Conversation::Resume { .. }),
+                            history: project
+                                .lead
+                                .as_ref()
+                                .and_then(|saved| saved.chat_history.clone()),
+                            data: self.data_dir.clone(),
+                            project: project.id.clone(),
+                        },
+                    )
+                    .map_err(Error::LeadChat)?,
+                )
+            } else {
+                None
+            };
+            let (pty, activity) = if chat {
+                (None, None)
+            } else {
+                let (pty, activity) = self.open_agent(
+                    &preset,
+                    program,
+                    &path,
+                    size,
+                    Some(&control),
+                    args,
+                    bootstrap,
+                    sink,
+                )?;
+                (Some(pty), activity)
+            };
             let saved = SavedLead {
                 cli: preset.id.clone(),
                 session_id: match &conversation {
-                    Conversation::Fresh { id } => id.clone(),
+                    Conversation::Fresh { id } => {
+                        if chat {
+                            None
+                        } else {
+                            id.clone()
+                        }
+                    }
                     Conversation::Resume { id } => Some(id.clone()),
                 },
+                chat_history: chat_transport
+                    .as_ref()
+                    .map(|transport| transport.history.clone())
+                    .or_else(|| {
+                        project
+                            .lead
+                            .as_ref()
+                            .and_then(|saved| saved.chat_history.clone())
+                    }),
                 reported_workers: project
                     .lead
                     .as_ref()
@@ -275,7 +355,9 @@ impl Core {
                     .unwrap_or_default(),
             };
             if let Err(err) = self.projects.set_lead(&project.id, Some(saved)) {
-                self.ptys.close(pty);
+                if let Some(pty) = pty {
+                    self.ptys.close(pty);
+                }
                 if let Some(activity) = &activity {
                     activity.cleanup();
                 }
@@ -300,6 +382,12 @@ impl Core {
             };
             if let Some(activity) = activity {
                 self.sessions.remember_activity(&session.id, activity);
+            }
+            if let Some(transport) = chat_transport {
+                self.chats
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(id.clone(), std::sync::Arc::new(transport));
             }
             self.sessions.insert(session.clone());
             Ok(session)
@@ -517,6 +605,7 @@ impl Core {
             worktree::remove_worktree(&git, env, &project.path, &path, discard)?;
         }
         self.journal.remove_path(&path)?;
+        crate::lead_chat_store::delete(&self.data_dir, project_id).map_err(Error::LeadChat)?;
         self.projects.set_lead(project_id, None)
     }
 

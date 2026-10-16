@@ -29,7 +29,8 @@ pub struct Session {
     /// project's base later leaves this card alone. None when it started from
     /// the main checkout's HEAD; the default branch is used then.
     pub base_ref: Option<String>,
-    pub pty: PtyId,
+    /// None only for a pipe-based Claude Lead.
+    pub pty: Option<PtyId>,
     pub shell_ptys: Vec<PtyId>,
     /// Whether the CLI's own session title has named the card and branch.
     pub cli_titled: bool,
@@ -340,7 +341,7 @@ impl SessionStore {
             .iter_mut()
             .find(|session| session.id == id)
             .ok_or(Error::UnknownSession)?;
-        let old = session.pty;
+        let old = session.pty.ok_or(Error::LeadUnsupported)?;
         // A task nobody has named yet still reads "New <CLI>": follow the CLI.
         if !session.manual_title && session.title == format!("New {}", session.preset_name) {
             session.title = format!("New {preset_name}");
@@ -350,7 +351,7 @@ impl SessionStore {
         }
         session.preset_id = preset_id;
         session.preset_name = preset_name;
-        session.pty = pty;
+        session.pty = Some(pty);
         Ok((session.clone(), old))
     }
 
@@ -452,7 +453,7 @@ mod tests {
             repo: PathBuf::from("/repo"),
             worktree: PathBuf::from("/repo/.worktrees/shika-draft-1"),
             base_ref: None,
-            pty,
+            pty: Some(pty),
             shell_ptys: Vec::new(),
             cli_titled: false,
             lead: false,
