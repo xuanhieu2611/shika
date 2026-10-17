@@ -51,6 +51,9 @@ pub struct SavedLead {
     /// them. Pruned when the worktree no longer exists.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reported_workers: Vec<PathBuf>,
+    /// Shika-owned Lead lifetime history, independent of provider context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_history: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -585,6 +588,7 @@ mod tests {
             cli: "claude".into(),
             session_id: Some("0198f2a4-7a3e".into()),
             reported_workers: Vec::new(),
+            chat_history: None,
         };
         db.set_lead("a", Some(saved.clone())).unwrap();
         let text = fs::read_to_string(&file).unwrap();
@@ -605,6 +609,7 @@ mod tests {
                 cli: "codex".into(),
                 session_id: None,
                 reported_workers: Vec::new(),
+                chat_history: None,
             })
         );
         db.set_lead_session("a", Some("thread-1".into())).unwrap();
@@ -642,6 +647,7 @@ mod tests {
                 cli: "claude".into(),
                 session_id: None,
                 reported_workers: Vec::new(),
+                chat_history: None,
             }),
         )
         .unwrap();
@@ -683,6 +689,7 @@ mod tests {
                 cli: "pi".into(),
                 session_id: None,
                 reported_workers: Vec::new(),
+                chat_history: None,
             }),
         )
         .unwrap();

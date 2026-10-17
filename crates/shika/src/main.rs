@@ -1,9 +1,13 @@
 mod activity;
 mod appearance;
 mod changes;
+mod chat_input;
 mod checks;
 mod control;
 mod control_client;
+mod lead_chat;
+mod lead_chat_markdown;
+mod lead_chat_question;
 mod lifecycle;
 mod model;
 mod name_input;
@@ -410,7 +414,10 @@ struct Card {
     evidence: activity::OutputEvidence,
     lifecycle: lifecycle::Lifecycle,
     lifecycle_checked: Option<Instant>,
+    /// Unbound host/identity pane for a chat card; never receives a PTY or CLI bytes.
     agent: Pane,
+    chat: bool,
+    chat_delivery: Option<control::ChatDelivery>,
     shells: Vec<Pane>,
     /// Zero is the pinned agent tab; shells use their index plus one.
     active_tab: usize,
@@ -478,6 +485,7 @@ struct LeadRun {
     /// When a launch that resumed the saved conversation completed. A CLI
     /// that exits within [`model::RESUME_GRACE`] refused the saved id.
     resumed_at: Option<Instant>,
+    unexpected_exit: bool,
     /// What became of a resumed Lead that exited early (see
     /// [`model::ResumeExit`]), until the app has acted on it.
     resume_exit: Option<model::ResumeExit>,
@@ -502,6 +510,7 @@ impl LeadRun {
             .collect::<Vec<_>>();
         Self {
             resumed_at: resumed.then_some(now),
+            unexpected_exit: false,
             resume_exit: None,
             // Codex picks its own conversation id, and only once the first
             // message is submitted.
@@ -652,6 +661,7 @@ impl SettingsSection {
 }
 
 enum Overlay {
+    LeadQuestion(lead_chat_question::QuestionDialog),
     WorktreeSetup(Box<worktree_setup::Editor>),
     CardMenu(CardMenu),
     Rename {
@@ -739,6 +749,7 @@ impl Overlay {
     /// How a refusal names this overlay to a Lead.
     fn name(&self) -> &'static str {
         match self {
+            Self::LeadQuestion(_) => "the Lead question dialog",
             Self::WorktreeSetup(_) => "the Worktree setup dialog",
             Self::CardMenu(_) => "a card menu",
             Self::Rename { .. } => "the Rename task dialog",
@@ -760,6 +771,8 @@ struct Shika {
     core: Arc<Core>,
     projects: Vec<Project>,
     cards: Vec<Card>,
+    lead_chats: HashMap<String, Entity<lead_chat::LeadChat>>,
+    chat_questions: Vec<(String, String, shika_core::ChatQuestion)>,
     selection: Option<Selection>,
     focus: FocusHandle,
     catalog: Option<CliCatalog>,
@@ -889,6 +902,8 @@ impl Shika {
             core: core.clone(),
             projects,
             cards: vec![],
+            lead_chats: HashMap::new(),
+            chat_questions: Vec::new(),
             selection,
             focus: cx.focus_handle(),
             catalog: None,
@@ -1204,13 +1219,20 @@ impl Shika {
         let selected_terminal = self
             .selected_card()
             .map(|index| self.cards[index].active_pane().view.focus_handle(cx));
-        if cards || changes || selected_terminal.as_ref() == Some(&focus) {
+        let chat_focus = self
+            .selected_chat()
+            .is_some_and(|chat| chat.read(cx).owns_focus(&focus, cx));
+        if cards || changes || chat_focus || selected_terminal.as_ref() == Some(&focus) {
             window.focus(&focus, cx);
-        } else if self.cards.iter().any(|card| {
+        } else if (self.cards.iter().any(|card| {
             std::iter::once(&card.agent)
                 .chain(card.shells.iter())
                 .any(|pane| pane.view.focus_handle(cx) == focus)
-        }) && !self.busy
+        }) || self
+            .lead_chats
+            .values()
+            .any(|chat| chat.read(cx).owns_focus(&focus, cx)))
+            && !self.busy
         {
             // A notification may have selected another task while editing.
             // Never restore focus to the old task's now-hidden terminal.
@@ -1221,6 +1243,11 @@ impl Shika {
     }
     fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
+            return;
+        }
+        if let Some(chat) = self.selected_chat() {
+            window.focus(&chat.focus_handle(cx), cx);
+            cx.notify();
             return;
         }
         if let Some(i) = self.selected_card() {
@@ -1786,6 +1813,15 @@ impl Shika {
         if author {
             self.busy = holds_busy;
         }
+        let chat = lead.is_some() && preset.id == "claude";
+        if chat {
+            self.ensure_lead_chat(&project, window, cx)
+                .update(cx, |chat, cx| {
+                    chat.live = false;
+                    chat.starting = true;
+                    cx.notify();
+                });
+        }
         let opacity = self.terminal_opacity();
         let pane = Pane::new(
             self.core.clone(),
@@ -1805,7 +1841,7 @@ impl Shika {
                 host.keep_title();
             }
         }
-        if configured || !author {
+        if configured || !author || chat {
             // A second launch can hide this pane before its first layout, and
             // a worker's pane is never shown until the author picks it. Give
             // it a real initial grid so the launch does not wait forever for
@@ -1835,6 +1871,8 @@ impl Shika {
             lifecycle: lifecycle::Lifecycle::default(),
             lifecycle_checked: None,
             agent: pane,
+            chat,
+            chat_delivery: None,
             shells: Vec::new(),
             active_tab: 0,
             shell_serial: 0,
@@ -1916,13 +1954,16 @@ impl Shika {
                         }
                     };
                     let result = match launch {
-                        Launch::Lead(launch) | Launch::LeadRestart { launch, .. } => core
-                            .start_lead(&project, &preset.id, size, sink, launch)
-                            .map(|start| {
-                                let session = start.session.clone();
-                                *lock(&started_lead) = Some(start);
-                                session
-                            }),
+                        Launch::Lead(launch) | Launch::LeadRestart { launch, .. } => (if chat {
+                            core.start_claude_lead(&project, launch)
+                        } else {
+                            core.start_lead(&project, &preset.id, size, sink, launch)
+                        })
+                        .map(|start| {
+                            let session = start.session.clone();
+                            *lock(&started_lead) = Some(start);
+                            session
+                        }),
                         Launch::Worker(options) => core.create_session_with_preparation(
                             &project, &preset.id, size, sink, options, control, report,
                         ),
@@ -1936,8 +1977,10 @@ impl Shika {
                             report,
                         ),
                     };
-                    if let Ok(s) = &result {
-                        bind_host(&core, &state_bind, s.pty);
+                    if let Ok(s) = &result
+                        && let Some(pty) = s.pty
+                    {
+                        bind_host(&core, &state_bind, pty);
                     }
                     result
                 })
@@ -1968,6 +2011,16 @@ impl Shika {
                     return;
                 };
                 this.cards[index].creating = false;
+                if let Some(chat) = this
+                    .lead_chats
+                    .get(&this.cards[index].project)
+                    .filter(|_| this.cards[index].chat)
+                {
+                    chat.update(cx, |chat, cx| {
+                        chat.starting = false;
+                        cx.notify();
+                    });
+                }
                 match result {
                     Ok(session)
                         if !this.cards[index]
@@ -2013,6 +2066,16 @@ impl Shika {
                             // The saved Lead is on disk now; a stop leaves
                             // its resting row.
                             this.reload_projects();
+                        }
+                        if this.cards[index].chat {
+                            let project = this.cards[index].project.clone();
+                            if let Some(chat) = this.lead_chats.get(&project) {
+                                chat.update(cx, |chat, cx| {
+                                    chat.live = true;
+                                    chat.busy = false;
+                                    cx.notify();
+                                });
+                            }
                         }
                         this.cards[index].session = Some(session);
                         this.cards[index].launch_control = None;
@@ -2206,7 +2269,7 @@ impl Shika {
         let Some(index) = self.selected_card() else {
             return;
         };
-        if tab > self.cards[index].shells.len() {
+        if self.cards[index].chat || tab > self.cards[index].shells.len() {
             return;
         }
         self.cards[index].active_tab = tab;
@@ -2368,11 +2431,15 @@ impl Shika {
         if let Some(run) = &mut self.cards[index].lead_run {
             run.resume_exit = None;
         }
-        let focused = self.cards[index]
-            .active_pane()
-            .view
-            .focus_handle(cx)
-            .is_focused(window);
+        let focused = self
+            .lead_chats
+            .get(&self.cards[index].project)
+            .is_some_and(|chat| self.cards[index].chat && chat.read(cx).focused(window, cx))
+            || self.cards[index]
+                .active_pane()
+                .view
+                .focus_handle(cx)
+                .is_focused(window);
         Some((
             index,
             self.selection == Some(Selection::Card(index)),
@@ -2395,6 +2462,12 @@ impl Shika {
         else {
             return;
         };
+        let unexpected = self
+            .cards
+            .iter()
+            .find(|c| c.session.as_ref().is_some_and(|s| s.id == id))
+            .and_then(|c| c.lead_run.as_ref())
+            .is_some_and(|run| run.unexpected_exit);
         let core = self.core.clone();
         let lead_id = id.clone();
         self.busy = true;
@@ -2408,7 +2481,11 @@ impl Shika {
                 match result {
                     Ok(()) => {
                         this.lead_departed(Some(&id), &project, false, cx);
-                        this.message(model::RESUME_EXIT_KEPT.into());
+                        this.message(if unexpected {
+                            "The Lead stopped unexpectedly. Select it to resume.".into()
+                        } else {
+                            model::RESUME_EXIT_KEPT.into()
+                        });
                         if focused && this.overlay.is_none() {
                             window.focus(&this.focus, cx);
                         }
@@ -2519,6 +2596,7 @@ impl Shika {
         let mut changed = self.drain_update_notice(cx);
         // The Lead's shika commands run here, with the rest of the state.
         self.drain_control(window, cx);
+        self.drain_lead_chats(window, cx);
         self.lead_upkeep(now, window, cx);
         // Reconcile agent/shell branch renames independently of the one-shot
         // CLI title watch. Git runs off-thread, with only one batch in flight.
@@ -2602,6 +2680,9 @@ impl Shika {
             }
         }
         for card in &mut self.cards {
+            if card.chat {
+                continue;
+            }
             // Sample live terminal chrome, never the user's scrollback. Read
             // the engine before taking HostState so query replies cannot
             // create an inverted lock order.
@@ -2873,7 +2954,13 @@ impl Shika {
         if let Some((i, _)) = on_screen {
             let card = &mut self.cards[i];
             if card.unseen()
-                && (stayed || card.active_pane().view.focus_handle(cx).is_focused(window))
+                && (stayed
+                    || card.active_pane().view.focus_handle(cx).is_focused(window)
+                    || (card.chat
+                        && self
+                            .lead_chats
+                            .get(&card.project)
+                            .is_some_and(|chat| chat.read(cx).focused(window, cx))))
             {
                 card.seen = Some(card.since);
                 changed = true;
@@ -3540,7 +3627,9 @@ impl Shika {
                         sink,
                         control,
                     )?;
-                    bind_host(&core, &state, session.pty);
+                    if let Some(pty) = session.pty {
+                        bind_host(&core, &state, pty);
+                    }
                     Ok::<_, shika_core::Error>(session)
                 })
                 .await;
@@ -4006,6 +4095,15 @@ impl Shika {
                 .position(|c| c.session.as_ref().is_some_and(|s| s.id == id))
         });
         self.reload_projects();
+        if forgotten {
+            self.lead_chats.remove(project);
+        } else if let Some(chat) = self.lead_chats.get(project) {
+            chat.update(cx, |chat, cx| {
+                chat.live = false;
+                chat.busy = false;
+                cx.notify();
+            });
+        }
         self.leftovers = self.core.leftovers_list().unwrap_or_default();
         let before = self.selection.take();
         let mine = match (&before, index) {
@@ -4150,6 +4248,10 @@ impl Shika {
         .detach();
     }
     fn cancel_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.overlay, Some(Overlay::LeadQuestion(_))) {
+            self.answer_chat_question(true, window, cx);
+            return;
+        }
         if self.busy
             && matches!(
                 self.overlay,
@@ -4213,6 +4315,9 @@ impl Shika {
                     Ok(_) => {
                         this.cards.retain(|c| c.project != removed_id);
                         this.projects.retain(|p| p.id != removed_id);
+                        this.lead_chats.remove(&removed_id);
+                        this.chat_questions
+                            .retain(|(_, project, _)| project != &removed_id);
                         this.bases.remove(&removed_id);
                         this.selection = this
                             .projects
@@ -4653,6 +4758,10 @@ impl Shika {
         }
     }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.overlay, Some(Overlay::LeadQuestion(_))) {
+            self.chat_question_key(event, window, cx);
+            return;
+        }
         let stroke = &event.keystroke;
         if stroke.modifiers.platform && stroke.key == "q" {
             cx.quit();
@@ -5131,7 +5240,8 @@ impl Shika {
                     }
                 }
                 // Typed into above, before the modifier check.
-                Some(Overlay::WorktreeSetup(_))
+                Some(Overlay::LeadQuestion(_))
+                | Some(Overlay::WorktreeSetup(_))
                 | Some(Overlay::Base { .. })
                 | Some(Overlay::Publish { .. })
                 | Some(Overlay::CardMenu(_))
@@ -6681,6 +6791,9 @@ impl Shika {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if let Some(chat) = self.chat_side(chrome, window, cx) {
+            return chat;
+        }
         // With the column hidden, this row is the whole title bar: it starts
         // after the traffic lights with the button that shows the column.
         let show_column = self.column.hidden.then(|| {
@@ -7218,7 +7331,7 @@ impl Shika {
                     .child(self.update_notice_panel(card, chrome, window, cx)),
             );
         }
-        right
+        right.into_any_element()
     }
 
     /// The update card. It does not take focus, so typing and Escape stay in
@@ -8149,6 +8262,7 @@ impl Shika {
             Overlay::CardMenu(_) | Overlay::RestingMenu { .. } => {
                 unreachable!("card menus render at the pointer")
             }
+            Overlay::LeadQuestion(question) => self.chat_question_view(question, chrome, max_h, cx),
             Overlay::LeadClose { step, .. } => {
                 let stopping = matches!(step, model::LeadClose::Stop { .. });
                 let mut panel =
@@ -9516,6 +9630,15 @@ fn home_dir() -> Option<PathBuf> {
 
 impl Render for Shika {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let chat_projects = self
+            .projects
+            .iter()
+            .filter(|p| p.lead.as_ref().is_some_and(|lead| lead.cli == "claude"))
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>();
+        for project in chat_projects {
+            self.ensure_lead_chat(&project, window, cx);
+        }
         let cards_focused = self.focus.is_focused(window);
         let chrome = self.chrome(window);
         let home = home_dir();
@@ -9847,6 +9970,7 @@ fn main() -> anyhow::Result<()> {
         let quitting_core = core.clone();
         cx.on_app_quit(move |_| {
             quitting_core.cancel_preparations();
+            quitting_core.stop_lead_chats();
             async {}
         })
         .detach();

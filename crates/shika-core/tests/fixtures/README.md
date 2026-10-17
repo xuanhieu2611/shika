@@ -1,0 +1,11 @@
+# Claude chat fixtures
+
+`claude-2.1.302-local.jsonl` and `claude-2.1.302-question-local.jsonl` were recorded on 2026-10-16 from installed Claude Code 2.1.302 in print/stream-JSON mode. Each run used a disposable repository and `CLAUDE_CONFIG_DIR`, a fake local-only API key and an HTTP server on loopback that supplied synthetic Messages responses. No provider request or paid usage occurred. This tests the actual CLI envelope and tool/question round trip, not authenticated model behavior.
+
+Common arguments were checked with `claude --help`: `-p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --append-system-prompt <fixture instructions> --session-id <uuid>`. The question run added `--permission-prompts host --permission-prompt-tool stdio` and a correlated initialization control request. The help's permission-prompts description names the latter flag; its stdio value and response envelope were corroborated against Anthropic's Python SDK subprocess/control reference and then exercised against the installed binary. The application implements the records in Rust and embeds no SDK.
+
+Metadata, paths and random ids were removed or normalized; message ids and distinct block-record UUID identities remain represented. Notably, separate text and tool records share the same assistant message id. The question fixture preserves a correlated `can_use_tool` request and the tool-result envelope after an explicit synthetic answer.
+
+`claude-chat.jsonl` is hand-written from the documented format to exercise thinking, subagent text, partials, duplicate records and an aggregate result containing intermediate text. Negative/multiple-text-block/error cases are also constructed directly in Rust tests. Tests never spawn a real Claude process or read normal provider files.
+
+Primary references: [programmatic guide](https://code.claude.com/docs/en/headless), [user input](https://code.claude.com/docs/en/agent-sdk/user-input), [subprocess flags](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/transport/subprocess_cli.py), [control protocol](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py).

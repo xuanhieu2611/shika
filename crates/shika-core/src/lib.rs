@@ -58,6 +58,9 @@ pub mod control;
 mod diff;
 mod error;
 mod lead;
+mod lead_chat;
+mod lead_chat_store;
+mod lead_transport;
 mod memory;
 mod path_env;
 mod preparation;
@@ -84,6 +87,10 @@ pub use diff::{
 };
 pub use error::{Error, Result};
 pub use lead::{FreshReason, LeadConversation, LeadLaunch, LeadLoss, LeadStart, LostWorker};
+pub use lead_chat_store::{ChatContent, ChatOrigin, ChatRecord};
+pub use lead_transport::{
+    ChatEvent, ChatQuestion, ChatQuestionItem, ChatQuestionOption, ChatStatus,
+};
 pub use memory::{MAX_NOTE_CHARS, MAX_TOTAL_BYTES, MemoryNote};
 pub use path_env::{LoginShellError, PathEnv};
 pub use preparation::{PreparationConfig, PreparationControl, PreparationDraft, PreparationEvent};
@@ -172,6 +179,7 @@ pub struct Core {
     env: OnceLock<PathEnv>,
     sessions: SessionStore,
     ptys: PtyHub,
+    chats: Mutex<HashMap<String, std::sync::Arc<lead_transport::ChatTransport>>>,
     operations: Mutex<()>,
     /// Where the agent CLIs keep their session titles. None without a home
     /// directory, which only means cards keep their prompt names.
@@ -203,6 +211,7 @@ impl Core {
             env: OnceLock::new(),
             sessions: SessionStore::new(),
             ptys: PtyHub::new(),
+            chats: Mutex::new(HashMap::new()),
             operations: Mutex::new(()),
             cli_home: CliHome::detect(),
             usage: OnceLock::new(),
@@ -267,7 +276,6 @@ impl Core {
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         self.projects.remove(id)?;
-        self.memory.delete(id);
         for (project, control) in self
             .preparing
             .lock()
@@ -282,6 +290,7 @@ impl Core {
         for session in &gone {
             self.hang_up(session);
         }
+        self.memory.delete(id);
         Ok(gone)
     }
 
@@ -732,7 +741,7 @@ impl Core {
                 repo: project.path.clone(),
                 worktree: draft.path.clone(),
                 base_ref: base.reference.clone(),
-                pty,
+                pty: Some(pty),
                 shell_ptys: Vec::new(),
                 cli_titled: false,
                 lead: false,
@@ -1626,7 +1635,18 @@ impl Core {
     }
 
     fn hang_up(&self, session: &Session) {
-        self.ptys.close(session.pty);
+        let chat = {
+            self.chats
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&session.id)
+        };
+        if let Some(chat) = chat {
+            chat.stop();
+        }
+        if let Some(pty) = session.pty {
+            self.ptys.close(pty);
+        }
         for shell in &session.shell_ptys {
             self.ptys.close(*shell);
         }
@@ -1897,7 +1917,7 @@ mod tests {
             got.contains(&format!("cwd:{}", session.worktree.display())),
             "{got}"
         );
-        core.write(session.pty, b"hello\r").unwrap();
+        core.write(session.pty.unwrap(), b"hello\r").unwrap();
         let echoed = collect_until(&rx, "got:hello", Duration::from_secs(3));
         assert!(echoed.contains("got:hello"), "{echoed}");
 
@@ -1911,7 +1931,7 @@ mod tests {
             .open_shell(&session.id, PtySize::default(), again_sink)
             .unwrap();
         assert_ne!(again, shell);
-        assert!(core.close_shell(&session.id, session.pty).is_err());
+        assert!(core.close_shell(&session.id, session.pty.unwrap()).is_err());
         core.close_shell(&session.id, shell).unwrap();
         assert_eq!(core.sessions.get(&session.id).unwrap().shell_ptys, [again]);
         assert!(core.write(shell, b"exit\r").is_err());
@@ -1926,7 +1946,7 @@ mod tests {
         ));
         assert!(session.worktree.exists());
         assert!(
-            core.write(session.pty, b"").is_ok(),
+            core.write(session.pty.unwrap(), b"").is_ok(),
             "a refused close kept the agent"
         );
 
@@ -1939,7 +1959,10 @@ mod tests {
                 .trim()
                 .is_empty()
         );
-        assert_eq!(core.write(session.pty, b"x"), Err(Error::UnknownPty));
+        assert_eq!(
+            core.write(session.pty.unwrap(), b"x"),
+            Err(Error::UnknownPty)
+        );
         assert_eq!(core.write(shell, b"x"), Err(Error::UnknownPty));
         assert_eq!(core.write(again, b"x"), Err(Error::UnknownPty));
         let (_, exit) = collect_to_exit(&rx, Duration::from_secs(5));
@@ -2491,7 +2514,7 @@ mod tests {
         );
         core.session_discard(&first.id).unwrap();
         assert!(core.session(&second.id).is_some());
-        core.write(second.pty, b"still alive\r").unwrap();
+        core.write(second.pty.unwrap(), b"still alive\r").unwrap();
         core.session_discard(&second.id).unwrap();
     }
 
@@ -2781,7 +2804,7 @@ mod tests {
         assert!(core.session(&session.id).is_some());
         assert!(session.worktree.exists());
         assert_eq!(core.worktree_journal().unwrap().len(), 1);
-        core.write(session.pty, b"still alive\r").unwrap();
+        core.write(session.pty.unwrap(), b"still alive\r").unwrap();
         let remote = local_remote(&scratch, &repo);
         // A rejecting bare remote exercises a real push error, not a fake git.
         let hook = remote.join("hooks/pre-receive");
@@ -3345,7 +3368,7 @@ mod tests {
             assert!(branch_exists(&repo, &session.branch));
             assert!(!core.sessions().is_empty());
             assert!(
-                core.write(session.pty, b"").is_ok(),
+                core.write(session.pty.unwrap(), b"").is_ok(),
                 "refusal kept the agent"
             );
         }
@@ -3558,6 +3581,211 @@ mod tests {
 
     /// Every CLI prints its arguments and environment (`SWITCH_CLI`), and the
     /// Core reads CLI files from a scratch home, never the real one.
+    #[test]
+    fn chat_interrupt_cancels_a_blocked_pipe_write_and_quit_reaps_the_child() {
+        let scratch = Scratch::new();
+        let mut core = core_with_switch_clis(&scratch);
+        core.cli_home = Some(CliHome::at(scratch.path.join("home")));
+        write_exec(&scratch.path, "claude", "#!/bin/sh\nsleep 30\n");
+        let project = core
+            .add_project(&scratch.repo("pipe-demo"))
+            .unwrap()
+            .project;
+        let start = core
+            .start_claude_lead(&project.id, lead_launch(&scratch))
+            .unwrap();
+        core.lead_chat_send(
+            &start.session.id,
+            "large input ".repeat(100_000),
+            ChatOrigin::Author,
+            Vec::new(),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(7);
+        loop {
+            if core
+                .lead_chat_events(&start.session.id)
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Record(_)))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        core.lead_chat_interrupt(&start.session.id);
+        loop {
+            if core
+                .lead_chat_events(&start.session.id)
+                .iter()
+                .any(|e| matches!(e, ChatEvent::Status(ChatStatus::Ready)))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "blocked stdin must be interruptible"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let now = Instant::now();
+        core.stop_lead_chats();
+        assert!(now.elapsed() < Duration::from_secs(4));
+    }
+
+    #[test]
+    fn claude_chat_has_no_pty_confirms_identity_and_keeps_history_until_forget() {
+        let scratch = Scratch::new();
+        let mut core = core_with_switch_clis(&scratch);
+        core.cli_home = Some(CliHome::at(scratch.path.join("home")));
+        write_exec(
+            &scratch.path,
+            "claude",
+            r#"#!/bin/sh
+id=
+while [ "$#" -gt 0 ]; do
+ case "$1" in --session-id|--resume) id="$2"; shift;; esac
+ shift
+done
+while IFS= read -r line; do
+ case "$line" in
+ *shika-initialize*) printf '{"type":"control_response","response":{"request_id":"shika-initialize","subtype":"success"}}\n';;
+ *'"type":"user"'*)
+ printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$id"
+ case "$line" in *please-interrupt*) sleep 30;; esac
+ printf '{"type":"assistant","session_id":"%s","message":{"id":"m1","content":[{"type":"text","text":"private commentary"}]}}\n' "$id"
+ printf '{"type":"assistant","session_id":"%s","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}\n' "$id"
+ printf '{"type":"assistant","session_id":"%s","message":{"id":"m2","content":[{"type":"text","text":"Final reply"}]}}\n' "$id"
+ printf '{"type":"result","session_id":"%s","subtype":"success","is_error":false,"result":"private aggregate"}\n' "$id"
+ ;;
+ esac
+done
+"#,
+        );
+        let project = core
+            .add_project(&scratch.repo("chat-demo"))
+            .unwrap()
+            .project;
+        core.remember(&project.id, "Keep this note").unwrap();
+        let start = core
+            .start_claude_lead(&project.id, lead_launch(&scratch))
+            .unwrap();
+        assert_eq!(start.session.pty, None);
+        assert_eq!(
+            core.saved_lead(&project.id).unwrap().unwrap().session_id,
+            None
+        );
+        let history = core
+            .saved_lead(&project.id)
+            .unwrap()
+            .unwrap()
+            .chat_history
+            .unwrap();
+        let collect = |predicate: &dyn Fn(&ChatEvent) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(7);
+            let mut events = Vec::new();
+            loop {
+                let batch = core.lead_chat_events(&start.session.id);
+                let done = batch.iter().any(predicate);
+                events.extend(batch);
+                if done {
+                    return events;
+                }
+                assert!(Instant::now() < deadline, "chat event deadline");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        core.lead_chat_send(
+            &start.session.id,
+            "Hello".into(),
+            ChatOrigin::Author,
+            Vec::new(),
+        )
+        .unwrap();
+        let events = collect(&|e| matches!(e, ChatEvent::Status(ChatStatus::Ready)));
+        let confirmed = events
+            .iter()
+            .find_map(|e| {
+                if let ChatEvent::Confirmed(id) = e {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        core.confirm_lead_chat(&start.session.id, confirmed)
+            .unwrap();
+        let page = core.lead_chat_page(&project.id, None).unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[1].content.text(), Some("Final reply"));
+        assert!(!format!("{page:?}").contains("private"));
+        let (worker_sink, _worker_output) = channel_sink();
+        let worker = core
+            .create_session(
+                &project.id,
+                "claude",
+                PtySize::default(),
+                worker_sink,
+                LaunchOptions {
+                    started_by: Some(start.session.id.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        core.lead_chat_send(
+            &start.session.id,
+            "please-interrupt".into(),
+            ChatOrigin::Author,
+            Vec::new(),
+        )
+        .unwrap();
+        collect(&|e| matches!(e, ChatEvent::Status(ChatStatus::Working)));
+        core.lead_chat_interrupt(&start.session.id);
+        collect(&|e| matches!(e, ChatEvent::Status(ChatStatus::Ready)));
+        assert!(
+            core.lead_chat_page(&project.id, None)
+                .unwrap()
+                .iter()
+                .any(|r| r.content.text() == Some("Reply stopped"))
+        );
+        core.lead_chat_send(
+            &start.session.id,
+            "Continue".into(),
+            ChatOrigin::Author,
+            Vec::new(),
+        )
+        .unwrap();
+        collect(&|e| matches!(e, ChatEvent::Status(ChatStatus::Ready)));
+        core.stop_lead(&start.session.id).unwrap();
+        assert!(
+            core.write(worker.pty.unwrap(), b"still running\n").is_ok(),
+            "chat interruption and Stop must not stop worker groups"
+        );
+        assert_eq!(
+            core.saved_lead(&project.id)
+                .unwrap()
+                .unwrap()
+                .chat_history
+                .as_deref(),
+            Some(history.as_str())
+        );
+        assert!(core.lead_chat_page(&project.id, None).unwrap().len() >= 5);
+        assert_eq!(
+            core.confirm_lead_chat(&start.session.id, confirmed),
+            Err(Error::UnknownSession)
+        );
+        core.forget_lead(&project.id, false).unwrap();
+        assert!(
+            !core
+                .data_dir()
+                .join("leads")
+                .join(&project.id)
+                .join("chat")
+                .exists()
+        );
+        assert_eq!(core.lead_memory(&project.id).unwrap().len(), 1);
+    }
+
     fn core_with_reporting_cli(scratch: &Scratch) -> Core {
         let mut core = core_with_switch_clis(scratch);
         core.cli_home = Some(CliHome::at(scratch.path.join("home")));
@@ -3667,6 +3895,7 @@ mod tests {
                 cli: "claude".into(),
                 session_id: Some(session_id),
                 reported_workers: Vec::new(),
+                chat_history: None,
             })
         );
         // The control env is set and the shika command directory leads PATH.
@@ -4166,6 +4395,7 @@ mod tests {
                 cli: "claude".into(),
                 session_id: Some(id),
                 reported_workers: Vec::new(),
+                chat_history: None,
             })
         );
         assert_eq!(core.worktree_journal().unwrap().len(), 1);
@@ -4215,6 +4445,7 @@ mod tests {
                     cli: "claude".into(),
                     session_id: Some("--dangerously-bad".into()),
                     reported_workers: Vec::new(),
+                    chat_history: None,
                 }),
             )
             .unwrap();
@@ -4288,6 +4519,7 @@ mod tests {
                 cli: "codex".into(),
                 session_id: None,
                 reported_workers: Vec::new(),
+                chat_history: None,
             })
         );
         // Nothing to find until Codex writes the conversation at the first message.
@@ -4429,6 +4661,7 @@ mod tests {
                 cli: "cursor".into(),
                 session_id: Some(chat.into()),
                 reported_workers: Vec::new(),
+                chat_history: None,
             })
         );
         core.stop_lead(&first.session.id).unwrap();
@@ -4471,6 +4704,7 @@ mod tests {
                     cli: "cursor".into(),
                     session_id: None,
                     reported_workers: Vec::new(),
+                    chat_history: None,
                 })
             );
             core.stop_lead(&first.session.id).unwrap();
@@ -4646,6 +4880,7 @@ mod tests {
                     cli: "claude".into(),
                     session_id: None,
                     reported_workers: Vec::new(),
+                    chat_history: None,
                 }),
             )
             .unwrap();
@@ -4690,7 +4925,7 @@ mod tests {
         core.stop_lead(&lead.id).unwrap();
         assert_eq!(core.sessions(), vec![worker.clone()]);
         assert_eq!(core.stop_lead(&lead.id), Err(Error::UnknownSession));
-        assert!(core.write(worker.pty, b"").is_ok());
+        assert!(core.write(worker.pty.unwrap(), b"").is_ok());
         assert!(core.lost_workers(&project.id).unwrap().is_empty());
     }
 
@@ -4956,11 +5191,14 @@ mod tests {
         assert_eq!(switched.shell_ptys, vec![shell]);
         assert!(!switched.lead);
         assert_eq!(
-            core.write(old_pty, b"still there\n"),
+            core.write(old_pty.unwrap(), b"still there\n"),
             Err(Error::UnknownPty)
         );
         assert!(core.write(shell, b"echo shells-stay\n").is_ok());
-        assert!(core.write(switched.pty, b"echo reviewer\n").is_ok());
+        assert!(
+            core.write(switched.pty.unwrap(), b"echo reviewer\n")
+                .is_ok()
+        );
         let journal = core
             .worktree_journal()
             .unwrap()
@@ -4985,7 +5223,10 @@ mod tests {
         assert_eq!(again.preset_id, "claude");
         assert_ne!(again.pty, cursor_pty);
         assert_eq!(again.shell_ptys, vec![shell]);
-        assert_eq!(core.write(cursor_pty, b"x"), Err(Error::UnknownPty));
+        assert_eq!(
+            core.write(cursor_pty.unwrap(), b"x"),
+            Err(Error::UnknownPty)
+        );
         assert!(core.write(shell, b"echo still\n").is_ok());
 
         let (pi, report) = switch_agent(&core, &session.id, "pi", Some(SWITCH_PROMPT), None);
@@ -5122,7 +5363,7 @@ mod tests {
         assert_eq!(stayed.preset_id, "claude");
         assert!(!stayed.cli_titled);
         assert_eq!(stayed.branch, session.branch);
-        assert!(core.write(old, b"still running\n").is_ok());
+        assert!(core.write(old.unwrap(), b"still running\n").is_ok());
 
         for prompt in ["-x", "a\0b"] {
             let (sink, _rx) = channel_sink();
@@ -5156,7 +5397,7 @@ mod tests {
         let stayed = core.session(&session.id).unwrap();
         assert_eq!(stayed.pty, old);
         assert!(!stayed.cli_titled);
-        assert!(core.write(old, b"still running\n").is_ok());
+        assert!(core.write(old.unwrap(), b"still running\n").is_ok());
     }
 
     #[test]

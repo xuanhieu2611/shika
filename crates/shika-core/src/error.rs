@@ -3,6 +3,8 @@
 /// the first line git or the PTY layer printed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    #[error("{0}")]
+    LeadChat(String),
     #[error("Could not open app data.")]
     AppData,
 

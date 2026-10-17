@@ -1,12 +1,20 @@
 # Lead agent
 
-Status: implemented: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, and `close`, the doorbell that wakes an idle Lead, the worker report channel (`shika report`), the Lead card and picker, and a Lead that outlives the app (resting row, resume, Stop and Forget, restart summary). GUI acceptance of `pr` and `close` is pending (see [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#lead-agent-spike)). This guide records the decision and the contract the implementation keeps. Update it with the code.
+Status: Claude Code Leads now use the final-only native chat specified in [lead-chat.md](lead-chat.md). Codex, Cursor CLI and Pi Leads keep the terminal UI. The existing lifecycle/control contract below is unchanged. Implemented: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, and `close`, the doorbell that wakes an idle Lead, the worker report channel (`shika report`), the Lead card and picker, and a Lead that outlives the app (resting row, resume, Stop and Forget, restart summary). GUI acceptance of `pr` and `close` is pending (see [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#lead-agent-spike)). This guide records the decision and the contract the implementation keeps. Update it with the code.
 
 Reference material lives beside it: [shika-cli.md](shika-cli.md) is the command reference (syntax, exact output, exit codes, `wait` rules, protocol, security model, debugging, and how to add a command), and [crates/shika-core/README.md](../crates/shika-core/README.md) maps the crate that holds the shared protocol and the Lead session code. This guide keeps the why; those hold the details.
 
-A project can have one Lead: an agent CLI the author talks to, which starts and drives ordinary task cards for them through a small `shika` command. The author states a goal once; the Lead splits it into tasks, starts a worker card per task, waits for them, reads their results, and brings back what needs a decision.
+A project can have one Lead: an installed agent CLI the author talks to through chat (Claude Code) or its terminal (the other presets), which starts and drives ordinary task cards for them through a small `shika` command. The author states a goal once; the Lead splits it into tasks, starts a worker card per task, waits for them, reads their results, and brings back what needs a decision.
 
 Read [AGENTS.md](../AGENTS.md) first, then [tasks-and-worktrees.md](tasks-and-worktrees.md), [agent-activity.md](agent-activity.md), [terminal-tabs.md](terminal-tabs.md), and [publishing.md](publishing.md): the Lead reuses all of them and replaces none. Visuals follow [design/DESIGN.md](../design/DESIGN.md).
+
+## Claude Code chat
+
+Claude Code runs as one long-lived `-p` child with bidirectional stream JSON in the same verified fixed worktree. The guide and memory are appended exactly as before. The author sees only their own messages and one completed final response per turn, with code/markdown rendered natively; thinking, tool output and intermediate assistant text are filtered before persistence. Native questions use the verified stdio control channel, and Shika's worker PR/Close dialogs retain the author's confirmation and return to the composer. Doorbells/restart summaries are internal submissions with muted Shika event rows. Workers and other Lead presets retain their terminals.
+
+`projects.json` retains `cli`, `sessionId` and restart accounting, plus an optional `chatHistory` lifetime binding. A fresh UUID is provisional until the structured id matches; confirmation commits only for the exact live Lead. Stop/quit keep the Shika-owned chat under `leads/<project-id>/chat/`; Forget deletes it with the saved link, preserves memory notes and does not delete provider files. Existing terminal Leads resume the same saved id with an empty visible history. History is never replayed as prompts. The existing automatic missing/refused-resume recovery and toasts remain.
+
+Stop generating/Escape interrupts only this turn, reaps the owned process group and resumes the same conversation on the next send. Started workers keep running. Explicit structured/control events drive chat status and the turn's notification budget; terminal quiet/screen detection is excluded. Chat focus replaces terminal focus for Seen, with the same selected-card dwell rule. The complete transport, persistence, error and keyboard contract, fixture provenance and remaining acceptance limits are in [lead-chat.md](lead-chat.md).
 
 ## The Lead is a manager
 

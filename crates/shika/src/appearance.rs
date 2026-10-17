@@ -106,7 +106,7 @@ fn macos_reduce_transparency() -> bool {
 }
 
 /// One status hue: the dot, and text that meets contrast on the column.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StatusColors {
     pub dot: Rgba,
     pub text: Rgba,
@@ -123,7 +123,7 @@ pub struct DiffColors {
 /// Colors for one paint of the window. Solid at 100% opacity, and whenever
 /// macOS Reduce transparency is on. Glass uses the frosted tints. The names
 /// follow `design/DESIGN.md`: `ink_1` is `--ink-1`, `line_2` is `--line-2`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Chrome {
     pub column: Rgba,
     /// `--line-1`: the column edge.

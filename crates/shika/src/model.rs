@@ -334,7 +334,7 @@ impl LeadClose {
                     facts.push("The agent is still working.");
                 }
                 facts.push(
-                    "Forget deletes the Lead's worktree and Shika's link to its conversation. The CLI keeps its own history. Its memory notes stay for the next Lead.",
+                    "Forget deletes the Lead's worktree and Shika's link to its conversation. Its Shika chat history will be deleted. The CLI keeps its own history. Its memory notes stay for the next Lead.",
                 );
                 if loss.uncommitted {
                     facts.push("Its worktree has uncommitted changes, which will be discarded.");
@@ -1371,7 +1371,7 @@ mod lead_tests {
         assert_eq!(
             forget.facts(),
             vec![
-                "Forget deletes the Lead's worktree and Shika's link to its conversation. The CLI keeps its own history. Its memory notes stay for the next Lead.",
+                "Forget deletes the Lead's worktree and Shika's link to its conversation. Its Shika chat history will be deleted. The CLI keeps its own history. Its memory notes stay for the next Lead.",
                 "Its worktree has uncommitted changes, which will be discarded.",
             ]
         );

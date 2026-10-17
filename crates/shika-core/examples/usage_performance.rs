@@ -258,14 +258,14 @@ fn measure(root: &Path, enabled: bool) {
     // Ensure the first coalesced recovery job can start before throughput work.
     std::thread::sleep(Duration::from_millis(350));
     let bulk_start = Instant::now();
-    core.write(session.pty, b"bulk\n").unwrap();
+    core.write(session.pty.unwrap(), b"bulk\n").unwrap();
     let bulk_received = until(&rx, "PERF_BULK_DONE");
     let bulk_seconds = bulk_start.elapsed().as_secs_f64();
     assert!(bulk_received >= BULK_BYTES);
     let mut samples = Vec::new();
     for index in 0..PROBES {
         let start = Instant::now();
-        core.write(session.pty, format!("probe-{index}\n").as_bytes())
+        core.write(session.pty.unwrap(), format!("probe-{index}\n").as_bytes())
             .unwrap();
         until(&rx, &format!("PERF_REPLY:probe-{index}\r\n"));
         samples.push(start.elapsed().as_secs_f64() * 1000.0);

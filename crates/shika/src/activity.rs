@@ -745,6 +745,28 @@ impl Activity {
         self.advance_with((signal, true), submission, output, now, exited)
     }
 
+    /// Chat has explicit turn boundaries. Never apply terminal debounce or
+    /// quiet-time inference to an authoritative terminal result.
+    pub fn advance_chat(&mut self, status: Status, submitted: bool, now: Instant) -> Transition {
+        match status {
+            Status::Ready if matches!(self.status, Status::Working | Status::Asking) => {
+                self.finish(now, self.status)
+            }
+            Status::Working | Status::Asking => self.advance_authoritative(
+                if status == Status::Asking {
+                    Signal::Blocked
+                } else {
+                    Signal::Working
+                },
+                submitted.then_some(now),
+                None,
+                now,
+                false,
+            ),
+            _ => Transition::default(),
+        }
+    }
+
     fn advance_with(
         &mut self,
         observation: (Signal, bool),
@@ -896,6 +918,36 @@ mod tests {
         start + Duration::from_millis(ms)
     }
 
+    #[test]
+    fn chat_status_uses_explicit_results_and_retains_the_turn_clock() {
+        let now = Instant::now();
+        let mut activity = Activity::new(now);
+        assert_eq!(activity.status, Status::Waiting);
+        activity.advance_chat(Status::Working, true, now);
+        let start = activity.turn_started;
+        assert!(
+            activity
+                .advance_chat(Status::Asking, false, at(now, 50))
+                .notify
+        );
+        activity.advance_chat(Status::Working, false, at(now, 100));
+        assert_eq!(activity.turn_started, start);
+        let done = activity.advance_chat(Status::Ready, false, at(now, 101));
+        assert!(done.ready);
+        assert!(!done.notify);
+        assert_eq!(activity.status, Status::Ready);
+        assert!(
+            !activity
+                .advance_chat(Status::Ready, false, at(now, 102))
+                .notify
+        );
+        activity.advance_chat(Status::Working, true, at(now, 200));
+        assert!(
+            activity
+                .advance_chat(Status::Ready, false, at(now, 201))
+                .notify
+        );
+    }
     #[test]
     fn cursor_stop_hint_below_framed_editor_is_working_not_idle() {
         assert_eq!(

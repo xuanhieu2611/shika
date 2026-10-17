@@ -26,14 +26,14 @@ It is:
 It is not:
 
 - A GPUI crate. Nothing here imports `gpui`. Terminal emulation lives in `shika-terminal`, and core only moves bytes.
-- A model client. Shika launches the user's own CLI. There is no API key, no transcript, and no conversation history anywhere in core.
+- A model client. Shika launches the user's own CLI. There is no provider API client. Claude Code Leads have Shika-owned final-only visible history, separate from the CLI's model context; workers have no Shika transcript.
 - The owner of UI state. Which card is selected, whether a task is Working or Ready, notifications, and dialogs belong to the app. Core reports git and process facts; the app decides what they mean. The control server therefore lives in `crates/shika`, and only the shared protocol is here.
 
 ## Threads, blocking, and the operations lock
 
 `Core` is `Send + Sync` and is shared as `Arc<Core>`. The crate docs in `src/lib.rs` list which methods block. The short version:
 
-- **Blocking** methods run git, the user's login shell, or setup commands, and can take seconds: `add_project`, `project_preparation_draft`, `save_project_preparation`, `save_and_approve_project_preparation`, `create_session`, `create_session_with_preparation`, `start_lead`, `stop_lead`, `forget_lead`, `discover_lead_session`, `set_lead_session`, `lead_loss`, `saved_lead_session_exists`, `open_shell`, `session_switch_agent`, every `session_*` git method, `leftover_remove`, `remove_project`, the base-branch methods, and the first call to `path_env` or `cli_catalog` (the login shell gets up to 20 seconds). Call them from a background executor, never from the GPUI main thread.
+- **Blocking** methods run git, the user's login shell, or setup commands, and can take seconds: `add_project`, `project_preparation_draft`, `save_project_preparation`, `save_and_approve_project_preparation`, `create_session`, `create_session_with_preparation`, `start_lead`, `start_claude_lead`, `confirm_lead_chat`, `lead_chat_page`, `stop_lead_chats`, `stop_lead`, `forget_lead`, `discover_lead_session`, `set_lead_session`, `lead_loss`, `saved_lead_session_exists`, `open_shell`, `session_switch_agent`, every `session_*` git method, `leftover_remove`, `remove_project`, the base-branch methods, and the first call to `path_env` or `cli_catalog` (the login shell gets up to 20 seconds). Call them from a background executor, never from the GPUI main thread.
 - **Quick** methods read a small JSON file, take a short lock, or queue bytes: `open`, `projects`, `settings`, `save_settings`, `worktree_journal`, `leftovers_list`, `sessions`, `session`, `lead_for_project`, `workers_of`, `saved_lead`, `set_lead_session`, `lost_workers`, `lead_memory`, `remember`, `forget_note`, `memory_path`, `write`, `resize`.
 
 `Core::operations` is one mutex that serializes everything that changes worktrees, branches, the journal, or the live session list: creating and removing worktrees, close, discard, push, rename, publish, and `remove_project`. Take it for any new method that mutates those. Two kinds of work deliberately stay outside it:
@@ -56,6 +56,7 @@ All modules are private except `control`. The crate root re-exports the public s
 | `pty` | `portable-pty` wrapper: one reader thread and one writer thread per PTY, environment setup, exit events. | `PtyId`, `PtySize`, `PtyEvent`, `PtyExit`, `PtySink`; internally `PtyHub`, `SpawnRequest`, `CONTROL_VARS` |
 | `agents` | The four CLI presets, their launch flags, and the Lead's flags: system prompt and conversation id per CLI (`lead_flags`). | `CliPreset`, `CliCatalog` |
 | `lead` | A project's Lead: `start_lead` (fixed worktree, conversation choice, saved record), stop, forget, Codex id discovery, lost workers, Cursor's `create-chat`. | `LeadLaunch`, `LeadStart`, `LeadConversation`, `FreshReason`, `LostWorker`, `LeadLoss` |
+| `lead_transport`, `lead_chat`, `lead_chat_store` | Claude-only pipe supervisor, final-response filter, fenced Core boundary, private transactional lifetime history and paging. No GPUI or model API. | `start_claude_lead`, `lead_chat_send`, `lead_chat_events`, `lead_chat_interrupt`, `lead_chat_answer`, `lead_chat_retry_save`, `confirm_lead_chat`, `lead_chat_page`, `stop_lead_chats` |
 | `path_env` | The login-shell `PATH`, captured once, and the absolute CLI paths resolved from it. | `PathEnv`, `LoginShellError` |
 | `memory` | A project's Lead memory file: cleaning and limits, numbered notes, and the instructions text with the notes appended (`instructions_with_notes`). | `MemoryNote`, `MAX_NOTE_CHARS`, `MAX_TOTAL_BYTES`; internally `MemoryStore` |
 | `projects` | `projects.json`: add (git root lookup), remove, base branch, preparation approval and local onboarding decision, the saved Lead. | `Project`, `ProjectAdded`, `SavedLead` |
@@ -78,6 +79,7 @@ All modules are private except `control`. The crate root re-exports the public s
 
 - `projects.json`: `{ id, name, path, baseBranch?, approvedPreparation?, lead? }` per project. The id is time-derived; the name is the folder name; a nested folder is stored as its repository root. `approvedPreparation` is the parsed setup config the author consented to, compared by equality. `lead` is `{ cli, sessionId? }`, the project's saved Lead: the preset id and the CLI's own conversation id (never a transcript). Missing means no saved Lead; `sessionId` is missing until Codex's is discovered or when Cursor's `create-chat` failed.
 - `leads/<project-id>/memory.json`: `{ notes: [{ text, created }] }`, the project's Lead memory (`memory.rs`). `text` is one line of 1 to 1,000 characters, all notes together at most 16,000 bytes, `created` is Unix seconds. A missing file is no notes; a file that does not parse is left alone and refuses reads and writes with `Error::MemoryUnreadable` naming it. Not part of `projects.json`: it survives Stop, Forget, and a CLI change, and `remove_project` deletes the folder.
+- `leads/<project-id>/chat/history.sqlite`: Claude Lead lifetime history, append-only visible/finality/delivery records and a rebuildable projection. `lead.chatHistory` binds its lifetime; provider `sessionId` stays separate. Stop/quit keep it; Forget deletes chat without touching memory. Reads never replay input. See [lead-chat.md](../../docs/lead-chat.md).
 - `worktrees.json`: the journal, one `{ projectId, branch, path, baseRef?, startedByLead? }` per worktree Shika created. It is written before a CLI starts and removed after the tree is gone. It is the only source for leftovers. `branch` is empty for a Lead. `startedByLead` (default false, written only when true) marks a worker a Lead started, so a later Lead start can report workers whose cards did not survive.
 - `settings.json`: see `settings::Settings`. A missing file or field takes its default. An unknown theme id is kept on disk until the user picks again.
 - `usage.sqlite` and `usage-sources/`: transactional daily totals, receipt counters, file checkpoints, collection issues, and path-only recovery metadata for Shika-launched Claude/Codex worktrees. A pre-existing PR-format `usage.json` is imported once and left untouched. The Usage dashboard reads indexed daily provider totals and shapes its Monday-first calendar off-thread; the independent worker reads provider metadata. See [token-usage.md](../../docs/token-usage.md).
@@ -105,7 +107,7 @@ A failed launch removes the worktree only when it is provably untouched. Changed
 
 ### Sessions
 
-A `Session` is one card: id, project, preset, title, branch, repo, worktree, `base_ref`, the agent `pty`, shell PTYs, `cli_titled`, `manual_title`, and the two Lead fields:
+A `Session` is one card: id, project, preset, title, branch, repo, worktree, `base_ref`, the optional agent `pty` (`None` only for Claude chat Leads), shell PTYs, `cli_titled`, `manual_title`, and the two Lead fields:
 
 - `lead: bool` - this session is its project's Lead.
 - `started_by: Option<String>` - the id of the Lead that started this worker. `None` for a card the author created.
