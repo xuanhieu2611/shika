@@ -12,6 +12,7 @@ mod lifecycle;
 mod model;
 mod name_input;
 mod notifications;
+mod scrollbar;
 mod shortcuts;
 mod updates;
 mod usage_dashboard;
@@ -31,7 +32,7 @@ use shika_core::{
     JournalEntry, KeyOverrides, KnownBranches, LaunchOptions, LeadLaunch, PreparationConfig,
     PreparationControl, PreparationEvent, Project, ProjectBase, PtyEvent, PtyId, PtySize,
     PublishPreview, Session, SessionGitState, Settings, ThemeMode, ThemeSettings, Translucency,
-    UsageReport, WorkerEnv,
+    WorkerEnv,
 };
 use shika_terminal::{
     InputSource, Palette, PtyHost, Terminal, TerminalConfig, TerminalEvent, TerminalOptions,
@@ -43,7 +44,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use usage_dashboard::UsageFilter;
+use usage_dashboard::{UsageFilter, UsageRange, UsageView};
 
 gpui::actions!(
     shika,
@@ -626,14 +627,16 @@ enum SettingsSection {
     Keyboard,
     Agents,
     Projects,
+    Usage,
 }
 
 impl SettingsSection {
-    const ALL: [SettingsSection; 4] = [
+    const ALL: [SettingsSection; 5] = [
         SettingsSection::Appearance,
         SettingsSection::Keyboard,
         SettingsSection::Agents,
         SettingsSection::Projects,
+        SettingsSection::Usage,
     ];
 
     /// One section up (`-1`) or down (`1`), wrapping.
@@ -652,6 +655,7 @@ impl SettingsSection {
             Self::Keyboard => "Keyboard",
             Self::Agents => "Agents",
             Self::Projects => "Projects",
+            Self::Usage => "Usage",
         }
     }
 }
@@ -717,14 +721,16 @@ enum Overlay {
     Leftovers,
     RemoveLeftover(usize),
     RemoveProject(String),
-    /// `section` is Appearance, Keyboard, Agents, or Projects. `row` is the selected row
+    /// `section` is Appearance, Keyboard, Agents, Projects, or Usage. `row` is the selected row
     /// in that section: an appearance `*_ROW`, a keyboard command, or a preset
     /// index. `edit` holds digits typed into the selected number, or the
-    /// prefix being typed, not yet applied.
+    /// prefix being typed, not yet applied. `usage` is the saved snapshot,
+    /// read the first time Usage shows and kept until Settings closes.
     Settings {
         section: SettingsSection,
         row: usize,
         edit: Option<String>,
+        usage: Option<Box<UsageView>>,
     },
     /// The branch New starts from in `project`. `text` is the field, always
     /// being typed into; `error` is why the last Enter was refused.
@@ -737,14 +743,6 @@ enum Overlay {
         error: Option<String>,
         choices: Option<KnownBranches>,
         highlight: Option<usize>,
-    },
-    /// Background snapshot of saved usage. The request identity fences a
-    /// read that finishes after this dialog was closed and opened again.
-    Usage {
-        request: Arc<()>,
-        report: Option<UsageReport>,
-        filter: UsageFilter,
-        grid: Option<Entity<usage_dashboard::UsageGrid>>,
     },
 }
 impl Overlay {
@@ -766,7 +764,6 @@ impl Overlay {
             Self::RemoveProject(_) => "the Remove project dialog",
             Self::Settings { .. } => "Settings",
             Self::Base { .. } => "the Base branch dialog",
-            Self::Usage { .. } => "the Usage dialog",
         }
     }
 }
@@ -788,6 +785,8 @@ struct Shika {
     /// The Settings row list, so `j` / `k` keep the selected row on screen
     /// when a short window makes that list scroll.
     settings_scroll: gpui::ScrollHandle,
+    /// Its scrollbar's thumb while the pointer drags it.
+    settings_grab: scrollbar::Grab,
     last_revealed_selection: Option<Selection>,
     busy: bool,
     toast: Option<(String, Instant)>,
@@ -917,6 +916,7 @@ impl Shika {
             sidebar_scroll: gpui::ScrollHandle::new(),
             base_scroll: gpui::ScrollHandle::new(),
             settings_scroll: gpui::ScrollHandle::new(),
+            settings_grab: scrollbar::Grab::default(),
             last_revealed_selection: None,
             busy: false,
             toast: if load_errors.is_empty() {
@@ -4367,33 +4367,42 @@ impl Shika {
         .detach();
     }
     /// View > Usage and its shortcut (Cmd+Shift+U until Settings changes
-    /// it). An open dashboard closes and restores the focus that opened it;
-    /// any other overlay keeps the shortcut inert.
+    /// it) open Settings on Usage, or switch an open Settings to it. Settings
+    /// already on Usage closes and restores the focus that opened it; any
+    /// other overlay keeps the shortcut inert.
     fn toggle_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy || self.key_recording {
             return;
         }
-        match self.overlay {
-            Some(Overlay::Usage { .. }) => self.cancel_overlay(window, cx),
+        match &self.overlay {
+            Some(Overlay::Settings {
+                section: SettingsSection::Usage,
+                ..
+            }) => self.cancel_overlay(window, cx),
+            Some(Overlay::Settings { edit: None, .. }) => {
+                self.select_section(SettingsSection::Usage, window, cx)
+            }
             Some(_) => {}
-            None => self.show_usage(window, cx),
+            None => {
+                self.overlay_return_focus = window.focused(cx);
+                self.show_settings(SettingsSection::Usage, window, cx);
+            }
         }
     }
-    /// Reads the saved store; CLI files stay on the collector.
-    fn show_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.overlay.is_some() {
+    /// Reads the saved store once per Settings; CLI files stay on the
+    /// collector.
+    fn load_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Overlay::Settings {
+            section: SettingsSection::Usage,
+            usage: usage @ None,
+            ..
+        }) = &mut self.overlay
+        else {
             return;
-        }
-        let request = Arc::new(());
-        self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Usage {
-            request: request.clone(),
-            report: None,
-            filter: UsageFilter::All,
-            grid: None,
-        });
-        window.focus(&self.focus, cx);
-        cx.notify();
+        };
+        let view = UsageView::new();
+        let request = view.request.clone();
+        *usage = Some(Box::new(view));
         let core = self.core.clone();
         cx.spawn_in(window, async move |this, cx| {
             let report = cx
@@ -4405,25 +4414,41 @@ impl Shika {
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 let chrome = this.chrome(window);
-                if let Some(Overlay::Usage {
-                    request: current,
-                    report: snapshot,
-                    filter,
-                    grid,
-                }) = &mut this.overlay
-                    && Arc::ptr_eq(current, &request)
+                if let Some(view) = this.usage_view_mut()
+                    && Arc::ptr_eq(&view.request, &request)
                 {
-                    *grid = report.calendar.as_ref().map(|calendar| {
-                        cx.new(|_| {
-                            usage_dashboard::UsageGrid::new(calendar.clone(), *filter, &chrome)
-                        })
-                    });
-                    *snapshot = Some(report);
+                    view.load(report, &chrome, cx);
                     cx.notify();
                 }
             });
         })
         .detach();
+    }
+    fn usage_view_mut(&mut self) -> Option<&mut UsageView> {
+        match &mut self.overlay {
+            Some(Overlay::Settings {
+                usage: Some(view), ..
+            }) => Some(view),
+            _ => None,
+        }
+    }
+    fn set_usage_filter(&mut self, filter: UsageFilter, cx: &mut Context<Self>) {
+        if let Some(Overlay::Settings {
+            usage: Some(view), ..
+        }) = &mut self.overlay
+        {
+            view.set_filter(filter, cx);
+        }
+        cx.notify();
+    }
+    fn set_usage_range(&mut self, range: UsageRange, cx: &mut Context<Self>) {
+        if let Some(Overlay::Settings {
+            usage: Some(view), ..
+        }) = &mut self.overlay
+        {
+            view.set_range(range, cx);
+        }
+        cx.notify();
     }
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
@@ -4447,9 +4472,11 @@ impl Shika {
             section,
             row: 0,
             edit: None,
+            usage: None,
         });
         self.key_recording = false;
         self.key_note = None;
+        self.load_usage(window, cx);
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -4515,7 +4542,10 @@ impl Shika {
     /// Apply typed digits, pulled into range, or the typed prefix, made
     /// safe for git. Nothing typed keeps a number.
     fn commit_setting_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Overlay::Settings { section, row, edit }) = &mut self.overlay else {
+        let Some(Overlay::Settings {
+            section, row, edit, ..
+        }) = &mut self.overlay
+        else {
             return;
         };
         if *section != SettingsSection::Appearance {
@@ -4692,14 +4722,13 @@ impl Shika {
         )
     }
     /// Give every live terminal view the current theme's palette and alpha,
-    /// and invalidate the open dashboard's cached calendar before rendering.
+    /// and invalidate Settings' cached usage chart before rendering.
     fn push_terminal_theme(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if let Some(Overlay::Usage {
-            grid: Some(grid), ..
+        if let Some(Overlay::Settings {
+            usage: Some(view), ..
         }) = &self.overlay
         {
-            let chrome = self.chrome(window);
-            grid.update(cx, |grid, cx| grid.set_chrome(&chrome, cx));
+            view.set_chrome(&self.chrome(window), cx);
         }
         let opacity = self.terminal_opacity();
         let palette = self.terminal_palette(window);
@@ -4877,6 +4906,7 @@ impl Shika {
             section: SettingsSection::Appearance,
             row: PREFIX_ROW,
             edit: Some(text),
+            ..
         }) = &mut self.overlay
         {
             match stroke.key.as_str() {
@@ -5030,9 +5060,9 @@ impl Shika {
             let offered_len = self.offered_presets().len();
             let catalog_ready = self.catalog.is_some();
             let settings_nav = match &self.overlay {
-                Some(Overlay::Settings { section, row, edit }) => {
-                    Some((*section, *row, edit.is_some()))
-                }
+                Some(Overlay::Settings {
+                    section, row, edit, ..
+                }) => Some((*section, *row, edit.is_some())),
                 _ => None,
             };
             if let Some((section, at, editing)) = settings_nav {
@@ -5057,6 +5087,12 @@ impl Shika {
                 }
                 if !editing && section == SettingsSection::Keyboard {
                     self.on_keyboard_key(at, key, window, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                if section == SettingsSection::Usage {
+                    self.on_usage_key(key, window, cx);
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -5203,16 +5239,6 @@ impl Shika {
                         _ => {}
                     }
                 }
-                Some(Overlay::Usage { filter, grid, .. }) => match key {
-                    "h" | "left" | "l" | "right" => {
-                        *filter = filter.step(if matches!(key, "h" | "left") { -1 } else { 1 });
-                        if let Some(grid) = grid {
-                            grid.update(cx, |grid, cx| grid.set_filter(*filter, cx));
-                        }
-                    }
-                    "escape" => self.cancel_overlay(window, cx),
-                    _ => {}
-                },
                 // Typed into above, before the modifier check.
                 Some(Overlay::LeadQuestion(_))
                 | Some(Overlay::WorktreeSetup(_))
@@ -5270,11 +5296,16 @@ const SOUND_ROW: usize = 8;
 const SETTING_ROWS: usize = 9;
 /// Wide enough for the longest catalog name, such as "Catppuccin Macchiato".
 const THEME_FIELD_WIDTH: f32 = 168.;
-/// Settings is wide enough for a section list and the appearance controls.
-const SETTINGS_WIDTH: f32 = 640.;
-/// Tall enough for the appearance rows. A short window uses less.
-const SETTINGS_HEIGHT: f32 = 520.;
+/// Tall enough for the appearance rows and the usage chart. A short window
+/// uses less, and the rows scroll with a scrollbar.
+const SETTINGS_HEIGHT: f32 = 580.;
 const SETTINGS_NAV_WIDTH: f32 = 148.;
+/// One size for every section, so switching never resizes the dialog: the
+/// usage year calendar beside the section list, inside the rows' 10px inset,
+/// the 12px gap and the dialog's padding.
+const SETTINGS_WIDTH: f32 = usage_dashboard::WIDTH + 20. + SETTINGS_NAV_WIDTH + 12. + 40.;
+// It fits the app's 960px minimum window with the dialog's 40px margin.
+const _: () = assert!(SETTINGS_WIDTH <= 960. - 40.);
 impl Shika {
     /// Move the Settings selection, applying any typed value first, and keep
     /// the row on screen. The rows are the children of the scrolling list.
@@ -5306,6 +5337,7 @@ impl Shika {
             section: at,
             row,
             edit,
+            ..
         }) = &mut self.overlay
             && *at != section
         {
@@ -5314,6 +5346,7 @@ impl Shika {
             *edit = None;
             self.settings_scroll.scroll_to_item(0);
         }
+        self.load_usage(window, cx);
         cx.notify();
     }
     fn set_agent_enabled(&mut self, id: &str, on: bool, cx: &mut Context<Self>) {
@@ -5358,6 +5391,25 @@ impl Shika {
             "l" | "right" => self.set_agent_row(row, true, cx),
             "enter" | "escape" => self.cancel_overlay(window, cx),
             _ => {}
+        }
+    }
+    /// The provider row steps like a segment, stopping at either end; the
+    /// range has a letter each.
+    fn on_usage_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let filter = self.usage_view_mut().map(|view| view.filter);
+        match key {
+            "h" | "left" | "l" | "right" => {
+                if let Some(filter) = filter {
+                    let step = if matches!(key, "h" | "left") { -1 } else { 1 };
+                    self.set_usage_filter(filter.step(step), cx);
+                }
+            }
+            "enter" | "escape" => self.cancel_overlay(window, cx),
+            _ => {
+                if let Some(range) = UsageRange::from_key(key) {
+                    self.set_usage_range(range, cx);
+                }
+            }
         }
     }
     fn recording_shortcut(&self) -> bool {
@@ -7483,6 +7535,14 @@ impl Shika {
                 ("esc", "done"),
             ];
         }
+        if section == SettingsSection::Usage {
+            return &[
+                ("h l", "provider"),
+                ("w m y", "range"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ];
+        }
         if section == SettingsSection::Agents {
             return if self.catalog.is_none() {
                 &[("[ ]", "section"), ("esc", "done")]
@@ -7753,7 +7813,6 @@ impl Shika {
         let mut rows = div()
             .id("settings-rows")
             .flex_1()
-            .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.settings_scroll)
@@ -7900,6 +7959,7 @@ impl Shika {
                     rows = rows.child(self.shortcut_row(index, command, chrome, cx));
                 }
             }
+            SettingsSection::Usage => rows = rows.child(self.usage_rows(chrome, cx)),
         }
         dialog_shell(SETTINGS_WIDTH, panel_h, chrome)
             .h(panel_h)
@@ -7916,7 +7976,22 @@ impl Shika {
                     .min_h_0()
                     .gap(px(12.))
                     .child(self.settings_nav(section, chrome, cx))
-                    .child(rows),
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .child(rows)
+                            .child(scrollbar::vertical(
+                                &self.settings_scroll,
+                                &self.settings_grab,
+                                chrome.ink_4,
+                                chrome.ink_3,
+                            )),
+                    ),
             )
             .child(
                 div()
@@ -8070,105 +8145,93 @@ impl Shika {
             )
     }
 
-    /// Usage, from the snapshot taken when the dashboard opened.
-    fn usage_panel(
-        &self,
-        report: Option<&UsageReport>,
-        filter: UsageFilter,
-        grid: Option<&Entity<usage_dashboard::UsageGrid>>,
-        chrome: &Chrome,
-        bounds: gpui::Size<Pixels>,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let mut panel = dialog_shell(f32::from(bounds.width), bounds.height, chrome)
-            .pt(px(20.))
-            .px(px(20.))
-            .pb(px(16.))
-            .gap(px(12.))
-            .child(dialog_title(div()).child("Usage"))
-            .child(
-                dialog_text(chrome)
-                    .child("Tokens from Claude Code and Codex in Shika. Not a bill."),
+    /// Settings > Usage, from the snapshot read when it first showed: the
+    /// range, the provider totals that filter the chart, then the chart.
+    fn usage_rows(&self, chrome: &Chrome, cx: &mut Context<Self>) -> gpui::Div {
+        let mut panel = div().flex().flex_col().gap(px(12.)).px(px(10.)).pt(px(4.));
+        let Some(Overlay::Settings {
+            usage: Some(view), ..
+        }) = &self.overlay
+        else {
+            return panel;
+        };
+        let (range, filter) = (view.range, view.filter);
+        let mut segments = div()
+            .flex()
+            .flex_none()
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(7.))
+            .bg(chrome.sunken);
+        for (index, choice) in UsageRange::CHOICES.into_iter().enumerate() {
+            segments = segments.child(
+                segment(
+                    ("usage-range", index),
+                    choice.label(),
+                    range == choice,
+                    chrome.raised,
+                    chrome.ink_1,
+                    chrome.ink_3,
+                )
+                .when(range == choice, |d| {
+                    d.shadow(vec![
+                        BoxShadow::new(px(0.), px(1.), chrome.control_shadow.into())
+                            .blur_radius(px(1.)),
+                    ])
+                })
+                .on_click(cx.listener(move |this, _, _, cx| this.set_usage_range(choice, cx))),
             );
-        if let Some(report) = report {
-            if report.unreadable {
-                panel = panel.child(dialog_text(chrome).child("Could not read usage."));
-            } else if let Some(calendar) = &report.calendar {
-                panel = panel.child(usage_dashboard::totals(calendar, filter, chrome));
-                let mut segments = div()
-                    .flex()
-                    .p(px(2.))
-                    .gap(px(2.))
-                    .rounded(px(7.))
-                    .bg(chrome.sunken);
-                for (index, choice) in UsageFilter::CHOICES.into_iter().enumerate() {
-                    segments = segments.child(
-                        segment(
-                            ("usage-filter", index),
-                            choice.label(),
-                            filter == choice,
-                            chrome.raised,
-                            chrome.ink_1,
-                            chrome.ink_3,
-                        )
-                        .when(filter == choice, |d| {
-                            d.shadow(vec![
-                                BoxShadow::new(px(0.), px(1.), chrome.control_shadow.into())
-                                    .blur_radius(px(1.)),
-                            ])
-                        })
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                if let Some(Overlay::Usage { filter, grid, .. }) = &mut this.overlay
-                                {
-                                    *filter = choice;
-                                    if let Some(grid) = grid {
-                                        grid.update(cx, |grid, cx| grid.set_filter(choice, cx));
-                                    }
-                                }
-                                window.focus(&this.focus, cx);
-                                cx.notify();
-                            },
-                        )),
-                    );
-                }
-                panel = panel.child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .items_center()
-                        .child(
-                            dialog_text(chrome)
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Daily tokens"),
-                        )
-                        .child(segments),
-                );
-                if let Some(grid) = grid {
-                    panel = panel.child(usage_dashboard::heatmap(calendar, filter, chrome, grid));
-                }
-                if calendar.totals.combined() == 0 {
-                    panel = panel.child(dialog_text(chrome).child(if report.empty {
-                        "No tokens recorded yet."
-                    } else {
-                        "No tokens recorded in this range."
-                    }));
-                }
-            }
-            if report.pending {
-                panel = panel.child(dialog_text(chrome).child(
-                    "Some usage is pending or could not be read. Saved totals are retained.",
+        }
+        panel = panel.child(
+            div()
+                .flex()
+                .justify_between()
+                .items_center()
+                .gap(px(12.))
+                .child(
+                    dialog_text(chrome)
+                        .min_w_0()
+                        .child("Tokens from Claude Code and Codex in Shika. Not a bill."),
+                )
+                .child(segments),
+        );
+        let Some(report) = &view.report else {
+            return panel.child(dialog_text(chrome).child("Reading usage..."));
+        };
+        if report.unreadable {
+            panel = panel.child(dialog_text(chrome).child("Could not read usage."));
+        } else if let Some(calendar) = &report.calendar {
+            panel = panel.child(usage_dashboard::totals(
+                calendar,
+                range,
+                filter,
+                chrome,
+                |choice, column| {
+                    column.on_click(
+                        cx.listener(move |this, _, _, cx| this.set_usage_filter(choice, cx)),
+                    )
+                },
+            ));
+            if let Some(chart) = &view.chart {
+                panel = panel.child(usage_dashboard::chart(
+                    calendar, range, filter, chrome, chart,
                 ));
             }
-        } else {
-            panel = panel.child(dialog_text(chrome).child("Reading usage..."));
+            if range.totals(calendar).combined() == 0 {
+                panel = panel.child(dialog_text(chrome).child(if report.empty {
+                    "No tokens recorded yet."
+                } else {
+                    "No tokens recorded in this range."
+                }));
+            }
         }
-        panel.child(
-            dialog_buttons()
-                .justify_between()
-                .child(hint("h l / ← →", "filter", chrome))
-                .child(self.cancel_button("Close", chrome, cx)),
-        )
+        if report.pending {
+            panel =
+                panel.child(dialog_text(chrome).child(
+                    "Some usage is pending or could not be read. Saved totals are retained.",
+                ));
+        }
+        panel
     }
 
     /// The pointer menu, or the picker/dialogs near the top. No overlay dims
@@ -8193,14 +8256,7 @@ impl Shika {
         }
         let height = window.viewport_size().height;
         let picker = matches!(overlay, Overlay::Picker { .. });
-        let top = height
-            * if picker {
-                0.18
-            } else if matches!(overlay, Overlay::Usage { .. }) {
-                0.10
-            } else {
-                0.20
-            };
+        let top = height * if picker { 0.18 } else { 0.20 };
         let max_h = (height - top - px(24.)).max(px(120.));
         let panel = match overlay {
             Overlay::CardMenu(_) | Overlay::RestingMenu { .. } => {
@@ -8839,22 +8895,6 @@ impl Shika {
             Overlay::Settings { section, row, .. } => {
                 self.settings_panel(*section, *row, max_h, chrome, home, cx)
             }
-            Overlay::Usage {
-                report,
-                filter,
-                grid,
-                ..
-            } => self.usage_panel(
-                report.as_ref(),
-                *filter,
-                grid.as_ref(),
-                chrome,
-                gpui::size(
-                    (window.viewport_size().width - px(40.)).min(px(usage_dashboard::WIDTH)),
-                    max_h,
-                ),
-                cx,
-            ),
         };
         div()
             .absolute()
@@ -10037,10 +10077,11 @@ mod host_tests {
 
     #[test]
     fn settings_projects_is_a_separate_section_and_navigation_wraps() {
-        assert!(SettingsSection::ALL.len() == 4);
+        assert!(SettingsSection::ALL.len() == 5);
         assert!(SettingsSection::Agents.step(1) == SettingsSection::Projects);
-        assert!(SettingsSection::Projects.step(1) == SettingsSection::Appearance);
-        assert!(SettingsSection::Appearance.step(-1) == SettingsSection::Projects);
+        assert!(SettingsSection::Projects.step(1) == SettingsSection::Usage);
+        assert!(SettingsSection::Usage.step(1) == SettingsSection::Appearance);
+        assert!(SettingsSection::Appearance.step(-1) == SettingsSection::Usage);
         assert!(SettingsSection::Projects.label() == "Projects");
     }
 

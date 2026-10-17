@@ -12,7 +12,7 @@ Feature guides explain what changed, why, implementation symbols, debugging, and
 | --- | --- |
 | Worktree creation, base branch, dirty and unpushed checks, Close, or leftovers | [Tasks and worktrees](docs/tasks-and-worktrees.md) |
 | Agent state, elapsed timers, notifications, or activity-based Close checks | [Agent activity and elapsed turns](docs/agent-activity.md), including its [debugging playbook](docs/agent-activity.md#debugging-playbook) |
-| Claude Code and Codex token totals, or the Usage dialog | [Token usage](docs/token-usage.md) |
+| Claude Code and Codex token totals, or Settings > Usage | [Token usage](docs/token-usage.md) |
 | Worktree setup, first-New onboarding, suggestions, local files, approval, cancellation, or retry | [Worktree preparation](docs/worktree-preparation.md): [evolution and rationale](docs/worktree-preparation.md#how-the-feature-evolved), [state routing](docs/worktree-preparation.md#configuration-consent-and-onboarding-state), and [contributor guide](docs/worktree-preparation.md#contributor-guide) |
 | Command shortcuts, focus restoration, or selected-row scrolling | [Keyboard flow](docs/keyboard-flow.md) |
 | The read-only diff beside the terminal, its refresh, caps, or width | [Changes panel](docs/changes-panel.md) |

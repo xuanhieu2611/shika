@@ -28,7 +28,7 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+[` | Previous agent in current row order | Same preservation rule |
 | `Cmd+B` | Hide or show the agent column | Unchanged; with the column hidden, `j`/`k` from cards still change the agent on screen |
 | `Cmd+Option+B` | Open or close the read-only Changes panel | Opening focuses the panel; closing from the panel restores the focus saved when it opened; closing from elsewhere moves no focus |
-| `Cmd+Shift+U` | Open or close the Usage dashboard (View > Usage) | Dialog; Close, Escape, or the shortcut again restores the focus that opened it |
+| `Cmd+Shift+U` | Open Settings on Usage, or close it (View > Usage) | Settings; Done, Escape, or the shortcut again restores the focus that opened it |
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
 | `Cmd+L` | Start the selected project's Lead (Agent > New Lead…), show it when the project already has one, or resume its saved one | Picker in Lead mode only when the project has no saved Lead (same keys as New; Tab changes project). A live Lead is selected and its terminal focused at once. A saved (resting) Lead starts in its saved CLI with no picker, and its new card is selected with the terminal focused; if that CLI is missing or off in Settings, the picker opens instead. See [lead-agent.md](lead-agent.md) |
 
@@ -50,7 +50,7 @@ Other improvements:
 - A selection change scrolls the selected header/card into view with minimal movement. Ordinary redraws do not undo manual scrolling.
 - First shell open focuses the new view immediately. Early typing is queued until the PTY is bound; startup completion does not reclaim focus if the user has returned to the cards.
 - The native Agent menu lists the new actions and shortcuts. New agent, new shell, and shell close expose Command shortcuts in tooltips.
-- The View menu lists "Hide or show changes" with `Cmd+Option+B`, and the panel's toggle shows it in its tooltip. View > Usage shows `Cmd+Shift+U` (or the chord Settings gave it). The shortcut opens the dashboard and, while it is open, closes it; it does nothing while another dialog or picker is open.
+- The View menu lists "Hide or show changes" with `Cmd+Option+B`, and the panel's toggle shows it in its tooltip. View > Usage shows `Cmd+Shift+U` (or the chord Settings gave it). The shortcut opens Settings on Usage, switches an open Settings to Usage, and closes Settings when Usage is showing; it does nothing while another dialog or picker is open, or while Settings is typing a value or recording a shortcut.
 
 Create PR is also in the Agent menu and terminal metadata row. Its dialog uses Tab to switch title/target fields, Enter to confirm publishing, and Escape to cancel. Plain card keys never run while editing. Busy/overlay conflicts and active/blocked turns block entry. See [publishing.md](publishing.md); publishing runs on a worker, not by writing commands into a terminal.
 
@@ -118,7 +118,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 | Terminal ownership | `crates/shika-terminal/src/view.rs`: `init`, `key_for` | Keeps Command shortcuts, Ctrl+Tab, and Ctrl+Shift+Tab out of PTY key encoding; retains terminal copy/paste and history bindings |
 | Discovery | `main` menu registration, `top_row`, `terminal_side`, `KeyTip` | Native Agent menu and existing themed tooltip component |
 | Changes panel | `ToggleChanges`, bound from `shortcuts::bindings` (default `cmd-alt-b`) in the `Shika` context, View menu; `crates/shika/src/changes.rs`: `Shika::toggle_changes`, `close_changes`, `restore_changes_focus`, `changes_key` on the panel's `Changes` key context, `Panel::focus`, `Panel::return_focus`; `move_agent` | Toggle, saved return focus, panel-local scrolling keys (see [changes-panel.md](changes-panel.md#architecture-and-code-map)) |
-| Usage dashboard | `ToggleUsage`, bound from `shortcuts::bindings` (default `cmd-shift-u`) in the `Shika` context, View menu "Usage"; `Shika::toggle_usage`, `show_usage`, `cancel_overlay` | Opens with saved return focus; inert under another overlay; a second press closes and restores focus |
+| Usage (Settings section) | `ToggleUsage`, bound from `shortcuts::bindings` (default `cmd-shift-u`) in the `Shika` context, View menu "Usage"; `Shika::toggle_usage`, `show_settings`, `select_section`, `on_usage_key`, `cancel_overlay` | Opens Settings on Usage with saved return focus; switches an open Settings; inert under another overlay; a second press closes and restores focus |
 | Custom shortcuts | `crates/shika/src/shortcuts.rs`: `COMMANDS`, `bindings`, `assign`; `install_keys` in `main.rs`; `KeyOverrides` in `settings.json` | The Keyboard rows, conflict handling, and the chords actually bound |
 
 ### Agent navigation
