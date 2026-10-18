@@ -529,6 +529,7 @@ impl LeadChat {
             }
             ChatEvent::Confirmed(_)
             | ChatEvent::Accepted
+            | ChatEvent::Started
             | ChatEvent::Question(_)
             | ChatEvent::QuestionCancelled(_) => {}
             ChatEvent::DeliveryFailed => {
@@ -1624,6 +1625,16 @@ impl Shika {
                         });
                     })
                     .detach();
+                }
+                if matches!(event, ChatEvent::Started) {
+                    // A turn the CLI began itself, such as after a background
+                    // `shika wait` returned, is a new turn with its own clock
+                    // and notification, like one the author submitted.
+                    let card = &mut self.cards[index];
+                    card.activity
+                        .advance_chat(Status::Working, true, Instant::now());
+                    card.status = card.activity.status;
+                    card.since = card.activity.since;
                 }
                 if let ChatEvent::Status(status) = event {
                     let card = &mut self.cards[index];

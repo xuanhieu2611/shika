@@ -795,11 +795,12 @@ impl Responder {
         Self { tx, step }
     }
 
-    pub fn send(&self, reply: Reply) -> Result<(), mpsc::SendError<Reply>> {
+    /// Whether the client was still there to receive it.
+    pub fn send(&self, reply: Reply) -> bool {
         if let Some(step) = &self.step {
             step.settle(&reply);
         }
-        self.tx.send(reply)
+        self.tx.send(reply).is_ok()
     }
 }
 
@@ -1982,7 +1983,7 @@ impl Shika {
                 };
                 match resolve(&state.ledger, &tasks, now, waiter.deadline) {
                     Some(Resolved { reply, marks }) => {
-                        if waiter.reply.send(reply).is_ok() {
+                        if waiter.reply.send(reply) {
                             state.unconfirmed.push(Unconfirmed {
                                 delivered: waiter.delivered,
                                 marks,
