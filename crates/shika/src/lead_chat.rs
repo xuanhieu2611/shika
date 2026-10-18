@@ -9,10 +9,115 @@ use gpui::{
     IntoElement, ListAlignment, ListState, ParentElement, Render, StatefulInteractiveElement,
     Styled, Window, div, prelude::FluentBuilder, px,
 };
+use shika_core::control::TaskStatus;
 use shika_core::{ChatContent, ChatEvent, ChatOrigin, ChatRecord, ChatStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
+/// The Lead mark: a pair of antlers over a small head, line art drawn for
+/// Shika from the antlers in `design/assets/shika-logo.png`. A single-color
+/// mask: GPUI colors it with `text_color`.
+pub(crate) const ANTLERS_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.2 15.2C6.6 14.6 4.4 11.4 4.6 4"/><path d="M5.1 11C4.2 10.4 3.4 9.4 3 8"/><path d="M8.6 13.4C8 11.4 8.4 8.6 9.4 6.6"/><path d="M13.8 15.2C17.4 14.6 19.6 11.4 19.4 4"/><path d="M18.9 11C19.8 10.4 20.6 9.4 21 8"/><path d="M15.4 13.4C16 11.4 15.6 8.6 14.6 6.6"/><path fill="#000" d="M10 16.4 12 20.2 14 16.4Z"/></svg>"##;
+
+/// The composer's up-arrow.
+pub(crate) const SEND_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5.5 11.5 12 5l6.5 6.5"/></svg>"##;
+
+/// Counts of the workers this Lead started, by status. The header shows them
+/// as one line, most urgent first. A worker whose CLI exited counts as
+/// waiting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorkerSummary {
+    pub asking: usize,
+    pub ready: usize,
+    pub working: usize,
+    pub waiting: usize,
+}
+impl WorkerSummary {
+    /// Counts workers by status. A worker still starting counts as working
+    /// and one whose CLI exited as waiting.
+    pub fn count(statuses: impl IntoIterator<Item = TaskStatus>) -> Self {
+        let mut summary = Self::default();
+        for status in statuses {
+            match status {
+                TaskStatus::Asking => summary.asking += 1,
+                TaskStatus::Ready => summary.ready += 1,
+                TaskStatus::Starting | TaskStatus::Working => summary.working += 1,
+                TaskStatus::Waiting | TaskStatus::Exited => summary.waiting += 1,
+            }
+        }
+        summary
+    }
+    /// "1 asking · 2 ready", in attention order with zero counts left out, or
+    /// "No workers".
+    pub fn label(&self) -> String {
+        let parts = [
+            (self.asking, "asking"),
+            (self.ready, "ready"),
+            (self.working, "working"),
+            (self.waiting, "waiting"),
+        ]
+        .iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, word)| format!("{count} {word}"))
+        .collect::<Vec<_>>();
+        if parts.is_empty() {
+            "No workers".into()
+        } else {
+            parts.join(" \u{b7} ")
+        }
+    }
+    /// The status of the dot: the most urgent one present, none with no
+    /// workers.
+    pub fn dot(&self) -> Option<Status> {
+        if self.asking > 0 {
+            Some(Status::Asking)
+        } else if self.ready > 0 {
+            Some(Status::Ready)
+        } else if self.working > 0 {
+            Some(Status::Working)
+        } else if self.waiting > 0 {
+            Some(Status::Waiting)
+        } else {
+            None
+        }
+    }
+}
+
+/// The steps shown under the newest bubble while a turn runs: up to three
+/// finished ones, then the current one. Memory only, per turn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActivitySteps {
+    finished: Vec<String>,
+    current: Option<String>,
+}
+impl ActivitySteps {
+    /// Replaces the steps. Only the newest three finished ones are kept.
+    pub fn set(&mut self, finished: Vec<String>, current: Option<String>) {
+        let skip = finished.len().saturating_sub(3);
+        self.finished = finished.into_iter().skip(skip).collect();
+        self.current = current;
+    }
+    pub fn clear(&mut self) {
+        self.finished.clear();
+        self.current = None;
+    }
+    /// The lines to show, oldest first: finished steps with a leading
+    /// check mark (true), then the current line (false). `fallback` is the
+    /// current line when no step is running.
+    fn lines<'a>(&'a self, fallback: &'a str) -> Vec<(bool, String)> {
+        let mut lines = self
+            .finished
+            .iter()
+            .map(|step| (true, format!("\u{2713} {step}")))
+            .collect::<Vec<_>>();
+        lines.push((
+            false,
+            self.current.as_deref().unwrap_or(fallback).to_string(),
+        ));
+        lines
+    }
+}
 
 #[derive(Clone)]
 pub enum ChatAction {
@@ -74,7 +179,11 @@ pub struct LeadChat {
     pub saving: bool,
     pub save_failed: bool,
     pub last_typed: Option<Instant>,
+    /// The current line when no step is running, and the line that replaces
+    /// the step ("Waiting for your decision", "Stopping...").
     pub activity: &'static str,
+    pub steps: ActivitySteps,
+    workers: WorkerSummary,
     pending: Option<String>,
     error: Option<String>,
     retry: Option<String>,
@@ -149,11 +258,156 @@ impl LeadChat {
             save_failed: false,
             last_typed: None,
             activity: "Working...",
+            steps: ActivitySteps::default(),
+            workers: WorkerSummary::default(),
             pending: None,
             error: None,
             retry: None,
             epoch: 0,
         }
+    }
+    /// The header's worker summary: the workers this Lead started.
+    pub fn set_worker_summary(&mut self, workers: WorkerSummary, cx: &mut Context<Self>) {
+        if self.workers != workers {
+            self.workers = workers;
+            cx.notify();
+        }
+    }
+    /// The steps of the running turn. Steps only show while `activity` is
+    /// "Working..."; the blocked and stopping lines replace the current step.
+    pub fn set_steps(
+        &mut self,
+        finished: Vec<String>,
+        current: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.steps.clone();
+        self.steps.set(finished, current);
+        if self.steps != before {
+            cx.notify();
+        }
+    }
+    /// The line that replaces the current step ("Stopping...", "Waiting for
+    /// your decision"), or None while the steps show.
+    pub fn replaced_line(&self) -> Option<&'static str> {
+        (self.activity != "Working...").then_some(self.activity)
+    }
+    /// The activity lines, oldest first, as `(finished, text)`.
+    fn activity_lines(&self) -> Vec<(bool, String)> {
+        if self.activity == "Working..." {
+            self.steps.lines(self.activity)
+        } else {
+            let mut lines = self.steps.lines(self.activity);
+            if let Some(last) = lines.last_mut() {
+                last.1 = self.activity.to_string();
+            }
+            lines
+        }
+    }
+    /// The composer: one raised field with no border (the caret shows focus)
+    /// and a round 32px action at its bottom right, Send or Stop. One
+    /// element builder for both places it lives (the empty state's center
+    /// and the bottom dock), so moving it keeps the same entity and focus.
+    fn composer_box(
+        &self,
+        chrome: &Chrome,
+        enabled: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let busy = self.busy;
+        let (bg, hover) = if busy || !enabled {
+            (chrome.sunken, chrome.sunken)
+        } else {
+            (chrome.primary_bg, chrome.primary_hover)
+        };
+        let ring = self.action_focus.is_focused(window);
+        let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+        let tip = if busy { "Stop esc" } else { "Send \u{21b5}" };
+        let clickable = busy || enabled;
+        div()
+            .flex()
+            .items_end()
+            .rounded(px(24.))
+            .min_h(px(48.))
+            .max_h(px(144.))
+            .bg(chrome.raised)
+            .pl(px(20.))
+            .pr(px(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h(px(48.))
+                    .flex()
+                    .items_center()
+                    .py(px(12.))
+                    .pr(px(8.))
+                    .child(div().flex_1().min_w_0().child(self.composer.clone())),
+            )
+            .child(
+                div().flex_none().pb(px(8.)).child(
+                    div()
+                        .id(if busy {
+                            "stop-lead-reply"
+                        } else {
+                            "send-lead-message"
+                        })
+                        .size(px(32.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(bg)
+                        .track_focus(&self.action_focus)
+                        .role(gpui::Role::Button)
+                        .aria_label(if busy { "Stop generating" } else { "Send" })
+                        .when(ring, |d| {
+                            d.shadow(vec![
+                                gpui::BoxShadow::new(px(0.), px(0.), chrome.focus.into())
+                                    .spread_radius(px(2.)),
+                            ])
+                        })
+                        .when(clickable, |d| {
+                            d.cursor_pointer()
+                                .hover(move |style| style.bg(hover))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if this.busy {
+                                        cx.emit(ChatAction::Interrupt);
+                                    } else {
+                                        this.submit(cx);
+                                    }
+                                }))
+                        })
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| crate::KeyTip {
+                                bg: tip_bg,
+                                fg: tip_fg,
+                                text: tip.into(),
+                            })
+                            .into()
+                        })
+                        .child(if busy {
+                            div()
+                                .size(px(7.))
+                                .rounded(px(2.))
+                                .bg(chrome.ink_1)
+                                .into_any_element()
+                        } else {
+                            gpui::svg()
+                                .data(SEND_ICON)
+                                .size(px(16.))
+                                .text_color(if enabled {
+                                    chrome.primary_fg
+                                } else {
+                                    chrome.ink_4
+                                })
+                                .into_any_element()
+                        }),
+                ),
+            )
+            .into_any_element()
     }
     fn set_chrome(&mut self, chrome: Chrome, cx: &mut Context<Self>) {
         if self.chrome != chrome {
@@ -235,6 +489,9 @@ impl LeadChat {
                 self.saving = false;
                 self.blocked = status == ChatStatus::Asking;
                 self.busy = matches!(status, ChatStatus::Working | ChatStatus::Asking);
+                if !self.busy {
+                    self.steps.clear();
+                }
                 self.activity = if status == ChatStatus::Asking {
                     "Waiting for your decision"
                 } else {
@@ -794,12 +1051,31 @@ impl Render for LeadChat {
         }
         let focused = self.focused(window, cx);
         let enabled = self.live && !self.saving && !self.save_failed && self.has_draft(cx);
+        let empty = self.rows.is_empty() && !self.loading;
+        let welcome = empty && self.live && !self.starting;
         let list = gpui::list(self.list.clone(), move |index, window, cx| {
             view.update(cx, |this, cx| this.row(index, window, cx))
         })
         .flex_1()
         .min_h_0()
         .w_full();
+        let composer = self.composer_box(&chrome, enabled, window, cx);
+        let hint = focused.then(|| {
+            div()
+                .text_size(px(11.5))
+                .text_color(chrome.ink_3)
+                .child("ctrl q back to cards")
+                .into_any_element()
+        });
+        let (welcome_composer, dock_composer) = if welcome {
+            (Some(composer), None)
+        } else if self.live {
+            (None, Some(composer))
+        } else {
+            (None, None)
+        };
+        let (welcome_hint, dock_hint) = if welcome { (hint, None) } else { (None, hint) };
+        let dock_extras = self.error.is_some() || self.retry.is_some() || self.save_failed;
         div()
             .flex_1()
             .min_h_0()
@@ -892,7 +1168,7 @@ impl Render for LeadChat {
                             })),
                         )
                     })
-                    .when(self.rows.is_empty(), |d| {
+                    .when(self.rows.is_empty() && self.loading, |d| {
                         d.child(
                             div()
                                 .flex_1()
@@ -901,178 +1177,205 @@ impl Render for LeadChat {
                                 .justify_center()
                                 .text_size(px(13.))
                                 .text_color(chrome.ink_3)
-                                .child(if self.loading {
-                                    "Loading conversation..."
-                                } else if self.starting {
-                                    "Starting Lead..."
-                                } else if self.live {
-                                    "What should we work on?"
-                                } else {
-                                    "Lead is not running"
-                                }),
+                                .child("Loading conversation..."),
+                        )
+                    })
+                    .when(empty && !welcome, |d| {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(14.))
+                                .child(mark_tile(&chrome))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .line_height(px(19.))
+                                        .text_color(chrome.ink_3)
+                                        .child(if self.starting {
+                                            "Starting Lead..."
+                                        } else {
+                                            "Lead is not running"
+                                        }),
+                                ),
+                        )
+                    })
+                    .when(welcome, |d| {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(14.))
+                                .child(mark_tile(&chrome))
+                                .child(
+                                    div()
+                                        .text_size(px(17.))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(chrome.ink_2)
+                                        .child("What should we work on?"),
+                                )
+                                .children(welcome_composer.map(|c| div().w_full().child(c)))
+                                .children(welcome_hint),
                         )
                     })
                     .when(!self.rows.is_empty(), |d| d.child(list)),
             )
-            .child(
-                div()
-                    .max_w(px(640.))
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.))
-                    .pt(px(12.))
-                    .when(self.busy, |d| {
-                        d.child(
-                            div()
-                                .h(px(20.))
-                                .text_size(px(12.))
-                                .text_color(chrome.ink_3)
-                                .child(self.activity),
-                        )
-                    })
-                    .when_some(self.error.clone(), |d, error| {
-                        d.child(
-                            div()
-                                .text_size(px(13.))
-                                .line_height(px(19.))
-                                .text_color(chrome.ink_2)
-                                .child(error),
-                        )
-                    })
-                    .when_some(self.retry.clone(), |d, text| {
-                        d.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(12.))
-                                .text_size(px(13.))
-                                .text_color(chrome.ink_2)
-                                .child("Work may already have started.")
-                                .child(
+            .when(!welcome || dock_extras, |d| {
+                d.child(
+                    div()
+                        .max_w(px(640.))
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .pt(px(12.))
+                        .when(self.busy, |d| {
+                            let lines = self.activity_lines();
+                            let single = lines.len() == 1;
+                            d.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .text_size(px(12.))
+                                    .when(single, |d| d.h(px(20.)))
+                                    .children(lines.into_iter().map(|(finished, text)| {
+                                        div()
+                                            .h(px(16.))
+                                            .line_height(px(16.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_color(if finished {
+                                                chrome.ink_4
+                                            } else {
+                                                chrome.ink_3
+                                            })
+                                            .child(text)
+                                    })),
+                            )
+                        })
+                        .when_some(self.error.clone(), |d, error| {
+                            d.child(
+                                div()
+                                    .text_size(px(13.))
+                                    .line_height(px(19.))
+                                    .text_color(chrome.ink_2)
+                                    .child(error),
+                            )
+                        })
+                        .when_some(self.retry.clone(), |d, text| {
+                            d.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(12.))
+                                    .text_size(px(13.))
+                                    .text_color(chrome.ink_2)
+                                    .child("Work may already have started.")
+                                    .child(
+                                        crate::dialog_button(
+                                            "retry-lead-message",
+                                            "Retry message",
+                                            "",
+                                            &chrome,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                if this.live
+                                                    && !this.busy
+                                                    && !this.saving
+                                                    && !this.save_failed
+                                                {
+                                                    this.retry = None;
+                                                    this.saving = true;
+                                                    cx.emit(ChatAction::Send(text.clone()));
+                                                    cx.notify();
+                                                }
+                                            }),
+                                        ),
+                                    ),
+                            )
+                        })
+                        .when(self.save_failed, |d| {
+                            d.child(
+                                crate::dialog_button("retry-chat-save", "Retry save", "", &chrome)
+                                    .on_click(
+                                        cx.listener(|_, _, _, cx| cx.emit(ChatAction::RetrySave)),
+                                    ),
+                            )
+                        })
+                        .when(self.newer || !self.list.is_following_tail(), |d| {
+                            d.child(
+                                div().flex().justify_center().child(
                                     crate::dialog_button(
-                                        "retry-lead-message",
-                                        "Retry message",
+                                        "new-lead-messages",
+                                        "New messages",
                                         "",
                                         &chrome,
                                     )
+                                    .track_focus(&self.new_focus)
                                     .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            if this.live
-                                                && !this.busy
-                                                && !this.saving
-                                                && !this.save_failed
-                                            {
-                                                this.retry = None;
-                                                this.saving = true;
-                                                cx.emit(ChatAction::Send(text.clone()));
-                                                cx.notify();
-                                            }
+                                        |this, _, _, cx| {
+                                            this.newest(cx);
+                                            cx.notify();
                                         },
                                     )),
                                 ),
-                        )
-                    })
-                    .when(self.save_failed, |d| {
-                        d.child(
-                            crate::dialog_button("retry-chat-save", "Retry save", "", &chrome)
-                                .on_click(
-                                    cx.listener(|_, _, _, cx| cx.emit(ChatAction::RetrySave)),
-                                ),
-                        )
-                    })
-                    .when(self.newer || !self.list.is_following_tail(), |d| {
-                        d.child(
-                            div().flex().justify_center().child(
-                                crate::dialog_button(
-                                    "new-lead-messages",
-                                    "New messages",
-                                    "",
-                                    &chrome,
-                                )
-                                .track_focus(&self.new_focus)
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.newest(cx);
-                                        cx.notify();
-                                    },
-                                )),
-                            ),
-                        )
-                    })
-                    .when(self.live, |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .items_end()
-                                .gap(px(12.))
-                                .rounded(px(24.))
-                                .min_h(px(48.))
-                                .max_h(px(144.))
-                                .border_1()
-                                .border_color(if focused {
-                                    chrome.focus
-                                } else {
-                                    chrome.line_control
-                                })
-                                .bg(chrome.raised)
-                                .py(px(12.))
-                                .px(px(20.))
-                                .child(div().flex_1().min_w_0().child(self.composer.clone()))
-                                .child(if self.busy {
-                                    crate::dialog_button("stop-lead-reply", "Stop", "esc", &chrome)
-                                        .py(px(4.))
+                            )
+                        })
+                        .children(dock_composer)
+                        .when(!self.live && !self.starting, |d| {
+                            d.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap(px(12.))
+                                    .text_size(px(13.))
+                                    .text_color(chrome.ink_3)
+                                    .child("Lead is not running")
+                                    .child(
+                                        crate::dialog_button(
+                                            "resume-chat-lead",
+                                            "Resume",
+                                            "↵",
+                                            &chrome,
+                                        )
                                         .track_focus(&self.action_focus)
                                         .on_click(
-                                            cx.listener(|_, _, _, cx| {
-                                                cx.emit(ChatAction::Interrupt)
-                                            }),
-                                        )
-                                        .into_any_element()
-                                } else {
-                                    crate::primary_button("send-lead-message", "Send", "↵", &chrome)
-                                        .py(px(4.))
-                                        .track_focus(&self.action_focus)
-                                        .opacity(if enabled { 1. } else { 0.45 })
-                                        .on_click(cx.listener(|this, _, _, cx| this.submit(cx)))
-                                        .into_any_element()
-                                }),
-                        )
-                    })
-                    .when(!self.live && !self.starting, |d| {
-                        d.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .gap(px(12.))
-                                .text_size(px(13.))
-                                .text_color(chrome.ink_3)
-                                .child("Lead is not running")
-                                .child(
-                                    crate::dialog_button(
-                                        "resume-chat-lead",
-                                        "Resume",
-                                        "↵",
-                                        &chrome,
-                                    )
-                                    .track_focus(&self.action_focus)
-                                    .on_click(
-                                        cx.listener(|_, _, _, cx| cx.emit(ChatAction::Resume)),
+                                            cx.listener(|_, _, _, cx| cx.emit(ChatAction::Resume)),
+                                        ),
                                     ),
-                                ),
-                        )
-                    })
-                    .when(focused, |d| {
-                        d.child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(chrome.ink_3)
-                                .child("ctrl q back to cards"),
-                        )
-                    }),
-            )
+                            )
+                        })
+                        .children(dock_hint),
+                )
+            })
     }
+}
+
+/// The antler mark on a raised tile: the Lead's empty and resting states.
+fn mark_tile(chrome: &Chrome) -> gpui::Div {
+    div()
+        .size(px(52.))
+        .flex_none()
+        .rounded(px(14.))
+        .bg(chrome.raised)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            gpui::svg()
+                .data(ANTLERS_ICON)
+                .size(px(30.))
+                .text_color(chrome.ink_2),
+        )
 }
 
 fn trim_blank_lines(text: &str) -> String {
@@ -1348,6 +1651,12 @@ impl Shika {
                         );
                     }
                 }
+                if let ChatEvent::Record(record) = &event
+                    && let ChatContent::Lead { text } = &record.content
+                    && let Some(line) = crate::lead_chat_markdown::reply_first_line(text)
+                {
+                    self.lead_snippets.insert(project.clone(), line);
+                }
                 if matches!(event, ChatEvent::Resuming)
                     && let Some(run) = &mut self.cards[index].lead_run
                 {
@@ -1371,7 +1680,6 @@ impl Shika {
             }
             if let Some(chat) = self.lead_chats.get(&project) {
                 let dialog = self.lead_dialog.as_ref().is_some_and(|d| d.lead_id == id);
-                let waiting = self.cards[index].lead.as_ref().is_some_and(|s| s.waiting());
                 if chat.read(cx).busy {
                     let status = if dialog || chat.read(cx).blocked {
                         Status::Asking
@@ -1403,8 +1711,6 @@ impl Shika {
                     if chat.busy && chat.activity != "Stopping..." {
                         let label = if dialog || chat.blocked {
                             "Waiting for your decision"
-                        } else if waiting {
-                            "Waiting for workers..."
                         } else {
                             "Working..."
                         };
@@ -1452,6 +1758,7 @@ impl Shika {
             .map_or("", |p| p.name.as_str())
             .to_string();
         let live = self.selected_card().is_some_and(|i| self.cards[i].chat);
+        let workers = chat.read(cx).workers;
         let project_click = project.clone();
         let header = div()
             .h(px(crate::BAR_HEIGHT))
@@ -1483,32 +1790,69 @@ impl Shika {
             .child(
                 div()
                     .size(px(24.))
+                    .flex_none()
                     .rounded(px(6.))
                     .bg(chrome.raised)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(13.))
-                    .text_color(chrome.ink_2)
-                    .child("L"),
-            )
-            .child(
-                div()
-                    .text_size(px(14.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(chrome.ink_1)
-                    .child("Lead"),
+                    .child(
+                        gpui::svg()
+                            .data(ANTLERS_ICON)
+                            .size(px(16.))
+                            .text_color(chrome.ink_2),
+                    ),
             )
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(px(11.5))
-                    .text_color(chrome.ink_3)
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(project_name),
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_size(px(14.))
+                    .line_height(px(20.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(chrome.ink_1)
+                            .child(project_name),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(chrome.ink_3)
+                            .child("Lead"),
+                    ),
             )
+            .when(live, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_size(px(12.))
+                        .text_color(chrome.ink_3)
+                        .whitespace_nowrap()
+                        .when_some(workers.dot(), |d, status| {
+                            d.child(div().size(px(6.)).flex_none().rounded_full().bg(
+                                match status {
+                                    Status::Asking => chrome.asking.dot,
+                                    Status::Ready => chrome.ready.dot,
+                                    Status::Working => chrome.working.dot,
+                                    Status::Waiting => chrome.waiting.dot,
+                                },
+                            ))
+                        })
+                        .child(workers.label()),
+                )
+            })
             .child(
                 crate::dialog_button(
                     "lead-chat-header",
@@ -1564,5 +1908,77 @@ impl Shika {
                 .child(chat)
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    fn summary(asking: usize, ready: usize, working: usize, waiting: usize) -> WorkerSummary {
+        WorkerSummary {
+            asking,
+            ready,
+            working,
+            waiting,
+        }
+    }
+
+    #[test]
+    fn summary_label_follows_attention_order_and_skips_zeros() {
+        assert_eq!(summary(0, 0, 0, 0).label(), "No workers");
+        assert_eq!(summary(1, 2, 0, 0).label(), "1 asking \u{b7} 2 ready");
+        assert_eq!(summary(0, 0, 2, 0).label(), "2 working");
+        assert_eq!(summary(0, 0, 0, 3).label(), "3 waiting");
+        assert_eq!(
+            summary(1, 1, 1, 1).label(),
+            "1 asking \u{b7} 1 ready \u{b7} 1 working \u{b7} 1 waiting"
+        );
+    }
+
+    #[test]
+    fn summary_dot_is_the_most_urgent_status() {
+        assert_eq!(summary(0, 0, 0, 0).dot(), None);
+        assert_eq!(summary(1, 2, 3, 4).dot(), Some(Status::Asking));
+        assert_eq!(summary(0, 2, 3, 4).dot(), Some(Status::Ready));
+        assert_eq!(summary(0, 0, 3, 4).dot(), Some(Status::Working));
+        assert_eq!(summary(0, 0, 0, 4).dot(), Some(Status::Waiting));
+    }
+
+    #[test]
+    fn steps_keep_the_newest_three_finished_with_check_marks() {
+        let mut steps = ActivitySteps::default();
+        assert_eq!(
+            steps.lines("Working..."),
+            vec![(false, "Working...".into())]
+        );
+        steps.set(
+            ["a", "b", "c", "d"].map(String::from).to_vec(),
+            Some("Reading x...".into()),
+        );
+        assert_eq!(
+            steps.lines("Working..."),
+            vec![
+                (true, "\u{2713} b".to_string()),
+                (true, "\u{2713} c".to_string()),
+                (true, "\u{2713} d".to_string()),
+                (false, "Reading x...".to_string()),
+            ]
+        );
+        steps.clear();
+        assert_eq!(
+            steps.lines("Stopping..."),
+            vec![(false, "Stopping...".into())]
+        );
+    }
+
+    #[test]
+    fn workers_are_counted_by_status_with_exited_as_waiting() {
+        use TaskStatus::*;
+        assert_eq!(
+            WorkerSummary::count([Asking, Ready, Ready, Starting, Working, Waiting, Exited]),
+            summary(1, 2, 2, 2)
+        );
+        assert_eq!(WorkerSummary::count([]), WorkerSummary::default());
     }
 }
