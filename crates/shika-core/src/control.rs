@@ -924,9 +924,11 @@ pub fn new_token() -> String {
 /// Where the `shika` command lives: `<data_dir>/bin/shika`, a symlink to the
 /// running executable. The path is the same on every launch, because a Lead's
 /// recorded conversation names it and a resumed Lead must find it again. Each
-/// call replaces the link atomically (a temporary link, then `rename`), so a
-/// concurrent reader sees the old target or the new one, never a gap. The
-/// directory is `0700`. Returns `<data_dir>/bin`.
+/// call replaces the link atomically (a temporary link, then `rename`), so the
+/// name never goes missing. On APFS, resolving the link at the instant it is
+/// replaced can still fail with EINVAL; the app installs once per launch, so
+/// that window only exists while a second Shika starts on the same data
+/// directory. The directory is `0700`. Returns `<data_dir>/bin`.
 ///
 /// Two Shika processes sharing one data directory share the link; the one
 /// started last wins. Nothing removes it on quit: a dangling or stale link
@@ -1681,13 +1683,15 @@ mod tests {
         assert_eq!(fs::read_link(bin.join("shika")).unwrap(), exe);
 
         // Concurrent installs (parallel tests, or two apps) never fail, and
-        // the link is always there for a reader.
+        // the link is always there for a reader. Checked with lstat: on APFS,
+        // resolving a symlink while another is renamed over it can briefly
+        // fail with EINVAL, so `exists()` may see false mid-swap.
         std::thread::scope(|scope| {
             for _ in 0..4 {
                 scope.spawn(|| {
                     for _ in 0..25 {
                         install_command(&data.0).unwrap();
-                        assert!(bin.join("shika").exists());
+                        assert!(fs::symlink_metadata(bin.join("shika")).is_ok());
                     }
                 });
             }
