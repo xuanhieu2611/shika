@@ -37,6 +37,9 @@ pub enum ChatStatus {
 pub enum ChatEvent {
     Confirmed(String),
     Accepted,
+    /// The CLI began a turn without Shika input, for example after one of the
+    /// Lead's background commands finished. It counts as a submission.
+    Started,
     DeliveryFailed,
     Rejected(String),
     Question(ChatQuestion),
@@ -76,6 +79,7 @@ pub struct ChatQuestion {
 #[derive(Debug, PartialEq, Eq)]
 enum Parsed {
     Confirmed,
+    Started,
     Final(Option<String>),
     Failed(&'static str),
     Question(ChatQuestion),
@@ -149,7 +153,14 @@ impl ClaudeStream {
                     return Parsed::Failed(BAD_STREAM);
                 }
                 self.confirmed = true;
-                Parsed::Confirmed
+                // Every turn opens with init. One while idle is a turn the CLI
+                // started itself; its final response is filtered the same way.
+                if self.active {
+                    Parsed::Confirmed
+                } else {
+                    self.begin();
+                    Parsed::Started
+                }
             }
             "control_request"
                 if self.active
@@ -353,6 +364,7 @@ impl ChatTransport {
         let history = store.lifetime.clone();
         store.recover()?;
         let boundary = store.bind("claude", &launch.conversation)?;
+        let next_turn = store.next_turn()?;
         let (input, rx) = mpsc::channel();
         let (frames, frame_rx) = mpsc::sync_channel(8);
         let (events, output) = mpsc::channel();
@@ -378,6 +390,7 @@ impl ChatTransport {
                     frames: actor_frames,
                     child: Some(child),
                     generation: 1,
+                    next_turn,
                     turn: None,
                     stopping: None,
                     exiting: false,
@@ -593,6 +606,7 @@ struct Actor {
     frames: mpsc::SyncSender<CommandIn>,
     child: Option<Process>,
     generation: u64,
+    next_turn: i64,
     turn: Option<i64>,
     stopping: Option<Instant>,
     exiting: bool,
@@ -607,6 +621,13 @@ impl Actor {
             source.notify();
         }
         let _ = self.output.send(event);
+    }
+    /// Counted here too, so rows buffered after a save failure keep their
+    /// numbers when a turn the CLI starts itself needs the next one.
+    fn allocate_turn(&mut self) -> i64 {
+        let turn = self.store.next_turn().unwrap_or(0).max(self.next_turn);
+        self.next_turn = turn + 1;
+        turn
     }
     fn persist(&mut self, turn: i64, content: ChatContent) -> bool {
         self.persist_batch(vec![(turn, content)])
@@ -655,12 +676,13 @@ impl Actor {
                 records.push((turn, ChatContent::Lead { text }));
             }
             if let Some(text) = error {
-                if text != "Reply stopped"
-                    && let Some((ChatOrigin::Author, input)) = input
-                {
-                    self.emit(ChatEvent::Rejected(input));
+                // A turn the CLI started has no input to offer again.
+                if let Some((origin, input)) = input {
+                    if text != "Reply stopped" && origin == ChatOrigin::Author {
+                        self.emit(ChatEvent::Rejected(input));
+                    }
+                    self.emit(ChatEvent::DeliveryFailed);
                 }
-                self.emit(ChatEvent::DeliveryFailed);
                 records.push((
                     turn,
                     ChatContent::Event {
@@ -768,14 +790,7 @@ impl Actor {
                     && !self.save_failed
                     && epoch == self.cancel.load(Ordering::Acquire) =>
                 {
-                    let Ok(turn) = self.store.next_turn() else {
-                        self.save_failed = true;
-                        self.emit(ChatEvent::SaveFailed);
-                        self.emit(ChatEvent::Rejected(text));
-                        self.emit(ChatEvent::DeliveryFailed);
-                        self.emit(ChatEvent::Status(ChatStatus::Ready));
-                        continue;
-                    };
+                    let turn = self.allocate_turn();
                     self.turn = Some(turn);
                     self.active_input = Some((origin.clone(), text.clone()));
                     let mut outgoing = Vec::new();
@@ -846,7 +861,22 @@ impl Actor {
                         .map(|c| c.decoder.parse(&line))
                         .unwrap_or(Parsed::Ignore);
                     match parsed {
-                        Parsed::Confirmed => {
+                        Parsed::Started if self.turn.is_none() => {
+                            self.launch.resumed = true;
+                            self.emit(ChatEvent::Confirmed(self.launch.conversation.clone()));
+                            // No Outgoing row: Accepted alone marks a turn the
+                            // CLI took without Shika input, so recovery and
+                            // numbering treat it like any other accepted turn.
+                            let turn = self.allocate_turn();
+                            self.turn = Some(turn);
+                            if let Some(child) = &mut self.child {
+                                child.input_epoch = self.cancel.load(Ordering::Acquire);
+                            }
+                            self.persist(turn, ChatContent::Accepted);
+                            self.emit(ChatEvent::Started);
+                            self.emit(ChatEvent::Status(ChatStatus::Working));
+                        }
+                        Parsed::Confirmed | Parsed::Started => {
                             self.launch.resumed = true;
                             self.emit(ChatEvent::Confirmed(self.launch.conversation.clone()))
                         }
@@ -989,6 +1019,52 @@ mod tests {
                 .all(|text| text.starts_with("Final synthetic reply")
                     && !text.contains("Intermediate")
                     && !text.contains("synthetic-tool-output"))
+        );
+    }
+    #[test]
+    fn installed_cli_background_fixture_reads_the_turn_the_cli_starts_itself() {
+        // Shika sends one message. When its background command finishes, the
+        // CLI opens a second turn with no input; the parser alone must find it.
+        let mut parser = ClaudeStream::new("fixture-session".into());
+        parser.begin();
+        let mut started = 0;
+        let mut finals = Vec::new();
+        for line in include_str!("../tests/fixtures/claude-2.1.302-background-local.jsonl").lines()
+        {
+            match parser.parse(line.as_bytes()) {
+                Parsed::Started => started += 1,
+                Parsed::Final(text) => finals.push(text.unwrap()),
+                Parsed::Failed(error) => panic!("{error}"),
+                _ => {}
+            }
+        }
+        assert_eq!(started, 1);
+        assert_eq!(
+            finals,
+            [
+                "Synthetic reply - waiting on the background command.",
+                "Background synthetic reply - the worker finished and its diff looks right."
+            ]
+        );
+        assert!(!parser.active);
+    }
+    #[test]
+    fn idle_records_other_than_init_never_start_a_turn() {
+        let mut p = ClaudeStream::new("s".into());
+        p.parse(br#"{"type":"control_response","response":{"request_id":"shika-initialize","subtype":"success"}}"#);
+        p.parse(br#"{"type":"system","subtype":"task_notification","session_id":"s"}"#);
+        p.parse(br#"{"type":"assistant","message":{"id":"a","content":[{"type":"text","text":"late"}]}}"#);
+        assert_eq!(
+            p.parse(br#"{"type":"result","subtype":"success","is_error":false,"session_id":"s"}"#),
+            Parsed::Ignore
+        );
+        assert_eq!(
+            p.parse(br#"{"type":"system","subtype":"init","session_id":"s"}"#),
+            Parsed::Started
+        );
+        assert_eq!(
+            p.parse(br#"{"type":"system","subtype":"init","session_id":"s"}"#),
+            Parsed::Confirmed
         );
     }
     #[test]
