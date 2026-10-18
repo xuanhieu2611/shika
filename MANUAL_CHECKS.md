@@ -402,6 +402,7 @@ Contributor overview, safety limits, implementation map, and debugging: [docs/br
 - PASS: `cargo fmt --all --check`, parallel `cargo test --workspace --locked --offline` (205 tests), and strict workspace/all-targets Clippy. The upstream `block` future-compatibility warning remains.
 - PASS: Debug app bundle builds, includes Shika's MIT license plus Heroicons, Octicons, and JetBrains Mono notices, and passes `codesign --verify --deep --strict`.
 - Native README/poster/share screenshot captured using isolated data and disposable `storefront`/`routekit` repositories. CLI output is simulated, explicitly captioned, and image metadata is stripped. This does not validate real provider flows or close outstanding GUI checks above.
+- 2026-10-17: the README screenshot (`docs/images/shika-native.png`) was replaced with the author's real capture of the app in frosted glass, resized to 2400px wide. The entry above now describes only the poster/share image.
 - Browser prototype checked with independent shell buffers (`git diff` and `pwd`), switching back to retained output, and the dirty-close dialog hiding Push. Component checks also cover tab ownership, pinned agent close, focus restoration, Codex/Pi picker choices, three-card cap, and simulated commit/push close behavior. Browser-reserved shortcuts can require visible controls.
 
 ## Lead agent spike
