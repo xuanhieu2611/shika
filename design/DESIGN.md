@@ -250,6 +250,7 @@ Stick to the bottom while already at the bottom, including final responses, comp
 | `j`/`k`, arrows in composer | Ordinary text/caret movement, never card navigation. |
 | Page Up/Down, Home/End in transcript | Scroll transcript; in composer, keep native text navigation. |
 | Enter / Shift+Enter in composer | Send while idle / newline; composition takes precedence. |
+| Option+Delete / Option+Fn+Delete in composer | Delete the previous / next word by macOS rules: skip spaces and punctuation, then the word, across lines. A selection is deleted instead. |
 | Escape in chat during a turn | Stop generating, preserving draft; dismiss an overlay or IME first. Idle Escape leaves draft/focus alone. |
 | `⌘]` / `⌘[` | Move through row order and preserve column versus content focus. Lead content focus resolves to composer; worker content focus resolves to its terminal. |
 | `⌘L` | Existing Lead start/resume entry; focus this project's composer when live. |

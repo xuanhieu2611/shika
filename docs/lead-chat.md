@@ -244,7 +244,7 @@ The previous version of this file was the approved design. Where the implementat
 | `crates/shika/src/lead_chat.rs` (new) | `LeadChat` view (rows, paging, scroll anchor, selection, composer wiring, banners) and the `Shika` glue: `ensure_lead_chat`, `submit_lead_chat`, `drain_lead_chats` (events to status, notifications, questions, identity confirmation, resume and exit handling), `selected_chat`, `chat_side`. |
 | `crates/shika/src/lead_chat_markdown.rs` (new) | Original markdown subset parser, block splitting, `safe_link`, theme-derived highlights. |
 | `crates/shika/src/lead_chat_question.rs` (new) | Native question dialog: open or queue, step through questions, build the answer, cancel, keys and view. |
-| `crates/shika/src/chat_input.rs` (new) | Multiline editor and read-only selectable text: IME, selection, undo/redo, links, Enter/Escape/Ctrl+Q events. |
+| `crates/shika/src/chat_input.rs` (new) | Multiline editor and read-only selectable text: IME, selection, word moves and Option+Delete word deletion, undo/redo, links, Enter/Escape/Ctrl+Q events. |
 | `crates/shika/src/control.rs` | `ChatDelivery`, `chat_delivery_finished`, chat-aware `lead_gate`, chat delivery in `ring_doorbells` and the restart summary, `LeadState::waiting`. |
 | `crates/shika/src/activity.rs` | `Activity::advance_chat` and its test. |
 | `crates/shika/src/main.rs` | `Card::chat`, `Card::chat_delivery`, `LeadRun::unexpected_exit`, `Overlay::LeadQuestion`, `Shika::lead_chats`, `chat_questions`; launch routing to `start_claude_lead`; focus and Seen for chat; skipping chat cards in terminal sampling; tabs disabled; quit hook. |

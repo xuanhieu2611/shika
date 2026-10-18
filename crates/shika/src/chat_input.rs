@@ -41,6 +41,40 @@ impl Text {
             .find_map(|(i, _)| (i > self.cursor).then_some(i))
             .unwrap_or(self.value.len())
     }
+    // macOS word rules: skip whitespace and punctuation, then the word.
+    fn word_start(&self) -> usize {
+        self.value[..self.cursor]
+            .split_word_bound_indices()
+            .rev()
+            .find_map(|(i, word)| word.chars().any(char::is_alphanumeric).then_some(i))
+            .unwrap_or(0)
+    }
+    fn word_end(&self) -> usize {
+        self.value[self.cursor..]
+            .split_word_bound_indices()
+            .find_map(|(i, word)| {
+                word.chars()
+                    .any(char::is_alphanumeric)
+                    .then_some(self.cursor + i + word.len())
+            })
+            .unwrap_or(self.value.len())
+    }
+    /// Backspace or forward delete, by grapheme or by word; a selection goes first.
+    fn delete(&mut self, forward: bool, word: bool) {
+        let selected = self.selection();
+        let range = if !selected.is_empty() {
+            selected
+        } else if forward {
+            self.cursor..if word { self.word_end() } else { self.next() }
+        } else {
+            (if word {
+                self.word_start()
+            } else {
+                self.previous()
+            })..self.cursor
+        };
+        self.replace(range, "");
+    }
     fn replace(&mut self, range: Range<usize>, text: &str) {
         self.value.replace_range(range.clone(), text);
         self.cursor = range.start + text.len();
@@ -395,22 +429,9 @@ impl ChatInput {
                     if left { 0 } else { self.text.value.len() }
                 } else if m.alt {
                     if left {
-                        self.text.value[..self.text.cursor]
-                            .split_word_bound_indices()
-                            .rev()
-                            .find_map(|(i, word)| {
-                                word.chars().any(char::is_alphanumeric).then_some(i)
-                            })
-                            .unwrap_or(0)
+                        self.text.word_start()
                     } else {
-                        self.text.value[self.text.cursor..]
-                            .split_word_bound_indices()
-                            .find_map(|(i, word)| {
-                                word.chars()
-                                    .any(char::is_alphanumeric)
-                                    .then_some(self.text.cursor + i + word.len())
-                            })
-                            .unwrap_or(self.text.value.len())
+                        self.text.word_end()
                     }
                 } else if !m.shift && !selected.is_empty() {
                     if left { selected.start } else { selected.end }
@@ -431,16 +452,9 @@ impl ChatInput {
                     self.text.move_to(offset, m.shift);
                 }
             }
-            "backspace" | "delete" if !m.control && !m.alt && !m.platform && !self.readonly => {
+            "backspace" | "delete" if !m.control && !m.platform && !self.readonly => {
                 self.checkpoint();
-                let range = if !selected.is_empty() {
-                    selected
-                } else if stroke.key == "backspace" {
-                    self.text.previous()..self.text.cursor
-                } else {
-                    self.text.cursor..self.text.next()
-                };
-                self.text.replace(range, "");
+                self.text.delete(stroke.key == "delete", m.alt);
             }
             _ => return,
         }
@@ -836,5 +850,96 @@ impl Render for ChatInput {
                 .absolute()
                 .size_full(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn at(value: &str, cursor: usize) -> Text {
+        Text {
+            value: value.into(),
+            anchor: cursor,
+            cursor,
+            marked: None,
+        }
+    }
+    fn delete_word(value: &str, cursor: usize) -> (String, usize) {
+        let mut text = at(value, cursor);
+        text.delete(false, true);
+        (text.value, text.cursor)
+    }
+    #[test]
+    fn option_backspace_skips_spaces_and_punctuation_then_the_word() {
+        assert_eq!(delete_word("hello world", 11), ("hello ".into(), 6));
+        assert_eq!(delete_word("hello world  ", 13), ("hello ".into(), 6));
+        assert_eq!(delete_word("run the tests.", 14), ("run the ".into(), 8));
+        assert_eq!(delete_word("see (foo).", 10), ("see (".into(), 5));
+        assert_eq!(delete_word("don't", 5), ("".into(), 0));
+        assert_eq!(delete_word("snake_case", 10), ("".into(), 0));
+        assert_eq!(delete_word("hello world", 8), ("hello rld".into(), 6));
+        assert_eq!(delete_word("  ...", 5), ("".into(), 0));
+        assert_eq!(delete_word("", 0), ("".into(), 0));
+        assert_eq!(delete_word("hello", 0), ("hello".into(), 0));
+    }
+    #[test]
+    fn option_backspace_crosses_lines() {
+        assert_eq!(delete_word("one\ntwo", 7), ("one\n".into(), 4));
+        assert_eq!(delete_word("one two\n\n", 9), ("one ".into(), 4));
+        assert_eq!(
+            delete_word("one\n  two\nthree", 9),
+            ("one\n  \nthree".into(), 6)
+        );
+    }
+    #[test]
+    fn option_backspace_keeps_utf8_and_graphemes_whole() {
+        let value = "x café";
+        assert_eq!(delete_word(value, value.len()), ("x ".into(), 2));
+        let value = "да привет";
+        assert_eq!(delete_word(value, value.len()), ("да ".into(), "да ".len()));
+        // UAX #29 has no dictionary, so ideographs go one at a time.
+        let value = "go 日本語";
+        assert_eq!(
+            delete_word(value, value.len()),
+            ("go 日本".into(), "go 日本".len())
+        );
+        let value = "ok e\u{301}te\u{301} 👩‍💻";
+        assert_eq!(delete_word(value, value.len()), ("ok ".into(), 3));
+        let value = "a 😀 b";
+        let (rest, cursor) = delete_word(value, "a 😀".len());
+        assert_eq!((rest.as_str(), cursor), (" b", 0));
+        assert!(rest.is_char_boundary(cursor));
+    }
+    #[test]
+    fn word_delete_removes_the_selection_first() {
+        let mut text = at("hello brave world", 12);
+        text.anchor = 6;
+        text.delete(false, true);
+        assert_eq!((text.value.as_str(), text.cursor), ("hello world", 6));
+        let mut text = Text {
+            anchor: 12,
+            ..at("hello brave world", 6)
+        };
+        text.delete(true, true);
+        assert_eq!((text.value.as_str(), text.cursor), ("hello world", 6));
+    }
+    #[test]
+    fn option_forward_delete_removes_the_next_word() {
+        let mut text = at("hello, world", 5);
+        text.delete(true, true);
+        assert_eq!((text.value.as_str(), text.cursor), ("hello", 5));
+        let mut text = at("one\ntwo", 0);
+        text.delete(true, true);
+        assert_eq!(text.value, "\ntwo");
+    }
+    #[test]
+    fn plain_delete_is_one_grapheme() {
+        let value = "ae\u{301}";
+        let mut text = at(value, value.len());
+        text.delete(false, false);
+        assert_eq!(text.value, "a");
+        let mut text = at("👩‍💻x", 0);
+        text.delete(true, false);
+        assert_eq!(text.value, "x");
     }
 }

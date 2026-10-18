@@ -795,11 +795,11 @@ impl Responder {
         Self { tx, step }
     }
 
-    pub fn send(&self, reply: Reply) -> Result<(), mpsc::SendError<Reply>> {
+    pub fn send(&self, reply: Reply) -> Result<(), Box<mpsc::SendError<Reply>>> {
         if let Some(step) = &self.step {
             step.settle(&reply);
         }
-        self.tx.send(reply)
+        self.tx.send(reply).map_err(Box::new)
     }
 }
 
