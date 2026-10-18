@@ -70,6 +70,11 @@ pub enum Error {
     RenameBranch(Option<String>),
     #[error("Could not publish PR: {0}")]
     Publish(String),
+    /// `shika pr` found no PR target: the task's recorded starting base
+    /// (named when it is a branch) is not a branch of origin on GitHub. Only
+    /// the author may choose another target, in Create PR.
+    #[error("{}", no_target(.0))]
+    PublishNoTarget(Option<String>),
     #[error("Could not push changes.{}", detail(.0))]
     Push(Option<String>),
     #[error("This task has work to keep. Choose discard or push before closing.")]
@@ -146,6 +151,14 @@ fn detail(line: &Option<String>) -> String {
         Some(line) => format!(" {line}"),
         None => String::new(),
     }
+}
+
+fn no_target(base: &Option<String>) -> String {
+    let start = match base {
+        Some(base) => format!("The task's starting base {base} is not a branch on GitHub"),
+        None => "The task did not start from a branch of origin".into(),
+    };
+    format!("{start}, so there is no PR target. The author can choose one in Create PR.")
 }
 
 /// First non-empty line of a tool's stderr, for the detail of an error.

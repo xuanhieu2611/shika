@@ -19,7 +19,7 @@ Start here when contributing to this feature. This guide records the decisions a
 - **Now:** a Claude Code Lead runs as one long-lived `claude -p` child speaking bidirectional stream JSON over pipes. It has no PTY (`Session::pty` is `None`). Shika shows only the author's text and each turn's final response, rendered as light markdown.
 - **Hidden:** thinking, tool calls, tool output, subagent text and every intermediate assistant message. They are dropped before anything is written to history.
 - **History:** Shika keeps a visible transcript for the Lead's lifetime in `leads/<project-id>/chat/history.sqlite`. Stop and quit keep it, Forget deletes it, memory notes survive. It is never replayed into the CLI.
-- **Unchanged:** the Lead guide and prompts, the worktree, the four-worker limit, ownership checks, the doorbell's gates and accounting, author-confirmed PR/Close dialogs, resume and the fresh-start fallback, Seen and notifications. Workers keep real terminals.
+- **Unchanged:** the Lead guide and prompts, the worktree, the four-worker limit, ownership checks, the doorbell's gates and accounting, the author-confirmed Close dialog (`shika pr` publishes without a dialog since protocol 6), resume and the fresh-start fallback, Seen and notifications. Workers keep real terminals.
 - **Start reading code:** `Core::start_claude_lead` (`crates/shika-core/src/lead.rs`), `ChatTransport` and `ClaudeStream::parse` (`lead_transport.rs`), `ChatStore` (`lead_chat_store.rs`), then `Shika::drain_lead_chats` (`crates/shika/src/lead_chat.rs`).
 
 ## How the feature evolved
@@ -146,7 +146,7 @@ Not every turn starts with a Shika write. When a Bash tool the Lead ran with `ru
 - **Answer:** the dialog collects one answer per question (an option label, a list of labels for multi-select, or free text), then `Core::lead_chat_answer` writes `{"behavior":"allow","updatedInput":<original input with "answers">}`. Cancel writes `{"behavior":"deny","message":"The author cancelled this question."}`. A successful write returns to Working. The question and its tool reply are never stored.
 - **Dismissal:** `control_cancel_request`, a settled turn, or an exit closes the dialog and drops queued questions for that Lead.
 - **Unknown:** any other `control_request`, or a question outside those limits, emits `Status(Asking)` and the error "This Lead needs an interaction chat does not support." It is never answered automatically. The author can Stop generating.
-- **PR and Close:** `shika pr` and `shika close` still open the author's own dialogs through the control socket. While a `LeadDialog` for this Lead is open, `drain_lead_chats` holds the card at Asking and the activity line reads "Waiting for your decision". A chat message can never confirm either.
+- **PR and Close:** `shika close` still opens the author's own Close dialog through the control socket. While a `LeadDialog` for this Lead is open, `drain_lead_chats` holds the card at Asking and the activity line reads "Waiting for your decision". A chat message can never confirm it. `shika pr` opens no dialog: it publishes and the Lead stays Working, with the step "Opening a PR for {task}...", until the URL comes back (see [lead-agent.md](lead-agent.md#pr-publishes-directly)).
 
 ### Stop generating
 
@@ -220,7 +220,7 @@ The ledger, batching, and gates are the ones in [shika-cli.md](shika-cli.md#the-
 | --- | --- |
 | Waiting | Live Lead before its first turn. Spawning and initialization start nothing. |
 | Working | A submission was dispatched (`advance_chat(Working, true)`), accepted, the CLI started a turn itself (`ChatEvent::Started`, also a submission), or a question was answered. Includes tools, silence and a blocking `shika wait`. The activity area shows [step lines](#activity-steps) built from the control socket, "Working..." when no command runs. |
-| Asking | A supported question or unknown interaction is pending, or a `shika pr`/`shika close` dialog for this Lead is open (label "Waiting for your decision"). |
+| Asking | A supported question or unknown interaction is pending, or a `shika close` dialog for this Lead is open (label "Waiting for your decision"). |
 | Ready | The turn settled: final result, failure, or "Reply stopped". |
 
 `Activity::advance_chat` applies explicit transitions only: no screen sampling, quiet fallback or idle debounce (chat cards are skipped in the terminal sampling loop). The turn clock starts at dispatch and survives Asking and back. One notification per turn at the first blocker or completion. Seen is unchanged: chat focus (composer, transcript, header, or any bubble text) counts as terminal focus, or the card stays selected for one second.
@@ -423,7 +423,7 @@ These must not change without the author's decision:
 - No PTY or hidden terminal behind the chat, no screen scraping, no raw JSON in the UI. Unknown optional events are ignored; unknown required ones fail visibly.
 - No model API, provider SDK, credential handling, or global CLI config writes. Arguments are arrays; JSON and TOML values are built with encoders.
 - The Lead guide, prompts and memory delivery stay as they are. No chat-shaping instructions.
-- Never replay history into a CLI, never resend automatically, never answer a question or confirm PR/Close on the author's behalf.
+- Never replay history into a CLI, never resend automatically, never answer a question or confirm Close on the author's behalf. (`shika pr` publishing on the author's request is not a confirmation Shika gives; it is the Lead's command.)
 - Keep generation, epoch and live-identity fencing; commit ids only under the operations lock for the exact live Lead.
 - Keep pipes drained off screen, frames and queues bounded, IO off the UI thread, and explicit reaping at quit.
 - Stop generating stops only the Lead's own process group, never worker PTYs.
@@ -434,7 +434,7 @@ These must not change without the author's decision:
 
 ## Author's decisions
 
-- This is a UI improvement for the Lead. Keep today's lifecycle, instructions, worker behavior, automatic fresh-start fallback and toasts, Seen rule and author-confirmed PR/Close dialogs.
+- This is a UI improvement for the Lead. Keep today's lifecycle, instructions, worker behavior, automatic fresh-start fallback and toasts, Seen rule and the author-confirmed Close dialog.
 - Per turn, show only the author's message and the Lead's final response. Hide thinking, tools and their output, and intermediate assistant messages. Bash and code in the final response render as markdown; no prompt change to suppress commands.
 - Shika owns visible history for the Lead's lifetime, with no age or size limit. Stop and quit keep it; Forget deletes it with the saved conversation link so a new Lead starts empty. Memory notes keep today's behavior and survive Forget.
 - An existing saved Lead resumes its saved conversation id in chat. Only visible history starts empty, without import or a migration confirmation or notice.

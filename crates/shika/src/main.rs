@@ -435,8 +435,13 @@ struct Card {
     named: bool,
     /// What the task changed, fetched each time the card turns Ready.
     diff: Option<DiffStat>,
-    /// The checks on the PR that Create PR made or reused. Memory only.
+    /// The checks on the PR that Create PR or a Lead's `shika pr` made or
+    /// reused. Memory only.
     pr: Option<checks::PrWatch>,
+    /// A Lead's `shika pr` is publishing this worker. Create PR, Close,
+    /// Switch agent, and the Lead's own commands on it wait until it ends
+    /// ([`control::LEAD_PUBLISHING`]). Memory only.
+    lead_publishing: bool,
     /// The `since` of the Ready turn the user has seen. Every turn that ends
     /// gets a new `since`, so its dot returns until it is seen.
     seen: Option<Instant>,
@@ -848,8 +853,8 @@ struct Shika {
     changes: changes::Panel,
     /// The Lead's control socket, or why there is none.
     control: Option<control::Server>,
-    /// The Create PR or Close dialog a Lead's `shika pr` or `shika close` is
-    /// waiting on. See `control::LeadDialog`.
+    /// The Close flow a Lead's `shika close` is waiting on. See
+    /// `control::LeadDialog`. `shika pr` has no dialog.
     lead_dialog: Option<control::LeadDialog>,
     control_error: Option<String>,
     /// Closed cards playing their exit. See [`Departing`].
@@ -1901,6 +1906,7 @@ impl Shika {
             named: is_lead,
             diff: None,
             pr: None,
+            lead_publishing: false,
             seen: None,
             launch_preset: preset.id.clone(),
             launch: launch.clone(),
@@ -3339,6 +3345,8 @@ impl Shika {
             Some("The Lead has no branch, so there is nothing to publish.")
         } else if card.creating || card.running() {
             Some("Wait for the agent to finish before publishing.")
+        } else if card.lead_publishing {
+            Some(control::LEAD_PUBLISHING)
         } else {
             None
         }
@@ -3360,7 +3368,6 @@ impl Shika {
             return;
         };
         let id = session.id.clone();
-        let session_id = id.clone();
         let core = self.core.clone();
         self.overlay_return_focus = window.focused(cx);
         self.busy = true;
@@ -3389,11 +3396,9 @@ impl Shika {
                     }
                     Err(e) => {
                         this.overlay_return_focus = None;
-                        this.lead_dialog_failed(&session_id, e.to_string());
                         this.message(e.to_string());
                     }
                 }
-                this.settle_lead_dialog(window, cx);
                 cx.notify();
             });
         })
@@ -3444,7 +3449,6 @@ impl Shika {
                     Ok(published) => {
                         this.overlay = None;
                         this.restore_overlay_focus(window, cx);
-                        this.lead_dialog_succeeded(&session_id, published.url.clone());
                         if let Some(card) = this.cards.iter_mut().find(|c| {
                             c.session.as_ref().is_some_and(|s| s.id == session_id)
                         }) {
@@ -3454,13 +3458,11 @@ impl Shika {
                         cx.open_url(&published.url);
                     }
                     Err(e) => {
-                        this.lead_dialog_failed(&session_id, control::publish_failure(&e.to_string()));
                         if let Some(Overlay::Publish { error, .. }) = &mut this.overlay {
                             *error = Some(format!("{e} Completed commits and pushes were kept. Cancel and reopen Create PR to retry."));
                         }
                     }
                 }
-                this.settle_lead_dialog(window, cx);
                 cx.notify();
             });
         }).detach();
@@ -3476,6 +3478,9 @@ impl Shika {
         }
         if card.closing {
             return Some("This task is closing.");
+        }
+        if card.lead_publishing {
+            return Some(control::LEAD_PUBLISHING);
         }
         if card.session.is_none() {
             return Some("This task has no agent to switch.");
@@ -3896,6 +3901,11 @@ impl Shika {
             // A Lead is stopped, not closed: its conversation is kept.
             let project = self.cards[index].project.clone();
             self.open_lead_close(project, Some(id), window, cx);
+            return;
+        }
+        if self.cards[index].lead_publishing {
+            self.message(control::LEAD_PUBLISHING.into());
+            cx.notify();
             return;
         }
         let task_id = id.clone();

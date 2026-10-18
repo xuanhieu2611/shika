@@ -66,7 +66,7 @@ All modules are private except `control`. The crate root re-exports the public s
 | `cli_title` | Read-only session titles, plus whether a stored conversation id still exists and which Codex conversation a Lead started. Usage shares project-directory/cwd encoding and newest `state_<n>.sqlite` discovery, not title/transcript reads. | internal `CliHome` |
 | `usage` | One paced background worker, streaming usage metadata, subagent discovery, deduplicated receipts and atomic file checkpoints in SQLite, bounded retries and restart recovery. | `UsageReport`, `UsageDay`, `UsageCalendar`, `UsageTotals`, `format_tokens`; `Core::start_usage_collection`, `Core::record_token_usage`, `Core::token_usage` |
 | `diff` | Parses git's unified patch into UI-free types with caps. | `SessionDiff`, `FileDiff`, `Hunk`, `DiffLine`, `FileKey`, `FileStatus`, `Collapse`, `LineKind`, `ModeChange` |
-| `publish` | Confirmed commit, push, and `gh pr create`, plus the PR checks read. | `PublishPreview`, `PublishedPr`, `PrChecks`, `ChecksState` |
+| `publish` | Confirmed commit, push, and `gh pr create` (the Create PR dialog, or a Lead's `shika pr` in one step), plus the PR checks read. | `PublishPreview`, `PublishedPr`, `PrChecks`, `ChecksState`, `MAX_PR_BODY_CHARS` |
 | `error` | The one `Error` enum. `Display` is the sentence the app shows. | `Error`, `Result` |
 
 `preparation_tests.rs` holds the integration tests for preparation.
@@ -145,7 +145,7 @@ Methods and how they treat a Lead (`refuse_lead` returns `Error::LeadUnsupported
 
 | Behavior | Methods |
 | --- | --- |
-| Refuse with `LeadUnsupported` | `open_shell`, `session_rename_from_prompt`, `session_apply_cli_title`, `session_switch_agent`, `session_diff`, `session_file_diff`, `session_publish_preview`, `session_publish`, `session_pr_checks`, `session_push_and_close`, `session_switched_close_check` (and so branch-switch close), `session_close`, `session_discard`, `close_session` |
+| Refuse with `LeadUnsupported` | `open_shell`, `session_rename_from_prompt`, `session_apply_cli_title`, `session_switch_agent`, `session_diff`, `session_file_diff`, `session_publish_preview`, `session_publish`, `session_publish_now`, `session_pr_checks`, `session_push_and_close`, `session_switched_close_check` (and so branch-switch close), `session_close`, `session_discard`, `close_session` |
 | Return a defined result | `session_git_state`: `dirty` from the tree, everything else false. `session_diff_stat`: `DiffStat::default()`. `session_pushed_head`: `None`. `session_refresh_branch`: the session unchanged. |
 | Work, with Lead rules | `stop_lead` keeps the tree and record. `forget_lead` removes them only after Stop, with `discard` required for edits or unreferenced commits. |
 | Unchanged | `session_dirty`, `session_set_title`, `cancel_session_start`, `close_shell`, `write`, `resize`, `leftover_remove` (an empty-branch entry removes the tree only) |
@@ -187,7 +187,7 @@ Both read only the task worktree. `worktree::read_only_git` sets `GIT_OPTIONAL_L
 
 ### Publishing
 
-`session_publish_preview` computes the file list, target, and an editable title using a disposable index; it never touches the user's staging area. `session_publish` re-verifies the preview against the current tree and then commits if needed, pushes, and runs `gh pr create`. It never merges, force-pushes, runs tests, or closes the task. `session_pr_checks` is one bounded `gh pr view`. All of it needs an authenticated `gh` on the login-shell `PATH`. Full contract: [publishing.md](../../docs/publishing.md) and [pr-checks.md](../../docs/pr-checks.md).
+`session_publish_preview` computes the file list, target, and an editable title using a disposable index; it never touches the user's staging area. `session_publish` re-verifies the preview against the current tree and then commits if needed, pushes, and runs `gh pr create`. `session_publish_now` is a Lead's `shika pr`: both steps in one hold of the operation lock, with the dialog's defaults (the recorded base as target, the task title) or a given title and body, and `PublishNoTarget` instead of a target choice. It never merges, force-pushes, runs tests, or closes the task. `session_pr_checks` is one bounded `gh pr view`. All of it needs an authenticated `gh` on the login-shell `PATH`. Full contract: [publishing.md](../../docs/publishing.md) and [pr-checks.md](../../docs/pr-checks.md).
 
 ### Preparation
 
@@ -202,12 +202,12 @@ Both read only the task worktree. `worktree::read_only_git` sets `GIT_OPTIONAL_L
 `shika_core::control` is the one public module. It defines everything the `shika` command and the app server share, and nothing about the server's state. In short:
 
 - One Unix-socket connection carries one JSON request line and one JSON reply line.
-- A request is `{ version, token, command }`. Commands: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, `close`, and the worker-only `report` (`clean_report`, `MAX_REPORT_BYTES`, `WORKER_HELP`). Replies: `help`, `tasks`, `started`, `status`, `waited`, `text`, `done` (also the PR URL and `closed ...`), `refused`, `error`. `TaskInfo` carries the worker's worktree `path` and its latest `report` from the current turn.
-- `PROTOCOL_VERSION` (currently 4) must match, or the server refuses. The request line is capped at `MAX_REQUEST_BYTES` (1 MiB).
+- A request is `{ version, token, command }`. Commands: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, `close`, and the worker-only `report` (`clean_report`, `MAX_REPORT_BYTES`, `WORKER_HELP`). `pr` carries optional `title` and `body`. Replies: `help`, `tasks`, `started`, `status`, `waited`, `text`, `done` (also the PR URL and `closed ...`), `refused`, `error`. `TaskInfo` carries the worker's worktree `path` and its latest `report` from the current turn.
+- `PROTOCOL_VERSION` (currently 6) must match, or the server refuses. The request line is capped at `MAX_REQUEST_BYTES` (1 MiB).
 - `ControlDir::create(data_dir)` makes the per-run `0700` temp directory holding `sock` and installs the command with `install_command`: `<data dir>/bin/shika`, a symlink to the running executable, replaced atomically (temporary link, then `rename`) at every start. The socket path only reaches environment variables of processes started by this run, so it may change; the command path is recorded in Lead conversations, so it may not.
 - `parse_args` and `render_text` are the client's front and back end; `--json` prints the reply as serialized. An unknown command word is a usage error (exit 2). `is_client_invocation(args, lead_env)` decides client or app: with `SHIKA_SOCKET` or `SHIKA_TOKEN` set it is always the client, otherwise only a command word is.
 - `key_name` normalizes and validates `shika key` names (`KEY_NAMES`, `MAX_KEYS`); `MAX_READ_LINES` bounds `read --lines`. The app turns names into bytes with `shika_terminal::input`; core stays free of terminal types.
-- `send` has no read timeout for `new` (preparation can take `timeout-seconds`; the server always answers or closes the socket) or for `pr` and `close` (they wait for the author), `timeout_secs + 30` for `wait`, 60 seconds otherwise.
+- `send` has no read timeout for `new` (preparation can take `timeout-seconds`; the server always answers or closes the socket) or for `pr` (a chain of bounded git and gh commands whose URL must not be lost) and `close` (it waits for the author), `timeout_secs + 30` for `wait`, 60 seconds otherwise.
 
 The command reference, wire examples, `wait` semantics, security model, debugging, and the checklist for adding a command are in [docs/shika-cli.md](../../docs/shika-cli.md). The product decision is in [docs/lead-agent.md](../../docs/lead-agent.md). The server is `crates/shika/src/control.rs`.
 
@@ -220,7 +220,7 @@ Do not break these. Each has a reason.
 - **Never edit the user's `.gitignore`.** `.worktrees/` goes into the repository's `info/exclude` (`ensure_excluded`), which is local and invisible to the repo.
 - **Journal before you start, remove after the tree is gone.** A crash between the two leaves a leftover the author can see, never an invisible tree. Failure paths remove only provably untouched trees.
 - **Close, discard, and leftover cleanup act only on what the journal and session list prove is Shika's.** Never delete a path because it looks like a task folder.
-- **Close never commits.** Only the confirmed publish flow creates a commit.
+- **Close never commits.** Only publishing creates a commit: the author's confirmed Create PR, or a Lead's `shika pr` when the author asked the Lead to publish.
 - **Remove the git redirect variables from every git call and every PTY** (`GIT_REDIRECTS`). Use `worktree::git_cmd` for git; do not build a bare `Command::new("git")`.
 - **Background reads use `read_only_git`.** `GIT_OPTIONAL_LOCKS=0` so a refresh never takes `index.lock` from under the author's own git, and the ceiling directory so a broken worktree never reads the main checkout.
 - **Reads take no operations lock.** Otherwise a slow diff on a huge change blocks Close.

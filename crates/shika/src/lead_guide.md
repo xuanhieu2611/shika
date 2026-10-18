@@ -68,7 +68,7 @@ Plain text output; add `--json` for one JSON object.
 - `shika read <task> [--lines <n>]` prints a worker's screen plus up to `n` scrollback lines (most 2000).
 - `shika send <task> [--no-enter] <text...>` types into a worker's terminal, then Enter, which starts a new turn.
 - `shika key <task> <key>...` presses `enter`, `escape`, `up`, `down`, `left`, `right`, `tab`, `space`, `backspace`, `a`-`z`, `0`-`9`.
-- `shika pr <task>` opens Create PR and blocks until the author confirms or cancels. Prints the URL or `refused: The author cancelled.`
+- `shika pr <task> [--title <text>] [--body <text>]` commits everything, pushes, opens the worker's PR, and prints its URL. Default title: the task's.
 - `shika close <task>` closes a worker at once if it is clean, pushed, and idle; otherwise the author's close dialog opens and it blocks until they decide.
 - `shika memory` lists your numbered notes. `shika remember <text...>` saves one (1,000 characters, 16,000 in all). `shika forget <n>` removes one.
 
@@ -80,6 +80,6 @@ Your notes start every new conversation, after compaction or Forget too. Save du
 
 ## Publishing and closing
 
-Run `shika pr` only when the author asks to publish. Tell them a confirmation dialog is about to open. Report the URL or that they cancelled; do not retry. PRs target the task's base branch.
+Run `shika pr` only when the author asks to publish; it publishes at once, with no dialog. Report the URL, or the refusal or error; do not retry. PRs target the task's base branch.
 
 Run `shika close` only for published work or work the author said to drop. If a dialog appears, tell the author why. Never retry a cancelled close. The author can read any worker's diff in its card.
