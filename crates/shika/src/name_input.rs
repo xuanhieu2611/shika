@@ -2,69 +2,14 @@
 //! the pinned GPUI input example's EntityInputHandler contract, not Zed's editor
 //! or terminal crates.
 use super::{Chrome, text_field};
+use crate::text_edit::{self, Paragraphs, Text, utf8_offset};
 use gpui::{
     App, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle, Focusable, IntoElement,
     KeyDownEvent, MouseButton, ParentElement, Pixels, Point, Render, ShapedLine, SharedString,
     Styled, TextRun, UTF16Selection, UnderlineStyle, Window, fill, point, px, size,
 };
 use std::ops::Range;
-use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Default)]
-struct Text {
-    value: String,
-    anchor: usize,
-    cursor: usize,
-    marked: Option<Range<usize>>,
-}
-impl Text {
-    fn selection(&self) -> Range<usize> {
-        self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
-    }
-    fn move_to(&mut self, offset: usize, select: bool) {
-        self.cursor = offset;
-        if !select {
-            self.anchor = offset;
-        }
-        self.marked = None;
-    }
-    fn previous(&self) -> usize {
-        self.value
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(i, _)| (i < self.cursor).then_some(i))
-            .unwrap_or(0)
-    }
-    fn next(&self) -> usize {
-        self.value
-            .grapheme_indices(true)
-            .find_map(|(i, _)| (i > self.cursor).then_some(i))
-            .unwrap_or(self.value.len())
-    }
-    fn replace(&mut self, range: Range<usize>, text: &str) {
-        self.value.replace_range(range.clone(), text);
-        self.cursor = range.start + text.len();
-        self.anchor = self.cursor;
-        self.marked = None;
-    }
-    fn utf8_range(&self, range: Range<usize>) -> Range<usize> {
-        utf8_offset(&self.value, range.start)..utf8_offset(&self.value, range.end)
-    }
-    fn to_utf16(&self, range: Range<usize>) -> Range<usize> {
-        self.value[..range.start].encode_utf16().count()
-            ..self.value[..range.end].encode_utf16().count()
-    }
-}
-fn utf8_offset(text: &str, offset: usize) -> usize {
-    let mut count = 0;
-    for (i, ch) in text.char_indices() {
-        if count >= offset {
-            return i;
-        }
-        count += ch.len_utf16();
-    }
-    text.len()
-}
 fn single_line(text: &str) -> String {
     text.chars()
         .filter_map(|ch| {
@@ -90,14 +35,9 @@ pub struct NameInput {
 }
 impl NameInput {
     pub fn new(value: String, chrome: Chrome, cx: &mut Context<Self>) -> Self {
-        let cursor = value.len();
         Self {
             focus: cx.focus_handle(),
-            text: Text {
-                value,
-                cursor,
-                ..Default::default()
-            },
+            text: Text::new(value),
             chrome,
             layout: None,
             bounds: None,
@@ -150,49 +90,21 @@ impl NameInput {
                     self.text.replace(selected, &single_line(&text));
                 }
             }
-            "left" | "right" | "home" | "end" if !m.control => {
-                let left = matches!(stroke.key.as_str(), "left" | "home");
-                let offset = if m.platform || matches!(stroke.key.as_str(), "home" | "end") {
-                    if left { 0 } else { self.text.value.len() }
-                } else if m.alt {
-                    if left {
-                        self.text.value[..self.text.cursor]
-                            .split_word_bound_indices()
-                            .rev()
-                            .find_map(|(i, word)| {
-                                word.chars().any(char::is_alphanumeric).then_some(i)
-                            })
-                            .unwrap_or(0)
-                    } else {
-                        self.text.value[self.text.cursor..]
-                            .split_word_bound_indices()
-                            .find_map(|(i, word)| {
-                                word.chars()
-                                    .any(char::is_alphanumeric)
-                                    .then_some(self.text.cursor + i + word.len())
-                            })
-                            .unwrap_or(self.text.value.len())
-                    }
-                } else if !m.shift && !selected.is_empty() {
-                    if left { selected.start } else { selected.end }
-                } else if left {
-                    self.text.previous()
-                } else {
-                    self.text.next()
+            _ => {
+                let Some(edit) = text_edit::edit_for(stroke, false) else {
+                    return;
                 };
-                self.text.move_to(offset, m.shift);
-            }
-            "backspace" | "delete" if !m.control && !m.alt && !m.platform => {
-                let range = if !selected.is_empty() {
-                    selected
-                } else if stroke.key == "backspace" {
-                    self.text.previous()..self.text.cursor
+                let mut kill = text_edit::KILL_BUFFER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if edit == text_edit::Edit::Yank {
+                    // The buffer can hold a newline the composer killed.
+                    self.text.replace(selected, &single_line(&kill));
                 } else {
-                    self.text.cursor..self.text.next()
-                };
-                self.text.replace(range, "");
+                    let value = self.text.value.clone();
+                    self.text.apply(edit, &Paragraphs::new(&value), &mut kill);
+                }
             }
-            _ => return,
         }
         cx.stop_propagation();
         cx.notify();
@@ -461,11 +373,7 @@ mod tests {
     use super::*;
     #[test]
     fn replacement_and_navigation_keep_graphemes_whole() {
-        let mut text = Text {
-            value: "Aé👩‍💻e\u{301}".into(),
-            ..Default::default()
-        };
-        text.cursor = text.value.len();
+        let mut text = Text::new("Aé👩‍💻e\u{301}".into());
         assert_eq!(text.previous(), "Aé👩‍💻".len());
         text.replace(text.previous()..text.cursor, "");
         assert_eq!(text.previous(), "Aé".len());
@@ -475,14 +383,7 @@ mod tests {
         assert_eq!(text.selection(), 7..7);
     }
     #[test]
-    fn utf16_offsets_and_single_line_paste() {
-        let text = Text {
-            value: "A😀é".into(),
-            ..Default::default()
-        };
-        assert_eq!(text.utf8_range(1..3), 1..5);
-        assert_eq!(text.to_utf16(1..5), 1..3);
-        assert_eq!(text.utf8_range(99..100), 7..7);
+    fn single_line_paste() {
         assert_eq!(single_line("Name\r\nwith\twords\0"), "Name  with words");
     }
 }

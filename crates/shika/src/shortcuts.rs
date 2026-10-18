@@ -126,8 +126,9 @@ pub struct Binding {
     pub chord: Option<String>,
 }
 
-/// Chords Settings must not take. They belong to the rest of the app, or
-/// to the terminal's copy and paste.
+/// Chords Settings must not take. They belong to the rest of the app, to
+/// the terminal's copy and paste, or to text editing: a binding is matched
+/// before a focused text field sees the key.
 const RESERVED: &[(&str, &str)] = &[
     ("cmd-n", "New agent"),
     ("cmd-l", "New Lead"),
@@ -146,6 +147,19 @@ const RESERVED: &[(&str, &str)] = &[
     ("cmd-alt-h", "Hide others"),
     ("cmd-c", "Copy"),
     ("cmd-v", "Paste"),
+    ("cmd-x", "Cut"),
+    ("cmd-a", "Select all"),
+    ("cmd-z", "Undo"),
+    ("cmd-shift-z", "Redo"),
+    ("cmd-left", "Move to line start"),
+    ("cmd-right", "Move to line end"),
+    ("cmd-up", "Move to the start of the text"),
+    ("cmd-down", "Move to the end of the text"),
+    ("cmd-shift-left", "Select to line start"),
+    ("cmd-shift-right", "Select to line end"),
+    ("cmd-shift-up", "Select to the start of the text"),
+    ("cmd-shift-down", "Select to the end of the text"),
+    ("cmd-backspace", "Delete to line start"),
 ];
 
 /// The chord bound to `id`, as the user should read it (`⌘R`). None when
@@ -503,6 +517,25 @@ mod tests {
             chord_from_keystroke(&plain).unwrap_err(),
             "Use a Command shortcut."
         );
+    }
+
+    #[test]
+    fn text_editing_chords_stay_with_text_fields() {
+        let overrides = KeyOverrides::default();
+        for (chord, name) in [
+            ("cmd-left", "Move to line start"),
+            ("cmd-shift-down", "Select to the end of the text"),
+            ("cmd-backspace", "Delete to line start"),
+            ("cmd-a", "Select all"),
+            ("cmd-shift-z", "Redo"),
+        ] {
+            let err = assign(&overrides, "toggleChanges", Some(chord.into())).unwrap_err();
+            assert!(err.contains(name), "{chord}: {err}");
+        }
+        // A chord saved by an older build no longer binds.
+        let mut edited = KeyOverrides::default();
+        edited.set("selectAgent1", "cmd-up");
+        assert_eq!(bound(&edited, "selectAgent1"), None);
     }
 
     #[test]

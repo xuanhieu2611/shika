@@ -2,102 +2,70 @@
 //! the pinned GPUI input example's EntityInputHandler contract, not Zed's editor
 //! or terminal crates.
 use super::Chrome;
+use crate::text_edit::{self, Edit, Lines, Paragraphs, Text, utf8_offset};
+use gpui::WrappedLineLayout;
 use gpui::{
     App, AppContext, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle, Focusable,
     IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Point, Render, Styled,
     TextLayout, UTF16Selection, Window, fill, point, px, size,
 };
 use std::ops::Range;
+use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Default)]
-struct Text {
-    value: String,
-    anchor: usize,
-    cursor: usize,
-    marked: Option<Range<usize>>,
+/// The composer's visual rows, read from the wrapped layout GPUI painted.
+struct Rows {
+    rows: Vec<Range<usize>>,
+    /// Per row: its paragraph's layout, that paragraph's start, and which
+    /// wrapped row of it this is.
+    lines: Vec<(Arc<WrappedLineLayout>, usize, usize)>,
+    line_height: Pixels,
 }
-impl Text {
-    fn selection(&self) -> Range<usize> {
-        self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
-    }
-    fn move_to(&mut self, offset: usize, select: bool) {
-        self.cursor = offset;
-        if !select {
-            self.anchor = offset;
+impl Rows {
+    fn new(layout: &TextLayout) -> Self {
+        let mut rows = Vec::new();
+        let mut lines = Vec::new();
+        let mut start = 0;
+        for line in layout.line_layouts() {
+            let mut row_start = start;
+            for (wrap, boundary) in line.wrap_boundaries().iter().enumerate() {
+                let end = start
+                    + line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index;
+                rows.push(row_start..end);
+                lines.push((line.clone(), start, wrap));
+                row_start = end;
+            }
+            rows.push(row_start..start + line.len());
+            lines.push((line.clone(), start, line.wrap_boundaries().len()));
+            start += line.len() + 1;
         }
-        self.marked = None;
-    }
-    fn previous(&self) -> usize {
-        self.value
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(i, _)| (i < self.cursor).then_some(i))
-            .unwrap_or(0)
-    }
-    fn next(&self) -> usize {
-        self.value
-            .grapheme_indices(true)
-            .find_map(|(i, _)| (i > self.cursor).then_some(i))
-            .unwrap_or(self.value.len())
-    }
-    // macOS word rules: skip whitespace and punctuation, then the word.
-    fn word_start(&self) -> usize {
-        self.value[..self.cursor]
-            .split_word_bound_indices()
-            .rev()
-            .find_map(|(i, word)| word.chars().any(char::is_alphanumeric).then_some(i))
-            .unwrap_or(0)
-    }
-    fn word_end(&self) -> usize {
-        self.value[self.cursor..]
-            .split_word_bound_indices()
-            .find_map(|(i, word)| {
-                word.chars()
-                    .any(char::is_alphanumeric)
-                    .then_some(self.cursor + i + word.len())
-            })
-            .unwrap_or(self.value.len())
-    }
-    /// Backspace or forward delete, by grapheme or by word; a selection goes first.
-    fn delete(&mut self, forward: bool, word: bool) {
-        let selected = self.selection();
-        let range = if !selected.is_empty() {
-            selected
-        } else if forward {
-            self.cursor..if word { self.word_end() } else { self.next() }
-        } else {
-            (if word {
-                self.word_start()
-            } else {
-                self.previous()
-            })..self.cursor
-        };
-        self.replace(range, "");
-    }
-    fn replace(&mut self, range: Range<usize>, text: &str) {
-        self.value.replace_range(range.clone(), text);
-        self.cursor = range.start + text.len();
-        self.anchor = self.cursor;
-        self.marked = None;
-    }
-    fn utf8_range(&self, range: Range<usize>) -> Range<usize> {
-        utf8_offset(&self.value, range.start)..utf8_offset(&self.value, range.end)
-    }
-    fn to_utf16(&self, range: Range<usize>) -> Range<usize> {
-        self.value[..range.start].encode_utf16().count()
-            ..self.value[..range.end].encode_utf16().count()
+        Self {
+            rows,
+            lines,
+            line_height: layout.line_height(),
+        }
     }
 }
-fn utf8_offset(text: &str, offset: usize) -> usize {
-    let mut count = 0;
-    for (i, ch) in text.char_indices() {
-        if count >= offset {
-            return i;
-        }
-        count += ch.len_utf16();
+impl Lines for Rows {
+    fn rows(&self) -> &[Range<usize>] {
+        &self.rows
     }
-    text.len()
+    fn x(&self, index: usize, row: usize) -> f32 {
+        let (line, start, _) = &self.lines[row];
+        if index == self.rows[row].start {
+            return 0.;
+        }
+        line.position_for_index(index - start, self.line_height)
+            .map_or(0., |p| p.x.into())
+    }
+    fn index_at(&self, row: usize, x: f32) -> usize {
+        let (line, start, wrap) = &self.lines[row];
+        let y = self.line_height * (*wrap as f32 + 0.5);
+        start
+            + line
+                .closest_index_for_position(point(px(x), y), self.line_height)
+                .unwrap_or_else(|i| i)
+    }
 }
 fn clean_text(text: &str) -> String {
     text.chars()
@@ -128,15 +96,9 @@ pub struct ChatInput {
 }
 impl ChatInput {
     pub fn new(value: String, chrome: Chrome, cx: &mut Context<Self>) -> Self {
-        let cursor = value.len();
         Self {
             focus: cx.focus_handle().tab_stop(true),
-            text: Text {
-                value,
-                cursor,
-                anchor: cursor,
-                ..Default::default()
-            },
+            text: Text::new(value),
             chrome,
             layout: None,
             bounds: None,
@@ -217,9 +179,37 @@ impl ChatInput {
             _ => 0,
         }
     }
+    /// Where the caret paints. GPUI puts a wrap boundary at the end of the
+    /// upper row; like NSTextView, the caret goes to the start of the lower
+    /// row unless it is upstream.
+    fn caret(&self, layout: &TextLayout) -> Option<Point<Pixels>> {
+        let position = layout.position_for_index(self.text.cursor)?;
+        if self.text.upstream || self.text.value.is_empty() {
+            return Some(position);
+        }
+        let rows = Rows::new(layout);
+        let row = self.text.row(&rows);
+        let cursor = self.text.cursor;
+        let wrapped = row > 0 && rows.rows[row].start == cursor && rows.rows[row - 1].end == cursor;
+        Some(if wrapped {
+            point(layout.bounds().left(), position.y + rows.line_height)
+        } else {
+            position
+        })
+    }
+    /// A press past the end of a wrapped row lands on the boundary, and the
+    /// caret stays on the row that was pressed.
+    fn upstream_at(&self, index: usize, position: Point<Pixels>) -> bool {
+        self.layout
+            .as_ref()
+            .and_then(|layout| layout.position_for_index(index))
+            .is_some_and(|caret| position.y < caret.y + px(20.))
+    }
     fn checkpoint(&mut self) {
-        self.history
-            .push((self.text.value.clone(), self.text.anchor, self.text.cursor));
+        self.remember((self.text.value.clone(), self.text.anchor, self.text.cursor));
+    }
+    fn remember(&mut self, entry: (String, usize, usize)) {
+        self.history.push(entry);
         if self.history.len() > 100 {
             self.history.remove(0);
         }
@@ -362,12 +352,9 @@ impl ChatInput {
                 } else {
                     self.redo.push(old);
                 }
-                self.text = Text {
-                    value,
-                    anchor,
-                    cursor,
-                    marked: None,
-                };
+                self.text = Text::new(value);
+                self.text.anchor = anchor;
+                self.text.cursor = cursor;
                 cx.emit(InputEvent::Changed);
                 cx.notify();
             }
@@ -423,40 +410,41 @@ impl ChatInput {
                     self.text.replace(selected, &clean_text(&text));
                 }
             }
-            "left" | "right" | "home" | "end" if !m.control => {
-                let left = matches!(stroke.key.as_str(), "left" | "home");
-                let offset = if m.platform || matches!(stroke.key.as_str(), "home" | "end") {
-                    if left { 0 } else { self.text.value.len() }
-                } else if m.alt {
-                    if left {
-                        self.text.word_start()
-                    } else {
-                        self.text.word_end()
-                    }
-                } else if !m.shift && !selected.is_empty() {
-                    if left { selected.start } else { selected.end }
-                } else if left {
-                    self.text.previous()
-                } else {
-                    self.text.next()
+            _ => {
+                let Some(edit) = text_edit::edit_for(stroke, true) else {
+                    return;
                 };
-                self.text.move_to(offset, m.shift);
-            }
-            "up" | "down" if !m.platform && !m.control => {
-                if let Some(layout) = &self.layout
-                    && let Some(position) = layout.position_for_index(self.text.cursor)
-                {
-                    let offset = self.index(
-                        position + point(px(0.), px(if stroke.key == "up" { -20. } else { 20. })),
-                    );
-                    self.text.move_to(offset, m.shift);
+                if self.readonly && !matches!(edit, Edit::Move(..)) {
+                    return;
+                }
+                if let Edit::Scroll(top) = edit {
+                    self.ensure_cursor = false;
+                    let offset = self.scroll.offset();
+                    let y = if top {
+                        px(0.)
+                    } else {
+                        -self.scroll.max_offset().y
+                    };
+                    self.scroll.set_offset(point(offset.x, y));
+                } else {
+                    let entry = (before.clone(), self.text.anchor, self.text.cursor);
+                    let mut kill = text_edit::KILL_BUFFER
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    // Before the layout catches up with the text, rows are
+                    // paragraphs; an empty composer lays out its placeholder.
+                    match self.layout.as_ref().filter(|layout| {
+                        !before.is_empty() && self.bounds.is_some() && layout.text() == before
+                    }) {
+                        Some(layout) => self.text.apply(edit, &Rows::new(layout), &mut kill),
+                        None => self.text.apply(edit, &Paragraphs::new(&before), &mut kill),
+                    };
+                    drop(kill);
+                    if self.text.value != before {
+                        self.remember(entry);
+                    }
                 }
             }
-            "backspace" | "delete" if !m.control && !m.platform && !self.readonly => {
-                self.checkpoint();
-                self.text.delete(stroke.key == "delete", m.alt);
-            }
-            _ => return,
         }
         if before != self.text.value {
             cx.emit(InputEvent::Changed);
@@ -715,7 +703,9 @@ impl Render for ChatInput {
                         this.text.anchor = range.start;
                         this.text.cursor = range.end;
                     } else {
+                        let upstream = this.upstream_at(index, event.position);
                         this.text.move_to(index, event.modifiers.shift);
+                        this.text.upstream = upstream;
                     }
                     this.selecting = true;
                     if this.readonly {
@@ -737,7 +727,9 @@ impl Render for ChatInput {
                     .find(|(range, _)| range.contains(&index))
                     .map(|(_, link)| link.clone());
                 if this.selecting {
+                    let upstream = this.upstream_at(index, event.position);
                     this.text.move_to(index, true);
+                    this.text.upstream = upstream;
                 }
                 if this.readonly && event.pressed_button == Some(MouseButton::Left) {
                     cx.emit(InputEvent::Select {
@@ -816,7 +808,7 @@ impl Render for ChatInput {
                             let position = if placeholder {
                                 Some(bounds.origin)
                             } else {
-                                layout.position_for_index(input.text.cursor)
+                                input.caret(&layout)
                             };
                             if let Some(position) = position {
                                 window.paint_quad(fill(
@@ -825,7 +817,7 @@ impl Render for ChatInput {
                                 ));
                             }
                         }
-                        let cursor = layout.position_for_index(input.text.cursor);
+                        let cursor = input.caret(&layout);
                         paint.update(cx, |input, cx| {
                             input.bounds = Some(bounds);
                             if !readonly
@@ -850,96 +842,5 @@ impl Render for ChatInput {
                 .absolute()
                 .size_full(),
             )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn at(value: &str, cursor: usize) -> Text {
-        Text {
-            value: value.into(),
-            anchor: cursor,
-            cursor,
-            marked: None,
-        }
-    }
-    fn delete_word(value: &str, cursor: usize) -> (String, usize) {
-        let mut text = at(value, cursor);
-        text.delete(false, true);
-        (text.value, text.cursor)
-    }
-    #[test]
-    fn option_backspace_skips_spaces_and_punctuation_then_the_word() {
-        assert_eq!(delete_word("hello world", 11), ("hello ".into(), 6));
-        assert_eq!(delete_word("hello world  ", 13), ("hello ".into(), 6));
-        assert_eq!(delete_word("run the tests.", 14), ("run the ".into(), 8));
-        assert_eq!(delete_word("see (foo).", 10), ("see (".into(), 5));
-        assert_eq!(delete_word("don't", 5), ("".into(), 0));
-        assert_eq!(delete_word("snake_case", 10), ("".into(), 0));
-        assert_eq!(delete_word("hello world", 8), ("hello rld".into(), 6));
-        assert_eq!(delete_word("  ...", 5), ("".into(), 0));
-        assert_eq!(delete_word("", 0), ("".into(), 0));
-        assert_eq!(delete_word("hello", 0), ("hello".into(), 0));
-    }
-    #[test]
-    fn option_backspace_crosses_lines() {
-        assert_eq!(delete_word("one\ntwo", 7), ("one\n".into(), 4));
-        assert_eq!(delete_word("one two\n\n", 9), ("one ".into(), 4));
-        assert_eq!(
-            delete_word("one\n  two\nthree", 9),
-            ("one\n  \nthree".into(), 6)
-        );
-    }
-    #[test]
-    fn option_backspace_keeps_utf8_and_graphemes_whole() {
-        let value = "x café";
-        assert_eq!(delete_word(value, value.len()), ("x ".into(), 2));
-        let value = "да привет";
-        assert_eq!(delete_word(value, value.len()), ("да ".into(), "да ".len()));
-        // UAX #29 has no dictionary, so ideographs go one at a time.
-        let value = "go 日本語";
-        assert_eq!(
-            delete_word(value, value.len()),
-            ("go 日本".into(), "go 日本".len())
-        );
-        let value = "ok e\u{301}te\u{301} 👩‍💻";
-        assert_eq!(delete_word(value, value.len()), ("ok ".into(), 3));
-        let value = "a 😀 b";
-        let (rest, cursor) = delete_word(value, "a 😀".len());
-        assert_eq!((rest.as_str(), cursor), (" b", 0));
-        assert!(rest.is_char_boundary(cursor));
-    }
-    #[test]
-    fn word_delete_removes_the_selection_first() {
-        let mut text = at("hello brave world", 12);
-        text.anchor = 6;
-        text.delete(false, true);
-        assert_eq!((text.value.as_str(), text.cursor), ("hello world", 6));
-        let mut text = Text {
-            anchor: 12,
-            ..at("hello brave world", 6)
-        };
-        text.delete(true, true);
-        assert_eq!((text.value.as_str(), text.cursor), ("hello world", 6));
-    }
-    #[test]
-    fn option_forward_delete_removes_the_next_word() {
-        let mut text = at("hello, world", 5);
-        text.delete(true, true);
-        assert_eq!((text.value.as_str(), text.cursor), ("hello", 5));
-        let mut text = at("one\ntwo", 0);
-        text.delete(true, true);
-        assert_eq!(text.value, "\ntwo");
-    }
-    #[test]
-    fn plain_delete_is_one_grapheme() {
-        let value = "ae\u{301}";
-        let mut text = at(value, value.len());
-        text.delete(false, false);
-        assert_eq!(text.value, "a");
-        let mut text = at("👩‍💻x", 0);
-        text.delete(true, false);
-        assert_eq!(text.value, "x");
     }
 }
