@@ -8,6 +8,7 @@ mod control_client;
 mod lead_chat;
 mod lead_chat_markdown;
 mod lead_chat_question;
+mod lead_steps;
 mod lifecycle;
 mod model;
 mod name_input;
@@ -772,6 +773,10 @@ struct Shika {
     projects: Vec<Project>,
     cards: Vec<Card>,
     lead_chats: HashMap<String, Entity<lead_chat::LeadChat>>,
+    /// First line of each project's latest Lead reply, for its card. Filled
+    /// from live replies and one off-thread read of the saved history.
+    lead_snippets: HashMap<String, String>,
+    snippets_requested: std::collections::HashSet<String>,
     chat_questions: Vec<(String, String, shika_core::ChatQuestion)>,
     selection: Option<Selection>,
     focus: FocusHandle,
@@ -903,6 +908,8 @@ impl Shika {
             projects,
             cards: vec![],
             lead_chats: HashMap::new(),
+            lead_snippets: HashMap::new(),
+            snippets_requested: Default::default(),
             chat_questions: Vec::new(),
             selection,
             focus: cx.focus_handle(),
@@ -1073,6 +1080,15 @@ impl Shika {
         match self.selection {
             Some(Selection::Card(i)) if i < self.cards.len() => Some(i),
             _ => None,
+        }
+    }
+    /// The project the selection belongs to: a selected header, a card of
+    /// it (its own, its Lead, or a worker of its Lead), or its resting Lead.
+    fn selected_project(&self) -> Option<&str> {
+        match &self.selection {
+            Some(Selection::Project(id) | Selection::Resting(id)) => Some(id),
+            Some(Selection::Card(i)) => self.cards.get(*i).map(|c| c.project.as_str()),
+            None => None,
         }
     }
     /// The project whose resting Lead is selected.
@@ -1775,7 +1791,7 @@ impl Shika {
         configured: bool,
         retry: Option<Arc<Mutex<HostState>>>,
         launch: Launch,
-        reply: Option<std::sync::mpsc::Sender<shika_core::control::Reply>>,
+        reply: Option<control::Responder>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2597,6 +2613,7 @@ impl Shika {
         // The Lead's shika commands run here, with the rest of the state.
         self.drain_control(window, cx);
         self.drain_lead_chats(window, cx);
+        self.sync_lead_activity(cx);
         self.lead_upkeep(now, window, cx);
         // Reconcile agent/shell branch renames independently of the one-shot
         // CLI title watch. Git runs off-thread, with only one batch in flight.
@@ -6009,6 +6026,7 @@ impl Shika {
     ) -> impl IntoElement {
         let id = project.id.clone();
         let selected = self.selection == Some(Selection::Project(id.clone()));
+        let plus_kept = self.selected_project() == Some(id.as_str());
         let group = SharedString::from(format!("project-group-{id}"));
         let hover = chrome.hover;
         let ink_1 = chrome.ink_1;
@@ -6111,7 +6129,7 @@ impl Shika {
                     .text_size(px(11.5))
                     .text_color(chrome.ink_3)
                     .opacity(0.)
-                    .group_hover(group, |style| style.opacity(1.))
+                    .group_hover(group.clone(), |style| style.opacity(1.))
                     .hover(move |style| style.text_color(ink_1))
                     .child("Remove")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -6128,6 +6146,11 @@ impl Shika {
                     .id(SharedString::from(format!("new-in-{id}")))
                     .flex_none()
                     .size(px(24.))
+                    // Hidden, the slot keeps its width so nothing moves.
+                    .when(!plus_kept, |d| {
+                        d.opacity(0.)
+                            .group_hover(group.clone(), |style| style.opacity(1.))
+                    })
                     .flex()
                     .items_center()
                     .justify_center()
@@ -6233,6 +6256,8 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let selected = self.selected_resting() == Some(project);
+        // The latest reply's first line; only a Lead with a chat has one.
+        let snippet = self.lead_snippets.get(project).cloned();
         let (quiet, quiet_separator) = if selected {
             (chrome.ink_3, chrome.ink_4)
         } else {
@@ -6266,16 +6291,21 @@ impl Shika {
             .text_size(px(12.))
             .line_height(px(16.))
             .text_color(quiet)
-            .child(div().flex_none().child(cli.to_string()))
-            .child(div().flex_none().text_color(quiet_separator).child("·"))
-            .child(
-                div()
-                    .flex_none()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(chrome.ink_2)
-                    .child("Lead"),
-            )
-            .child(div().flex_1())
+            .when_some(snippet.clone(), |d, line| {
+                d.child(div().flex_1().min_w_0().truncate().child(line))
+            })
+            .when(snippet.is_none(), |d| {
+                d.child(div().flex_none().child(cli.to_string()))
+                    .child(div().flex_none().text_color(quiet_separator).child("·"))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(chrome.ink_2)
+                            .child("Lead"),
+                    )
+                    .child(div().flex_1())
+            })
             .when(selected && cards_focused, |d| {
                 d.child(row_hint("↵", "resume", chrome))
             });
@@ -6313,8 +6343,19 @@ impl Shika {
         } else {
             base.overflow_hidden()
         };
-        base.child(task)
-            .child(meta)
+        base.flex_row()
+            .gap(px(10.))
+            .child(antler_tile(selected, chrome))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(task)
+                    .child(meta),
+            )
             .when(selected && reveal_selection, |d| {
                 d.child(self.selection_reveal(cx))
             })
@@ -6482,6 +6523,29 @@ impl Shika {
         } else {
             None
         };
+        // A live Lead's line two: its current step while Working, else its
+        // latest reply. None keeps the CLI and "Lead".
+        let lead_line = card
+            .lead
+            .as_ref()
+            .filter(|_| notice.is_none())
+            .and_then(|state| {
+                let (_, current, _) = lead_steps::snapshot(&state.steps);
+                let chat = self
+                    .lead_chats
+                    .get(&card.project)
+                    .filter(|_| card.chat)
+                    .map(|chat| chat.read(cx));
+                lead_steps::card_line(
+                    card.status == Status::Working,
+                    current.as_deref(),
+                    chat.and_then(|chat| chat.replaced_line()),
+                    card.chat
+                        .then(|| self.lead_snippets.get(&card.project))
+                        .flatten()
+                        .map(String::as_str),
+                )
+            });
         let task = div()
             .flex()
             .items_center()
@@ -6540,8 +6604,14 @@ impl Shika {
             // The CLI and branch sit back so the task reads first. Results
             // (the diff stat, the PR mark, the hints) stay a step brighter.
             .text_color(quiet)
-            .child(div().flex_none().child(card.preset.clone()))
-            .when(card.lead.is_some(), |d| {
+            .when(lead_line.is_none(), |d| {
+                d.child(div().flex_none().child(card.preset.clone()))
+            })
+            .when_some(lead_line.clone(), |d, line| {
+                // The system font, truncating, in the card's line-two inks.
+                d.child(div().flex_1().min_w_0().truncate().child(line))
+            })
+            .when(card.lead.is_some() && lead_line.is_none(), |d| {
                 d.child(separator()).child(
                     div()
                         .flex_none()
@@ -6572,16 +6642,20 @@ impl Shika {
                 )
             })
             .when_some(
-                card.session.as_ref().filter(|_| card.lead.is_none()),
-                |d, session| {
-                    // The branch truncates before the diff stat.
+                card.session
+                    .as_ref()
+                    .filter(|_| card.lead.is_none())
+                    .and_then(model::card_branch),
+                |d, branch| {
+                    // The branch truncates before the diff stat. A draft
+                    // has no name yet, so line two shows only the CLI.
                     d.child(separator()).child(
                         div()
                             .min_w_0()
                             .truncate()
                             .font_family(MONO)
                             .text_size(px(11.5))
-                            .child(session.branch.clone()),
+                            .child(branch.to_string()),
                     )
                 },
             )
@@ -6606,7 +6680,7 @@ impl Shika {
             .when_some(card.pr.as_ref(), |d, pr| {
                 d.child(separator()).child(pr_mark(&key, pr, chrome, cx))
             })
-            .child(div().flex_1())
+            .when(lead_line.is_none(), |d| d.child(div().flex_1()))
             .when(selected && cards_focused, |d| {
                 d.children(
                     hints
@@ -6652,11 +6726,27 @@ impl Shika {
         } else {
             base.overflow_hidden()
         };
-        base.child(task)
-            .child(meta)
-            .when(selected && reveal_selection, |d| {
-                d.child(self.selection_reveal(cx))
-            })
+        // A Lead's antler tile spans both lines on the left.
+        let base = if card.lead.is_some() {
+            base.flex_row()
+                .gap(px(10.))
+                .child(antler_tile(selected, chrome))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(task)
+                        .child(meta),
+                )
+        } else {
+            base.child(task).child(meta)
+        };
+        base.when(selected && reveal_selection, |d| {
+            d.child(self.selection_reveal(cx))
+        })
     }
 
     /// Measure the selected row after layout, then reveal only the clipped
@@ -6825,11 +6915,28 @@ impl Shika {
         if let Some(i) = self.selected_card() {
             let card = &self.cards[i];
             let active_tab = card.active_tab;
-            let path = card
-                .session
-                .as_ref()
-                .map(|s| model::tilde(&s.worktree, home))
-                .unwrap_or_else(|| card.stage.clone());
+            // The metadata row names the project and branch. The full worktree
+            // path is its tooltip. Before the worktree exists, the setup stage
+            // stands in for both.
+            let path = SharedString::from(
+                card.session
+                    .as_ref()
+                    .map(|s| model::tilde(&s.worktree, home))
+                    .unwrap_or_else(|| card.stage.clone()),
+            );
+            let (project_name, branch, stage) = match card.session.as_ref() {
+                // A Lead has no branch.
+                Some(s) => (
+                    self.projects
+                        .iter()
+                        .find(|p| p.id == card.project)
+                        .map(|p| SharedString::from(p.name.clone())),
+                    (!s.lead).then(|| SharedString::from(s.branch.clone())),
+                    None,
+                ),
+                None => (None, None, Some(SharedString::from(card.stage.clone()))),
+            };
+            let create_pr_chord = shortcuts::display("cmd-shift-p");
             let term_hover = chrome.term_hover;
             let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
             // Connected tabs: the active tab is filled like the terminal and
@@ -7126,14 +7233,47 @@ impl Shika {
                         .text_color(chrome.term_dim)
                         .child(
                             div()
-                                .flex_1()
+                                .id("task-where")
                                 .min_w_0()
-                                .overflow_hidden()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
                                 .whitespace_nowrap()
-                                .text_ellipsis_start()
-                                .font_family(MONO)
-                                .child(path),
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| KeyTip {
+                                        bg: tip_bg,
+                                        fg: tip_fg,
+                                        text: path.clone(),
+                                    })
+                                    .into()
+                                })
+                                // The project never gives way before the branch.
+                                .when_some(project_name, |d, name| {
+                                    d.child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(12.))
+                                            .text_color(chrome.term_fg)
+                                            .child(name),
+                                    )
+                                })
+                                .when_some(branch, |d, branch| {
+                                    d.child(
+                                        gpui::svg()
+                                            .data(BRANCH_ICON)
+                                            .flex_none()
+                                            .size(px(12.))
+                                            .text_color(chrome.term_dim),
+                                    )
+                                    .child(
+                                        div().min_w_0().truncate().font_family(MONO).child(branch),
+                                    )
+                                })
+                                .when_some(stage, |d, stage| {
+                                    d.child(div().min_w_0().truncate().child(stage))
+                                }),
                         )
+                        .child(div().flex_1())
                         .when(
                             card.session.is_some() && !card.creating && card.lead.is_none(),
                             |d| {
@@ -7142,19 +7282,37 @@ impl Shika {
                                         .id("create-pr")
                                         .occlude()
                                         .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(7.))
+                                        .border_1()
+                                        .border_color(chrome.term_seg_active)
                                         .rounded(px(6.))
-                                        .px(px(8.))
+                                        .pl(px(10.))
+                                        .pr(px(6.))
                                         .py(px(4.))
+                                        .text_size(px(12.))
+                                        .line_height(px(16.))
+                                        .text_color(chrome.term_fg)
                                         .cursor_pointer()
-                                        .hover(move |style| {
-                                            style.bg(term_hover).text_color(term_white)
-                                        })
+                                        .hover(move |style| style.bg(term_hover))
                                         .child("Create PR")
+                                        .child(
+                                            kbd(
+                                                create_pr_chord.clone(),
+                                                chrome.term_line,
+                                                chrome.term_dim,
+                                            )
+                                            .py_0(),
+                                        )
                                         .tooltip(move |_, cx| {
                                             cx.new(|_| KeyTip {
                                                 bg: tip_bg,
                                                 fg: tip_fg,
-                                                text: "Commit, push, create PR  ⌘⇧P".into(),
+                                                text: format!(
+                                                    "Commit, push, create PR  {create_pr_chord}"
+                                                )
+                                                .into(),
                                             })
                                             .into()
                                         })
@@ -9241,6 +9399,29 @@ fn pr_mark(
 /// The right end of a card's first line, one 14px slot so the signals line
 /// up down the column: working pixels, a ready dot until the result is seen,
 /// a grey waiting dot, and nothing once a Ready result has been seen.
+/// The antler mark on a raised tile, left of both lines of a Lead's card.
+fn antler_tile(selected: bool, chrome: &Chrome) -> gpui::Div {
+    div()
+        .flex_none()
+        .mt(px(2.))
+        .size(px(30.))
+        .rounded(px(8.))
+        .bg(if selected {
+            chrome.raised_hover
+        } else {
+            chrome.raised
+        })
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            gpui::svg()
+                .data(lead_chat::ANTLERS_ICON)
+                .size(px(18.))
+                .text_color(chrome.ink_2),
+        )
+}
+
 fn card_signal(card: &str, status: Status, unseen: bool, chrome: &Chrome) -> gpui::AnyElement {
     let slot = div().flex_none().flex().justify_center().w(px(SIGNAL_SLOT));
     let color = chrome.status(status).dot;

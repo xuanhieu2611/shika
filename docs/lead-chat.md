@@ -4,7 +4,7 @@ A Claude Code Lead is a native chat instead of a terminal. The author's messages
 
 Status: implemented for Claude Code on 2026-10-16 (commits `c1f03a0` and `63f98f7`, designed in `0785b3c` and `a100820`). Codex, Cursor CLI and Pi Leads keep their terminals; their adapters are planned in [Extending to other CLIs](#extending-to-other-clis). Native acceptance beyond an isolated smoke run is still open in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#claude-code-lead-chat-2026-10-16).
 
-Start here when contributing to this feature. This guide records the decisions and explains how the code works and how to debug and extend it. The Lead itself (lifecycle, worktree, resume, memory, workers) is specified in [lead-agent.md](lead-agent.md); the `shika` command and doorbell in [shika-cli.md](shika-cli.md); the visual contract and light/dark plates in [DESIGN.md](../design/DESIGN.md#lead-chat).
+Start here when contributing to this feature. This guide records the decisions and explains how the code works and how to debug and extend it. The Lead itself (lifecycle, worktree, resume, memory, workers) is specified in [lead-agent.md](lead-agent.md); the `shika` command and doorbell in [shika-cli.md](shika-cli.md); the visual contract in [DESIGN.md](../design/DESIGN.md#lead-chat) (its SVG light/dark plates are outdated; the text is the contract).
 
 ## Reading paths
 
@@ -198,7 +198,7 @@ The ledger, batching, and gates are the ones in [shika-cli.md](shika-cli.md#the-
 | Status | Chat evidence |
 | --- | --- |
 | Waiting | Live Lead before its first turn. Spawning and initialization start nothing. |
-| Working | A submission was dispatched (`advance_chat(Working, true)`), accepted, or a question was answered. Includes tools, silence and a blocking `shika wait` (label "Waiting for workers..." while the Lead has an open wait). |
+| Working | A submission was dispatched (`advance_chat(Working, true)`), accepted, or a question was answered. Includes tools, silence and a blocking `shika wait`. The activity area shows [step lines](#activity-steps) built from the control socket, "Working..." when no command runs. |
 | Asking | A supported question or unknown interaction is pending, or a `shika pr`/`shika close` dialog for this Lead is open (label "Waiting for your decision"). |
 | Ready | The turn settled: final result, failure, or "Reply stopped". |
 
@@ -206,7 +206,13 @@ The ledger, batching, and gates are the ones in [shika-cli.md](shika-cli.md#the-
 
 ### The view
 
-`LeadChat` is one GPUI entity per project, created by `ensure_lead_chat` for every project whose saved Lead is Claude, so a resting Lead shows its history and drafts and scroll position survive card switches in memory. `chat_side` replaces the terminal side for a selected live or resting Claude Lead, with the header ("Lead", project name, Stop Lead `⌘⇧W` or Resume `↵`). The list is a GPUI `list` with bottom alignment and tail follow; rows are time separators (first row, a 5 minute gap, or a new local day, formatted with libc `strftime`), event rows, and one row per markdown block, so a very tall reply builds only visible rows. Prose blocks over 4096 bytes are split for layout without truncating text. Bubble text is a read-only `ChatInput` per visible block, cached by `(record id, block)`. "New messages" appears when not at the bottom. Ctrl+Q returns to the cards. Exact geometry, keys and focus rules are in [DESIGN.md](../design/DESIGN.md#lead-chat).
+`LeadChat` is one GPUI entity per project, created by `ensure_lead_chat` for every project whose saved Lead is Claude, so a resting Lead shows its history and drafts and scroll position survive card switches in memory. `chat_side` replaces the terminal side for a selected live or resting Claude Lead, with the header (antler mark tile, "{project} Lead", the worker summary on a live Lead, Stop Lead `⌘⇧W` or Resume `↵`). The list is a GPUI `list` with bottom alignment and tail follow; rows are time separators (first row, a 5 minute gap, or a new local day, formatted with libc `strftime`), event rows, and one row per markdown block, so a very tall reply builds only visible rows. Prose blocks over 4096 bytes are split for layout without truncating text. Bubble text is a read-only `ChatInput` per visible block, cached by `(record id, block)`. "New messages" appears when not at the bottom. Ctrl+Q returns to the cards. Exact geometry, keys and focus rules are in [DESIGN.md](../design/DESIGN.md#lead-chat).
+
+A live Lead with no visible history shows the antler mark, "What should we work on?" and the composer as one centered group with no dock; after the first send the composer docks at the bottom, without animation. The composer has no border (focus is the caret) and a 32px round action: send arrow (sunken and inert when the draft is empty, primary with text) or stop square while Working or Asking.
+
+#### Activity steps
+
+While a turn runs, the lane shows a short step list: the current step in 12 ink-3 as the last line and up to 3 finished steps of this turn above it in 12 ink-4 with a leading "✓ ". Steps come only from Shika's knowledge of the `shika` commands the Lead runs over the control socket (never from provider output, thinking or tool text), are memory only, per turn, never stored in history, and vanish when the turn settles. Identical consecutive commands collapse. The command-to-copy table is in [DESIGN.md](../design/DESIGN.md#lead-chat) (Events and activity). The same current-step string is the second line of a Working Lead's card in the column, for terminal Leads too; otherwise a chat Lead's card shows the first line of its latest final reply (markdown stripped), and other Leads show "{CLI} · Lead". Code: `crates/shika/src/lead_steps.rs` holds the pure copy (`step_text`), the log (`StepLog`, `StepToken`) and the card line (`card_line`). `handle_control` starts a `StepToken` for every Lead command but `help` and `report` and wraps the reply channel in a `Responder`, so the step ends with the reply wherever it is sent (including the asynchronous `wait`, `pr`, `close`, `new`, and `diff`). A refused or failed command, a `wait` that timed out empty, a cancelled `close`, and a command whose client left (the token is dropped unanswered) leave no step; a cancelled `pr` leaves "Create PR cancelled for {task}". `Shika::sync_lead_activity` runs every tick: a changed `turn_started` starts the list over, a settled Lead (Ready, Waiting, exited) clears it, late replies from before a reset are ignored, and the result goes into `LeadChat::set_steps` (chat Leads) and the card. It also counts the workers the Lead started (`WorkerSummary::count`; exited counts as waiting, starting as working) for the chat header. While a wait runs "Waiting for workers..." is that step, not a second label. Terminal Leads get steps and the card line too. The card's reply line is `lead_chat_markdown::reply_first_line` of the latest Lead record, kept in `Shika::lead_snippets`: fed by live replies and read once per project from saved history off the UI thread, dropped when the Lead is forgotten.
 
 ### Where the code and the earlier design text differ
 
@@ -420,7 +426,18 @@ The author approved these geometry values:
 | Composer growth **six text lines**, capped at **144px total** | Existing 20px line height plus 12px top/bottom padding, then internal scrolling. |
 | Time separators **five minutes** | Centered local-time separator when the gap reaches this threshold; always separate a new local day. |
 
-No new color, font size, shadow or animation values. Lane width 640, insets 20, gaps 6/12/20, avatar 24/radius 6, header 48, and type 14/20 and 11.5 reuse the existing design system.
+No new color, font size, shadow or animation values. Lane width 640, insets 20, gaps 6/12/20, header 48, and type 14/20 and 11.5 reuse the existing design system.
+
+Approved after the 2026-10-17 prototype review:
+
+| Value | Purpose |
+| --- | --- |
+| Antler mark `ANTLERS_ICON`, line art in ink-2 | Replaces the `L` initial tile. Header 24px tile (radius 6, mark 16px); Leads card 30px tile (radius 8, mark 18px); empty state 52px tile (radius 14, mark 30px). Raised fill; no status color. |
+| Header `{project} Lead` and worker summary | 14/20 semibold ink-1 plus " Lead" 14 medium ink-3; summary in 12 ink-3 with a 6px status dot, hidden when resting. |
+| Empty state | Mark tile, "What should we work on?" (17 medium ink-2) and the composer as one centered group, gaps 14, no dock until the first send. |
+| Composer | No border; 32px round action button (send arrow 16px, stop square 7px); 20px left and 8px right text padding. |
+| Activity steps | Current step 12 ink-3, up to 3 finished steps 12 ink-4 with "✓ ", gap 4, from socket commands only. |
+| Leads card line two | The current step while Working, else the first line of the latest reply, else "{CLI} · Lead". |
 
 ## Evidence and acceptance
 

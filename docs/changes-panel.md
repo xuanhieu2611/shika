@@ -24,7 +24,7 @@ The goal is snappy, light, and reliable. Closed, it costs nothing. Open, it stay
 ╭────────────╮                                     │
 │ Claude Code│ +                  [Close task ⌘⇧W] │ Changes  2 files +64 −3   r refresh  esc close  [▯▯]
 ╯            ╰──────────────────────────────────── │ ─────────────────────────────────────────────────────
- worktree path                         focus hint  │ ╭─────────────────────────────────────────────────╮
+ project  branch  [Create PR ⌘⇧P]      focus hint  │ ╭─────────────────────────────────────────────────╮
                                                    │ │ ⌄ layout.rs                              +60 −3 │
  (terminal)                                        │ │   src                                  Modified │
                                                    │ │   12  let width = bounds.width;                 │

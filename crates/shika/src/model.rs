@@ -943,6 +943,11 @@ pub fn diff_stat_parts(
         format!("\u{2212}{deletions}"),
     )
 }
+/// The branch a card shows on line two: none while the task is still on its
+/// `shika-draft-<id>` branch, which nobody has named yet.
+pub fn card_branch(session: &shika_core::Session) -> Option<&str> {
+    (!session.on_draft_branch()).then_some(session.branch.as_str())
+}
 /// A path with the home directory written as `~`.
 pub fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
     match home.and_then(|home| path.strip_prefix(home).ok()) {
@@ -1015,6 +1020,35 @@ impl Dwell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session_on(branch: &str) -> shika_core::Session {
+        shika_core::Session {
+            id: "18db".into(),
+            project_id: "repo".into(),
+            preset_id: "claude".into(),
+            preset_name: "Claude Code".into(),
+            title: "New Claude Code".into(),
+            manual_title: false,
+            branch: branch.into(),
+            repo: "/repo".into(),
+            worktree: "/repo/.worktrees/x".into(),
+            base_ref: None,
+            pty: None,
+            shell_ptys: Vec::new(),
+            cli_titled: false,
+            lead: false,
+            started_by: None,
+        }
+    }
+
+    #[test]
+    fn a_draft_card_shows_no_branch_until_it_is_named() {
+        assert_eq!(card_branch(&session_on("shika-draft-18db")), None);
+        assert_eq!(
+            card_branch(&session_on("fix-flaky-test")),
+            Some("fix-flaky-test")
+        );
+    }
 
     #[test]
     fn ease_runs_from_zero_to_one_and_front_loads_the_motion() {

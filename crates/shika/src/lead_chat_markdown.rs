@@ -235,6 +235,16 @@ fn inline(input: &str, depth: usize) -> (String, Vec<Span>) {
     }
     (text, spans)
 }
+/// The first line of a final reply as plain text for the Lead's card: markdown
+/// parsed away (so no `**`, backticks, or heading marks), whitespace collapsed,
+/// and cut to a length the card truncates anyway. None for an empty reply.
+pub fn reply_first_line(text: &str) -> Option<String> {
+    parse(text, true)
+        .iter()
+        .map(|block| block.text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|line| !line.is_empty())
+        .map(|line| line.chars().take(200).collect())
+}
 pub fn safe_link(target: &str) -> bool {
     let valid_scheme = target.starts_with("https://")
         || target.starts_with("http://")
@@ -306,5 +316,25 @@ mod tests {
                 .any(|s| s.link.is_some())
         );
         assert_eq!(parse("**literal**", false)[0].text, "**literal**");
+    }
+    #[test]
+    fn a_reply_card_line_is_plain_text() {
+        assert_eq!(
+            reply_first_line("\n## **Done**:   all  `three` workers\nsecond line").as_deref(),
+            Some("Done: all three workers")
+        );
+        assert_eq!(
+            reply_first_line("- first item\n- second").as_deref(),
+            Some("\u{2022} first item")
+        );
+        assert_eq!(
+            reply_first_line("```bash\nls\n```\nafter").as_deref(),
+            Some("ls")
+        );
+        assert_eq!(reply_first_line("  \n\t"), None);
+        assert_eq!(
+            reply_first_line(&"x".repeat(500)).unwrap().chars().count(),
+            200
+        );
     }
 }

@@ -13,6 +13,8 @@
 //! Lead is idle and its author is not typing, Shika submits one `[shika]` line
 //! into the Lead's terminal. `send` and `key` use the same typing path
 //! ([`Shika::type_into`]) with the guard in [`input_refusal`].
+use crate::lead_chat::WorkerSummary;
+use crate::lead_steps::{self, SharedSteps, StepKind, StepToken};
 use crate::{Card, HostState, Launch, Overlay, Selection, Shika, lock, model::Status};
 use gpui::{Context, Window};
 use shika_core::control::{
@@ -319,12 +321,13 @@ pub struct LeadState {
     waiters: Vec<Waiter>,
     unconfirmed: Vec<Unconfirmed>,
     doorbell: Doorbell,
+    /// The activity steps of the running turn (see `lead_steps`).
+    pub steps: SharedSteps,
+    /// The step list version last pushed to the chat and the card.
+    steps_seen: u64,
 }
 
 impl LeadState {
-    pub(super) fn waiting(&self) -> bool {
-        !self.waiters.is_empty()
-    }
     pub fn new(token: String) -> Self {
         Self {
             token,
@@ -332,6 +335,8 @@ impl LeadState {
             waiters: Vec::new(),
             unconfirmed: Vec::new(),
             doorbell: Doorbell::default(),
+            steps: SharedSteps::default(),
+            steps_seen: 0,
         }
     }
 }
@@ -765,7 +770,7 @@ struct Waiter {
     /// Lead started.
     named: Vec<String>,
     deadline: Instant,
-    reply: Sender<Reply>,
+    reply: Responder,
     delivered: Receiver<bool>,
 }
 
@@ -777,8 +782,29 @@ impl Waiter {
     }
 }
 
+/// The way back to a Lead's command: the client's channel, and the activity
+/// step the command runs as. Sending the reply settles the step; dropping it
+/// unanswered (the client left, the Lead closed) removes the step.
+pub struct Responder {
+    tx: Sender<Reply>,
+    step: Option<StepToken>,
+}
+
+impl Responder {
+    fn new(tx: Sender<Reply>, step: Option<StepToken>) -> Self {
+        Self { tx, step }
+    }
+
+    pub fn send(&self, reply: Reply) -> Result<(), mpsc::SendError<Reply>> {
+        if let Some(step) = &self.step {
+            step.settle(&reply);
+        }
+        self.tx.send(reply)
+    }
+}
+
 /// Sends the answer to a `shika new`, if one is waiting for it.
-pub fn answer(reply: &Option<Sender<Reply>>, answer: Reply) {
+pub fn answer(reply: &Option<Responder>, answer: Reply) {
     if let Some(reply) = reply {
         let _ = reply.send(answer);
     }
@@ -826,7 +852,7 @@ pub struct LeadDialog {
     pub(super) lead_id: String,
     /// Session id of the worker the dialog is about.
     task: String,
-    reply: Sender<Reply>,
+    reply: Responder,
     /// Set when the flow succeeded: the PR URL, or what Close did.
     outcome: Option<String>,
     /// The last failure the flow reported. The dialog stays open for a retry,
@@ -904,7 +930,7 @@ pub fn dialog_reply(
             message: "The task is no longer in Shika.".into(),
         }
     } else {
-        refused("The author cancelled.")
+        refused(crate::lead_steps::CANCELLED)
     }
 }
 
@@ -1046,6 +1072,20 @@ impl Shika {
             return;
         };
         let project = self.cards[lead].project.clone();
+        // Each command but help and report runs as an activity step, settled
+        // by the reply wherever it is sent.
+        let task = lead_steps::command_task(&command).map(|task| match &command {
+            Command::New { prompt, .. } => lead_steps::prompt_name(prompt),
+            _ => self
+                .project_card(&project, task)
+                .map_or_else(|| task.to_string(), |card| card.title.clone()),
+        });
+        let step = StepKind::of(&command)
+            .zip(self.cards[lead].lead.as_ref())
+            .map(|(kind, state)| {
+                StepToken::start(&state.steps, kind, task.as_deref().unwrap_or(""))
+            });
+        let reply = Responder::new(reply, step);
         let answer = match command {
             Command::Help => Reply::Help {
                 text: self
@@ -1212,7 +1252,7 @@ impl Shika {
         lead_id: &str,
         project: &str,
         task: String,
-        reply: Sender<Reply>,
+        reply: Responder,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1397,7 +1437,7 @@ impl Shika {
         project: &str,
         task: String,
         stat: bool,
-        reply: Sender<Reply>,
+        reply: Responder,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self
@@ -1442,7 +1482,7 @@ impl Shika {
         task: String,
         input: Input,
         message: String,
-        reply: Sender<Reply>,
+        reply: Responder,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1538,6 +1578,109 @@ impl Shika {
             let _ = this.update_in(cx, |this, _, _| done(this, result));
         })
         .detach();
+    }
+
+    /// Every tick, after commands and chat events: brings each Lead's
+    /// activity steps up to its turn (a new turn starts them over, a settled
+    /// one clears them), counts the workers it started for the chat header,
+    /// pushes both into the chat, and keeps the card's reply line loaded.
+    /// Counting is a few status reads per Lead and the setters ignore an
+    /// unchanged value, so nothing repaints without a change.
+    pub(crate) fn sync_lead_activity(&mut self, cx: &mut Context<Self>) {
+        let mut repaint = false;
+        for lead in 0..self.cards.len() {
+            let card = &self.cards[lead];
+            let (Some(state), Some(session)) = (&card.lead, &card.session) else {
+                continue;
+            };
+            let settled = matches!(
+                card.control_status(),
+                TaskStatus::Waiting | TaskStatus::Ready | TaskStatus::Exited
+            );
+            let (finished, current, version) =
+                lead_steps::sync(&state.steps, card.activity.turn_started, settled);
+            let seen = state.steps_seen;
+            let (project, chat) = (card.project.clone(), card.chat);
+            let workers = WorkerSummary::count(
+                self.cards
+                    .iter()
+                    .filter(|worker| {
+                        worker.lead.is_none()
+                            && !worker.discard
+                            && !worker.closing
+                            && worker.started_by.as_deref() == Some(session.id.as_str())
+                    })
+                    .map(Card::control_status),
+            );
+            if version != seen {
+                repaint = true;
+                if let Some(state) = self.cards[lead].lead.as_mut() {
+                    state.steps_seen = version;
+                }
+            }
+            if chat && let Some(view) = self.lead_chats.get(&project) {
+                view.update(cx, |view, cx| {
+                    view.set_steps(finished, current, cx);
+                    view.set_worker_summary(workers, cx);
+                });
+            }
+        }
+        self.sync_lead_snippets(cx);
+        if repaint {
+            cx.notify();
+        }
+    }
+
+    /// Reads the saved history of each chat Lead once, off the UI thread, for
+    /// the reply line on its card (a live reply replaces it as it arrives),
+    /// and drops the line of a Lead that was forgotten.
+    fn sync_lead_snippets(&mut self, cx: &mut Context<Self>) {
+        let saved: Vec<String> = self
+            .projects
+            .iter()
+            .filter(|project| {
+                project
+                    .lead
+                    .as_ref()
+                    .is_some_and(|lead| lead.cli == "claude" && lead.chat_history.is_some())
+            })
+            .map(|project| project.id.clone())
+            .collect();
+        self.lead_snippets.retain(|id, _| saved.contains(id));
+        self.snippets_requested.retain(|id| saved.contains(id));
+        for id in saved {
+            if !self.snippets_requested.insert(id.clone()) {
+                continue;
+            }
+            let core = self.core.clone();
+            cx.spawn(async move |this, cx| {
+                let project = id.clone();
+                let line = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let records = core.lead_chat_page(&project, None).ok()?;
+                        records
+                            .iter()
+                            .filter_map(|record| match &record.content {
+                                shika_core::ChatContent::Lead { text } => Some((record.id, text)),
+                                _ => None,
+                            })
+                            .max_by_key(|(id, _)| *id)
+                            .and_then(|(_, text)| crate::lead_chat_markdown::reply_first_line(text))
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    // A reply that arrived meanwhile is newer.
+                    if let Some(line) = line
+                        && this.snippets_requested.contains(&id)
+                    {
+                        this.lead_snippets.entry(id).or_insert(line);
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
     }
 
     /// Rings each Lead whose workers settled, when [`Gate`] is open.
@@ -1893,7 +2036,7 @@ impl Shika {
         cli: String,
         base: Option<String>,
         prompt: String,
-        reply: Sender<Reply>,
+        reply: Responder,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2303,7 +2446,7 @@ mod tests {
         lead.waiters.push(Waiter {
             named: vec![],
             deadline: at(t0, 600.0),
-            reply,
+            reply: Responder::new(reply, None),
             delivered,
         });
         let tasks = [observed("a", TaskStatus::Ready, Some(t0))];
@@ -2582,7 +2725,7 @@ mod tests {
         );
         // Cancelling is a refusal with a fixed reason.
         let cancelled = dialog_reply(None, None, true, true);
-        assert_eq!(cancelled, refused("The author cancelled."));
+        assert_eq!(cancelled, refused(crate::lead_steps::CANCELLED));
         assert_eq!(cancelled.exit_code(), 1);
         // The dialog went away under it.
         assert_eq!(dialog_reply(None, None, false, true).exit_code(), 2);
@@ -2615,7 +2758,7 @@ mod tests {
                 Command::Pr { task } if task == "ship" => Reply::Done {
                     message: "https://github.com/o/r/pull/7".into(),
                 },
-                Command::Pr { .. } => refused("The author cancelled."),
+                Command::Pr { .. } => refused(crate::lead_steps::CANCELLED),
                 Command::Close { task } if task == "gone" => {
                     // The card vanished: the pending reply is dropped.
                     drop(incoming.reply);

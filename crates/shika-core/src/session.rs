@@ -43,6 +43,14 @@ pub struct Session {
     pub started_by: Option<String>,
 }
 
+impl Session {
+    /// True while the task is still on its `shika-draft-<id>` branch, which
+    /// is to say nobody has named it yet.
+    pub fn on_draft_branch(&self) -> bool {
+        self.branch == format!("shika-draft-{}", self.id)
+    }
+}
+
 /// Options for starting a worker session. `Default` is the plain New flow.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaunchOptions {
@@ -346,7 +354,7 @@ impl SessionStore {
         if !session.manual_title && session.title == format!("New {}", session.preset_name) {
             session.title = format!("New {preset_name}");
         }
-        if session.branch != format!("shika-draft-{}", session.id) {
+        if !session.on_draft_branch() {
             session.cli_titled = true;
         }
         session.preset_id = preset_id;
@@ -459,6 +467,17 @@ mod tests {
             lead: false,
             started_by: None,
         }
+    }
+
+    #[test]
+    fn a_session_is_on_its_draft_branch_until_renamed() {
+        let mut session = sample("1", "repo", PtyId(1));
+        assert!(session.on_draft_branch());
+        session.branch = "fix-flaky-test".into();
+        assert!(!session.on_draft_branch());
+        // Another task's draft branch is not this task's.
+        session.branch = "shika-draft-2".into();
+        assert!(!session.on_draft_branch());
     }
 
     #[test]
