@@ -949,6 +949,26 @@ mod tests {
         );
     }
     #[test]
+    fn a_chat_turn_the_cli_starts_itself_needs_the_submission_mark() {
+        // `ChatEvent::Started` maps to a submission. A bare Working after a
+        // settled turn continues that turn: old clock and no notification.
+        let now = Instant::now();
+        let mut bare = Activity::new(now);
+        bare.advance_chat(Status::Working, true, now);
+        assert!(bare.advance_chat(Status::Ready, false, at(now, 10)).notify);
+        bare.advance_chat(Status::Working, false, at(now, 500));
+        assert_eq!(bare.turn_started, Some(now));
+        assert!(!bare.advance_chat(Status::Ready, false, at(now, 900)).notify);
+
+        let mut started = Activity::new(now);
+        started.advance_chat(Status::Working, true, now);
+        started.advance_chat(Status::Ready, false, at(now, 10));
+        started.advance_chat(Status::Working, true, at(now, 500));
+        assert_eq!(started.turn_started, Some(at(now, 500)));
+        let done = started.advance_chat(Status::Ready, false, at(now, 900));
+        assert!(done.ready && done.notify);
+    }
+    #[test]
     fn cursor_stop_hint_below_framed_editor_is_working_not_idle() {
         assert_eq!(
             screen(

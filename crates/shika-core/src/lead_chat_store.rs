@@ -17,6 +17,8 @@ pub enum ChatOrigin {
     ShikaEvent,
 }
 
+/// `Accepted` means the CLI has the turn: Shika's write succeeded, or, with no
+/// `Outgoing` before it in that turn, the CLI started the turn itself.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChatContent {
@@ -396,6 +398,23 @@ pub(crate) fn delete(data: &Path, project: &str) -> ChatResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_turn_the_cli_started_recovers_as_an_interrupted_reply() {
+        let dir = std::env::temp_dir().join(format!("shika-chat-{}", crate::control::new_token()));
+        fs::create_dir(&dir).unwrap();
+        let mut store = ChatStore::open(&dir, "p").unwrap();
+        store.bind("claude", "same").unwrap();
+        store.append(1, ChatContent::Accepted).unwrap();
+        drop(store);
+        let mut store = ChatStore::open(&dir, "p").unwrap();
+        store.recover().unwrap();
+        assert_eq!(
+            store.page(None, 60).unwrap()[0].content.text(),
+            Some("Reply interrupted by restart")
+        );
+        assert_eq!(store.next_turn().unwrap(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn completion_is_atomic_and_worker_report_updates_rebuild_in_place() {
         let dir = std::env::temp_dir().join(format!("shika-chat-{}", crate::control::new_token()));

@@ -9,7 +9,7 @@ Start here when contributing to this feature. This guide records the decisions a
 ## Reading paths
 
 - **New to the team:** read the [overview](#two-minute-overview), [evolution](#how-the-feature-evolved), and [decisions](#why-this-design), then [one turn end to end](#one-turn-end-to-end) and the [code map](#code-map).
-- **Debugging:** start with [debugging by symptom](#debugging-by-symptom). Reproduce with [isolated data and a fake CLI](#isolated-reproduction), never normal app data or a personal repository.
+- **Debugging:** start with [debugging by symptom](#debugging-by-symptom). A reply the CLI wrote but the chat never showed: read [turns the CLI starts itself](#turns-the-cli-starts-itself). Reproduce with [isolated data and a fake CLI](#isolated-reproduction), never normal app data or a personal repository.
 - **Adding a CLI:** read [extending to other CLIs](#extending-to-other-clis) and the [guardrails](#contributor-guardrails) first. The current transport is Claude-specific in more places than the module name suggests.
 - **Changing visuals:** read [DESIGN.md](../design/DESIGN.md#lead-chat) and the [approved design values](#approved-design-values). Every chat color comes from the active theme.
 
@@ -105,6 +105,25 @@ GPUI main thread                         Core (shika-core)
 9. **Result.** A successful `result` returns the candidate. `Actor::complete` writes the `Lead { text }` record (if there is text) and `Settled` in one transaction, then emits `Record` and `Status(Ready)`.
 10. **App.** `drain_lead_chats` maps `Status(Ready)` through `advance_chat`, which finishes the turn and posts the turn's single notification (titled with the project name, "Lead", and the status). The view parses the record off thread into markdown blocks and appends it. Seen follows the normal rule, with chat focus standing in for terminal focus.
 
+### Turns the CLI starts itself
+
+Not every turn starts with a Shika write. When a Bash tool the Lead ran with `run_in_background` finishes (typically a long `shika wait`), Claude Code queues an internal task notification and, with no stdin input, opens a new turn and answers it. The Lead's reply in that turn is usually the one the author is waiting for ("the README worker finished, here is what it did").
+
+**What.** Such a turn is an ordinary Lead turn: the card goes Working, then Ready with its own clock and notification; the final response is filtered exactly like any other (final only; thinking, tools, tool output and intermediate text are dropped before storage) and shown and saved as a Lead bubble; there is no author bubble.
+
+**Why.** Before this was handled, the decoder only read `assistant` and `result` records while a Shika-submitted turn was active, so everything the CLI produced after a turn settled was dropped. On 2026-10-17 an author's Lead replied twice after its background waits returned; neither reply was recorded, the card stayed Ready with no notification, and the author had to ask "can you check on the worker?". The CLI's own transcript held both replies (each turn opened by a `<task-notification>` queue entry). The doorbell was correctly silent: the Lead's own `wait` reported those worker settlements, so nothing was due.
+
+**How.** Claude Code 2.1.302 opens every turn, Shika's or its own, with `system/init` (recorded in `claude-2.1.302-background-local.jsonl`; startup and `--resume` print no `init` until input arrives). Before it the CLI prints `system/task_updated`, `system/task_notification` and `system/background_tasks_changed`, which are ignored, and no `user` record: the notification text never reaches stdout.
+
+1. `ClaudeStream::parse` treats a `system/init` while no turn is active as the start of a turn: it resets the per-turn state (`begin`) and returns `Parsed::Started`. Other records while idle still start nothing, so a stray late record cannot hold the card at Working.
+2. The actor allocates the next turn number (`Actor::allocate_turn`, which also counts rows buffered after a save failure), stamps the child's input epoch so a question answer in that turn is not refused as stale, writes one `Accepted` row, and emits `Confirmed`, `Started` and `Status(Working)`.
+3. The app maps `Started` to `advance_chat(Working, submitted: true)`: a new turn with a fresh clock and notification. A bare `Status(Working)` after Ready would only continue the settled turn, with its old clock and no notification. The chat becomes busy, so the composer, `submit_lead_chat` and the doorbell gate wait for it like any running turn.
+4. The rest is the normal path: questions, Stop generating, the successful `result`, failures and exits. Completion writes `Lead` and `Settled`. Failures add their event row, but no Retry message or `DeliveryFailed`, since nothing was sent.
+
+**History.** The turn's rows are `Accepted`, then `Lead` (if it had text) and `Settled`, with no `Author` or `Outgoing`. `Accepted` without `Outgoing` is how a CLI-started turn is recognized. Using an existing kind keeps the store at `user_version` 1, so older builds still read it, and recovery already does the right thing: an unsettled CLI turn becomes "Reply interrupted by restart".
+
+**Crossing.** Stream JSON carries no correlation between a user record and a turn. If the author's send reaches the actor just before the CLI's own `init`, the notification reply settles the author's turn and the author's answer arrives as the next, CLI-started turn. Both are shown, in arrival order; nothing is dropped. The window is the actor's queue latency, and the app refuses a send while the Lead is busy, so it is narrow.
+
 ### Final-response extraction
 
 `ClaudeStream::parse` (one decoder per process, reset per turn) decides what may become the bubble:
@@ -117,6 +136,7 @@ GPUI main thread                         Core (shika-core)
 - On `result`: if initialization, `system/init` confirmation or the session id is missing or wrong, the turn fails as unreadable. If `is_error` is not false or `subtype` is not `success`, it fails with "Claude Code could not complete the reply. Check its sign-in and connection, then retry." Otherwise the candidate (possibly none) is the final response. `result.result` is never used: some releases aggregate commentary into it.
 - A turn that completes with no final text creates no bubble, only `Settled`.
 - `stream_event` partials and unknown record types are ignored, never printed.
+- A `system/init` while no turn is active starts a turn the CLI began itself (see [turns the CLI starts itself](#turns-the-cli-starts-itself)). `assistant`, `user` and `result` records outside a turn are ignored.
 
 ### Questions and unknown interactions
 
@@ -175,10 +195,10 @@ Location: `<data dir>/leads/<project-id>/chat/history.sqlite`, next to `memory.j
 | `records` | Immutable append-only rows: `id`, `turn` (0 for events outside a turn), `timestamp` (local Unix seconds, never provider timestamps), `segment` (context number), `visible`, `content` (JSON `ChatContent`). Indexed by `(visible, id)` and `(turn, id)`. |
 | `visible_entries` | The projection pages read: one row per visible entry, `event_key UNIQUE`. A keyed event upserts: the entry keeps its first id and position but points at the newest record. Rebuilt from `records` when the table is missing. |
 
-`ChatContent` kinds: `Author { text }`, `Lead { text }`, `Event { text, key }` are visible; `Outgoing { origin }`, `Accepted`, `Settled`, `Context { cli, conversation }` are bookkeeping. `ChatOrigin` is `author` or `shika_event`.
+`ChatContent` kinds: `Author { text }`, `Lead { text }`, `Event { text, key }` are visible; `Outgoing { origin }`, `Accepted`, `Settled`, `Context { cli, conversation }` are bookkeeping. `ChatOrigin` is `author` or `shika_event`. A turn with `Accepted` and no `Outgoing` is one the CLI started itself.
 
 - **Binding.** `SavedLead::chat_history` in `projects.json` (`chatHistory`) holds the store's `lifetime`. A start or page read whose saved lifetime differs from the store's fails with "Could not read this conversation: history identity changed" rather than showing someone else's transcript. `bind(cli, conversation)` writes a `Context` row when the binding changes, plus the visible event "A new Lead conversation started" if there was an earlier context.
-- **Transactions.** Author, events and `Outgoing` commit together before dispatch. `Accepted` commits after the write. Final text and `Settled` commit together. There is no cross-file exactly-once claim between `projects.json` and the store.
+- **Transactions.** Author, events and `Outgoing` commit together before dispatch. `Accepted` commits after the write, or alone when the CLI starts a turn itself. Final text and `Settled` commit together. There is no cross-file exactly-once claim between `projects.json` and the store.
 - **Crash recovery.** `recover` runs at every transport start. If the last turn has no `Settled`, it appends "Reply interrupted by restart" (if `Accepted` exists) or "Delivery unknown" (if not), then `Settled`. Nothing is resent.
 - **Reading.** `Core::lead_chat_page(project, before)` returns up to 60 visible entries before an id. The view loads the newest page on first render, loads older pages when scrolled near the top, keeps at most 180 records in memory, and never prunes the store. A failed or corrupt store is left untouched and reported; sends are blocked.
 - **Deletion.** Forget calls `lead_chat_store::delete` (refusing redirected paths) before clearing the saved Lead; `memory.json` stays. Project removal deletes the whole `leads/<project-id>/` folder, as before.
@@ -192,13 +212,14 @@ The ledger, batching, and gates are the ones in [shika-cli.md](shika-cli.md#the-
 - **Accounting.** `chat_delivery_finished` marks the batch rung only on `Accepted` (a successful pipe write). On delivery failure nothing is marked and the bell rings again later.
 - **Restart summary.** For a chat Lead the summary is not held for quiet output. Rows "Shika restarted. Worker worktrees were kept." and, when the checkout was not moved, "The Lead checkout was kept without moving to the latest base." are shown; the detailed line goes privately to the CLI. `reportedWorkers` is updated only on `Accepted`; on failure the summary is restored for another try.
 - Internal input never becomes an author bubble, and starts a normal turn with its own notification.
+- A turn the CLI starts itself makes the Lead busy, so the bell waits for it. When the Lead ran `shika wait` in the background, that wait reports the settlements it returns, and they never ring.
 
 ### Status, clock, notifications and Seen
 
 | Status | Chat evidence |
 | --- | --- |
 | Waiting | Live Lead before its first turn. Spawning and initialization start nothing. |
-| Working | A submission was dispatched (`advance_chat(Working, true)`), accepted, or a question was answered. Includes tools, silence and a blocking `shika wait`. The activity area shows [step lines](#activity-steps) built from the control socket, "Working..." when no command runs. |
+| Working | A submission was dispatched (`advance_chat(Working, true)`), accepted, the CLI started a turn itself (`ChatEvent::Started`, also a submission), or a question was answered. Includes tools, silence and a blocking `shika wait`. The activity area shows [step lines](#activity-steps) built from the control socket, "Working..." when no command runs. |
 | Asking | A supported question or unknown interaction is pending, or a `shika pr`/`shika close` dialog for this Lead is open (label "Waiting for your decision"). |
 | Ready | The turn settled: final result, failure, or "Reply stopped". |
 
@@ -240,7 +261,7 @@ The previous version of this file was the approved design. Where the implementat
 | `crates/shika-core/src/lead.rs` | `start_claude_lead` and the shared `start_lead_inner` (same worktree, conversation choice, guide plus memory, control env); chat saves no provisional id and carries `chat_history`; Forget deletes chat. |
 | `crates/shika-core/src/lib.rs` | `Core::chats` map; `hang_up` stops the transport; `Session::pty` became optional; re-exports; core integration tests with a fake `claude`. `remove_project` now deletes memory (and chat) after hanging up sessions. |
 | `crates/shika-core/src/projects.rs`, `session.rs`, `error.rs` | `SavedLead::chat_history` (`chatHistory`); `Session::pty: Option<PtyId>` (`None` only for a chat Lead; Switch agent refuses it); `Error::LeadChat`. |
-| `crates/shika-core/tests/fixtures/` (new) | Two installed-CLI recordings, one hand-written stream, and their provenance README. |
+| `crates/shika-core/tests/fixtures/` (new) | Three installed-CLI recordings, one hand-written stream, and their provenance README. |
 | `crates/shika/src/lead_chat.rs` (new) | `LeadChat` view (rows, paging, scroll anchor, selection, composer wiring, banners) and the `Shika` glue: `ensure_lead_chat`, `submit_lead_chat`, `drain_lead_chats` (events to status, notifications, questions, identity confirmation, resume and exit handling), `selected_chat`, `chat_side`. |
 | `crates/shika/src/lead_chat_markdown.rs` (new) | Original markdown subset parser, block splitting, `safe_link`, theme-derived highlights. |
 | `crates/shika/src/lead_chat_question.rs` (new) | Native question dialog: open or queue, step through questions, build the answer, cancel, keys and view. |
@@ -272,6 +293,7 @@ sqlite3 -readonly "$db" "SELECT * FROM visible_entries ORDER BY id DESC LIMIT 20
 | Symptom | Inspect first |
 | --- | --- |
 | A reply never appears; card stays Working | Last turn's records: `Outgoing` without `Accepted` means the write never completed; `Accepted` without `Settled` means no `result` arrived. Is the child alive (`pgrep -fl 'claude -p'`) and still in a tool or `shika wait`? An unknown `control_request` shows "This Lead needs an interaction chat does not support." and stays Asking. Stop generating settles it. |
+| The CLI's transcript has a reply the chat never showed | Rows after the last `Settled`: a CLI-started turn writes `Accepted` with no `Outgoing`. None at all means its `system/init` was not read as a turn start; compare the stdout with `claude-2.1.302-background-local.jsonl` and see [turns the CLI starts itself](#turns-the-cli-starts-itself). The transcript is `<claude config>/projects/<worktree slug>/<lead.sessionId>.jsonl`; read it, never edit it. |
 | Turn settled but no Lead bubble | A tool-only turn has no final text and no bubble, by design. Check whether the last assistant text came before a tool call (it is commentary). Reproduce with the decoder tests, adding the stream as a fixture. |
 | Intermediate text appeared in a bubble | A filter bug. Capture the stream with a fake CLI or the synthetic server, add it to the fixtures, and assert in `lead_transport` tests. Check record `uuid` dedup and `parent_tool_use_id`. Never fix by trimming text. |
 | "This Claude Code version could not be read" | A record type or block type the decoder does not know, an oversized frame, or no initialize response within 10 seconds. Compare `claude --version` with the fixtures and record a new one. |
@@ -319,6 +341,7 @@ Add the printed repo, then Cmd+L and choose Claude Code. That run uses the insta
 `crates/shika-core/tests/fixtures/README.md` is the provenance record:
 
 - `claude-2.1.302-local.jsonl` (two turns with a tool) and `claude-2.1.302-question-local.jsonl` (a correlated `AskUserQuestion`) were recorded on 2026-10-16 from installed Claude Code 2.1.302 with the [chat arguments](#processes-and-threads), a disposable repository and `CLAUDE_CONFIG_DIR`, a fake local-only API key, and an HTTP server on loopback returning synthetic Messages responses. No provider request or paid usage occurred. They test the real CLI envelope, not model behavior.
+- `claude-2.1.302-background-local.jsonl` was recorded on 2026-10-17 the same way: one sent message whose turn starts a Bash command with `run_in_background` and settles, then the turn the CLI starts itself when that command finishes (task notification records, `system/init`, narration, a foreground tool, the final text, `result`). The loopback server answered `<task-notification>` requests like any other.
 - `claude-chat.jsonl` is hand-written from the documented format: thinking, subagent text, a partial `stream_event`, a duplicate record, and an aggregate `result` containing commentary.
 - Tests read fixtures with `include_str!`; they never spawn a real Claude or read provider files.
 
@@ -334,11 +357,13 @@ To re-record after a CLI upgrade:
 
 | Test | Covers |
 | --- | --- |
-| `lead_transport::tests::*` | Final-only extraction from both kinds of fixture, split blocks with one message id, multiple final text blocks and uuid dedup, question parsing, identity mismatch, garbage, unknown control requests, failed results. |
-| `lead_chat_store::tests::*` | Atomic completion, keyed event replacement, index rebuild, recovery markers, 60-entry paging across reopen, corruption preserved, Forget keeping `memory.json`. |
+| `lead_transport::tests::*` | Final-only extraction from both kinds of fixture, the turn the CLI starts itself, split blocks with one message id, multiple final text blocks and uuid dedup, question parsing, identity mismatch, garbage, unknown control requests, failed results. |
+| `lead_chat_store::tests::*` | Atomic completion, keyed event replacement, index rebuild, recovery markers (including a CLI-started turn), 60-entry paging across reopen, corruption preserved, Forget keeping `memory.json`. |
 | `tests::claude_chat_has_no_pty_...` | No PTY, provisional then confirmed id, final-only history, interrupt and continue, Stop keeping history and workers, Forget deleting chat and keeping memory. |
+| `tests::a_turn_the_claude_cli_starts_itself_...` | A fake CLI's own turn after a settled one: `Started` then Working, final-only Lead bubble, rows `Accepted`, `Lead`, `Settled` with no author bubble, and the next send numbered after it. The decoder side is `installed_cli_background_fixture_...`. |
 | `tests::chat_interrupt_cancels_a_blocked_pipe_write_...` | A write blocked on a full pipe is interruptible, and quit reaps within 4 seconds. |
 | `activity::tests::chat_status_uses_explicit_results_and_retains_the_turn_clock` | Turn clock across Asking, one notification per turn. |
+| `activity::tests::a_chat_turn_the_cli_starts_itself_needs_the_submission_mark` | Why `Started` is a submission: without it a new turn keeps the old clock and never notifies. |
 | `lead_chat_markdown` tests | Bash fences as code, HTML as text, unsafe links refused, long prose split without losing style ranges. |
 
 Passing tests are not native acceptance. Record GUI results in MANUAL_CHECKS.md.

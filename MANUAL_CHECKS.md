@@ -402,6 +402,7 @@ Contributor overview, safety limits, implementation map, and debugging: [docs/br
 - PASS: `cargo fmt --all --check`, parallel `cargo test --workspace --locked --offline` (205 tests), and strict workspace/all-targets Clippy. The upstream `block` future-compatibility warning remains.
 - PASS: Debug app bundle builds, includes Shika's MIT license plus Heroicons, Octicons, and JetBrains Mono notices, and passes `codesign --verify --deep --strict`.
 - Native README/poster/share screenshot captured using isolated data and disposable `storefront`/`routekit` repositories. CLI output is simulated, explicitly captioned, and image metadata is stripped. This does not validate real provider flows or close outstanding GUI checks above.
+- 2026-10-17: the README screenshot (`docs/images/shika-native.png`) was replaced with the author's real capture of the app in frosted glass, resized to 2400px wide. The entry above now describes only the poster/share image.
 - Browser prototype checked with independent shell buffers (`git diff` and `pwd`), switching back to retained output, and the dirty-close dialog hiding Push. Component checks also cover tab ownership, pinned agent close, focus restoration, Codex/Pi picker choices, three-card cap, and simulated commit/push close behavior. Browser-reserved shortcuts can require visible controls.
 
 ## Lead agent spike
@@ -557,4 +558,5 @@ Remaining native acceptance checks (leave unchecked until performed):
 - [ ] IME marked text and Enter/Escape priority, grapheme/word navigation, multiline paste, selection across blocks/messages, copy, undo/redo, and screen-reader role/time/delivery/completion announcements.
 - [ ] Long paged lifetime history: stable visible message/offset through new results, height changes and older-page loads; New messages returns to latest without animation; Seen remains focus/dwell based when reading older messages.
 - [ ] Forced crash, unknown delivery, transcript write/commit failure and Retry save/message: preserve data and draft/recoverability, no prompt replay, correct interrupted marker, no hidden content anywhere in SQLite.
+- [ ] A turn the CLI starts itself (2026-10-17 fix): a Lead that runs `shika wait` in the background and settles, then replies when the wait returns, shows that reply as a Lead bubble with no author bubble, goes Working then Ready, posts one notification, and keeps it after relaunch. Covered by core tests and a recorded fixture only.
 - [ ] Native Forget deletes Shika chat and saved conversation binding while memory remains; project removal removes its chat; non-Claude Leads and all workers remain unchanged real terminals.
