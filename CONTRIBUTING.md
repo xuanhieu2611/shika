@@ -62,19 +62,43 @@ Open an issue before working on any of these:
 
 ## Development
 
-Install Rust and full Xcode, then follow the README build instructions. Keep the pinned GPUI revision unless the change explicitly upgrades it. Do not copy GPL code from Zed's terminal crates.
+### Build from source
+
+You need macOS 13 or later, Rust, full Xcode (not only Command Line Tools), and at least one supported CLI, installed and signed in. GPUI is pinned in [Cargo.toml](Cargo.toml); keep that revision unless the change explicitly upgrades it. Runtime Metal shaders mean you don't need Xcode's separate Metal Toolchain component. Do not copy GPL code from Zed's terminal crates.
+
+```sh
+git clone https://github.com/xuanhieu2611/shika.git
+cd shika
+source "$HOME/.cargo/env"
+./scripts/bundle-app.sh
+open target/release/Shika.app
+```
+
+Local bundles are ad hoc signed.
+
+### Checks
 
 Before submitting a change, run:
 
 ```sh
 cargo fmt --all --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+./scripts/bundle-app.sh --debug
 ```
 
-Use disposable repositories and an isolated app data directory for integration tests. Never test worktree deletion against personal projects. Verify the app window is in front before automated keyboard input.
+> [!IMPORTANT]
+> Never run automated UI checks against your normal app data. Use disposable repositories and a fresh data directory:
+>
+> ```sh
+> open -n target/debug/Shika.app --args --data-dir /absolute/path/to/test-data
+> ```
 
-Describe what changed, why, and how it was verified. Include a screenshot for visible UI changes. Check the product principles and non-goals above before adding features. Update the matching feature guide and the short AGENTS.md handoff when behavior, ownership, or a toolchain trap changes. Record actual acceptance results separately from intended behavior; do not turn an unchecked GUI item into a pass based only on implementation or unit tests.
+Never test worktree deletion against personal projects. Confirm Shika's own window is in front before sending keystrokes. A `cargo run` launch does not prove Finder PATH discovery. See [terminal checks](crates/shika-terminal/MANUAL_CHECKS.md) and the [acceptance record](MANUAL_CHECKS.md).
+
+### Pull requests
+
+Describe what changed, why, and how it was verified. Include a screenshot for visible UI changes. Check the product principles and non-goals above before adding features. Update the matching feature guide and the short AGENTS.md handoff when behavior, ownership, or a toolchain trap changes. Update the [user guide](docs/using-shika.md) when user-visible behavior changes. Record actual acceptance results separately from intended behavior; do not turn an unchecked GUI item into a pass based only on implementation or unit tests.
 
 ## License
 
