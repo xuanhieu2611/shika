@@ -2,12 +2,13 @@
 
 Start with [AGENTS.md](../AGENTS.md) for architecture, constraints, and local build/testing instructions, and [CONTRIBUTING.md](../CONTRIBUTING.md) for the product principles and non-goals. Each guide holds the rules for its feature. For UI changes, read [design/DESIGN.md](../design/DESIGN.md).
 
-The public how-to is the website guide in [site/guide](../site/guide/index.html). Update it when user-visible behavior changes. These pages stay the contributor contract.
+The public how-to is [Using Shika](using-shika.md), the user guide for shortcuts, supported agents, and everyday workflows, plus the website guide in [site/guide](../site/guide/index.html). Update both when user-visible behavior changes. The guides below stay the contributor contract.
 
 These guides explain why features exist, how they are implemented, and where to debug or extend them:
 
 | Guide | Read when working on |
 | --- | --- |
+| [Using Shika](using-shika.md) | The user guide: every shortcut, supported agents and launch arguments, the Lead, worktree preparation, renaming, Create PR, and Close |
 | [Tasks and worktrees](tasks-and-worktrees.md) | Projects, worktree creation, base branch, dirty and unpushed checks, Close, and leftovers |
 | [Agent activity and elapsed turns](agent-activity.md) | Timer-reset root cause, hybrid state detection, lifecycle reports, notifications, safe Close, and debugging |
 | [Token usage](token-usage.md) | Local Claude Code and Codex token totals, the daily file, and Settings > Usage |
