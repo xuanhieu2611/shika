@@ -15,6 +15,7 @@ mod name_input;
 mod notifications;
 mod scrollbar;
 mod shortcuts;
+mod text_edit;
 mod updates;
 mod usage_dashboard;
 mod worktree_setup;

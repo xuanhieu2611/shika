@@ -2,68 +2,70 @@
 //! the pinned GPUI input example's EntityInputHandler contract, not Zed's editor
 //! or terminal crates.
 use super::Chrome;
+use crate::text_edit::{self, Edit, Lines, Paragraphs, Text, utf8_offset};
+use gpui::WrappedLineLayout;
 use gpui::{
     App, AppContext, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle, Focusable,
     IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Point, Render, Styled,
     TextLayout, UTF16Selection, Window, fill, point, px, size,
 };
 use std::ops::Range;
+use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Default)]
-struct Text {
-    value: String,
-    anchor: usize,
-    cursor: usize,
-    marked: Option<Range<usize>>,
+/// The composer's visual rows, read from the wrapped layout GPUI painted.
+struct Rows {
+    rows: Vec<Range<usize>>,
+    /// Per row: its paragraph's layout, that paragraph's start, and which
+    /// wrapped row of it this is.
+    lines: Vec<(Arc<WrappedLineLayout>, usize, usize)>,
+    line_height: Pixels,
 }
-impl Text {
-    fn selection(&self) -> Range<usize> {
-        self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
-    }
-    fn move_to(&mut self, offset: usize, select: bool) {
-        self.cursor = offset;
-        if !select {
-            self.anchor = offset;
+impl Rows {
+    fn new(layout: &TextLayout) -> Self {
+        let mut rows = Vec::new();
+        let mut lines = Vec::new();
+        let mut start = 0;
+        for line in layout.line_layouts() {
+            let mut row_start = start;
+            for (wrap, boundary) in line.wrap_boundaries().iter().enumerate() {
+                let end = start
+                    + line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index;
+                rows.push(row_start..end);
+                lines.push((line.clone(), start, wrap));
+                row_start = end;
+            }
+            rows.push(row_start..start + line.len());
+            lines.push((line.clone(), start, line.wrap_boundaries().len()));
+            start += line.len() + 1;
         }
-        self.marked = None;
-    }
-    fn previous(&self) -> usize {
-        self.value
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(i, _)| (i < self.cursor).then_some(i))
-            .unwrap_or(0)
-    }
-    fn next(&self) -> usize {
-        self.value
-            .grapheme_indices(true)
-            .find_map(|(i, _)| (i > self.cursor).then_some(i))
-            .unwrap_or(self.value.len())
-    }
-    fn replace(&mut self, range: Range<usize>, text: &str) {
-        self.value.replace_range(range.clone(), text);
-        self.cursor = range.start + text.len();
-        self.anchor = self.cursor;
-        self.marked = None;
-    }
-    fn utf8_range(&self, range: Range<usize>) -> Range<usize> {
-        utf8_offset(&self.value, range.start)..utf8_offset(&self.value, range.end)
-    }
-    fn to_utf16(&self, range: Range<usize>) -> Range<usize> {
-        self.value[..range.start].encode_utf16().count()
-            ..self.value[..range.end].encode_utf16().count()
+        Self {
+            rows,
+            lines,
+            line_height: layout.line_height(),
+        }
     }
 }
-fn utf8_offset(text: &str, offset: usize) -> usize {
-    let mut count = 0;
-    for (i, ch) in text.char_indices() {
-        if count >= offset {
-            return i;
-        }
-        count += ch.len_utf16();
+impl Lines for Rows {
+    fn rows(&self) -> &[Range<usize>] {
+        &self.rows
     }
-    text.len()
+    fn x(&self, index: usize, row: usize) -> f32 {
+        let (line, start, _) = &self.lines[row];
+        if index == self.rows[row].start {
+            return 0.;
+        }
+        line.position_for_index(index - start, self.line_height)
+            .map_or(0., |p| p.x.into())
+    }
+    fn index_at(&self, row: usize, x: f32) -> usize {
+        let (line, start, wrap) = &self.lines[row];
+        let y = self.line_height * (*wrap as f32 + 0.5);
+        start
+            + line
+                .closest_index_for_position(point(px(x), y), self.line_height)
+                .unwrap_or_else(|i| i)
+    }
 }
 fn clean_text(text: &str) -> String {
     text.chars()
@@ -94,15 +96,9 @@ pub struct ChatInput {
 }
 impl ChatInput {
     pub fn new(value: String, chrome: Chrome, cx: &mut Context<Self>) -> Self {
-        let cursor = value.len();
         Self {
             focus: cx.focus_handle().tab_stop(true),
-            text: Text {
-                value,
-                cursor,
-                anchor: cursor,
-                ..Default::default()
-            },
+            text: Text::new(value),
             chrome,
             layout: None,
             bounds: None,
@@ -183,9 +179,37 @@ impl ChatInput {
             _ => 0,
         }
     }
+    /// Where the caret paints. GPUI puts a wrap boundary at the end of the
+    /// upper row; like NSTextView, the caret goes to the start of the lower
+    /// row unless it is upstream.
+    fn caret(&self, layout: &TextLayout) -> Option<Point<Pixels>> {
+        let position = layout.position_for_index(self.text.cursor)?;
+        if self.text.upstream || self.text.value.is_empty() {
+            return Some(position);
+        }
+        let rows = Rows::new(layout);
+        let row = self.text.row(&rows);
+        let cursor = self.text.cursor;
+        let wrapped = row > 0 && rows.rows[row].start == cursor && rows.rows[row - 1].end == cursor;
+        Some(if wrapped {
+            point(layout.bounds().left(), position.y + rows.line_height)
+        } else {
+            position
+        })
+    }
+    /// A press past the end of a wrapped row lands on the boundary, and the
+    /// caret stays on the row that was pressed.
+    fn upstream_at(&self, index: usize, position: Point<Pixels>) -> bool {
+        self.layout
+            .as_ref()
+            .and_then(|layout| layout.position_for_index(index))
+            .is_some_and(|caret| position.y < caret.y + px(20.))
+    }
     fn checkpoint(&mut self) {
-        self.history
-            .push((self.text.value.clone(), self.text.anchor, self.text.cursor));
+        self.remember((self.text.value.clone(), self.text.anchor, self.text.cursor));
+    }
+    fn remember(&mut self, entry: (String, usize, usize)) {
+        self.history.push(entry);
         if self.history.len() > 100 {
             self.history.remove(0);
         }
@@ -328,12 +352,9 @@ impl ChatInput {
                 } else {
                     self.redo.push(old);
                 }
-                self.text = Text {
-                    value,
-                    anchor,
-                    cursor,
-                    marked: None,
-                };
+                self.text = Text::new(value);
+                self.text.anchor = anchor;
+                self.text.cursor = cursor;
                 cx.emit(InputEvent::Changed);
                 cx.notify();
             }
@@ -389,60 +410,41 @@ impl ChatInput {
                     self.text.replace(selected, &clean_text(&text));
                 }
             }
-            "left" | "right" | "home" | "end" if !m.control => {
-                let left = matches!(stroke.key.as_str(), "left" | "home");
-                let offset = if m.platform || matches!(stroke.key.as_str(), "home" | "end") {
-                    if left { 0 } else { self.text.value.len() }
-                } else if m.alt {
-                    if left {
-                        self.text.value[..self.text.cursor]
-                            .split_word_bound_indices()
-                            .rev()
-                            .find_map(|(i, word)| {
-                                word.chars().any(char::is_alphanumeric).then_some(i)
-                            })
-                            .unwrap_or(0)
-                    } else {
-                        self.text.value[self.text.cursor..]
-                            .split_word_bound_indices()
-                            .find_map(|(i, word)| {
-                                word.chars()
-                                    .any(char::is_alphanumeric)
-                                    .then_some(self.text.cursor + i + word.len())
-                            })
-                            .unwrap_or(self.text.value.len())
-                    }
-                } else if !m.shift && !selected.is_empty() {
-                    if left { selected.start } else { selected.end }
-                } else if left {
-                    self.text.previous()
-                } else {
-                    self.text.next()
+            _ => {
+                let Some(edit) = text_edit::edit_for(stroke, true) else {
+                    return;
                 };
-                self.text.move_to(offset, m.shift);
-            }
-            "up" | "down" if !m.platform && !m.control => {
-                if let Some(layout) = &self.layout
-                    && let Some(position) = layout.position_for_index(self.text.cursor)
-                {
-                    let offset = self.index(
-                        position + point(px(0.), px(if stroke.key == "up" { -20. } else { 20. })),
-                    );
-                    self.text.move_to(offset, m.shift);
+                if self.readonly && !matches!(edit, Edit::Move(..)) {
+                    return;
+                }
+                if let Edit::Scroll(top) = edit {
+                    self.ensure_cursor = false;
+                    let offset = self.scroll.offset();
+                    let y = if top {
+                        px(0.)
+                    } else {
+                        -self.scroll.max_offset().y
+                    };
+                    self.scroll.set_offset(point(offset.x, y));
+                } else {
+                    let entry = (before.clone(), self.text.anchor, self.text.cursor);
+                    let mut kill = text_edit::KILL_BUFFER
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    // Before the layout catches up with the text, rows are
+                    // paragraphs; an empty composer lays out its placeholder.
+                    match self.layout.as_ref().filter(|layout| {
+                        !before.is_empty() && self.bounds.is_some() && layout.text() == before
+                    }) {
+                        Some(layout) => self.text.apply(edit, &Rows::new(layout), &mut kill),
+                        None => self.text.apply(edit, &Paragraphs::new(&before), &mut kill),
+                    };
+                    drop(kill);
+                    if self.text.value != before {
+                        self.remember(entry);
+                    }
                 }
             }
-            "backspace" | "delete" if !m.control && !m.alt && !m.platform && !self.readonly => {
-                self.checkpoint();
-                let range = if !selected.is_empty() {
-                    selected
-                } else if stroke.key == "backspace" {
-                    self.text.previous()..self.text.cursor
-                } else {
-                    self.text.cursor..self.text.next()
-                };
-                self.text.replace(range, "");
-            }
-            _ => return,
         }
         if before != self.text.value {
             cx.emit(InputEvent::Changed);
@@ -701,7 +703,9 @@ impl Render for ChatInput {
                         this.text.anchor = range.start;
                         this.text.cursor = range.end;
                     } else {
+                        let upstream = this.upstream_at(index, event.position);
                         this.text.move_to(index, event.modifiers.shift);
+                        this.text.upstream = upstream;
                     }
                     this.selecting = true;
                     if this.readonly {
@@ -723,7 +727,9 @@ impl Render for ChatInput {
                     .find(|(range, _)| range.contains(&index))
                     .map(|(_, link)| link.clone());
                 if this.selecting {
+                    let upstream = this.upstream_at(index, event.position);
                     this.text.move_to(index, true);
+                    this.text.upstream = upstream;
                 }
                 if this.readonly && event.pressed_button == Some(MouseButton::Left) {
                     cx.emit(InputEvent::Select {
@@ -802,7 +808,7 @@ impl Render for ChatInput {
                             let position = if placeholder {
                                 Some(bounds.origin)
                             } else {
-                                layout.position_for_index(input.text.cursor)
+                                input.caret(&layout)
                             };
                             if let Some(position) = position {
                                 window.paint_quad(fill(
@@ -811,7 +817,7 @@ impl Render for ChatInput {
                                 ));
                             }
                         }
-                        let cursor = layout.position_for_index(input.text.cursor);
+                        let cursor = input.caret(&layout);
                         paint.update(cx, |input, cx| {
                             input.bounds = Some(bounds);
                             if !readonly
