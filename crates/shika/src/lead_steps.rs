@@ -12,8 +12,8 @@ use std::time::Instant;
 const FINISHED_KEPT: usize = 3;
 /// A prompt's first line, as a task name, is cut to this many characters.
 const NAME_CHARS: usize = 40;
-/// The refusal `dialog_reply` gives when the author closes a `pr` or `close`
-/// dialog without confirming.
+/// The refusal `dialog_reply` gives when the author closes a `close` dialog
+/// without confirming.
 pub const CANCELLED: &str = "The author cancelled.";
 
 /// A command that gets a step. `help` and `report` get none.
@@ -60,7 +60,7 @@ pub fn command_task(command: &Command) -> Option<&str> {
         | Command::Diff { task, .. }
         | Command::Send { task, .. }
         | Command::Key { task, .. }
-        | Command::Pr { task }
+        | Command::Pr { task, .. }
         | Command::Close { task } => Some(task),
         Command::New { prompt, .. } => Some(prompt),
         _ => None,
@@ -89,8 +89,6 @@ pub fn prompt_name(prompt: &str) -> String {
 pub struct StepText {
     pub current: String,
     pub done: String,
-    /// Only `pr` has one: the author closed the dialog.
-    pub cancelled: Option<String>,
 }
 
 pub fn step_text(kind: StepKind, task: &str) -> StepText {
@@ -105,8 +103,8 @@ pub fn step_text(kind: StepKind, task: &str) -> StepText {
         ),
         StepKind::Answer => (format!("Answering {task}..."), format!("Answered {task}")),
         StepKind::Pr => (
-            format!("Opening Create PR for {task}..."),
-            format!("Opened Create PR for {task}"),
+            format!("Opening a PR for {task}..."),
+            format!("Opened a PR for {task}"),
         ),
         StepKind::Close => (format!("Closing {task}..."), format!("Closed {task}")),
         StepKind::Memory => ("Reading its memory...".into(), "Read its memory".into()),
@@ -119,18 +117,13 @@ pub fn step_text(kind: StepKind, task: &str) -> StepText {
             "Removed a memory note".into(),
         ),
     };
-    StepText {
-        current,
-        done,
-        cancelled: (kind == StepKind::Pr).then(|| format!("Create PR cancelled for {task}")),
-    }
+    StepText { current, done }
 }
 
 /// How a command ended, for its step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Done,
-    Cancelled,
     /// Refused, failed, or never answered: the step leaves no trace, so a
     /// command that did nothing is not shown as work.
     Dropped,
@@ -138,15 +131,12 @@ pub enum Outcome {
 
 /// The outcome of `reply`, and the task name to finish with when the reply
 /// knows a better one than the command did (`new` learns the card's name).
-pub fn outcome(kind: StepKind, reply: &Reply) -> (Outcome, Option<String>) {
+pub fn outcome(reply: &Reply) -> (Outcome, Option<String>) {
     match reply {
         Reply::Started { task } => (Outcome::Done, Some(task.title.clone())),
         Reply::Waited {
             events, timed_out, ..
         } if *timed_out && events.is_empty() => (Outcome::Dropped, None),
-        Reply::Refused { reason } if kind == StepKind::Pr && reason == CANCELLED => {
-            (Outcome::Cancelled, None)
-        }
         Reply::Refused { .. } | Reply::Error { .. } => (Outcome::Dropped, None),
         _ => (Outcome::Done, None),
     }
@@ -271,7 +261,7 @@ impl StepToken {
     }
 
     pub fn settle(&self, reply: &Reply) {
-        let (outcome, name) = outcome(self.kind, reply);
+        let (outcome, name) = outcome(reply);
         self.end(outcome, name.as_deref());
     }
 
@@ -282,7 +272,6 @@ impl StepToken {
         let text = step_text(self.kind, name.unwrap_or(&self.task));
         let done = match outcome {
             Outcome::Done => Some(text.done),
-            Outcome::Cancelled => text.cancelled,
             Outcome::Dropped => None,
         };
         lock(&self.log).finish(self.id, self.generation, done);
@@ -369,17 +358,12 @@ mod tests {
         let text = step_text(StepKind::New, "Fix login");
         assert_eq!(text.current, "Starting Fix login...");
         assert_eq!(text.done, "Started Fix login");
-        assert_eq!(text.cancelled, None);
         let wait = step_text(StepKind::Wait, "");
         assert_eq!(wait.current, "Waiting for workers...");
         assert_eq!(wait.done, "Workers changed");
         let pr = step_text(StepKind::Pr, "Fix login");
-        assert_eq!(pr.current, "Opening Create PR for Fix login...");
-        assert_eq!(pr.done, "Opened Create PR for Fix login");
-        assert_eq!(
-            pr.cancelled.as_deref(),
-            Some("Create PR cancelled for Fix login")
-        );
+        assert_eq!(pr.current, "Opening a PR for Fix login...");
+        assert_eq!(pr.done, "Opened a PR for Fix login");
         assert_eq!(
             step_text(StepKind::Diff, "x").current,
             "Checking the diff of x..."
@@ -495,21 +479,23 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_pr_says_so_and_a_cancelled_close_does_not() {
+    fn only_a_published_pr_and_a_finished_close_leave_a_step() {
         let log = shared();
         let cancelled = Reply::Refused {
             reason: CANCELLED.into(),
         };
-        StepToken::start(&log, StepKind::Pr, "Fix login").settle(&cancelled);
         StepToken::start(&log, StepKind::Close, "Fix login").settle(&cancelled);
-        assert_eq!(snapshot(&log).0, ["Create PR cancelled for Fix login"]);
+        StepToken::start(&log, StepKind::Pr, "Fix login").settle(&Reply::Refused {
+            reason: "Fix login is still working.".into(),
+        });
+        StepToken::start(&log, StepKind::Pr, "Fix login").settle(&Reply::Error {
+            message: "gh failed.".into(),
+        });
+        assert!(snapshot(&log).0.is_empty());
         StepToken::start(&log, StepKind::Pr, "Fix login").settle(&Reply::Done {
             message: "url".into(),
         });
-        assert_eq!(
-            snapshot(&log).0.last().unwrap(),
-            "Opened Create PR for Fix login"
-        );
+        assert_eq!(snapshot(&log).0, ["Opened a PR for Fix login"]);
     }
 
     #[test]

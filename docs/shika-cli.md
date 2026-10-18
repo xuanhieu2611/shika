@@ -4,7 +4,7 @@ Reference for the command a Lead agent runs (and the one command, `report`, its 
 
 Contents: [What it is](#what-it-is) - [Commands](#commands) - [Output and exit codes](#output-and-exit-codes) - [Scope and security](#scope-and-security) - [wait in detail](#wait-in-detail) - [The doorbell](#the-doorbell) - [Protocol](#protocol) - [Debugging](#debugging) - [Adding a command](#adding-a-command) - [Code map](#code-map)
 
-Status: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, `close`, and the memory commands `memory`, `remember`, and `forget` are implemented, plus the doorbell that wakes an idle Lead and `report`, the one command a Lead-started worker can run. GUI acceptance of `pr` and `close` is pending (see [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#lead-agent-spike)).
+Status: `help`, `tasks`, `new`, `status`, `wait`, `read`, `diff`, `send`, `key`, `pr`, `close`, and the memory commands `memory`, `remember`, and `forget` are implemented, plus the doorbell that wakes an idle Lead and `report`, the one command a Lead-started worker can run. Since protocol 6, `pr` publishes directly without the author's Create PR dialog (the author's decision, see [`shika pr`](#shika-pr-task---title-text---body-text)); `close` still goes through the author's Close flow. GUI acceptance of `pr` and `close` is pending (see [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#lead-agent-spike)).
 
 ## What it is
 
@@ -230,27 +230,42 @@ pressed enter in 18f3a9c2b7d4e601.
 
 A key is not a submission. A key that resolves a dialog is seen by the usual activity detection, which moves the card on (Asking to Working, then Ready). An unknown key is a usage error; `ctrl-c` and function keys do not exist.
 
-### `shika pr <task>`
+### `shika pr <task> [--title <text>] [--body <text>]`
 
-Opens the ordinary Create PR confirmation for a worker this Lead started and blocks until the author decides. It selects the worker's card and opens the same dialog as Cmd+Shift+P (`Shika::create_pr`): the same preview of what will be committed, the same editable title and target, the same rechecks, the same recorded-base targeting. Nothing is published unless the author confirms in the dialog; the Lead can never confirm it. The selection and focus move to the dialog on purpose.
+Publishes a worker this Lead started, directly: no dialog opens and the author presses nothing. It runs the pipeline the Create PR dialog runs when the author confirms it without editing a field: stage every non-ignored change, commit if anything is uncommitted, push the task branch (never forced), then create the PR with the author's authenticated `gh`, or reuse the open PR from this branch to the same target. The target is the task's recorded starting base, exactly as the dialog prefills it. The command blocks until publishing ends and prints the PR URL.
 
 ```text
 $ shika pr 18f3a9c2b7e0aa12
 https://github.com/acme/app/pull/42
+$ shika pr 18f3a9c2b7e0aa12 --title "Fix login redirect" --body "Sends users to /home after login.
+
+Tests: npm test passes."
+https://github.com/acme/app/pull/42
 ```
 
-Outcomes, and how they map to exit codes:
+**Why it does not ask.** Until protocol 6, `pr` opened the author's Create PR dialog and waited for them to read the title and description and press Enter, then the Lead relayed the result. The author found that a needless round trip and decided (2026-10-17): "I want my leader to open the PR for me, and just give me the response." Asking the Lead to open the PR is the author's confirmation. The guide still tells the Lead to run `pr` only when the author asks to publish. `close` keeps its dialog, and the author's own Create PR (Cmd+Shift+P, the card button, the Agent menu) is unchanged.
 
-| Author does | Output | Exit |
+Options:
+
+- `--title <text>`: the commit message (when a commit is needed) and the PR title. One line, not blank. Default: the task title, the text Create PR prefills, which is the card's name, including a name set with Rename task.
+- `--body <text>`: the PR description. It may span lines; not blank; at most 65,536 characters (GitHub's limit, `MAX_PR_BODY_CHARS`). It replaces `gh --fill` for the description. Default: `gh --fill`, the description built from the commits, as Create PR does.
+
+Each value is one argument, so the Lead quotes it. A flag given twice, a blank value, or a multi-line title is a usage error (exit 2) before anything is sent. Neither option edits an existing PR: when the branch already has an open PR to the target, Shika pushes and prints that PR's URL, and its title and body stay as they were.
+
+Outcomes, and how they map to exit codes (`pr_reply`):
+
+| Outcome | Output | Exit |
 | --- | --- | --- |
-| Confirms; the PR is created, or an open one for the branch is reused | the PR URL (`done`) | 0 |
-| Cancels (Escape or Cancel) | `refused: The author cancelled.` | 1 |
-| Confirms and publishing fails, then cancels | `error: <text>`: git's or gh's message and `Completed commits and pushes were kept.`, so the Lead knows which steps ran | 2 |
-| The dialog could not open, or went away (the task or the Lead was closed) | `error: ...` | 2 |
+| The PR is created, or an open one for the branch is reused | the PR URL (`done`) | 0 |
+| No PR target: the task's starting base is not recorded, is not a branch of origin, or no longer exists on GitHub (`Error::PublishNoTarget`) | `refused: The task's starting base dev is not a branch on GitHub, so there is no PR target. The author can choose one in Create PR.` (or `The task did not start from a branch of origin, ...`) | 1 |
+| The worktree is checked out on another branch (`Error::TaskBranchChanged`) | `refused: The worktree is on <current>, not task branch <expected>. ...` | 1 |
+| A step failed: no `gh`, signed out, unsupported origin, nothing to publish, files changed while publishing, a commit hook, a rejected push, `gh pr create` | `error: Could not publish PR: <git's or gh's first line> Completed commits and pushes were kept.` | 2 |
+| The task went away while publishing | `error: The task is no longer in Shika.` | 2 |
+| The app quit | `error: Shika stopped handling this command. ...` | 2 |
 
-A failure leaves the dialog open so the author can retry, exactly as it does without a Lead; the reply is sent when the dialog ends. If the author retries and succeeds, the Lead gets the URL and not the earlier error. If the preview itself fails (no `gh`, no remote), the dialog never opens and the reply is that `error`.
+A missing target is never a dialog and never another branch: the dialog is the only place a target is chosen, and only the author chooses it. Partial success is kept exactly as in the dialog: a failure after the commit leaves the commit, and one after the push leaves the pushed branch. Running `pr` again after the cause is fixed skips the commit when the tree already matches HEAD and reuses an open PR.
 
-Refusals (exit 1), all with a one-line reason (`dialog_refusal`, `pr_status_refusal`, `dialog_gate_refusal`):
+Refusals (exit 1) before anything runs, all with a one-line reason (`Shika::pr_refusal`: `pr_gate_refusal`, `worker_refusal`, `pr_status_refusal`, then `Shika::publish_blocker`):
 
 | Reason | Cause |
 | --- | --- |
@@ -261,11 +276,11 @@ Refusals (exit 1), all with a one-line reason (`dialog_refusal`, `pr_status_refu
 | `<id> has exited, so it cannot be published.` | The CLI ended. |
 | `<id> is still being set up.` | Setup has not finished. |
 | `Wait for the agent to finish before publishing.` | The card is running by Create PR's own test (`Shika::publish_blocker`, shared with Cmd+Shift+P, so the two cannot disagree). |
-| `Shika has <overlay> open. The author has to finish or dismiss it first; try again later.` | Another dialog, menu, picker, or Settings is on screen. |
-| `Shika is busy with another operation. Try again in a moment.` | A git or close operation is running. |
-| `Another dialog from this Lead is already waiting for the author. ...` | A `pr` or `close` is already pending. |
+| `The Lead is publishing this task. Try again when it finishes.` | A `pr` on this task is still running (`Card::lead_publishing`). |
+| `The author has <dialog> open for <id>. Try again after they finish it.` | The author's own Create PR, Close, or Switch agent dialog for this same task is on screen. Any other overlay (Settings, the picker, another task's dialog) does not block `pr`, because `pr` opens none. |
+| `Shika is busy with another operation. Try again in a moment.` | A git or close operation of the author's is running (`Shika::busy`). |
 
-Afterwards the card shows the PR's checks as `#N` as usual, and `tasks` and `status` show `pr=#N`. After the dialog ends, whatever the outcome, selection and focus go back to the Lead card and its terminal, because the author was talking to the Lead. The client has no read timeout, because the author may take as long as they like.
+**What the author sees.** Nothing moves: no dialog, no selection or focus change, no toast, and no browser tab (the author's own Create PR opens the URL; `pr` leaves that to the Lead's reply). The global `busy` flag is not set, so the author keeps navigating, typing, and starting tasks while it runs. Instead the card is marked `Card::lead_publishing` until the reply: the author's Create PR, Close, and Switch agent on that card, and the Lead's own `pr`, `close`, `send`, and `key` on it, are refused with `The Lead is publishing this task. Try again when it finishes.` (a toast for the author). Afterwards the card shows the PR's checks as `#N` as after any publish, and `tasks` and `status` show `pr=#N`. The client has no read timeout: every git and gh command is bounded at 120 seconds but the chain is not, and the server always answers.
 
 ### `shika close <task>`
 
@@ -288,7 +303,7 @@ closed
 | The author cancelled | `refused: The author cancelled.` | 1 |
 | The close failed and the author cancelled, or the task vanished | `error: <text>` | 2 |
 
-Refusals are those of `pr` without the status checks: unknown task, not started by this Lead (`... so it cannot close it.`), still being set up, another overlay open, busy, or another Lead dialog pending. The Lead itself, the author's cards, and other projects' cards are never closable this way. Closing a worker frees one of the 4 worker slots. As for `pr`, selection and focus return to the Lead afterwards (a cancelled Close does not take the author to the worker's shell, as it does when they cancel it themselves), and the client has no read timeout.
+Refusals (`Shika::control_close`: `dialog_gate_refusal`, then `worker_refusal`): unknown task, not started by this Lead (`... so it cannot close it.`), still being set up, being published by a `pr` (`The Lead is publishing this task. ...`), any overlay open (`Shika has <overlay> open. ...`), busy, or another Lead dialog pending. The Lead itself, the author's cards, and other projects' cards are never closable this way. Closing a worker frees one of the 4 worker slots. Selection and focus return to the Lead afterwards (a cancelled Close does not take the author to the worker's shell, as it does when they cancel it themselves), and the client has no read timeout.
 
 ### `shika memory`, `shika remember <text...>`, `shika forget <n>`
 
@@ -351,16 +366,20 @@ When you finish or get blocked, run: '<data dir>/bin/shika' report "<what you ch
 
 The actual executable path is substituted and shell-quoted, including spaces and single quotes. Credentials stay in the environment, never the prompt. Branch and card naming read the first nonblank prompt line, which is still the Lead's. The combined prompt does not start with `-`, so it passes the positional-prompt rules unchanged.
 
-### How `pr` and `close` resolve
+### How `pr` resolves
 
-Both go through `Shika::control_dialog`. After the refusal checks it stores a `LeadDialog` (kind, Lead id, task id, the reply channel, the outcome and last error) in `Shika::lead_dialog`, selects the card, and calls `create_pr` or `close`. The flows record what happens: `lead_dialog_succeeded` (publish success, `finish_close` success with `close_outcome`) and `lead_dialog_failed` (preview, publish, or close failure). `Shika::settle_lead_dialog` answers once the dialog is no longer on screen and no flow is still running. It runs after every place a dialog can end (the flows, `cancel_overlay`) and on every tick, so a dialog that disappears another way (the card or project removed) still answers: `dialog_reply` gives the outcome if there is one, else the last error, else `The Lead was closed before the author answered.` or `The task is no longer in Shika.`, else `The author cancelled.` If the app quits, the reply channel drops and the client gets `Shika stopped handling this command.` If the Lead card goes away first, the client is answered at once and any dialog stays open for the author.
+`Shika::control_pr` runs `pr_refusal` on the app thread, sets `Card::lead_publishing`, and spawns `Core::session_publish_now` on the background executor. That takes the core operation lock once and runs `publish::publish_now`: `publish::preview` (the same snapshot Create PR shows), a refusal when the preview has no target, then `publish::publish` with the preview's target and the given or default title and body, so every recheck of the dialog path runs. Back on the app thread it clears `lead_publishing`, starts the card's checks watch (`PrWatch::new`) on success, and sends `pr_reply`. Nothing else in the app waits on it: there is no `LeadDialog`, and `settle_lead_dialog` is not involved. If the app is gone the reply channel drops and the client gets `Shika stopped handling this command.`
+
+### How `close` resolves
+
+`Shika::control_close` runs the refusal checks, stores a `LeadDialog` (Lead id, task id, the reply channel, the outcome and last error) in `Shika::lead_dialog`, selects the card, and calls `close`. The flow records what happens: `lead_dialog_succeeded` (`finish_close` success with `close_outcome`) and `lead_dialog_failed` (close failure). `Shika::settle_lead_dialog` answers once the dialog is no longer on screen and no flow is still running. It runs after every place a dialog can end (the flows, `cancel_overlay`) and on every tick, so a dialog that disappears another way (the card or project removed) still answers: `dialog_reply` gives the outcome if there is one, else the last error, else `The Lead was closed before the author answered.` or `The task is no longer in Shika.`, else `The author cancelled.` If the app quits, the reply channel drops and the client gets `Shika stopped handling this command.` If the Lead card goes away first, the client is answered at once and any dialog stays open for the author.
 
 ## Output and exit codes
 
 | Exit | Meaning |
 | --- | --- |
 | 0 | The app answered with `help`, `tasks`, `started`, `status`, `waited`, `text`, `memory`, or `done`. A `wait` that timed out is still 0. `pr` prints the URL and `close` prints `closed ...` as `done`. |
-| 1 | The app answered `refused`: understood and declined, with a reason. That includes the author cancelling a `pr` or `close` (`The author cancelled.`). |
+| 1 | The app answered `refused`: understood and declined, with a reason. That includes the author cancelling a `close` (`The author cancelled.`) and a `pr` with no PR target. |
 | 2 | The app answered `error`, or the client failed before or while talking: usage error, missing `SHIKA_SOCKET` or `SHIKA_TOKEN`, no connection, I/O failure, or an unreadable reply. |
 
 Where text goes (`control_client::run`):
@@ -382,7 +401,7 @@ usage: shika [--json] <command>
   diff <task> [--stat]
   send <task> [--no-enter] <text...>
   key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)
-  pr <task>
+  pr <task> [--title <text>] [--body <text>]
   close <task>
   memory
   remember <text...>
@@ -402,7 +421,7 @@ The design goal is a local helper that can drive one project's workers and canno
 - **Project scope.** A Lead sees and affects only cards with its own project id. `new` starts workers only in that project.
 - **Ownership.** `tasks` and `status` (with the worker's report) work on every task in the project, whoever started it. `read` and `diff` are reads and work on every task in the project. `wait`, `send`, `key`, `pr`, and `close` work only on tasks this Lead started. The author's own cards stay the author's. `memory`, `remember`, and `forget` act on the Lead's own project. `send` and `key` write only to a task's agent terminal, never to a shell tab, and never to a draft the author left.
 - **The 4-worker limit** (`MAX_WORKERS`). A card counts when it was started by this Lead and is not the Lead itself, not marked for discard, has no launch error, and its CLI has not exited (`Card::is_live_worker_of`). It counts while it is still being created (no session yet), while working, and after it finishes until the author closes it or its CLI exits. The check runs on the app thread twice: before the approval check and again immediately before the card is added, so parallel `new` calls cannot overshoot. Ask the author to close finished tasks to free slots.
-- **No authority beyond starting and watching.** The Lead cannot merge, push, commit, or publish through Shika. `pr` and `close` only open the existing Create PR and Close flows and wait for the author, who alone confirms. Nothing in this protocol can bypass that confirmation, and neither command has a flag to skip it. Close without a question happens only where the author's own Close would not ask.
+- **Publishing is the one write the Lead does itself.** `pr` publishes a worker this Lead started without a dialog, because the author decided that asking the Lead is their confirmation (see [`shika pr`](#shika-pr-task---title-text---body-text)). It can stage, commit, push the task branch without force, and create or reuse a PR, to the task's recorded base only, with every recheck of Create PR. It cannot choose another target, merge, force-push, push anything but the task branch, edit an existing PR, or publish the author's cards. The guide limits it to when the author asks. `close` only opens the existing Close flow and waits for the author, who alone confirms; nothing in this protocol bypasses that, and close without a question happens only where the author's own Close would not ask.
 - **Resource limits.** One request line at most 1 MiB (`MAX_REQUEST_BYTES`). At most 32 simultaneous connections (`MAX_CONNECTIONS`); the next gets an `error` reply `Shika is serving too many commands at once.` The server gives a client 5 seconds to send its request and 10 seconds to accept the reply.
 - **Lifetime and leftovers.** The control directory is removed when the server is dropped: at an orderly quit (`cx.on_app_quit` clears `Shika::control`), and when the Server value drops. A crash or `kill -9` leaves `shika-control-<pid>-<nonce>/` in the temp directory, with a dead socket. The `<data dir>/bin/shika` link stays after any exit and is replaced at the next start. It is harmless and can be deleted by hand once that pid is gone; macOS also clears the temp directory eventually. Leads do not survive a relaunch, so a stale socket is never reused. Each launch makes a new directory. The Lead's own `shika-lead-<id>` worktree is journaled and appears under leftover worktrees after a crash.
 
@@ -477,11 +496,11 @@ A bell does not mark the settlement reported. The Lead's next `shika wait` retur
 {"version":4,"token":"0123456789abcdef0123456789abcdef","command":{"type":"new","cli":"codex","base":"dev","prompt":"Fix it"}}
 ```
 
-`command` is internally tagged by `type` (snake_case): `{"type":"help"}`, `{"type":"tasks"}`, `{"type":"new","cli":"...","base":null|"...","prompt":"..."}`, `{"type":"status","task":"..."}`, `{"type":"wait","tasks":[...],"timeout_secs":30}`, `{"type":"read","task":"...","lines":0}`, `{"type":"diff","task":"...","stat":false}`, `{"type":"send","task":"...","text":"...","enter":true}`, `{"type":"key","task":"...","keys":["down","enter"]}`, `{"type":"pr","task":"..."}`, `{"type":"close","task":"..."}`, `{"type":"memory"}`, `{"type":"remember","text":"..."}`, `{"type":"forget","note":2}`, `{"type":"report","text":"..."}`.
+`command` is internally tagged by `type` (snake_case): `{"type":"help"}`, `{"type":"tasks"}`, `{"type":"new","cli":"...","base":null|"...","prompt":"..."}`, `{"type":"status","task":"..."}`, `{"type":"wait","tasks":[...],"timeout_secs":30}`, `{"type":"read","task":"...","lines":0}`, `{"type":"diff","task":"...","stat":false}`, `{"type":"send","task":"...","text":"...","enter":true}`, `{"type":"key","task":"...","keys":["down","enter"]}`, `{"type":"pr","task":"...","title":null|"...","body":null|"..."}` (`title` and `body` may also be left out), `{"type":"close","task":"..."}`, `{"type":"memory"}`, `{"type":"remember","text":"..."}`, `{"type":"forget","note":2}`, `{"type":"report","text":"..."}`.
 
 **Reply.** One of the objects below, tagged by `type`: `help` (`text`), `tasks` (`tasks`), `started` (`task`), `status` (`task`), `waited` (`events`, `still_working`, `timed_out`), `text` (`text`; `read` and `diff`), `done` (`message`; `send`, `key`, `pr`, `close`, `remember`, and `forget`), `memory` (`notes`: `text`, `created`), `refused` (`reason`), `error` (`message`). Examples are under [Commands](#commands). `TaskInfo` fields: `id`, `title`, `cli`, `status`, `elapsed_secs`, `branch`, `diff_stat`, `pr`, `started_by_lead`, `path`, `report`.
 
-**Versioning.** `PROTOCOL_VERSION` is currently `5` (2 added `read`, `diff`, `send`, `key`, the `text` and `done` replies, and `TaskInfo::path`; 3 added `pr` and `close`; 4 added `report`, worker tokens, and `TaskInfo::report`; 5 added `memory`, `remember`, `forget`, and the `memory` reply). The server compares it for equality before looking at the command, and a mismatch is a refusal rather than a parse failure:
+**Versioning.** `PROTOCOL_VERSION` is currently `6` (2 added `read`, `diff`, `send`, `key`, the `text` and `done` replies, and `TaskInfo::path`; 3 added `pr` and `close`; 4 added `report`, worker tokens, and `TaskInfo::report`; 5 added `memory`, `remember`, `forget`, and the `memory` reply; 6 made `pr` publish without a dialog and gave it optional `title` and `body`). The server compares it for equality before looking at the command, and a mismatch is a refusal rather than a parse failure:
 
 ```json
 {"type":"refused","reason":"This shika speaks protocol 9 but the running Shika app speaks 5. Restart the Lead from the app."}
@@ -516,7 +535,7 @@ The token is the only secret, so use the shell variable; do not type it into a t
 With `nc` (BSD netcat, `-U` for Unix sockets):
 
 ```sh
-printf '{"version":3,"token":"%s","command":{"type":"tasks"}}\n' "$SHIKA_TOKEN" | nc -U "$SHIKA_SOCKET"
+printf '{"version":6,"token":"%s","command":{"type":"tasks"}}\n' "$SHIKA_TOKEN" | nc -U "$SHIKA_SOCKET"
 ```
 
 With `python3`:
@@ -524,7 +543,7 @@ With `python3`:
 ```sh
 python3 -c 'import json,os,socket
 s=socket.socket(socket.AF_UNIX); s.connect(os.environ["SHIKA_SOCKET"])
-s.sendall(json.dumps({"version":3,"token":os.environ["SHIKA_TOKEN"],"command":{"type":"tasks"}}).encode()+b"\n")
+s.sendall(json.dumps({"version":6,"token":os.environ["SHIKA_TOKEN"],"command":{"type":"tasks"}}).encode()+b"\n")
 print(s.makefile().readline().strip())'
 ```
 
@@ -549,6 +568,9 @@ A `wait` request over `nc` blocks until the reply, up to the server timeout, lik
 | `error: Shika stopped handling this command. The Lead may have been closed.` | The reply channel dropped, typically because the Lead card was closed during a `wait` or `new`. |
 | `Control socket failed: ...` (stderr) | Read or write timed out or broke. |
 | `The Lead needs Shika's control socket: Could not set up the control directory: ...` (toast in the app when starting a Lead) | The app could not create the control directory, install the command under the data directory, or bind the socket at startup (socket path over the 103-byte limit, unwritable temp or data directory). The app runs without a control server and no Lead can start until it is relaunched. |
+| `refused: The task's starting base <base> is not a branch on GitHub, so there is no PR target. ...` | `shika pr` found no target: the task started from a branch that is not on origin's GitHub repository, or it was deleted there. Only the author can choose another target, in Create PR. Check `Session::base_ref` (`worktrees.json`, `baseRef`) and `gh api repos/OWNER/REPO/branches`. |
+| `refused: The Lead is publishing this task. ...` | A `shika pr` on that task has not replied yet. Wait for it; the author sees the same message on Create PR, Close, and Switch agent for that card. |
+| `error: Could not publish PR: ... Completed commits and pushes were kept.` | A git or gh step of `shika pr` failed. The text is the first stderr line. See [publishing.md](publishing.md#debugging-playbook); never reset or force-push to retry. |
 | `Unknown command <word>.` plus the usage (stderr, exit 2) | The first word is not a command. Typically a typo. Not a protocol error. |
 | `Missing command.` plus the usage (stderr, exit 2) | A bare `shika` in a Lead terminal. With `SHIKA_SOCKET` or `SHIKA_TOKEN` set the binary never starts the app, so this and any mistyped or app-flag invocation are usage errors. Outside a Lead terminal a bare `shika` is the app itself, as for a Finder launch. |
 
@@ -569,13 +591,13 @@ The server writes no log. To see its state:
 - `shika tasks --json` (or `status`) from the Lead, and the cards in the app itself.
 - `ls -d "$TMPDIR"/shika-control-*` shows live and abandoned control directories; the pid in the name tells which app owns one. `lsof -U` can show which process listens on a `sock`; I have not tested that.
 - Run the app with `cargo run -p shika -- --data-dir /absolute/test/data` and a disposable repository (see [AGENTS.md](../AGENTS.md#toolchain)). Launching with `open` is needed to test CLI discovery and session titles, because `cargo run` from inside Claude Code passes `CLAUDE_CODE_CHILD_SESSION` to PTYs.
-- Unit tests: `cargo test -p shika-core control` for parsing, rendering, framing, the control directory, and a socket round trip. `cargo test -p shika control::` for `resolve`/`Ledger`, the doorbell (`Doorbell`, `Gate`, `doorbell_line`), the send and key guard (`input_refusal`), key and paste encoding, a real socket with a stand-in UI thread, a client that left, and launch-failure classification. `cargo test -p shika-core diff::` covers `render_unified`. The core-side Lead tests are `cargo test -p shika-core lead`.
+- Unit tests: `cargo test -p shika-core control` for parsing (including `pr --title/--body`), rendering, framing, the control directory, and a socket round trip. `cargo test -p shika-core publish::tests::publish_now` for the direct publish against a disposable repository, a local bare remote, and a fake `gh`. `cargo test -p shika control::` for `resolve`/`Ledger`, the doorbell (`Doorbell`, `Gate`, `doorbell_line`), the send and key guard (`input_refusal`), the `pr` gate and reply mapping (`pr_gate_refusal`, `pr_reply`), key and paste encoding, a real socket with a stand-in UI thread, a client that left, and launch-failure classification. `cargo test -p shika-core diff::` covers `render_unified`. The core-side Lead tests are `cargo test -p shika-core lead`.
 
 ## Adding a command
 
 Follow this order. The compiler enforces some of it (the `match` on `Command` in `handle_control` is exhaustive); the rest is by hand.
 
-1. **Decide the contract first** in [lead-agent.md](lead-agent.md): what it does, what it refuses, and which tasks it may touch (own workers only, or the whole project). A command that writes needs an ownership check. A command that publishes or closes must open the existing author-confirmed flow and never skip it.
+1. **Decide the contract first** in [lead-agent.md](lead-agent.md): what it does, what it refuses, and which tasks it may touch (own workers only, or the whole project). A command that writes needs an ownership check. A command that closes must open the existing author-confirmed flow and never skip it. `pr` is the one command the author chose to let publish without a dialog; it reuses the publish pipeline and every recheck. Do not extend that exception to another command, another target, or the author's cards without the author's decision.
 2. **`crates/shika-core/src/control.rs`**:
    - Add the `Command` variant, with `///` docs on its fields.
    - Add its word to `is_command` (the client is chosen by this list, and the list is not derived from the enum).
@@ -595,7 +617,7 @@ Follow this order. The compiler enforces some of it (the `match` on `Command` in
 
 Guardrails (from [lead-agent.md](lead-agent.md)):
 
-- Do not let the Lead publish, close dirty work, merge, push, or force anything without the author's confirmation in the app.
+- Do not let the Lead close dirty work, merge, force anything, or push outside `shika pr` without the author's confirmation in the app. Keep `shika pr` on the task's recorded base, on workers this Lead started, through `session_publish_now` with every recheck; never add a target, merge, or skip-recheck option.
 - Do not edit any CLI's global or project configuration to teach it `shika`. The command reaches the Lead through `PATH` plus its absolute executable in the first prompt and help preamble.
 - Do not add a model API call. Shika launches the author's CLI and nothing else.
 - Keep the client free of GPUI, settings, and app data (`control_client::run` runs before any of them).
@@ -610,7 +632,8 @@ Guardrails (from [lead-agent.md](lead-agent.md)):
 | Client entry: environment, parse, round trip, print, exit status | `crates/shika/src/control_client.rs` (`run`), called at the top of `main` in `crates/shika/src/main.rs` |
 | Server: `Server`, `accept_loop`, `serve`, `peer_closed`, `Incoming` | `crates/shika/src/control.rs` |
 | Command handling: `Shika::drain_control`, `handle_control`, `control_new`, `control_diff`, `control_input`, `new_refusal`, `wait_refusal`, `wait_set`, `resolve_waiters`; `resolve`, `Ledger`, `Observed`; `Card::control_status`, `task_info`, `is_live_worker_of`; `failure_reply` | `crates/shika/src/control.rs` |
-| `pr` and `close`: `Shika::control_dialog`, `dialog_refusal`, `settle_lead_dialog`, `lead_dialog_succeeded`, `lead_dialog_failed`; `LeadDialog`, `DialogKind`, `dialog_gate_refusal`, `pr_status_refusal`, `dialog_reply`, `close_outcome`, `publish_failure`; shared checks `Shika::publish_blocker`, `Overlay::name` | `crates/shika/src/control.rs`; hooks in `create_pr`, `publish_pr`, `close`, `finish_close`, `cancel_overlay` in `crates/shika/src/main.rs` |
+| `pr`: `Shika::control_pr`, `pr_refusal`, `worker_refusal`; `pr_gate_refusal`, `pr_status_refusal`, `pr_reply`, `publish_failure`, `LEAD_PUBLISHING`; `Card::lead_publishing` and its checks in `publish_blocker`, `switch_blocker`, `close`, `input_refusal`; core `Core::session_publish_now`, `publish::publish_now`, `Error::PublishNoTarget`, `MAX_PR_BODY_CHARS`; parsing `parse_pr` | `crates/shika/src/control.rs`; `crates/shika/src/main.rs`; `crates/shika-core/src/lib.rs`, `publish.rs`, `error.rs`, `control.rs` |
+| `close`: `Shika::control_close`, `worker_refusal`, `settle_lead_dialog`, `lead_dialog_succeeded`, `lead_dialog_failed`; `LeadDialog`, `dialog_gate_refusal`, `dialog_reply`, `close_outcome`; `Overlay::name` | `crates/shika/src/control.rs`; hooks in `close`, `finish_close`, `cancel_overlay` in `crates/shika/src/main.rs` |
 | Doorbell and typing: `Doorbell`, `Gate`, `doorbell_line`, `Shika::ring_doorbells`, `Shika::type_into`, `Step`, `paste_steps`, `key_steps`, `key_bytes`, `input_refusal`, `HostState::inject` | `crates/shika/src/control.rs`; `HostState::capture_typed`, `has_draft` in `crates/shika/src/main.rs` |
 | Terminal text with scrollback | `Terminal::text_with_history` in `crates/shika-terminal/src/terminal.rs` |
 | Diff text | `shika_core::render_unified`, `RENDER_CAP_BYTES` in `crates/shika-core/src/diff.rs` |

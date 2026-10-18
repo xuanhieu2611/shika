@@ -2,7 +2,7 @@
 
 Contributor and coding-agent guide for Shika's **Create PR** feature: what changed, why, how the implementation works, and how to debug or extend it safely.
 
-Start with [AGENTS.md](../AGENTS.md) for architecture and build constraints. This guide records the product decision: Create PR is the only flow in which Shika commits for the user, and only after confirmation. Read [design/DESIGN.md](../design/DESIGN.md) before UI changes, [keyboard-flow.md](keyboard-flow.md) for dispatch/focus, and [terminal-tabs.md](terminal-tabs.md) for task/PTY ownership. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#confirmed-pr-publishing) separates validation evidence from remaining acceptance checks.
+Start with [AGENTS.md](../AGENTS.md) for architecture and build constraints. This guide records the product decision: publishing is the only flow in which Shika commits for the user, and only when the author asked for it: by confirming Create PR, or by asking their Lead to publish a worker (`shika pr`, which has no dialog; see [Publishing from a Lead](#publishing-from-a-lead)). Read [design/DESIGN.md](../design/DESIGN.md) before UI changes, [keyboard-flow.md](keyboard-flow.md) for dispatch/focus, and [terminal-tabs.md](terminal-tabs.md) for task/PTY ownership. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#confirmed-pr-publishing) separates validation evidence from remaining acceptance checks.
 
 ## What changed
 
@@ -63,13 +63,29 @@ The dialog displays:
 - A title initially copied from the task title, including a manual [Rename task](task-names.md) name, used for both a new commit and a new PR. Renaming alone creates no commit and rewrites no existing commit or PR; the editable title here still requires confirmation.
 - An editable target field with matching existing GitHub branches.
 
-A Lead can open this dialog with `shika pr <task>` for a worker it started (see [shika-cli.md](shika-cli.md#shika-pr-task)). It goes through `create_pr` and the same `publish_blocker` check, shows the same dialog, and never confirms it; the Lead's command blocks until the author confirms or cancels, then focus returns to the Lead.
+A Lead publishes a worker it started with `shika pr <task>` without this dialog (see [Publishing from a Lead](#publishing-from-a-lead)). While it runs, Create PR on that card is refused with "The Lead is publishing this task. Try again when it finishes."
 
 Tab switches fields; clicking selects a field or branch. Enter or **Commit, push, create PR** confirms. Escape or Cancel restores the previous focus before publishing begins. While publishing, the action reads **Publishing...** and dismissal is blocked.
 
 **The file list is the proposed new commit, not the entire PR diff.** Already-committed changes are not listed there. A clean worktree can still publish existing commits without creating another commit. Selective staging is not preserved as a publishing boundary: confirmation approves `git add -A` for the task root. Use the shell for partial commits.
 
 On success, Shika opens the returned PR URL, restores focus, and keeps the card, branch, worktree, agent, and shell PTYs intact. Reusing an existing PR pushes approved work and opens that PR; it does not rewrite the existing PR title or body.
+
+## Publishing from a Lead
+
+**What changed.** Until protocol 6, a Lead's `shika pr` opened this dialog for the author and waited. Since 2026-10-17 it publishes directly: no dialog, no Enter, and the Lead prints the PR URL. The author decided it: "I want my leader to open the PR for me, and just give me the response, instead of me checking the PR title, description, etc., then pressing enter, then seeing the response." Asking the Lead is the confirmation, so the second confirmation in the dialog was removed for this one caller. The author's own Create PR keeps its dialog. The command reference is [shika-cli.md](shika-cli.md#shika-pr-task---title-text---body-text); the decision, flow, and debugging live in [lead-agent.md](lead-agent.md#pr-publishes-directly).
+
+**Same pipeline.** `Core::session_publish_now` takes the operation lock once and runs `publish::publish_now`: `preview`, then `publish` with the preview's own values, exactly as if the author opened the dialog and confirmed it untouched. Every recheck below applies. The differences are only where the dialog would have asked:
+
+| The dialog | `shika pr` |
+| --- | --- |
+| Target prefilled from the recorded base; the author may choose another | The recorded base only. No target is `Error::PublishNoTarget`, a refusal that tells the author to use Create PR. Never a fallback branch. |
+| Title prefilled from the task title, editable | The task title, or `--title` (one line). |
+| Description from `gh --fill` | `gh --fill`, or `--body` (up to `MAX_PR_BODY_CHARS`, 65,536), passed as `gh pr create --body` instead of `--fill`. |
+| Opens the PR URL in the browser, restores focus | Prints the URL for the Lead. No browser, selection, focus, or toast change. |
+| Global `busy` while running | `Card::lead_publishing` for that card only; the author keeps working. Create PR, Close, and Switch agent on that card wait for it. |
+
+A reused PR keeps its title and body; `--title` and `--body` only shape a new commit and a new PR.
 
 ## Target and repository identity
 
@@ -115,6 +131,13 @@ Shika::publish_pr
       → publish::publish
   → success: dismiss, restore focus, open URL
     failure: keep dialog and report retained work
+
+Shika::control_pr (a Lead's shika pr; no dialog)
+  → refusals, then Card::lead_publishing
+  → background Core::session_publish_now(session_id, title, body)
+      → operation lock (once) + task-branch ownership check
+      → publish::publish_now: preview, recorded target or PublishNoTarget, publish
+  → reply URL, refusal, or error to the Lead; start the checks watch
 ```
 
 ### Preview without changing the real index
@@ -150,14 +173,14 @@ The real staging area is untouched by preview, but preview is **not completely s
    gh pr create --repo HOST/OWNER/REPO --head TASK --base TARGET --title TITLE --fill
    ```
 
-   The explicit title overrides `--fill`'s generated title. The description comes from commits. Explicit `--head` avoids gh choosing a push/fork destination.
+   The explicit title overrides `--fill`'s generated title. The description comes from commits. Explicit `--head` avoids gh choosing a push/fork destination. When a Lead passes `--body`, `--body BODY` replaces `--fill` rather than joining it, so gh never has to reconcile the two.
 10. Returns the existing/new PR URL. A new URL must be a single-line HTTPS value.
 
 Pushing a **pinned SHA**, not a moving `HEAD`, prevents a concurrent later commit from hitching a ride after approval. This is not an atomic lock on the worktree or Git configuration. External shells, hooks, and other processes still require defensive rechecks and can create races.
 
 ### Threads, process environment, and ownership
 
-Both core publishing APIs are blocking and must run on a background executor. The UI's global busy guard prevents conflicting app actions. The core operation lock serializes publishing with app-managed branch/lifecycle mutations; it can be held across network requests. Neither guard prevents shell edits or enforces repository-wide exclusivity against external Git processes.
+All three core publishing APIs are blocking and must run on a background executor. The UI's global busy guard prevents conflicting app actions during the author's Create PR; a Lead's `shika pr` uses the per-card `Card::lead_publishing` instead, so the author's navigation is never frozen by work they did not start. The core operation lock serializes publishing with app-managed branch/lifecycle mutations; it can be held across network requests. Neither guard prevents shell edits or enforces repository-wide exclusivity against external Git processes.
 
 `run_with_timeout` provides:
 
@@ -205,8 +228,10 @@ Use symbols rather than line numbers, which change frequently.
 | Same file: `ensure_not_integrating`, `dirty_submodule` | Refuse unfinished integration and uncommitted submodule content. |
 | Same file: `publish`, `PullRequest` | Revalidation, stage/commit/push, source-qualified PR reuse, and creation. |
 | Same file: `run`, `run_with_timeout`, `git`, `gh` | Bounded subprocesses and child environment. |
-| `crates/shika-core/src/lib.rs`: `session_publish_preview`, `session_publish`, `ensure_session_branch` | Public API, operation locking, CLI resolution, task ownership, and supported external renames. |
-| `crates/shika-core/src/error.rs`: `Error::Publish`, `Error::TaskBranchChanged` | Publishing details versus a distinct task-branch mismatch. |
+| Same file: `publish_now`, `MAX_PR_BODY_CHARS` | A Lead's one-step publish with the dialog's defaults, and the body limit. |
+| `crates/shika-core/src/lib.rs`: `session_publish_preview`, `session_publish`, `session_publish_now`, `ensure_session_branch` | Public API, operation locking, CLI resolution, task ownership, and supported external renames. |
+| `crates/shika-core/src/error.rs`: `Error::Publish`, `Error::TaskBranchChanged`, `Error::PublishNoTarget` | Publishing details, a distinct task-branch mismatch, and a Lead publish with no recorded target. |
+| `crates/shika/src/control.rs`: `Shika::control_pr`, `pr_refusal`, `pr_reply`, `LEAD_PUBLISHING`; `Card::lead_publishing` in `main.rs` | A Lead's `shika pr`: refusals, the per-card in-flight mark, and the reply. |
 | `crates/shika/src/main.rs`: `CreatePr`, `create_pr`, `publish_pr`, `Overlay::Publish` | Action dispatch, workers, validation, dialog state, and completion. |
 | Same file: `terminal_side`, `overlay_view`, `key`, `cancel_overlay`, `restore_overlay_focus`, `main` | Control/menu/binding registration, field editing, focus, and busy dismissal. |
 | `crates/shika-core/src/session.rs`: `Session::base_ref`; `worktree.rs`: base resolution and `JournalEntry` | Existing starting-base ownership/persistence; no new schema for publishing. |
@@ -231,6 +256,8 @@ Do not attach tokens, credential-bearing remote URLs, private file contents, or 
 | Symptom | Inspect first |
 | --- | --- |
 | Create PR does nothing | `create_pr` busy/overlay guard, selection/session availability, setup, and `Card::running`; binding/action registration if only the shortcut fails. |
+| Create PR says "The Lead is publishing this task." | A Lead's `shika pr` on that card has not finished (`Card::lead_publishing`). It clears when the Lead's command gets its reply. |
+| A Lead's `shika pr` is refused for having no PR target | The task's `Session::base_ref` maps to no branch on GitHub. Publish with Create PR and choose a target; the Lead cannot. |
 | `unknown flag: --repo` as soon as Create PR opens | Preview's auth check is `gh repo view HOST/OWNER/REPO --json nameWithOwner`. `repo view` takes the repository as an argument and rejects `--repo` (gh 2.102.0). `pr list`, `pr create`, and `pr view` still use `--repo`. |
 | It works in a terminal but not from the Dock | `Core::path_env`, `PathEnv::resolve("gh")`, and the login-shell PATH. A shell's `which gh` alone does not prove GUI discovery. |
 | Target is blank or seems wrong | The task's `Session::base_ref`, `base_name`, and GitHub branch list. Do not “fix” it by reading current project settings or `origin/HEAD`. |
@@ -273,7 +300,7 @@ Verify that the isolated process's window is frontmost before synthetic input. A
 ## Contributor guardrails and extension points
 
 - Keep the original task base authoritative. Any alternative target must be an explicit selection validated in the intended repository.
-- Preserve confirmation and approved-tree/HEAD/origin/source checks. Do not stage the real index while merely opening a dialog.
+- Preserve confirmation and approved-tree/HEAD/origin/source checks. Do not stage the real index while merely opening a dialog. The only publish without the dialog is a Lead's `shika pr`, which the author chose; it must go through `session_publish_now`, keep every recheck, and never choose a target. Do not add another dialog-free caller without the author's decision.
 - Keep publishing independent of Close, PTY/tab ownership, activity detection, and task cleanup.
 - Keep blocking commands off the UI thread. Do not remove the busy/operation guards without a stable-identity and concurrency design.
 - Preserve user identity, hooks, signing, ignored-file rules, and non-force pushes. Add no agent attribution.

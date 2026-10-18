@@ -25,10 +25,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::memory::MemoryNote;
+use crate::publish::MAX_PR_BODY_CHARS;
 
 /// Bumped when a request or reply changes shape. The server refuses a request
 /// with another version, so a stale `shika` never misreads a newer app.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The longest request line the server reads. A longer one is rejected.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -53,7 +54,7 @@ pub const MAX_REPORT_BYTES: usize = 4096;
 pub const CLI_IDS: [&str; 4] = ["claude", "codex", "cursor", "pi"];
 
 /// Usage text for argument errors.
-pub const USAGE: &str = "usage: shika [--json] <command>\n  help\n  tasks\n  new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>\n  status <task>\n  wait [<task>...] [--timeout <seconds>]\n  read <task> [--lines <n>]\n  diff <task> [--stat]\n  send <task> [--no-enter] <text...>\n  key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)\n  pr <task>\n  close <task>
+pub const USAGE: &str = "usage: shika [--json] <command>\n  help\n  tasks\n  new --cli <claude|codex|cursor|pi> [--base <branch>] <prompt...>\n  status <task>\n  wait [<task>...] [--timeout <seconds>]\n  read <task> [--lines <n>]\n  diff <task> [--stat]\n  send <task> [--no-enter] <text...>\n  key <task> <key>...   (enter escape up down left right tab space backspace a-z 0-9)\n  pr <task> [--title <text>] [--body <text>]\n  close <task>
   memory
   remember <text...>
   forget <n>
@@ -157,9 +158,18 @@ pub enum Command {
     /// Press `keys` (names from [`KEY_NAMES`] or one of a-z, 0-9) in order in
     /// a worker's agent terminal. Only a worker this Lead started.
     Key { task: String, keys: Vec<String> },
-    /// Open the Create PR confirmation for a worker this Lead started, and
-    /// block until the author decides. The reply is the PR URL.
-    Pr { task: String },
+    /// Publish a worker this Lead started, without a dialog: what Create PR
+    /// does when the author confirms it untouched. Blocks until done. The
+    /// reply is the PR URL.
+    Pr {
+        task: String,
+        /// Commit and PR title. None: the task title, as Create PR prefills.
+        #[serde(default)]
+        title: Option<String>,
+        /// PR description. None: gh fills it from the commits.
+        #[serde(default)]
+        body: Option<String>,
+    },
     /// Close a worker this Lead started: at once when Close needs no
     /// confirmation, otherwise through the close dialog. Blocks until done.
     Close { task: String },
@@ -584,7 +594,8 @@ pub fn parse_args(args: &[String]) -> Result<(Command, bool), String> {
             text: parse_text(word, rest, &mut json)?,
         },
         "forget" => parse_forget(rest, &mut json)?,
-        "pr" | "close" => {
+        "pr" => parse_pr(rest, &mut json)?,
+        "close" => {
             let mut tasks = Vec::new();
             for arg in rest {
                 if arg == "--json" {
@@ -596,9 +607,8 @@ pub fn parse_args(args: &[String]) -> Result<(Command, bool), String> {
                 }
             }
             match <[String; 1]>::try_from(tasks) {
-                Ok([task]) if word == "pr" => Command::Pr { task },
                 Ok([task]) => Command::Close { task },
-                Err(_) => return Err(usage_error(&format!("{word} takes exactly one task."))),
+                Err(_) => return Err(usage_error("close takes exactly one task.")),
             }
         }
         other => return Err(usage_error(&format!("Unknown command {other}."))),
@@ -650,6 +660,57 @@ fn parse_new(args: &[String], json: &mut bool) -> Result<Command, String> {
         return Err(usage_error("new needs a prompt."));
     }
     Ok(Command::New { cli, base, prompt })
+}
+
+/// `pr <task> [--title <text>] [--body <text>]`: each value is one argument,
+/// so the Lead quotes it. The title is one line, as Create PR's field is; the
+/// body may span lines. Neither may be blank or given twice.
+fn parse_pr(args: &[String], json: &mut bool) -> Result<Command, String> {
+    let mut tasks = Vec::new();
+    let mut title = None;
+    let mut body = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--json" => *json = true,
+            "--title" | "--body" => {
+                let value = iter
+                    .next()
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| usage_error(&format!("{arg} needs text.")))?;
+                let slot = if arg == "--title" {
+                    &mut title
+                } else {
+                    &mut body
+                };
+                if slot.replace(value.clone()).is_some() {
+                    return Err(usage_error(&format!("{arg} is given twice.")));
+                }
+            }
+            other if other.starts_with('-') => {
+                return Err(usage_error(&format!("Unknown option {other}.")));
+            }
+            other => tasks.push(other.to_string()),
+        }
+    }
+    if title
+        .as_deref()
+        .is_some_and(|title| title.contains(['\n', '\r', '\0']))
+    {
+        return Err(usage_error("--title must be one line."));
+    }
+    if body
+        .as_deref()
+        .is_some_and(|body| body.contains('\0') || body.chars().count() > MAX_PR_BODY_CHARS)
+    {
+        return Err(usage_error(&format!(
+            "--body is text of at most {MAX_PR_BODY_CHARS} characters."
+        )));
+    }
+    match <[String; 1]>::try_from(tasks) {
+        Ok([task]) => Ok(Command::Pr { task, title, body }),
+        Err(_) => Err(usage_error("pr takes exactly one task.")),
+    }
 }
 
 fn parse_read(args: &[String], json: &mut bool) -> Result<Command, String> {
@@ -826,7 +887,8 @@ fn io_error(err: &std::io::Error) -> ControlError {
 
 /// Client side: connect to `socket`, send one request line, read one reply
 /// line. Blocking; `wait` blocks here for up to its timeout, `new` until the
-/// launch finishes, and `pr` and `close` until the author decides.
+/// launch finishes, `pr` until publishing ends, and `close` until the author
+/// decides.
 pub fn send(socket: &Path, request: &Request) -> Result<Reply> {
     let mut stream = UnixStream::connect(socket).map_err(|err| {
         ControlError::Connect(format!(
@@ -839,10 +901,11 @@ pub fn send(socket: &Path, request: &Request) -> Result<Reply> {
     // project's `timeout-seconds`, and a client that gave up early would
     // leave the worker running with no one told its id. The server always
     // answers a live app (the launch result, or an error), and a quitting
-    // app closes the socket, which ends the read with EOF. `pr` and `close`
-    // wait for the author at a confirmation dialog and are unbounded for the
-    // same reason: the server answers on confirm, cancel, or any way the
-    // dialog goes away.
+    // app closes the socket, which ends the read with EOF. `pr` runs a chain
+    // of git and gh commands, each bounded at 120 seconds but not the chain,
+    // and a client that gave up could miss the URL of a PR that was created.
+    // `close` waits for the author at a confirmation dialog. Both are
+    // unbounded for the same reason: the server always answers.
     let patience = match &request.command {
         Command::Wait { timeout_secs, .. } => {
             Some(Duration::from_secs(timeout_secs.saturating_add(30)))
@@ -1081,7 +1144,16 @@ mod tests {
                 task: "a".into(),
                 keys: vec!["down".into(), "enter".into()],
             },
-            Command::Pr { task: "a".into() },
+            Command::Pr {
+                task: "a".into(),
+                title: None,
+                body: None,
+            },
+            Command::Pr {
+                task: "a".into(),
+                title: Some("Fix \"login\"".into()),
+                body: Some("Why\n\n- tested".into()),
+            },
             Command::Close { task: "a".into() },
             Command::Memory,
             Command::Remember {
@@ -1141,7 +1213,25 @@ mod tests {
         }
         assert_eq!(
             serde_json::to_string(&Request::new("t", Command::Tasks)).unwrap(),
-            r#"{"version":5,"token":"t","command":{"type":"tasks"}}"#
+            r#"{"version":6,"token":"t","command":{"type":"tasks"}}"#
+        );
+        // `pr` title and body are optional on the wire.
+        assert_eq!(
+            serde_json::from_str::<Command>(r#"{"type":"pr","task":"a"}"#).unwrap(),
+            Command::Pr {
+                task: "a".into(),
+                title: None,
+                body: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&Command::Pr {
+                task: "a".into(),
+                title: Some("T".into()),
+                body: None,
+            })
+            .unwrap(),
+            r#"{"type":"pr","task":"a","title":"T","body":null}"#
         );
     }
 
@@ -1390,14 +1480,36 @@ mod tests {
                 false
             )
         );
-        assert_eq!(ok("pr abc"), (Command::Pr { task: "abc".into() }, false));
+        let pr = |title: Option<&str>, body: Option<&str>| Command::Pr {
+            task: "abc".into(),
+            title: title.map(str::to_string),
+            body: body.map(str::to_string),
+        };
+        assert_eq!(ok("pr abc"), (pr(None, None), false));
         assert_eq!(
             ok("--json close abc"),
             (Command::Close { task: "abc".into() }, true)
         );
+        assert_eq!(ok("pr abc --json"), (pr(None, None), true));
+        // A quoted value is one argument, spaces, dashes, and lines included.
+        let quoted = |words: &[&str]| {
+            parse_args(&words.iter().map(|w| w.to_string()).collect::<Vec<_>>()).unwrap()
+        };
         assert_eq!(
-            ok("pr abc --json"),
-            (Command::Pr { task: "abc".into() }, true)
+            quoted(&["pr", "--title", "Fix the login", "abc"]),
+            (pr(Some("Fix the login"), None), false)
+        );
+        assert_eq!(
+            quoted(&[
+                "pr",
+                "abc",
+                "--body",
+                "Why:\n- it broke",
+                "--json",
+                "--title",
+                "-x"
+            ]),
+            (pr(Some("-x"), Some("Why:\n- it broke")), true)
         );
         assert_eq!(
             ok("wait"),
@@ -1553,7 +1665,13 @@ mod tests {
             "pr",
             "pr a b",
             "pr --nope",
+            "pr a --title",
+            "pr a --body",
+            "pr --title x",
+            "pr a --title x --title y",
+            "pr a --body x --body y",
             "close",
+            "close a --title x",
             "close a b",
             "close a --nope",
         ] {
@@ -1564,6 +1682,21 @@ mod tests {
         assert!(err.starts_with("Unknown command frob."), "{err}");
         let too_many = format!("key a {}", ["tab"; MAX_KEYS + 1].join(" "));
         assert!(parse_args(&args(&too_many)).is_err());
+        let long = "x".repeat(MAX_PR_BODY_CHARS + 1);
+        for values in [
+            ["--title", " "],
+            ["--title", "two\nlines"],
+            ["--body", "\n"],
+            ["--body", "nul\0"],
+            ["--body", long.as_str()],
+        ] {
+            let words: Vec<String> = ["pr", "a", values[0], values[1]]
+                .iter()
+                .map(|w| w.to_string())
+                .collect();
+            let err = parse_args(&words).unwrap_err();
+            assert!(err.contains("usage: shika"), "{values:?}: {err}");
+        }
     }
 
     #[test]

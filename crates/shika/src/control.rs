@@ -528,6 +528,8 @@ pub struct InputState {
     pub status: TaskStatus,
     /// The author typed into that terminal and has not submitted it.
     pub draft: bool,
+    /// A `shika pr` is publishing it ([`Card::lead_publishing`]).
+    pub publishing: bool,
 }
 
 /// Why the Lead may not type into `task` now. `escape_only` is a `key` of
@@ -540,6 +542,7 @@ pub fn input_refusal(task: &str, state: &InputState, escape_only: bool) -> Optio
             ));
         }
         TaskStatus::Starting => return Some(format!("{task} is still starting. Try again.")),
+        _ if state.publishing => return Some(LEAD_PUBLISHING.into()),
         TaskStatus::Working if !escape_only => {
             return Some(format!(
                 "{task} is working. Wait for it, or interrupt it with: shika key {task} escape"
@@ -834,27 +837,18 @@ pub fn failure_reply(error: &shika_core::Error) -> Reply {
     }
 }
 
-/// Which confirmation a Lead asked the author for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DialogKind {
-    /// Create PR, from `shika pr`.
-    Pr,
-    /// The close dialog, or a direct close, from `shika close`.
-    Close,
-}
-
-/// The one `pr` or `close` waiting on the author. Shika holds at most one,
-/// because both flows open a dialog and only one overlay exists at a time.
-/// It outlives the dialog just long enough to answer the client and give the
-/// selection and focus back to the Lead.
+/// The one `close` waiting on the author. Shika holds at most one, because
+/// the flow may open a dialog and only one overlay exists at a time. It
+/// outlives the dialog just long enough to answer the client and give the
+/// selection and focus back to the Lead. `pr` has none: it publishes without
+/// a dialog ([`Shika::control_pr`]).
 pub struct LeadDialog {
-    kind: DialogKind,
     /// Session id of the Lead that asked.
     pub(super) lead_id: String,
     /// Session id of the worker the dialog is about.
     task: String,
     reply: Responder,
-    /// Set when the flow succeeded: the PR URL, or what Close did.
+    /// Set when the flow succeeded: what Close did.
     outcome: Option<String>,
     /// The last failure the flow reported. The dialog stays open for a retry,
     /// so it is only sent if the author then gives up.
@@ -877,6 +871,24 @@ pub fn dialog_gate_refusal(pending: bool, busy: bool, open: Option<&str>) -> Opt
     }
     busy.then(|| "Shika is busy with another operation. Try again in a moment.".into())
 }
+
+/// Why a Lead's `pr` cannot publish `task` right now, from the state of
+/// Shika alone. `open` names an overlay the author has open about this same
+/// task (its Create PR, Close, or Switch agent dialog). Other overlays do not
+/// matter: `pr` opens none.
+pub fn pr_gate_refusal(task: &str, busy: bool, open: Option<&str>) -> Option<String> {
+    if let Some(open) = open {
+        return Some(format!(
+            "The author has {open} open for {task}. Try again after they finish it."
+        ));
+    }
+    busy.then(|| "Shika is busy with another operation. Try again in a moment.".into())
+}
+
+/// The refusal for anything that would act on a worker while a Lead's `pr`
+/// publishes it: the author's Create PR, Close, and Switch agent, and the
+/// Lead's `pr`, `close`, `send`, and `key`.
+pub const LEAD_PUBLISHING: &str = "The Lead is publishing this task. Try again when it finishes.";
 
 /// `pr` needs a task that has finished a turn: the same condition as Create PR
 /// ([`crate::Shika::publish_blocker`]) plus the states a Lead can see.
@@ -904,9 +916,28 @@ pub fn close_outcome(action: u8) -> &'static str {
     }
 }
 
-/// A publish failure as the Lead reads it. The dialog adds how to retry.
+/// A publish failure as the Lead reads it.
 pub fn publish_failure(error: &str) -> String {
     format!("{error} Completed commits and pushes were kept.")
+}
+
+/// What a finished `pr` answers: the URL, a refusal for what only the author
+/// can resolve before publishing (no PR target, the worktree on another
+/// branch), or the error with what was kept.
+pub fn pr_reply(result: Result<String, shika_core::Error>) -> Reply {
+    use shika_core::Error;
+    match result {
+        Ok(url) => Reply::Done { message: url },
+        Err(error @ (Error::PublishNoTarget(_) | Error::TaskBranchChanged { .. })) => {
+            refused(error.to_string())
+        }
+        Err(Error::UnknownSession) => Reply::Error {
+            message: "The task is no longer in Shika.".into(),
+        },
+        Err(error) => Reply::Error {
+            message: publish_failure(&error.to_string()),
+        },
+    }
 }
 
 /// The reply for a dialog that ended. Success wins, then the last failure the
@@ -1182,20 +1213,12 @@ impl Shika {
                 );
                 return;
             }
-            Command::Pr { task } => {
-                self.control_dialog(DialogKind::Pr, &lead_id, &project, task, reply, window, cx);
+            Command::Pr { task, title, body } => {
+                self.control_pr(&lead_id, &project, task, title, body, reply, cx);
                 return;
             }
             Command::Close { task } => {
-                self.control_dialog(
-                    DialogKind::Close,
-                    &lead_id,
-                    &project,
-                    task,
-                    reply,
-                    window,
-                    cx,
-                );
+                self.control_close(&lead_id, &project, task, reply, window, cx);
                 return;
             }
             Command::Wait {
@@ -1243,13 +1266,102 @@ impl Shika {
         reply
     }
 
-    /// `shika pr` and `shika close`: select the worker's card and run the
-    /// ordinary Create PR or Close flow, which asks the author. The reply is
-    /// sent by [`Self::settle_lead_dialog`] when the dialog ends.
+    /// `shika pr`: publish a worker without a dialog, as Create PR does when
+    /// the author confirms it untouched, and answer with the URL. The
+    /// author's selection, focus, and overlays are left alone, and the global
+    /// `busy` is not set, so they keep working meanwhile; the card is marked
+    /// [`Card::lead_publishing`] instead, which refuses what could race with
+    /// it on that task. The `#N` checks mark appears as after any publish.
     #[allow(clippy::too_many_arguments)]
-    fn control_dialog(
+    fn control_pr(
         &mut self,
-        kind: DialogKind,
+        lead_id: &str,
+        project: &str,
+        task: String,
+        title: Option<String>,
+        body: Option<String>,
+        reply: Responder,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(reason) = self.pr_refusal(lead_id, project, &task) {
+            let _ = reply.send(refused(reason));
+            return;
+        }
+        let Some(card) = self
+            .cards
+            .iter_mut()
+            .find(|card| card.session.as_ref().is_some_and(|s| s.id == task))
+        else {
+            let _ = reply.send(refused(format!("No task {task} in this project.")));
+            return;
+        };
+        card.lead_publishing = true;
+        cx.notify();
+        let core = self.core.clone();
+        cx.spawn(async move |this, cx| {
+            let id = task.clone();
+            let result = cx
+                .background_executor()
+                .spawn(
+                    async move { core.session_publish_now(&id, title.as_deref(), body.as_deref()) },
+                )
+                .await;
+            // If the app is gone the reply drops, and the connection thread
+            // tells the client.
+            let _ = this.update(cx, |this, cx| {
+                let card = this
+                    .cards
+                    .iter_mut()
+                    .find(|card| card.session.as_ref().is_some_and(|s| s.id == task));
+                if let Some(card) = card {
+                    card.lead_publishing = false;
+                    if let Ok(published) = &result {
+                        card.pr = crate::checks::PrWatch::new(published, Instant::now());
+                    }
+                }
+                let _ = reply.send(pr_reply(result.map(|published| published.url)));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The refusal for a `pr`, or None when it may publish.
+    fn pr_refusal(&self, lead_id: &str, project: &str, task: &str) -> Option<String> {
+        let open = self.overlay.as_ref().filter(|overlay| {
+            let card_is = |index: &usize| {
+                self.cards
+                    .get(*index)
+                    .and_then(|card| card.session.as_ref())
+                    .is_some_and(|s| s.id == task)
+            };
+            match overlay {
+                Overlay::Publish { preview, .. } => preview.session_id == task,
+                Overlay::SwitchAgent { session_id, .. } => session_id == task,
+                Overlay::Close { index, .. } | Overlay::SwitchedClose { index, .. } => {
+                    card_is(index)
+                }
+                _ => false,
+            }
+        });
+        if let Some(reason) = pr_gate_refusal(task, self.busy, open.map(Overlay::name)) {
+            return Some(reason);
+        }
+        if let Some(reason) = self.worker_refusal(lead_id, project, task, "publish") {
+            return Some(reason);
+        }
+        let card = self.project_card(project, task)?;
+        pr_status_refusal(task, card.control_status()).or_else(|| {
+            let index = self.cards.iter().position(|c| std::ptr::eq(c, card))?;
+            self.publish_blocker(index).map(str::to_string)
+        })
+    }
+
+    /// `shika close`: select the worker's card and run the ordinary Close
+    /// flow, which asks the author when Close would. The reply is sent by
+    /// [`Self::settle_lead_dialog`] when the flow ends.
+    fn control_close(
+        &mut self,
         lead_id: &str,
         project: &str,
         task: String,
@@ -1257,7 +1369,13 @@ impl Shika {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(reason) = self.dialog_refusal(kind, lead_id, project, &task) {
+        let refusal = dialog_gate_refusal(
+            self.lead_dialog.is_some(),
+            self.busy,
+            self.overlay.as_ref().map(Overlay::name),
+        )
+        .or_else(|| self.worker_refusal(lead_id, project, &task, "close"));
+        if let Some(reason) = refusal {
             let _ = reply.send(refused(reason));
             return;
         }
@@ -1270,7 +1388,6 @@ impl Shika {
             return;
         };
         self.lead_dialog = Some(LeadDialog {
-            kind,
             lead_id: lead_id.to_string(),
             task,
             reply,
@@ -1278,11 +1395,8 @@ impl Shika {
             error: None,
         });
         self.selection = Some(Selection::Card(index));
-        match kind {
-            DialogKind::Pr => self.create_pr(window, cx),
-            DialogKind::Close => self.close(window, cx),
-        }
-        // The flows start with `busy` set. If neither that nor a dialog
+        self.close(window, cx);
+        // The flow starts with `busy` set. If neither that nor a dialog
         // appeared, nothing will ever answer, so answer now.
         if !self.busy
             && self.overlay.is_none()
@@ -1295,29 +1409,20 @@ impl Shika {
         cx.notify();
     }
 
-    /// The refusal for a `pr` or `close`, or None when it may proceed.
-    fn dialog_refusal(
+    /// What `pr` and `close` both require of `task`: a worker this Lead
+    /// started in its project, set up, and not being published. `verb` is
+    /// the action, for the ownership refusal.
+    fn worker_refusal(
         &self,
-        kind: DialogKind,
         lead_id: &str,
         project: &str,
         task: &str,
+        verb: &str,
     ) -> Option<String> {
-        if let Some(reason) = dialog_gate_refusal(
-            self.lead_dialog.is_some(),
-            self.busy,
-            self.overlay.as_ref().map(Overlay::name),
-        ) {
-            return Some(reason);
-        }
         let Some(card) = self.project_card(project, task) else {
             return Some(format!("No task {task} in this project."));
         };
         if card.started_by.as_deref() != Some(lead_id) {
-            let verb = match kind {
-                DialogKind::Pr => "publish",
-                DialogKind::Close => "close",
-            };
             return Some(format!(
                 "{task} was not started by this Lead, so it cannot {verb} it."
             ));
@@ -1325,29 +1430,17 @@ impl Shika {
         if card.creating || card.launch_error.is_some() {
             return Some(format!("{task} is still being set up."));
         }
-        if kind == DialogKind::Close {
-            return None;
-        }
-        pr_status_refusal(task, card.control_status()).or_else(|| {
-            let index = self.cards.iter().position(|c| std::ptr::eq(c, card))?;
-            self.publish_blocker(index).map(str::to_string)
-        })
+        card.lead_publishing.then(|| LEAD_PUBLISHING.to_string())
     }
 
-    /// Whether the dialog `kind` for `task` is on screen.
-    fn lead_dialog_open(&self, kind: DialogKind, task: &str) -> bool {
-        let card_is = |index: &usize| {
-            self.cards
+    /// Whether the close dialog for `task` is on screen.
+    fn lead_dialog_open(&self, task: &str) -> bool {
+        match &self.overlay {
+            Some(Overlay::Close { index, .. } | Overlay::SwitchedClose { index, .. }) => self
+                .cards
                 .get(*index)
                 .and_then(|card| card.session.as_ref())
-                .is_some_and(|s| s.id == task)
-        };
-        match (&self.overlay, kind) {
-            (Some(Overlay::Publish { preview, .. }), DialogKind::Pr) => preview.session_id == task,
-            (
-                Some(Overlay::Close { index, .. } | Overlay::SwitchedClose { index, .. }),
-                DialogKind::Close,
-            ) => card_is(index),
+                .is_some_and(|s| s.id == task),
             _ => false,
         }
     }
@@ -1376,7 +1469,7 @@ impl Shika {
         })
     }
 
-    /// Answers the waiting `pr` or `close` once its dialog is gone and no
+    /// Answers the waiting `close` once its dialog is gone and no
     /// flow is still running, then gives the selection and focus back to the
     /// Lead, since the author was talking to it. Called from every place a
     /// dialog can end and from the tick, so a dialog that goes away any other
@@ -1398,8 +1491,7 @@ impl Shika {
             .cards
             .iter()
             .any(|card| card.session.as_ref().is_some_and(|s| s.id == dialog.task));
-        let running = self.lead_dialog_open(dialog.kind, &dialog.task)
-            || (self.busy && self.overlay.is_none());
+        let running = self.lead_dialog_open(&dialog.task) || (self.busy && self.overlay.is_none());
         if running && lead.is_some() && task_open {
             return;
         }
@@ -1502,6 +1594,7 @@ impl Shika {
         let state = InputState {
             status: card.control_status(),
             draft: lock(&card.agent.state).has_draft(),
+            publishing: card.lead_publishing,
         };
         if let Some(reason) = input_refusal(&task, &state, escape_only) {
             let _ = reply.send(refused(reason));
@@ -2688,6 +2781,58 @@ mod tests {
     }
 
     #[test]
+    fn pr_is_gated_only_by_busy_and_the_authors_dialogs_on_that_task() {
+        assert_eq!(pr_gate_refusal("a", false, None), None);
+        let open = pr_gate_refusal("a", true, Some("the Create PR dialog")).unwrap();
+        assert_eq!(
+            open,
+            "The author has the Create PR dialog open for a. Try again after they finish it."
+        );
+        let busy = pr_gate_refusal("a", true, None).unwrap();
+        assert!(busy.contains("busy"), "{busy}");
+    }
+
+    #[test]
+    fn pr_results_map_to_replies_and_exit_codes() {
+        use shika_core::Error;
+        let url = "https://github.com/o/r/pull/7".to_string();
+        let done = pr_reply(Ok(url.clone()));
+        assert_eq!(done, Reply::Done { message: url });
+        assert_eq!(done.exit_code(), 0);
+        // What only the author can resolve before publishing is a refusal.
+        for error in [
+            Error::PublishNoTarget(Some("dev".into())),
+            Error::PublishNoTarget(None),
+            Error::TaskBranchChanged {
+                expected: "a".into(),
+                current: "b".into(),
+            },
+        ] {
+            let reply = pr_reply(Err(error.clone()));
+            assert_eq!(reply, refused(error.to_string()));
+            assert_eq!(reply.exit_code(), 1);
+        }
+        let no_target = render_text(&pr_reply(Err(Error::PublishNoTarget(Some("dev".into())))));
+        assert!(
+            no_target.contains("dev") && no_target.contains("Create PR"),
+            "{no_target}"
+        );
+        // A failed step is an error that says what was kept.
+        let failed = pr_reply(Err(Error::Publish("push rejected".into())));
+        assert_eq!(failed.exit_code(), 2);
+        assert_eq!(
+            render_text(&failed),
+            "error: Could not publish PR: push rejected Completed commits and pushes were kept."
+        );
+        assert_eq!(
+            pr_reply(Err(Error::UnknownSession)),
+            Reply::Error {
+                message: "The task is no longer in Shika.".into()
+            }
+        );
+    }
+
+    #[test]
     fn pr_needs_a_task_that_finished_a_turn() {
         for status in [
             TaskStatus::Working,
@@ -2704,25 +2849,25 @@ mod tests {
 
     #[test]
     fn dialog_outcomes_map_to_replies_and_exit_codes() {
-        let url = "https://github.com/o/r/pull/7".to_string();
-        let done = dialog_reply(Some(url.clone()), None, true, true);
+        let closed = close_outcome(2).to_string();
+        let done = dialog_reply(Some(closed.clone()), None, true, true);
         assert_eq!(
             done,
             Reply::Done {
-                message: url.clone()
+                message: closed.clone()
             }
         );
         assert_eq!(done.exit_code(), 0);
         // Success wins over a failure the author then retried past.
         assert_eq!(
-            dialog_reply(Some(url.clone()), Some("x".into()), true, true),
+            dialog_reply(Some(closed.clone()), Some("x".into()), true, true),
             done
         );
         // A failure the author gave up on is an error with its text.
-        let failed = dialog_reply(None, Some(publish_failure("gh failed.")), true, true);
+        let failed = dialog_reply(None, Some("Could not push changes.".into()), true, true);
         assert_eq!(failed.exit_code(), 2);
         assert!(
-            matches!(&failed, Reply::Error { message } if message == "gh failed. Completed commits and pushes were kept.")
+            matches!(&failed, Reply::Error { message } if message == "Could not push changes.")
         );
         // Cancelling is a refusal with a fixed reason.
         let cancelled = dialog_reply(None, None, true, true);
@@ -2749,17 +2894,26 @@ mod tests {
     }
 
     #[test]
-    fn a_pr_or_close_waits_for_the_author_and_always_gets_an_answer() {
+    fn a_pr_or_close_blocks_until_it_ends_and_always_gets_an_answer() {
         let server = start_server();
         let socket = server.socket();
         answer_with(server, |incoming| {
-            // The stand-in UI thread: the author decides a moment later.
+            // The stand-in UI thread: publishing, or the author, takes a
+            // moment.
             std::thread::sleep(Duration::from_millis(600));
             let reply = match incoming.command {
-                Command::Pr { task } if task == "ship" => Reply::Done {
-                    message: "https://github.com/o/r/pull/7".into(),
-                },
-                Command::Pr { .. } => refused(crate::lead_steps::CANCELLED),
+                Command::Pr {
+                    task,
+                    title: Some(title),
+                    body: Some(body),
+                } if task == "ship" && title == "Fix \"login\"" && body == "Why\n- tested" => {
+                    Reply::Done {
+                        message: "https://github.com/o/r/pull/7".into(),
+                    }
+                }
+                Command::Pr { .. } => {
+                    refused(shika_core::Error::PublishNoTarget(Some("dev".into())).to_string())
+                }
                 Command::Close { task } if task == "gone" => {
                     // The card vanished: the pending reply is dropped.
                     drop(incoming.reply);
@@ -2775,11 +2929,17 @@ mod tests {
         let ask = |command| send(&socket, &Request::new("t", command)).unwrap();
         let shipped = ask(Command::Pr {
             task: "ship".into(),
+            title: Some("Fix \"login\"".into()),
+            body: Some("Why\n- tested".into()),
         });
         assert_eq!(render_text(&shipped), "https://github.com/o/r/pull/7");
-        let cancelled = ask(Command::Pr { task: "no".into() });
-        assert_eq!(cancelled.exit_code(), 1);
-        assert_eq!(render_text(&cancelled), "refused: The author cancelled.");
+        let no_target = ask(Command::Pr {
+            task: "other".into(),
+            title: None,
+            body: None,
+        });
+        assert_eq!(no_target.exit_code(), 1);
+        assert!(render_text(&no_target).starts_with("refused: The task's starting base dev"));
         assert_eq!(
             render_text(&ask(Command::Close { task: "a".into() })),
             "closed"
@@ -3054,7 +3214,11 @@ mod tests {
                 task: "a".into(),
                 keys: vec!["enter".into()],
             },
-            Command::Pr { task: "a".into() },
+            Command::Pr {
+                task: "a".into(),
+                title: None,
+                body: None,
+            },
             Command::Close { task: "a".into() },
             Command::Memory,
             Command::Remember { text: "x".into() },
@@ -3089,7 +3253,11 @@ mod tests {
 
     #[test]
     fn typing_into_a_worker_is_refused_unless_it_is_safe() {
-        let state = |status, draft| InputState { status, draft };
+        let state = |status, draft| InputState {
+            status,
+            draft,
+            publishing: false,
+        };
         let ok = |status| input_refusal("t", &state(status, false), false);
         assert_eq!(ok(TaskStatus::Ready), None);
         assert_eq!(ok(TaskStatus::Asking), None);
@@ -3110,6 +3278,18 @@ mod tests {
         let refusal = input_refusal("t", &state(TaskStatus::Ready, true), false).unwrap();
         assert!(refusal.contains("author has typed"), "{refusal}");
         assert!(input_refusal("t", &state(TaskStatus::Working, true), true).is_some());
+        // Nothing types into a worker a `shika pr` is publishing.
+        for (status, escape_only) in [(TaskStatus::Ready, false), (TaskStatus::Waiting, true)] {
+            let publishing = InputState {
+                status,
+                draft: false,
+                publishing: true,
+            };
+            assert_eq!(
+                input_refusal("t", &publishing, escape_only).as_deref(),
+                Some(LEAD_PUBLISHING)
+            );
+        }
     }
 
     #[test]

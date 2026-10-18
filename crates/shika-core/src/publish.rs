@@ -1,5 +1,7 @@
 //! Explicit, confirmed publishing through the user's git and GitHub CLI.
-//! Preview uses a disposable index, never the user's staging area.
+//! Preview uses a disposable index, never the user's staging area. The
+//! author confirms in the Create PR dialog; a Lead's `shika pr` is the one
+//! caller that publishes without it ([`publish_now`]).
 use crate::{Error, Result, Session, worktree};
 use serde::Deserialize;
 use std::{
@@ -59,6 +61,9 @@ pub struct PrChecks {
     pub open: bool,
     pub state: ChecksState,
 }
+
+/// GitHub's limit on a pull request body, in characters.
+pub const MAX_PR_BODY_CHARS: usize = 65_536;
 
 fn fail(message: impl Into<String>) -> Error {
     Error::Publish(message.into())
@@ -443,6 +448,31 @@ pub(crate) fn preview(
     })
 }
 
+/// `shika pr`: what the Create PR dialog does when the author confirms it
+/// untouched, in one step. The preview's defaults are the dialog's: the
+/// recorded starting base as target and the task title. A task with no such
+/// target is refused, never defaulted to another branch. `title` and `body`
+/// replace the defaults; no body keeps `gh --fill`'s commit description.
+pub(crate) fn publish_now(
+    git_bin: &Path,
+    gh_bin: &Path,
+    env: &str,
+    session: &Session,
+    title: Option<&str>,
+    body: Option<&str>,
+) -> Result<PublishedPr> {
+    let preview = preview(git_bin, gh_bin, env, session)?;
+    let Some(target) = preview.target.clone() else {
+        return Err(Error::PublishNoTarget(base_name(
+            session.base_ref.as_deref(),
+        )));
+    };
+    let title = title.unwrap_or(&preview.title);
+    publish(
+        git_bin, gh_bin, env, session, &preview, &target, title, body,
+    )
+}
+
 #[derive(Deserialize)]
 struct PullRequest {
     url: String,
@@ -459,6 +489,9 @@ struct HeadRepository {
 struct HeadOwner {
     login: String,
 }
+/// `body` is the new PR's description; None (or only whitespace) leaves it to
+/// `gh --fill`. A reused PR keeps its title and body.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn publish(
     git_bin: &Path,
     gh_bin: &Path,
@@ -467,11 +500,20 @@ pub(crate) fn publish(
     preview: &PublishPreview,
     target: &str,
     title: &str,
+    body: Option<&str>,
 ) -> Result<PublishedPr> {
     let dir = &session.worktree;
     ensure_not_integrating(git_bin, env, dir)?;
     if title.trim().is_empty() || title.contains(['\n', '\r', '\0']) {
         return Err(fail("Enter a single-line commit and PR title."));
+    }
+    let body = body.filter(|body| !body.trim().is_empty());
+    if let Some(body) = body
+        && (body.contains('\0') || body.chars().count() > MAX_PR_BODY_CHARS)
+    {
+        return Err(fail(format!(
+            "The PR body must be text of at most {MAX_PR_BODY_CHARS} characters."
+        )));
     }
     if !preview.branches.iter().any(|b| b == target) || target == session.branch {
         return Err(fail("Choose a different, existing target branch."));
@@ -637,24 +679,25 @@ pub(crate) fn publish(
             head: approved_head,
         });
     }
-    let output = gh(
-        gh_bin,
-        env,
-        dir,
-        &[
-            "pr",
-            "create",
-            "--repo",
-            &repo,
-            "--head",
-            &session.branch,
-            "--base",
-            target,
-            "--title",
-            title.trim(),
-            "--fill",
-        ],
-    )?;
+    let mut create = vec![
+        "pr",
+        "create",
+        "--repo",
+        &repo,
+        "--head",
+        &session.branch,
+        "--base",
+        target,
+        "--title",
+        title.trim(),
+    ];
+    // An explicit body replaces `--fill` rather than joining it, so gh never
+    // has to choose between them.
+    match body {
+        Some(body) => create.extend(["--body", body]),
+        None => create.push("--fill"),
+    }
+    let output = gh(gh_bin, env, dir, &create)?;
     let url = text(output);
     if !url.starts_with("https://") || url.contains(['\n', '\r']) {
         return Err(fail(
@@ -801,6 +844,7 @@ mod tests {
                 preview,
                 "dev",
                 "Add useful feature",
+                None,
             )
         }
         fn git(&self, args: &[&str]) -> String {
@@ -840,6 +884,7 @@ mod tests {
             &preview,
             "dev",
             &preview.title,
+            None,
         )
         .unwrap();
         assert_eq!(f.git(&["log", "-1", "--format=%s"]), "My chosen task name");
@@ -932,7 +977,19 @@ mod tests {
             assert_eq!(f.preview().target, None);
         }
         let p = f.preview();
-        assert!(publish(&f.git, &f.gh, "/usr/bin:/bin", &f.session, &p, "", "title").is_err());
+        assert!(
+            publish(
+                &f.git,
+                &f.gh,
+                "/usr/bin:/bin",
+                &f.session,
+                &p,
+                "",
+                "title",
+                None
+            )
+            .is_err()
+        );
     }
     #[test]
     fn existing_pr_is_reused_without_duplicate_creation() {
@@ -1007,7 +1064,8 @@ mod tests {
                 &f.session,
                 &p,
                 "not-a-branch",
-                "title"
+                "title",
+                None,
             )
             .is_err()
         );
@@ -1036,6 +1094,7 @@ mod tests {
             &p,
             "main",
             &p.title,
+            None,
         )
         .unwrap();
         assert!(
@@ -1043,6 +1102,93 @@ mod tests {
                 .unwrap()
                 .contains("--base main --title Add useful feature")
         );
+    }
+    #[test]
+    fn publish_now_uses_the_dialog_defaults() {
+        let f = Fixture::new();
+        f.edit();
+        let published =
+            publish_now(&f.git, &f.gh, "/usr/bin:/bin", &f.session, None, None).unwrap();
+        assert_eq!(published.url, "https://github.com/test/repo/pull/1");
+        assert_eq!(published.head, f.git(&["rev-parse", "HEAD"]));
+        assert_eq!(f.git(&["log", "-1", "--format=%s"]), "Add useful feature");
+        assert!(f.git(&["status", "--porcelain"]).is_empty());
+        let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
+        assert!(calls.contains(
+            "pr create --repo github.com/test/repo --head feat/task --base dev --title Add useful feature --fill"
+        ));
+    }
+    #[test]
+    fn publish_now_takes_a_title_and_a_body_instead_of_fill() {
+        let f = Fixture::new();
+        f.edit();
+        publish_now(
+            &f.git,
+            &f.gh,
+            "/usr/bin:/bin",
+            &f.session,
+            Some("Lead title"),
+            Some("Why it changed"),
+        )
+        .unwrap();
+        assert_eq!(f.git(&["log", "-1", "--format=%s"]), "Lead title");
+        let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
+        assert!(calls.contains("--base dev --title Lead title --body Why it changed\n"));
+        assert!(!calls.contains("--fill"));
+    }
+    #[test]
+    fn publish_now_ignores_a_blank_body() {
+        let f = Fixture::new();
+        f.edit();
+        publish_now(
+            &f.git,
+            &f.gh,
+            "/usr/bin:/bin",
+            &f.session,
+            None,
+            Some("  \n"),
+        )
+        .unwrap();
+        let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
+        assert!(calls.contains("--title Add useful feature --fill"));
+        assert!(!calls.contains("--body"));
+    }
+    #[test]
+    fn publish_now_refuses_a_bad_body_before_committing() {
+        let f = Fixture::new();
+        f.edit();
+        let long = "x".repeat(MAX_PR_BODY_CHARS + 1);
+        for body in ["nul\0inside", long.as_str()] {
+            let err = publish_now(&f.git, &f.gh, "/usr/bin:/bin", &f.session, None, Some(body))
+                .unwrap_err();
+            assert!(err.to_string().contains("PR body"), "{err}");
+        }
+        assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+        assert!(
+            !std::fs::read_to_string(f.root.join("calls"))
+                .unwrap()
+                .contains("pr create")
+        );
+    }
+    #[test]
+    fn publish_now_without_a_target_refuses_and_changes_nothing() {
+        let mut f = Fixture::new();
+        f.edit();
+        for (reference, name) in [
+            (None, None),
+            (Some("refs/heads/deleted"), Some("deleted")),
+            (Some("refs/remotes/origin/HEAD"), None),
+        ] {
+            f.session.base_ref = reference.map(str::to_string);
+            assert_eq!(
+                publish_now(&f.git, &f.gh, "/usr/bin:/bin", &f.session, None, None),
+                Err(Error::PublishNoTarget(name.map(str::to_string)))
+            );
+        }
+        assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+        assert!(!f.git(&["status", "--porcelain"]).is_empty());
+        let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
+        assert!(!calls.contains("pr list") && !calls.contains("pr create"));
     }
     #[test]
     fn switched_source_branch_cannot_publish_even_with_same_head_and_files() {

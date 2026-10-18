@@ -96,7 +96,7 @@ pub use path_env::{LoginShellError, PathEnv};
 pub use preparation::{PreparationConfig, PreparationControl, PreparationDraft, PreparationEvent};
 pub use projects::{Project, ProjectAdded, SavedLead};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
-pub use publish::{ChecksState, PrChecks, PublishPreview, PublishedPr};
+pub use publish::{ChecksState, MAX_PR_BODY_CHARS, PrChecks, PublishPreview, PublishedPr};
 pub use session::{DiffStat, LaunchOptions, Session, SessionGitState, WorkerEnv, task_title};
 pub use settings::{
     AgentSettings, Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize,
@@ -1342,6 +1342,37 @@ impl Core {
             preview,
             target,
             title,
+            None,
+        )
+    }
+
+    /// A Lead's `shika pr`: preview and publish in one hold of the operation
+    /// lock, with the Create PR dialog's defaults (recorded base as target,
+    /// task title) unless `title` or `body` replace them. There is no dialog,
+    /// so a task without a recorded target is [`Error::PublishNoTarget`].
+    /// The same rechecks, partial-success rules, and PR reuse apply.
+    pub fn session_publish_now(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<PublishedPr> {
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        refuse_lead(&session)?;
+        let session = self.ensure_session_branch(&session)?;
+        let gh = self.path_env().resolve("gh").ok_or_else(|| {
+            Error::Publish(
+                "gh not found on PATH. Install GitHub CLI and run gh auth login in a shell.".into(),
+            )
+        })?;
+        publish::publish_now(
+            &self.git()?,
+            &gh,
+            self.path_env().path(),
+            &session,
+            title,
+            body,
         )
     }
 
@@ -5199,6 +5230,10 @@ done
         );
         assert!(matches!(
             core.session_publish_preview(&lead.id),
+            Err(Error::LeadUnsupported)
+        ));
+        assert!(matches!(
+            core.session_publish_now(&lead.id, None, None),
             Err(Error::LeadUnsupported)
         ));
         assert!(matches!(
