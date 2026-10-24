@@ -569,3 +569,14 @@ Remaining native acceptance checks (leave unchecked until performed):
 - [ ] Forced crash, unknown delivery, transcript write/commit failure and Retry save/message: preserve data and draft/recoverability, no prompt replay, correct interrupted marker, no hidden content anywhere in SQLite.
 - [ ] A turn the CLI starts itself (2026-10-17 fix): a Lead that runs `shika wait` in the background and settles, then replies when the wait returns, shows that reply as a Lead bubble with no author bubble, goes Working then Ready, posts one notification, and keeps it after relaunch. Covered by core tests and a recorded fixture only.
 - [ ] Native Forget deletes Shika chat and saved conversation binding while memory remains; project removal removes its chat; non-Claude Leads and all workers remain unchanged real terminals.
+
+## Column sections and quiet title bar (2026-10-24)
+
+Implemented; `cargo test -p shika` and clippy pass. The GUI checks below are not yet done.
+
+- [ ] The title bar shows only the traffic lights, "Shika", and the column toggle beside it; dragging and double-click zoom still work on its empty space, and hiding the column moves the toggle to the terminal header.
+- [ ] The Leads header ("Leads" and `+`) shows with no Lead at all. `+` opens the New Lead picker, or shows the project's Lead when it already has one; with no project it toasts "Add a project first."
+- [ ] The Projects header shows the folder-plus (tooltip "Add project a") and `+` (tooltip "New agent ⌘N"); both `+` buttons line up with each project header's `+`.
+- [ ] The footer has the gear (tooltip "Settings ⌘,") on the left and no Add project button. With leftovers, a column below 420px drops the key hints and nothing clips.
+- [ ] `j`/`k` never stops on a section header; light, dark, glass, and a derived theme render the headers with existing tokens.
+- [ ] The column opens at 30% of the window (420px at 1400px), keeps that share while the window resizes (never under 320 or over 800, terminal keeps 420), a drag sets a new share that survives a relaunch, and a double-click on the edge restores 30%.

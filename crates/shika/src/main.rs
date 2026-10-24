@@ -4699,7 +4699,8 @@ impl Shika {
         let (column, panel) = changes::pane_widths(
             f32::from(window.viewport_size().width),
             MIN_TERMINAL_WIDTH,
-            (!self.column.hidden).then_some(f32::from(self.column.width)),
+            (!self.column.hidden)
+                .then_some(self.column.width(f32::from(window.viewport_size().width))),
             self.changes
                 .open
                 .then_some(f32::from(self.changes.width.width)),
@@ -4717,8 +4718,11 @@ impl Shika {
         self.column_drag_from.get_or_insert(self.column);
         // Beside the Changes panel as shown, the terminal still keeps 420.
         let panel = self.pane_widths(window).1.unwrap_or(px(0.));
-        let room = window.viewport_size().width - px(MIN_TERMINAL_WIDTH) - panel;
-        let next = self.column.with_width(f32::from(x.min(room)));
+        let viewport = window.viewport_size().width;
+        let room = viewport - px(MIN_TERMINAL_WIDTH) - panel;
+        let next = self
+            .column
+            .with_width(f32::from(x.min(room)), f32::from(viewport));
         if next != self.column {
             self.column = next;
             cx.notify();
@@ -5870,7 +5874,7 @@ impl Shika {
             .on_drag(ColumnDrag, |_, _, _, cx| cx.new(|_| ColumnDrag))
             .on_click(cx.listener(|this, event: &gpui::ClickEvent, _, cx| {
                 if event.click_count() == 2 {
-                    this.column = this.column.with_width(f32::from(Column::DEFAULT_WIDTH));
+                    this.column = this.column.reset();
                     this.save_settings();
                     cx.notify();
                 }
@@ -5941,8 +5945,8 @@ impl Shika {
     }
 
     /// The sidebar half of the title bar: the real traffic lights, the
-    /// wordmark, the column toggle, the settings gear, and New agent. The
-    /// system title is hidden.
+    /// wordmark, and the column toggle beside it. The system title is hidden.
+    /// New agent sits on the Projects header and the gear in the footer.
     fn top_row(
         &self,
         chrome: &Chrome,
@@ -5950,9 +5954,6 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let inset = Self::title_inset(window);
-        let hover = chrome.hover;
-        let gear_hover = chrome.ink_1;
-        let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
         let row = div()
             .id("titlebar")
             .h(px(BAR_HEIGHT))
@@ -5969,58 +5970,27 @@ impl Shika {
                     .text_color(chrome.ink_1)
                     .child("Shika"),
             )
-            .child(div().flex_1())
-            .child(self.column_toggle(chrome.ink_3, chrome.ink_1, hover, chrome, cx))
+            .child(self.column_toggle(chrome.ink_3, chrome.ink_1, chrome.hover, chrome, cx));
+        self.title_drag(row, cx)
+    }
+
+    /// The Projects header: its label, then Add project and New agent, the
+    /// `+` lining up with each project header's `+` below it.
+    fn projects_header(&self, chrome: &Chrome, cx: &mut Context<Self>) -> gpui::Div {
+        section_header("Projects", chrome)
             .child(
-                div()
-                    .id("settings")
-                    .group("settings")
-                    .occlude()
-                    .size(px(24.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(hover))
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| KeyTip {
-                            bg: tip_bg,
-                            fg: tip_fg,
-                            text: "Settings  \u{2318},".into(),
-                        })
-                        .into()
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
-                    .child(
-                        gpui::svg()
-                            .data(SETTINGS_ICON)
-                            .size(px(15.))
-                            .text_color(chrome.ink_3)
-                            .group_hover("settings", move |style| style.text_color(gear_hover)),
-                    ),
+                icon_button(
+                    "add-project",
+                    Some(FOLDER_PLUS_ICON),
+                    "Add project  a",
+                    chrome,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.add_project(cx))),
             )
             .child(
-                secondary_button("new", chrome)
-                    .occlude()
-                    .gap(px(8.))
-                    .pl(px(11.))
-                    .pr(px(6.))
-                    .py(px(4.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("New agent")
-                    .child(kbd("\u{2318}N", chrome.sunken, chrome.ink_3))
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| KeyTip {
-                            bg: tip_bg,
-                            fg: tip_fg,
-                            text: "New agent  ⌘N".into(),
-                        })
-                        .into()
-                    })
+                icon_button("new-agent", None, "New agent  \u{2318}N", chrome)
                     .on_click(cx.listener(|this, _, window, cx| this.picker(window, cx))),
-            );
-        self.title_drag(row, cx)
+            )
     }
 
     /// One project: its header, then the author's own cards. `indices` is
@@ -6192,9 +6162,9 @@ impl Shika {
         )
     }
 
-    /// The Leads section: a small label, then each Lead with its workers
-    /// under it. A project with a Lead leaving still draws its exit here
-    /// after the entry is gone.
+    /// The Leads section: its header with New Lead, then each Lead with its
+    /// workers under it. With no Lead it is the header alone. A project with
+    /// a Lead leaving still draws its exit here after the entry is gone.
     fn leads_section(
         &self,
         layout: &model::ColumnLayout,
@@ -6203,11 +6173,12 @@ impl Shika {
         reveal_selection: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let mut section = div()
-            .flex_none()
-            .flex()
-            .flex_col()
-            .child(section_label("Leads", chrome));
+        let mut section = div().flex_none().flex().flex_col().child(
+            section_header("Leads", chrome).child(
+                icon_button("new-lead", None, "New Lead  \u{2318}L", chrome)
+                    .on_click(cx.listener(|this, _, window, cx| this.new_lead(window, cx))),
+            ),
+        );
         for project in &self.projects {
             let entry = layout.leads.iter().find(|e| e.project == project.id);
             let leaving = self
@@ -6817,15 +6788,11 @@ impl Shika {
         )
     }
 
-    /// Add project, leftovers, and the key hints. A column too narrow for
-    /// the hints drops them; the keys still work.
+    /// The settings gear, leftovers, and the key hints. A column too narrow
+    /// for the hints beside Leftover worktrees drops them; the keys still
+    /// work.
     fn footer(&self, chrome: &Chrome, width: Pixels, cx: &mut Context<Self>) -> impl IntoElement {
-        let hints_fit = width
-            >= px(if self.leftovers.is_empty() {
-                FOOTER_HINTS_FIT
-            } else {
-                FOOTER_HINTS_FIT_WITH_LEFTOVERS
-            });
+        let hints_fit = self.leftovers.is_empty() || width >= px(FOOTER_HINTS_FIT);
         let hover = chrome.hover;
         let text_button = |id: &'static str| {
             div()
@@ -6866,11 +6833,15 @@ impl Shika {
                     .items_center()
                     .gap(px(4.))
                     .child(
-                        text_button("add")
-                            .flex_none()
-                            .child("Add project…")
-                            .child(kbd("a", chrome.sunken, chrome.ink_3))
-                            .on_click(cx.listener(|this, _, _, cx| this.add_project(cx))),
+                        icon_button(
+                            "settings",
+                            Some(SETTINGS_ICON),
+                            "Settings  \u{2318},",
+                            chrome,
+                        )
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
+                        ),
                     )
                     .when(!self.leftovers.is_empty(), |d| {
                         d.child(
@@ -9104,7 +9075,7 @@ impl Focusable for Shika {
 const UI_FONT: &str = ".AppleSystemUIFont";
 const MONO: &str = "JetBrains Mono";
 /// The terminal keeps at least this much of the window beside the column.
-/// The 960px window minimum leaves room for the default 540px column.
+/// The 960px window minimum leaves room for the column at 30% or 320px.
 const MIN_TERMINAL_WIDTH: f32 = 420.;
 /// Every card's height: the 20px task line, the 6px gap, the 16px meta line,
 /// and 23px of padding.
@@ -9139,16 +9110,72 @@ fn row_hint(key: &'static str, label: &'static str, chrome: &Chrome) -> gpui::Di
         .child(label)
 }
 
-/// "Leads" or "Projects": a quiet sentence-case label, 11px medium ink-3,
-/// aligned with the project header's text.
-fn section_label(text: &'static str, chrome: &Chrome) -> gpui::Div {
+/// The "Leads" or "Projects" header: a quiet sentence-case label, 12px
+/// medium ink-3, aligned with the project header's text. Its actions follow
+/// at the right, padded like a project header so the `+` buttons line up.
+fn section_header(text: &'static str, chrome: &Chrome) -> gpui::Div {
     div()
-        .px(px(8.))
-        .text_size(px(11.))
-        .line_height(px(16.))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(chrome.ink_3)
-        .child(text)
+        .min_h(px(24.))
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .pl(px(8.))
+        .pr(px(4.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(chrome.ink_3)
+                .child(text),
+        )
+}
+
+/// A 24px column button: ink-3, ink-1 on the hover wash, with its name and
+/// key in a tooltip. `icon` is an alpha-mask glyph at 15px; without one it
+/// is the 16px `+` the project headers use.
+fn icon_button(
+    id: &'static str,
+    icon: Option<&'static [u8]>,
+    tip: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    let (hover, ink_1, ink_3) = (chrome.hover, chrome.ink_1, chrome.ink_3);
+    let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+    let button = div()
+        .id(id)
+        .group(id)
+        .occlude()
+        .flex_none()
+        .size(px(24.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .cursor_pointer()
+        .text_color(ink_3)
+        .hover(move |style| style.bg(hover).text_color(ink_1))
+        .tooltip(move |_, cx| {
+            cx.new(|_| KeyTip {
+                bg: tip_bg,
+                fg: tip_fg,
+                text: tip.into(),
+            })
+            .into()
+        });
+    match icon {
+        Some(data) => button.child(
+            gpui::svg()
+                .data(data)
+                .size(px(15.))
+                .text_color(ink_3)
+                .group_hover(id, move |style| style.text_color(ink_1)),
+        ),
+        None => button.text_size(px(16.)).child("+"),
+    }
 }
 
 /// The card and its leading gap occupy one nonnegative layout slot. At the
@@ -9175,10 +9202,9 @@ fn card_row() -> gpui::Div {
 fn card_key(view: gpui::EntityId) -> SharedString {
     view.to_string().into()
 }
-/// The narrowest column that fits the footer's key hints, without and with
-/// the Leftover worktrees button.
+/// The narrowest column that fits the footer's key hints beside the Leftover
+/// worktrees button. Beside the gear alone they fit the narrowest column.
 const FOOTER_HINTS_FIT: f32 = 420.;
-const FOOTER_HINTS_FIT_WITH_LEFTOVERS: f32 = 580.;
 /// The invisible strip over the column's edge that starts a resize.
 const COLUMN_HANDLE_WIDTH: f32 = 8.;
 /// The top row of both halves of the window, which is the title bar.
@@ -9201,6 +9227,11 @@ const WORDMARK_INSET: f32 = 90.;
 /// Heroicons cog-6-tooth (24px solid). MIT notice: assets/licenses/Heroicons-MIT.txt.
 /// Drawn as an alpha mask and tinted by the element's text color.
 const SETTINGS_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#000" fill-rule="evenodd" d="M11.078 2.25c-.917 0-1.699.663-1.85 1.567L9.05 4.889c-.02.12-.115.26-.297.348a7.493 7.493 0 0 0-.986.57c-.166.115-.334.126-.45.083L6.3 5.508a1.875 1.875 0 0 0-2.282.819l-.922 1.597a1.875 1.875 0 0 0 .432 2.385l.84.692c.095.078.17.229.154.43a7.598 7.598 0 0 0 0 1.139c.015.2-.059.352-.153.43l-.841.692a1.875 1.875 0 0 0-.432 2.385l.922 1.597a1.875 1.875 0 0 0 2.282.818l1.019-.382c.115-.043.283-.031.45.082.312.214.641.405.985.57.182.088.277.228.297.35l.178 1.071c.151.904.933 1.567 1.85 1.567h1.844c.916 0 1.699-.663 1.85-1.567l.178-1.072c.02-.12.114-.26.297-.349.344-.165.673-.356.985-.57.167-.114.335-.125.45-.082l1.02.382a1.875 1.875 0 0 0 2.28-.819l.923-1.597a1.875 1.875 0 0 0-.432-2.385l-.84-.692c-.095-.078-.17-.229-.154-.43a7.614 7.614 0 0 0 0-1.139c-.016-.2.059-.352.153-.43l.84-.692c.708-.582.891-1.59.433-2.385l-.922-1.597a1.875 1.875 0 0 0-2.282-.818l-1.02.382c-.114.043-.282.031-.449-.083a7.49 7.49 0 0 0-.985-.57c-.183-.087-.277-.227-.297-.348l-.179-1.072a1.875 1.875 0 0 0-1.85-1.567h-1.843ZM12 15.75a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5Z"/></svg>"##;
+
+/// Heroicons folder-plus (24px outline), on the Projects header. Drawn as an
+/// alpha mask and tinted by the element's text color.
+/// MIT notice: assets/licenses/Heroicons-MIT.txt.
+const FOLDER_PLUS_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10.5v6m3-3H9m4.06-7.19-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>"##;
 
 /// The agent column toggle: a window with its left pane split off. Drawn for
 /// Shika at 16px.
@@ -9899,22 +9930,13 @@ impl Render for Shika {
             .flex_col()
             .gap(px(20.));
         let layout = self.column_layout();
-        // The labels only name the two sections once a Lead exists. A Lead
-        // that is leaving keeps the section until its exit has played.
-        let leads_shown = !layout.leads.is_empty()
-            || self
-                .departing
-                .iter()
-                .any(|d| matches!(d.home, Home::Leads(_)));
-        if leads_shown {
-            projects = projects.child(self.leads_section(
-                &layout,
-                &chrome,
-                cards_focused,
-                reveal_selection,
-                cx,
-            ));
-        }
+        projects = projects.child(self.leads_section(
+            &layout,
+            &chrome,
+            cards_focused,
+            reveal_selection,
+            cx,
+        ));
         let mut groups = div().flex_none().flex().flex_col().gap(px(20.));
         for (project, entry) in self.projects.iter().zip(&layout.projects) {
             groups = groups.child(self.project_group(
@@ -9927,19 +9949,15 @@ impl Render for Shika {
                 cx,
             ));
         }
-        projects = if leads_shown {
-            projects.child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .flex_col()
-                    .gap(px(CARD_GAP))
-                    .child(section_label("Projects", &chrome))
-                    .child(groups),
-            )
-        } else {
-            projects.child(groups)
-        };
+        projects = projects.child(
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(CARD_GAP))
+                .child(self.projects_header(&chrome, cx))
+                .child(groups),
+        );
         let (column_width, changes_width) = self.pane_widths(window);
         let sidebar = column_width.map(|width| {
             div()
@@ -10257,9 +10275,9 @@ fn main() -> anyhow::Result<()> {
                             px(TRAFFIC_LIGHTS.1),
                         )),
                     }),
-                    // The default 540px column plus a terminal wide enough to read.
+                    // The column at 30% (320px here) plus a terminal wide enough to read.
                     window_min_size: Some(size(px(960.), px(600.))),
-                    // The gear and New agent live in the title bar, so clicks
+                    // The column toggle lives in the title bar, so clicks
                     // there have to reach the app. The bar starts the drag itself.
                     app_owns_titlebar_drag: true,
                     window_background: appearance::background(&start),
