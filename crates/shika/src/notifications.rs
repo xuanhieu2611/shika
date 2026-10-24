@@ -104,9 +104,9 @@ mod native {
         pub fn new(clicks: Sender<String>, warnings: Sender<String>) -> Option<Self> {
             // currentNotificationCenter raises an Objective-C exception for an
             // unbundled executable. `cargo run` stays usable without banners.
-            if NSBundle::mainBundle().bundleIdentifier().as_deref()
-                != Some(&*NSString::from_str("com.hieule.shika"))
-            {
+            // Any bundle ID works: the release is com.hieule.shika, local
+            // bundles com.hieule.shika.dev, and scratch builds their own.
+            if NSBundle::mainBundle().bundleIdentifier().is_none() {
                 let _ = warnings.send("Notifications need the bundled Shika.app. Build it with scripts/bundle-app.sh.".into());
                 return None;
             }

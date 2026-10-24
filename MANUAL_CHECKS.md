@@ -2,6 +2,18 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Local bundle ID, 2026-10-24
+
+`scripts/bundle-app.sh` bundles are `com.hieule.shika.dev`; `release-app.sh` passes `--distribution` and keeps `com.hieule.shika`. Notifications start for any bundle ID. Formatting, strict Clippy, and workspace tests pass (249 app, 386 core, 67 terminal; one existing ignored) except the machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis`.
+
+- PASS: `./scripts/bundle-app.sh --debug` gives `CFBundleIdentifier` and `codesign -dv` `Identifier` `com.hieule.shika.dev`, ad hoc, satisfying its designated requirement; `assets/macos/Info.plist` is unchanged. `./scripts/bundle-app.sh --distribution` (the release profile, as `release-app.sh` calls it) gives `com.hieule.shika` in both. An unknown argument exits 2 with usage.
+- PASS: The dev bundle opened with `open -n ... --args --data-dir <disposable> --diagnostics-file <file>` wrote `notification_center_initialized=true`, and usernoted logged "Sending request for permission for com.hieule.shika.dev" and presented the permission alert. Status stayed denied (1) because nobody answered it, so no banner was posted.
+
+- [ ] A dev bundle opened with `open -n target/debug/Shika.app --args --data-dir /absolute/disposable/dir` asks for notification permission once as its own entry, then posts a banner when a card turns Ready; a click on it selects that card.
+- [ ] After the one-time cleanup (remove Shika from System Settings > Privacy & Security > Screen Recording, add `/Applications/Shika.app`, restart Shika), `screencapture` from an agent shell in the release produces an image, and keeps working after a dev bundle is rebuilt, launched, and given Screen Recording.
+- [ ] The release keeps its notification permission after a dev bundle is approved, and vice versa.
+- [ ] A notarized `release-app.sh` build reports `com.hieule.shika` in `Info.plist` and `codesign -dv`, and Sparkle offers it as an update to an installed release.
+
 ## CLI marks on cards, 2026-10-24
 
 Line two shows each CLI's mark (`crates/shika/src/agent_marks.rs`) in place of its name. `cargo test -p shika agent_marks` and Clippy pass; the debug bundle builds with the Lobe Icons and Pi notices.

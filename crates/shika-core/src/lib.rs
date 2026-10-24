@@ -158,7 +158,8 @@ struct BaseFetch {
 const FETCH_FRESH: Duration = Duration::from_secs(30);
 
 /// The bundle identifier the Tauri build shipped with. Its data directory
-/// is named after it, so it must not change.
+/// is named after it, so it must not change. Local bundles are
+/// `com.hieule.shika.dev` but share this directory.
 pub const APP_IDENTIFIER: &str = "com.hieule.shika";
 
 /// `~/Library/Application Support/com.hieule.shika`, the directory Tauri 2's

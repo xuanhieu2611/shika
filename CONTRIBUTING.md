@@ -74,7 +74,7 @@ source "$HOME/.cargo/env"
 open target/release/Shika.app
 ```
 
-Local bundles are ad hoc signed.
+Local bundles are ad hoc signed, with the bundle ID `com.hieule.shika.dev`, so they ask for macOS permissions separately from an installed release. They still read and write the normal app data directory unless you pass `--data-dir`.
 
 ### Checks
 

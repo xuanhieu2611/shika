@@ -70,7 +70,7 @@ Never point a test build at the real feed or at normal app data. Sparkle relaunc
 
 1. Back up `assets/macos/Info.plist`. Set `CFBundleIdentifier` to `com.hieule.shika.updatetest`, the version to 0.2.99 build 101, and `SUFeedURL` to `http://127.0.0.1:8765/appcast.xml`. App Transport Security exempts IP addresses, and the EdDSA signatures still apply.
 2. Run `scripts/release-app.sh`, then `SHIKA_DOWNLOAD_URL=http://127.0.0.1:8765/Shika.dmg scripts/appcast.sh notes.md`. Copy the DMG and the feed into a folder and serve it with `python3 -m http.server 8765 --bind 127.0.0.1`.
-3. Set build 100, version 0.2.98, and add `SUEnableAutomaticChecks` and `SUAutomaticallyUpdate` as true. Run `scripts/bundle-app.sh` and `scripts/embed-sparkle.sh target/release/Shika.app "Developer ID Application"`, then sign the app with `codesign --force --options runtime --timestamp --sign "Developer ID Application"`. Copy it out of `target/`, and restore `Info.plist`.
+3. Set build 100, version 0.2.98, and add `SUEnableAutomaticChecks` and `SUAutomaticallyUpdate` as true. Run `scripts/bundle-app.sh --distribution` (without it the bundle ID gets `.dev` and no longer matches build 101) and `scripts/embed-sparkle.sh target/release/Shika.app "Developer ID Application"`, then sign the app with `codesign --force --options runtime --timestamp --sign "Developer ID Application"`. Copy it out of `target/`, and restore `Info.plist`.
 4. Launch the copy with `open -n <copy>/Shika.app --args --data-dir <test data>`. The server log shows the feed and the DMG. Sparkle's `Autoupdate` waits for the app to quit.
 5. Quit it with `osascript -e 'tell application id "com.hieule.shika.updatetest" to quit'`. Its `Info.plist` now reads build 101, and `spctl --assess` accepts it.
 6. Clean up with `defaults delete com.hieule.shika.updatetest`, and remove `~/Library/Caches/com.hieule.shika.updatetest`.
@@ -92,6 +92,7 @@ In zsh, `log` is a builtin. Use `/usr/bin/log stream --predicate 'process == "Au
 
 ## Guardrails
 
+- Keep `--distribution` on the `bundle-app.sh` call in `release-app.sh`. Without it the release would ship as `com.hieule.shika.dev`, a different app to macOS, Sparkle, and every installed copy.
 - Do not embed Sparkle in `bundle-app.sh` bundles. `bundle-app.sh` starts from an empty bundle so a release's framework never lingers in a local build.
 - Do not sign with `--deep`, and do not enable Sparkle's XPC services or sandbox Shika without following Sparkle's sandboxing guide.
 - Keep `SUFeedURL` on useshika.com. Every shipped build has it baked in; move hosting by changing `site/_redirects`.
