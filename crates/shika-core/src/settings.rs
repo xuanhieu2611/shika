@@ -77,45 +77,71 @@ impl Default for Appearance {
     }
 }
 
-/// The agent column beside the terminal. A drag on its edge sets the width,
-/// and it can be hidden so the terminal fills the window.
+/// The agent column beside the terminal. It takes a share of the window's
+/// width, so it keeps its proportion as the window resizes. A drag on its
+/// edge sets the share, and it can be hidden so the terminal fills the
+/// window. A `width` saved by an older build is ignored.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Column {
-    /// Points, from [`Column::MIN_WIDTH`] to [`Column::MAX_WIDTH`]. A narrow
-    /// window can show less; the stored width comes back when it grows.
+    /// Ten-thousandths of the window's width (3000 is 30%), from
+    /// [`Column::MIN_SHARE`] to [`Column::MAX_SHARE`]. On screen the width
+    /// stays between [`Column::MIN_WIDTH`] and [`Column::MAX_WIDTH`].
     #[serde(deserialize_with = "saturating_u16")]
-    pub width: u16,
+    pub share: u16,
     pub hidden: bool,
 }
 
 impl Column {
     pub const MIN_WIDTH: u16 = 320;
     pub const MAX_WIDTH: u16 = 800;
-    pub const DEFAULT_WIDTH: u16 = 540;
+    pub const DEFAULT_SHARE: u16 = 3000;
+    pub const MIN_SHARE: u16 = 1000;
+    pub const MAX_SHARE: u16 = 7000;
 
-    /// A dragged width, rounded to a whole point and pulled into range.
-    pub fn with_width(self, width: f32) -> Self {
-        let width = if width.is_finite() {
-            width
-                .round()
-                .clamp(f32::from(Self::MIN_WIDTH), f32::from(Self::MAX_WIDTH)) as u16
-        } else {
-            Self::DEFAULT_WIDTH
-        };
-        Self { width, ..self }
+    /// The width in whole points for a window `viewport` wide, between
+    /// [`Column::MIN_WIDTH`] and [`Column::MAX_WIDTH`].
+    pub fn width(self, viewport: f32) -> f32 {
+        (viewport * f32::from(self.share) / 10_000.)
+            .round()
+            .clamp(f32::from(Self::MIN_WIDTH), f32::from(Self::MAX_WIDTH))
+    }
+
+    /// A width dragged in a window `viewport` wide, pulled into the point
+    /// range and kept as that share of the window.
+    pub fn with_width(self, width: f32, viewport: f32) -> Self {
+        if !width.is_finite() || !viewport.is_finite() || viewport <= 0. {
+            return self.reset();
+        }
+        let width = width.clamp(f32::from(Self::MIN_WIDTH), f32::from(Self::MAX_WIDTH));
+        let share = (width / viewport * 10_000.)
+            .round()
+            .clamp(f32::from(Self::MIN_SHARE), f32::from(Self::MAX_SHARE))
+            as u16;
+        Self { share, ..self }
+    }
+
+    /// The default share, as a double-click on the edge puts back.
+    pub fn reset(self) -> Self {
+        Self {
+            share: Self::DEFAULT_SHARE,
+            ..self
+        }
     }
 
     /// Values from a hand-edited file, pulled into range.
     pub fn clamped(self) -> Self {
-        self.with_width(f32::from(self.width))
+        Self {
+            share: self.share.clamp(Self::MIN_SHARE, Self::MAX_SHARE),
+            ..self
+        }
     }
 }
 
 impl Default for Column {
     fn default() -> Self {
         Self {
-            width: Self::DEFAULT_WIDTH,
+            share: Self::DEFAULT_SHARE,
             hidden: false,
         }
     }
@@ -441,8 +467,8 @@ pub struct Settings {
     /// A bool's own default is false, so this field names its default.
     #[serde(default = "notification_sound_on")]
     pub notification_sound: bool,
-    /// The agent column's width and whether it is hidden. Missing means a
-    /// 540px column on screen.
+    /// The agent column's share of the window and whether it is hidden.
+    /// Missing means a column on screen at 30% of the window.
     pub column: Column,
     /// The Changes panel's width. Missing or invalid means 480. Whether the
     /// panel is open is not saved.
@@ -573,7 +599,7 @@ mod tests {
             font_size: FontSize::from_text("14.5").unwrap(),
             notification_sound: false,
             column: Column {
-                width: 400,
+                share: 2500,
                 hidden: true,
             },
             changes: Changes { width: 610 },
@@ -591,7 +617,7 @@ mod tests {
         assert!(text.contains("\"fontSize\": 14.5"));
         assert!(text.contains("\"notificationSound\": false"));
         assert!(text.contains("\"column\": {"));
-        assert!(text.contains("\"width\": 400"));
+        assert!(text.contains("\"share\": 2500"));
         assert!(text.contains("\"hidden\": true"));
         assert!(text.contains("\"changes\": {"));
         assert!(text.contains("\"width\": 610"));
@@ -703,23 +729,37 @@ mod tests {
     }
 
     #[test]
-    fn column_width_is_pulled_into_range() {
+    fn column_is_a_share_of_the_window_pulled_into_range() {
         let column = Column::default();
-        assert_eq!(column.width, 540);
+        assert_eq!(column.share, 3000);
         assert!(!column.hidden);
-        assert_eq!(column.with_width(412.6).width, 413);
-        assert_eq!(column.with_width(10.).width, Column::MIN_WIDTH);
-        assert_eq!(column.with_width(5000.).width, Column::MAX_WIDTH);
-        assert_eq!(column.with_width(f32::NAN).width, Column::DEFAULT_WIDTH);
+        // 30% of the window, in whole points, held to 320..800.
+        assert_eq!(column.width(1400.), 420.);
+        assert_eq!(column.width(1801.), 540.);
+        assert_eq!(column.width(960.), f32::from(Column::MIN_WIDTH));
+        assert_eq!(column.width(3200.), f32::from(Column::MAX_WIDTH));
+        // A drag keeps its proportion when the window resizes.
+        let dragged = column.with_width(500., 1400.);
+        assert_eq!(dragged.share, 3571);
+        assert_eq!(dragged.width(1400.), 500.);
+        assert_eq!(dragged.width(1800.), 643.);
+        assert_eq!(column.with_width(10., 1400.).width(1400.), 320.);
+        assert_eq!(column.with_width(5000., 1400.).share, 5714);
+        assert_eq!(column.with_width(5000., 400.).share, Column::MAX_SHARE);
+        assert_eq!(dragged.with_width(f32::NAN, 1400.), column);
+        assert_eq!(dragged.with_width(500., 0.), column);
+        assert_eq!(dragged.reset(), column);
         let path = temp_file("column");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, r#"{ "column": { "width": 99999, "hidden": true } }"#).unwrap();
+        fs::write(&path, r#"{ "column": { "share": 99999, "hidden": true } }"#).unwrap();
         let settings = SettingsFile::open(path.clone()).load().unwrap();
-        assert_eq!(settings.column.width, Column::MAX_WIDTH);
+        assert_eq!(settings.column.share, Column::MAX_SHARE);
         assert!(settings.column.hidden);
-        fs::write(&path, r#"{ "column": { "hidden": true } }"#).unwrap();
+        // An older build's fixed width gives way to the default share.
+        fs::write(&path, r#"{ "column": { "width": 540, "hidden": true } }"#).unwrap();
         let settings = SettingsFile::open(path.clone()).load().unwrap();
-        assert_eq!(settings.column.width, Column::DEFAULT_WIDTH);
+        assert_eq!(settings.column.share, Column::DEFAULT_SHARE);
+        assert!(settings.column.hidden);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
