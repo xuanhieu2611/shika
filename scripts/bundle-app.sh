@@ -1,10 +1,24 @@
 #!/bin/sh
 # Build locally, without signing or notarization for distribution.
+#
+#   --debug         build the debug profile into target/debug/Shika.app
+#   --distribution  keep the bundle ID from assets/macos/Info.plist, for
+#                   release-app.sh. Without it the bundle ID gets ".dev".
 set -eu
 cd "$(dirname "$0")/.."
 profile=release
-if [ "${1:-}" = "--debug" ]; then
-    profile=debug
+distribution=false
+for arg in "$@"; do
+    case "$arg" in
+        --debug) profile=debug ;;
+        --distribution) distribution=true ;;
+        *)
+            echo "usage: $0 [--debug] [--distribution]" >&2
+            exit 2
+            ;;
+    esac
+done
+if [ "$profile" = debug ]; then
     cargo build -p shika
 else
     cargo build --release -p shika
@@ -26,7 +40,16 @@ cp assets/licenses/Heroicons-MIT.txt assets/licenses/Octicons-MIT.txt assets/lic
     assets/licenses/Dracula-MIT.txt assets/licenses/Gruvbox-MIT.txt assets/licenses/LobeIcons-MIT.txt \
     assets/licenses/Pi-MIT.txt "$bundle/Contents/Resources/licenses/"
 cp assets/fonts/OFL.txt "$bundle/Contents/Resources/licenses/JetBrainsMono-OFL.txt"
-# Stable ad hoc identity lets macOS attribute native notification permission
-# to com.hieule.shika. No Developer ID or distribution signing is performed.
-codesign --force --deep --sign - --identifier com.hieule.shika "$bundle"
+# macOS keeps one Screen Recording and one Notifications entry per bundle ID,
+# tied to the signature it last approved. An ad hoc signature changes on every
+# build, so a local bundle with the release's ID would take that entry from
+# /Applications/Shika.app and lose it again on the next build. Local bundles
+# are com.hieule.shika.dev and ask for their own permissions; the release keeps
+# com.hieule.shika. No Developer ID or distribution signing is performed.
+identifier=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$bundle/Contents/Info.plist")
+if [ "$distribution" = false ]; then
+    identifier="$identifier.dev"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $identifier" "$bundle/Contents/Info.plist"
+fi
+codesign --force --deep --sign - --identifier "$identifier" "$bundle"
 printf '%s\n' "$bundle"

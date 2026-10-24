@@ -35,8 +35,9 @@ if [ "$("$sparkle/bin/generate_keys" -p 2>/dev/null)" != "$public_key" ]; then
 fi
 
 # bundle-app.sh assembles the bundle and ad hoc signs it; the Developer ID
-# signature below replaces that one.
-app=$(./scripts/bundle-app.sh | tail -n 1)
+# signature below replaces that one. --distribution keeps the bundle ID in
+# Info.plist (com.hieule.shika) instead of the local builds' ".dev" one.
+app=$(./scripts/bundle-app.sh --distribution | tail -n 1)
 release_dir=$(dirname "$app")
 version=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$app/Contents/Info.plist")
 dmg="$release_dir/Shika.dmg"
