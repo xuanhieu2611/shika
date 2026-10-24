@@ -11,6 +11,20 @@ Branch icon: Octicons, git-branch-16, GitHub Inc.
 https://github.com/primer/octicons
 MIT license: licenses/Octicons-MIT.txt inside the app bundle.
 
+CLI marks on agent cards: Lobe Icons, claude, codex, and cursor (mono), LobeHub.
+https://github.com/lobehub/lobe-icons
+MIT license: licenses/LobeIcons-MIT.txt inside the app bundle.
+
+CLI mark for Pi: the pi logo from pi-logo.ts, Mario Zechner.
+https://github.com/earendil-works/pi
+MIT license: licenses/Pi-MIT.txt inside the app bundle.
+
+Claude and Claude Code are trademarks of Anthropic, PBC. Codex is a trademark
+of OpenAI. Cursor is a trademark of Anysphere, Inc. The Pi name and logo belong
+to the Pi project.
+Their names and marks only identify the CLI a card runs. Shika is not
+affiliated with, sponsored by, or endorsed by any of them.
+
 Software updates, release builds only: Sparkle 2.10.0, Andy Matuschak and contributors.
 https://github.com/sparkle-project/Sparkle
 MIT license, with the bsdiff, sais-lite, and ed25519 notices:
