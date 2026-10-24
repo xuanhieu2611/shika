@@ -2,6 +2,15 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## CLI marks on cards, 2026-10-24
+
+Line two shows each CLI's mark (`crates/shika/src/agent_marks.rs`) in place of its name. `cargo test -p shika agent_marks` and Clippy pass; the debug bundle builds with the Lobe Icons and Pi notices.
+
+- [ ] Resting Leads for Claude Code, Codex, Cursor CLI, and Pi (seeded `lead` records in an isolated `projects.json`) show the matching 14px mark, then `·` and "Lead"; hovering the mark shows the CLI name.
+- [ ] A live draft card shows only the mark on line two; after naming, mark · branch · diff stat line up on one baseline, and the branch still truncates first.
+- [ ] Marks follow the line's ink: ink-4 at rest, ink-3 on the selected card, in Shika Light, Shika Dark, a derived theme, and glass.
+- [ ] Switch agent changes the mark with the CLI. A click on the mark selects the card and focuses its terminal like any card click.
+
 ## Manual task names
 
 See [docs/task-names.md](docs/task-names.md) for the public FAQ and contributor contract. Workspace tests passed (375 passed, one existing ignored); formatting, strict Clippy, and dependency-notice regeneration passed.

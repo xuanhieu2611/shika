@@ -1,4 +1,5 @@
 mod activity;
+mod agent_marks;
 mod appearance;
 mod changes;
 mod chat_input;
@@ -6238,6 +6239,12 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let selected = self.selected_resting() == Some(project);
+        let cli_id = self
+            .projects
+            .iter()
+            .find(|p| p.id == project)
+            .and_then(|p| p.lead.as_ref())
+            .map_or("", |lead| lead.cli.as_str());
         // The latest reply's first line; only a Lead with a chat has one.
         let snippet = self.lead_snippets.get(project).cloned();
         let (quiet, quiet_separator) = if selected {
@@ -6277,16 +6284,22 @@ impl Shika {
                 d.child(div().flex_1().min_w_0().truncate().child(line))
             })
             .when(snippet.is_none(), |d| {
-                d.child(div().flex_none().child(cli.to_string()))
-                    .child(div().flex_none().text_color(quiet_separator).child("·"))
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(chrome.ink_2)
-                            .child("Lead"),
-                    )
-                    .child(div().flex_1())
+                d.child(cli_mark(
+                    SharedString::from(format!("cli-resting-{project}")),
+                    cli_id,
+                    cli,
+                    quiet,
+                    chrome,
+                ))
+                .child(div().flex_none().text_color(quiet_separator).child("·"))
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(chrome.ink_2)
+                        .child("Lead"),
+                )
+                .child(div().flex_1())
             })
             .when(selected && cards_focused, |d| {
                 d.child(row_hint("↵", "resume", chrome))
@@ -6587,7 +6600,13 @@ impl Shika {
             // (the diff stat, the PR mark, the hints) stay a step brighter.
             .text_color(quiet)
             .when(lead_line.is_none(), |d| {
-                d.child(div().flex_none().child(card.preset.clone()))
+                d.child(cli_mark(
+                    SharedString::from(format!("cli-{key}")),
+                    &card.launch_preset,
+                    &card.preset,
+                    quiet,
+                    chrome,
+                ))
             })
             .when_some(lead_line.clone(), |d, line| {
                 // The system font, truncating, in the card's line-two inks.
@@ -9436,6 +9455,35 @@ fn pr_mark(
             cx.stop_propagation();
             cx.open_url(&url);
         }))
+}
+
+/// The CLI on a card's second line: its mark at 14px in the line's ink, with
+/// the name as its tooltip. A CLI without a mark keeps its name.
+fn cli_mark(
+    id: SharedString,
+    preset: &str,
+    name: &str,
+    color: Rgba,
+    chrome: &Chrome,
+) -> gpui::AnyElement {
+    let Some(mark) = agent_marks::for_preset(preset) else {
+        return div().flex_none().child(name.to_string()).into_any_element();
+    };
+    let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+    let name = SharedString::from(name.to_string());
+    div()
+        .id(id)
+        .flex_none()
+        .child(gpui::svg().data(mark).size(px(14.)).text_color(color))
+        .tooltip(move |_, cx| {
+            cx.new(|_| KeyTip {
+                bg: tip_bg,
+                fg: tip_fg,
+                text: name.clone(),
+            })
+            .into()
+        })
+        .into_any_element()
 }
 
 /// The right end of a card's first line, one 14px slot so the signals line
