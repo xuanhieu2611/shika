@@ -38,7 +38,7 @@ cp assets/licenses/APP_NOTICES.txt "$bundle/Contents/Resources/THIRD_PARTY_NOTIC
 cp assets/licenses/Heroicons-MIT.txt assets/licenses/Octicons-MIT.txt assets/licenses/RUST_CRATES.txt \
     assets/licenses/Catppuccin-MIT.txt assets/licenses/RosePine-MIT.txt assets/licenses/TokyoNight-Apache-2.0.txt \
     assets/licenses/Dracula-MIT.txt assets/licenses/Gruvbox-MIT.txt assets/licenses/LobeIcons-MIT.txt \
-    assets/licenses/Pi-MIT.txt "$bundle/Contents/Resources/licenses/"
+    assets/licenses/Pi-MIT.txt assets/licenses/Zeron-MIT.txt "$bundle/Contents/Resources/licenses/"
 cp assets/fonts/OFL.txt "$bundle/Contents/Resources/licenses/JetBrainsMono-OFL.txt"
 # macOS keeps one Screen Recording and one Notifications entry per bundle ID,
 # tied to the signature it last approved. An ad hoc signature changes on every

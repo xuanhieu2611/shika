@@ -65,6 +65,8 @@ Shika finds each CLI through your login shell's PATH, including when launched fr
 > [!WARNING]
 > These presets launch each CLI in an automatic approval mode. Claude Code, Codex, and Cursor CLI bypass permission prompts or sandboxing, so agents can run commands with your user account's access. A worktree separates Git edits; it does not restrict access to files, credentials, or the network. Use Shika in projects you trust and review the agent's changes.
 
+Settings > Appearance > Background image puts a picture of your own behind the glass, in place of the desktop: choose a file, pick an effect (None, Dither, ASCII, Halftone, or Scanlines), and Adjust to drag and zoom the crop. Background opacity sets how much of it shows, and Apply to picks the sidebar alone or the sidebar and terminal. Choosing an image at 100% opacity lowers it to 70% so the image shows. Shika keeps its own copy, so moving the original changes nothing.
+
 Settings > Agents turns each CLI on or off for New. [Switch agent](agent-switch.md) (Cmd+Shift+A) starts a different CLI in an idle task's worktree, to continue the work or review it.
 
 ## The Lead

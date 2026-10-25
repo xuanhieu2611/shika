@@ -10,13 +10,20 @@ use shika_terminal::{Palette, Rgb, Theme, catalog};
 
 /// Make the window transparent, or opaque again, and set the blur behind it.
 /// macOS Reduce transparency forces a solid window even when opacity is lower.
-pub fn apply(appearance: &Appearance, window: &mut Window) {
-    apply_for(appearance, reduce_transparency(), window);
+/// With a background `image`, the app paints the backdrop itself: the window
+/// stays opaque and the window server blurs nothing.
+pub fn apply(appearance: &Appearance, image: bool, window: &mut Window) {
+    apply_for(appearance, reduce_transparency(), image, window);
 }
 
-pub fn apply_for(appearance: &Appearance, reduce_transparency: bool, window: &mut Window) {
-    window.set_background_appearance(background_for(appearance, reduce_transparency));
-    let radius = if appearance.is_opaque() || reduce_transparency {
+pub fn apply_for(
+    appearance: &Appearance,
+    reduce_transparency: bool,
+    image: bool,
+    window: &mut Window,
+) {
+    window.set_background_appearance(background_for(appearance, reduce_transparency, image));
+    let radius = if appearance.is_opaque() || reduce_transparency || image {
         0
     } else {
         appearance.blur
@@ -24,15 +31,16 @@ pub fn apply_for(appearance: &Appearance, reduce_transparency: bool, window: &mu
     set_blur_radius(window, radius);
 }
 
-pub fn background(appearance: &Appearance) -> WindowBackgroundAppearance {
-    background_for(appearance, reduce_transparency())
+pub fn background(appearance: &Appearance, image: bool) -> WindowBackgroundAppearance {
+    background_for(appearance, reduce_transparency(), image)
 }
 
 pub fn background_for(
     appearance: &Appearance,
     reduce_transparency: bool,
+    image: bool,
 ) -> WindowBackgroundAppearance {
-    if appearance.is_opaque() || reduce_transparency {
+    if appearance.is_opaque() || reduce_transparency || image {
         WindowBackgroundAppearance::Opaque
     } else {
         WindowBackgroundAppearance::Transparent
@@ -936,9 +944,16 @@ mod tests {
         assert_eq!(sidebar_alpha(&appearance), 0.7);
         assert_eq!(terminal_alpha_for(&appearance, false), 1.0);
         assert_eq!(
-            background_for(&appearance, false),
+            background_for(&appearance, false, false),
             WindowBackgroundAppearance::Transparent
         );
+        // A background image replaces the desktop, so the window stays opaque
+        // while the column keeps its alpha over the image.
+        assert_eq!(
+            background_for(&appearance, false, true),
+            WindowBackgroundAppearance::Opaque
+        );
+        assert!(glass_active(&appearance, false));
     }
 
     #[test]
@@ -956,7 +971,7 @@ mod tests {
         appearance.opacity = 100;
         assert_eq!(terminal_alpha_for(&appearance, false), 1.0);
         assert_eq!(
-            background_for(&appearance, false),
+            background_for(&appearance, false, false),
             WindowBackgroundAppearance::Opaque
         );
     }
@@ -970,7 +985,7 @@ mod tests {
         };
         assert_eq!(terminal_alpha_for(&appearance, true), 1.0);
         assert_eq!(
-            background_for(&appearance, true),
+            background_for(&appearance, true, false),
             WindowBackgroundAppearance::Opaque
         );
         let chrome = chrome_for(&appearance, shika_theme(false), true);

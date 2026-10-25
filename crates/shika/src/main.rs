@@ -1,6 +1,8 @@
 mod activity;
 mod agent_marks;
 mod appearance;
+mod background;
+mod background_view;
 mod changes;
 mod chat_input;
 mod checks;
@@ -672,6 +674,8 @@ impl SettingsSection {
 enum Overlay {
     LeadQuestion(lead_chat_question::QuestionDialog),
     WorktreeSetup(Box<worktree_setup::Editor>),
+    /// Frame the background image, opened from Settings, which it returns to.
+    Adjust(Box<background_view::Adjust>),
     CardMenu(CardMenu),
     Rename {
         target: gpui::EntityId,
@@ -760,6 +764,7 @@ impl Overlay {
         match self {
             Self::LeadQuestion(_) => "the Lead question dialog",
             Self::WorktreeSetup(_) => "the Worktree setup dialog",
+            Self::Adjust(_) => "the Adjust background dialog",
             Self::CardMenu(_) => "a card menu",
             Self::Rename { .. } => "the Rename task dialog",
             Self::Publish { .. } => "the Create PR dialog",
@@ -792,6 +797,13 @@ struct Shika {
     overlay: Option<Overlay>,
     /// Non-workflow overlays return to the surface that opened them.
     overlay_return_focus: Option<FocusHandle>,
+    /// The background image from settings, painted behind the glass.
+    background: Option<shika_core::Background>,
+    /// The image's rasters on screen and the one being built.
+    backdrop: background::Backdrop,
+    /// The image was picked or removed, so the window's own background
+    /// (opaque or transparent) changes on the next paint.
+    window_backdrop_dirty: bool,
     sidebar_scroll: gpui::ScrollHandle,
     /// The Base branch list, so Up and Down can bring the highlight into view.
     base_scroll: gpui::ScrollHandle,
@@ -901,6 +913,7 @@ impl Shika {
         let agents = settings.agents.clone();
         let keys = settings.keys.clone();
         let column = settings.column;
+        let background = settings.background.clone();
         let changes = changes::Panel::new(settings.changes, cx.focus_handle(), diagnostics.clone());
         let (control, control_error) = match control::Server::start(core.data_dir()) {
             Ok(server) => (Some(server), None),
@@ -931,6 +944,9 @@ impl Shika {
                 Some(Overlay::Leftovers)
             },
             overlay_return_focus: None,
+            background,
+            backdrop: background::Backdrop::default(),
+            window_backdrop_dirty: false,
             sidebar_scroll: gpui::ScrollHandle::new(),
             base_scroll: gpui::ScrollHandle::new(),
             settings_scroll: gpui::ScrollHandle::new(),
@@ -2686,7 +2702,7 @@ impl Shika {
             let reduce = appearance::reduce_transparency();
             if reduce != self.reduce_transparency {
                 self.reduce_transparency = reduce;
-                appearance::apply(&self.appearance, window);
+                appearance::apply(&self.appearance, self.background.is_some(), window);
                 self.push_terminal_theme(window, cx);
                 changed = true;
             }
@@ -4315,6 +4331,10 @@ impl Shika {
             self.finish_worktree_setup(window, cx);
             return;
         }
+        if matches!(self.overlay, Some(Overlay::Adjust(_))) {
+            self.close_adjust(false, window, cx);
+            return;
+        }
         self.commit_setting_edit(window, cx);
         self.key_recording = false;
         self.key_note = None;
@@ -4635,7 +4655,7 @@ impl Shika {
         }
         self.appearance = next;
         self.reduce_transparency = appearance::reduce_transparency();
-        appearance::apply(&next, window);
+        appearance::apply(&next, self.background.is_some(), window);
         self.push_terminal_theme(window, cx);
         self.save_settings();
         cx.notify();
@@ -4803,6 +4823,7 @@ impl Shika {
             changes: self.changes.width,
             agents: self.agents.clone(),
             keys: self.keys.clone(),
+            background: self.background.clone(),
         };
         if let Err(e) = self.core.save_settings(&settings) {
             self.message(e.to_string());
@@ -5148,6 +5169,14 @@ impl Shika {
                     cx.notify();
                     return;
                 }
+                if !editing
+                    && section == SettingsSection::Appearance
+                    && self.on_background_key(at, key, window, cx)
+                {
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
             }
             // A project the picker moved to, to fetch its base branch.
             let mut moved_to = None;
@@ -5180,6 +5209,7 @@ impl Shika {
                         }
                     }
                 }
+                Some(Overlay::Adjust(_)) => self.adjust_key(key, window, cx),
                 Some(Overlay::Preparation { .. }) => match key {
                     "enter" => self.approve_preparation(window, cx),
                     "escape" => self.cancel_overlay(window, cx),
@@ -5282,10 +5312,12 @@ impl Shika {
                         (None, "l" | "right") => self.step_setting(at, 1, window, cx),
                         (None, "enter" | "escape") => self.cancel_overlay(window, cx),
                         (_, "j" | "down" | "tab") => {
-                            self.select_setting((at + 1) % SETTING_ROWS, window, cx)
+                            let next = self.next_appearance_row(at, 1);
+                            self.select_setting(next, window, cx)
                         }
                         (_, "k" | "up") => {
-                            self.select_setting((at + SETTING_ROWS - 1) % SETTING_ROWS, window, cx)
+                            let next = self.next_appearance_row(at, -1);
+                            self.select_setting(next, window, cx)
                         }
                         _ => {}
                     }
@@ -5333,18 +5365,20 @@ impl Shika {
     }
 }
 /// Settings rows, top to bottom: the theme mode, the light and dark themes,
-/// opacity, blur, translucency, font size, the branch prefix, then
-/// notification sound.
+/// the background image and its effect (hidden without an image), opacity,
+/// blur, translucency, font size, the branch prefix, then notification sound.
 const MODE_ROW: usize = 0;
 const LIGHT_ROW: usize = 1;
 const DARK_ROW: usize = 2;
-const OPACITY_ROW: usize = 3;
-const BLUR_ROW: usize = 4;
-const APPLY_ROW: usize = 5;
-const FONT_ROW: usize = 6;
-const PREFIX_ROW: usize = 7;
-const SOUND_ROW: usize = 8;
-const SETTING_ROWS: usize = 9;
+const IMAGE_ROW: usize = 3;
+const EFFECT_ROW: usize = 4;
+const OPACITY_ROW: usize = 5;
+const BLUR_ROW: usize = 6;
+const APPLY_ROW: usize = 7;
+const FONT_ROW: usize = 8;
+const PREFIX_ROW: usize = 9;
+const SOUND_ROW: usize = 10;
+const SETTING_ROWS: usize = 11;
 /// Wide enough for the longest catalog name, such as "Catppuccin Macchiato".
 const THEME_FIELD_WIDTH: f32 = 168.;
 /// Tall enough for the appearance rows and the usage chart. A short window
@@ -7029,6 +7063,7 @@ impl Shika {
                     .flex()
                     .items_center()
                     .gap(px(6.))
+                    .pb(px(TAB_LABEL_LIFT))
                     .pl(px(12.))
                     .pr(px(if closable { 6. } else { 12. }))
                     .text_size(px(12.))
@@ -7151,7 +7186,7 @@ impl Shika {
                             .justify_end()
                             .pr(px(4.))
                             .child(
-                                div().h(px(TAB_HEIGHT)).flex().items_center().child(
+                                div().h(px(CONTROL_BAND)).flex().items_center().child(
                                     div()
                                         .id("new-terminal")
                                         .occlude()
@@ -7192,7 +7227,7 @@ impl Shika {
                         // Closed, the Changes toggle follows 8 after Close task.
                         .pr(px(if self.changes.open { 12. } else { 8. }))
                         .child(
-                            div().h(px(TAB_HEIGHT)).flex().items_center().child(
+                            div().h(px(CONTROL_BAND)).flex().items_center().child(
                                 div()
                                     .id("close")
                                     .occlude()
@@ -7235,7 +7270,7 @@ impl Shika {
                             .pr(px(12.))
                             .child(
                                 div()
-                                    .h(px(TAB_HEIGHT))
+                                    .h(px(CONTROL_BAND))
                                     .flex()
                                     .items_center()
                                     .child(self.changes_toggle(chrome, cx)),
@@ -7453,16 +7488,9 @@ impl Shika {
                                             .flex_none()
                                             .h_full()
                                             .flex()
-                                            .flex_col()
-                                            .justify_end()
+                                            .items_center()
                                             .pr(px(12.))
-                                            .child(
-                                                div()
-                                                    .h(px(TAB_HEIGHT))
-                                                    .flex()
-                                                    .items_center()
-                                                    .child(self.changes_toggle(chrome, cx)),
-                                            ),
+                                            .child(self.changes_toggle(chrome, cx)),
                                     )
                                 }),
                             cx,
@@ -7772,6 +7800,25 @@ impl Shika {
                 ("[ ]", "section"),
                 ("esc", "done"),
             ],
+            (false, IMAGE_ROW) if self.background.is_some() => &[
+                ("j k", "choose"),
+                ("↵", "replace"),
+                ("a", "adjust"),
+                ("⌫", "remove"),
+                ("esc", "done"),
+            ],
+            (false, IMAGE_ROW) => &[
+                ("j k", "choose"),
+                ("↵", "choose image"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ],
+            (false, EFFECT_ROW) => &[
+                ("j k", "choose"),
+                ("h l", "effect"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ],
             (false, _) => &[
                 ("j k", "choose"),
                 ("h l", "change"),
@@ -8024,6 +8071,8 @@ impl Shika {
                     .child(self.mode_row(chrome, cx))
                     .child(self.theme_row(LIGHT_ROW, "Light theme", chrome, cx))
                     .child(self.theme_row(DARK_ROW, "Dark theme", chrome, cx))
+                    .child(self.image_row(chrome, cx))
+                    .child(self.effect_row(chrome, cx))
                     .child(self.setting_row(
                         OPACITY_ROW,
                         "Background opacity",
@@ -8484,6 +8533,7 @@ impl Shika {
             Overlay::WorktreeSetup(editor) => {
                 self.worktree_setup_view(editor, chrome, max_h, window, cx)
             }
+            Overlay::Adjust(adjust) => self.adjust_view(adjust, max_h, chrome, window, cx),
             Overlay::Rename { input, error, .. } => {
                 input.update(cx, |input, _| input.set_chrome(*chrome));
                 dialog(chrome, max_h)
@@ -9236,8 +9286,16 @@ const COLUMN_HANDLE_WIDTH: f32 = 8.;
 const BAR_HEIGHT: f32 = 48.;
 /// Six base-branch rows. The list scrolls after that.
 const BASE_LIST_MAX: f32 = 220.;
-/// A terminal tab, sitting on the bottom of the 48px header.
-const TAB_HEIGHT: f32 = 34.;
+/// A terminal tab, sitting on the bottom line of the 48px header and
+/// reaching to 5px under its top.
+const TAB_HEIGHT: f32 = 42.;
+/// Lifts a tab's label off the tab's own middle onto the bar's middle line,
+/// where the traffic lights, the wordmark, and every header control sit.
+/// The tab ends on the 1px bottom line, so its box is 5..47.
+const TAB_LABEL_LIFT: f32 = BAR_HEIGHT - 2. - TAB_HEIGHT;
+/// A header control's band: the bar above its 1px bottom line, minus the
+/// same 1px on top, so a control centered in it sits on the bar's middle.
+const CONTROL_BAND: f32 = BAR_HEIGHT - 2.;
 /// The radius of a tab's top corners and of the concave flares that turn its
 /// sides into the bottom line. The flares reach this far past the tab.
 const TAB_FLARE: f32 = 7.;
@@ -9935,8 +9993,10 @@ impl Render for Shika {
         for project in chat_projects {
             self.ensure_lead_chat(&project, window, cx);
         }
+        self.sync_window_backdrop(window, cx);
         let cards_focused = self.focus.is_focused(window);
         let chrome = self.chrome(window);
+        let backdrop = self.backdrop_layers(&chrome, window, cx);
         let home = home_dir();
         let reveal_selection = self.selection != self.last_revealed_selection;
         self.last_revealed_selection = self.selection.clone();
@@ -10082,6 +10142,16 @@ impl Render for Shika {
                     this.drag_changes(event.event.position.x, window, cx)
                 },
             ))
+            .on_drag_move(cx.listener(
+                |this, event: &gpui::DragMoveEvent<background_view::PanDrag>, _, cx| {
+                    this.drag_preview(event.event.position, cx)
+                },
+            ))
+            .on_drag_move(cx.listener(
+                |this, event: &gpui::DragMoveEvent<background_view::ZoomDrag>, _, cx| {
+                    this.drag_zoom(event.event.position.x, cx)
+                },
+            ))
             .relative()
             .size_full()
             .flex()
@@ -10089,6 +10159,7 @@ impl Render for Shika {
             .text_size(px(12.))
             .line_height(gpui::relative(1.3))
             .text_color(chrome.ink_1)
+            .children(backdrop)
             .children(sidebar)
             .child(self.terminal_side(&chrome, cards_focused, home.as_deref(), window, cx))
             .children(changes_width.map(|width| self.changes_panel(width, &chrome, window, cx)))
@@ -10298,6 +10369,7 @@ fn main() -> anyhow::Result<()> {
         }
         let settings = core.settings();
         let start = settings.as_ref().map(|s| s.appearance).unwrap_or_default();
+        let start_image = settings.as_ref().is_ok_and(|s| s.background.is_some());
         // Before the window opens, so it starts in the forced appearance.
         appearance::apply_mode(settings.as_ref().map(|s| s.theme.mode).unwrap_or_default());
         let handle = cx
@@ -10322,7 +10394,7 @@ fn main() -> anyhow::Result<()> {
                     // The column toggle lives in the title bar, so clicks
                     // there have to reach the app. The bar starts the drag itself.
                     app_owns_titlebar_drag: true,
-                    window_background: appearance::background(&start),
+                    window_background: appearance::background(&start, start_image),
                     ..Default::default()
                 },
                 |window, cx| {
@@ -10335,7 +10407,9 @@ fn main() -> anyhow::Result<()> {
             )
             .expect("Open Shika window");
         // The blur radius needs the window on screen, which it is now.
-        let _ = handle.update(cx, |_, window, _| appearance::apply(&start, window));
+        let _ = handle.update(cx, |_, window, _| {
+            appearance::apply(&start, start_image, window)
+        });
         // Closes the control socket and removes its directory on quit; the
         // window's state may never be dropped.
         cx.on_app_quit(move |cx| {
