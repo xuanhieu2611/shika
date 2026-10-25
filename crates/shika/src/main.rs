@@ -14,6 +14,7 @@ mod lifecycle;
 mod model;
 mod name_input;
 mod notifications;
+mod project_motion;
 mod scrollbar;
 mod shortcuts;
 mod text_edit;
@@ -861,6 +862,9 @@ struct Shika {
     /// Closed cards playing their exit. See [`Departing`].
     departing: Vec<Departing>,
     departing_serial: u64,
+    /// Last rendered project order, independent of the saved repository list.
+    project_order: Vec<String>,
+    project_order_epoch: u64,
 }
 impl Shika {
     fn new(
@@ -969,6 +973,8 @@ impl Shika {
             control_error,
             departing: Vec::new(),
             departing_serial: 0,
+            project_order: Vec::new(),
+            project_order_epoch: 0,
         };
         cx.spawn_in(window, async move |this, cx| {
             let catalog = cx
@@ -1157,7 +1163,15 @@ impl Shika {
                 cli: self.cli_name(cli),
             })
             .collect::<Vec<_>>();
-        model::ColumnLayout::new(&projects, &placements, &resting)
+        let departing = self
+            .departing
+            .iter()
+            .filter_map(|d| match &d.home {
+                Home::Project(project) => Some(project.as_str()),
+                Home::Leads(_) => None,
+            })
+            .collect::<Vec<_>>();
+        model::ColumnLayout::with_departing(&projects, &placements, &resting, &departing)
     }
     /// Walking order for `j` / `k`, Cmd+] / Cmd+[ and Go to agent N: the Leads
     /// section (no headers), then each project's header and cards.
@@ -6771,9 +6785,12 @@ impl Shika {
             gpui::canvas(
                 move |bounds, window, _cx| {
                     let viewport = scroll.bounds();
+                    // Project reorder translates prepaint (and hitboxes), not
+                    // layout. Reveal the final row, not its in-flight position.
+                    let translation = window.element_offset().y - scroll.offset().y;
                     let delta = model::reveal_delta(
-                        bounds.top().into(),
-                        bounds.bottom().into(),
+                        (bounds.top() - translation).into(),
+                        (bounds.bottom() - translation).into(),
                         viewport.top().into(),
                         viewport.bottom().into(),
                     );
@@ -9941,16 +9958,33 @@ impl Render for Shika {
             reveal_selection,
             cx,
         ));
+        let order = layout
+            .projects
+            .iter()
+            .map(|e| e.project.clone())
+            .collect::<Vec<_>>();
+        if order != self.project_order {
+            self.project_order = order;
+            self.project_order_epoch += 1;
+        }
         let mut groups = div().flex_none().flex().flex_col().gap(px(20.));
-        for (project, entry) in self.projects.iter().zip(&layout.projects) {
-            groups = groups.child(self.project_group(
-                project,
-                entry.cards.clone(),
-                home.as_deref(),
-                &chrome,
-                cards_focused,
-                reveal_selection,
-                cx,
+        for entry in &layout.projects {
+            let Some(project) = self.projects.iter().find(|p| p.id == entry.project) else {
+                continue;
+            };
+            groups = groups.child(project_motion::project_motion(
+                SharedString::from(format!("project-motion-{}", project.id)),
+                self.project_group(
+                    project,
+                    entry.cards.clone(),
+                    home.as_deref(),
+                    &chrome,
+                    cards_focused,
+                    reveal_selection,
+                    cx,
+                ),
+                self.project_order_epoch,
+                self.sidebar_scroll.clone(),
             ));
         }
         projects = projects.child(

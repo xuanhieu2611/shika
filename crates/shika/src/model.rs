@@ -94,7 +94,20 @@ pub struct ColumnLayout {
 }
 
 impl ColumnLayout {
+    #[cfg(test)]
     pub fn new(projects: &[&str], cards: &[Placement], resting: &[Resting]) -> Self {
+        Self::with_departing(projects, cards, resting, &[])
+    }
+
+    /// Nonempty project groups precede empty headers, preserving saved order
+    /// within each tier. A departing card keeps its group nonempty until its
+    /// exit finishes, so the project does not move halfway through Close.
+    pub fn with_departing(
+        projects: &[&str],
+        cards: &[Placement],
+        resting: &[Resting],
+        departing: &[&str],
+    ) -> Self {
         let by_attention = |indices: &mut Vec<usize>| indices.sort_by_key(|&i| cards[i].rank);
         let mut leads = Vec::new();
         let mut led = vec![false; cards.len()];
@@ -133,7 +146,7 @@ impl ColumnLayout {
                 });
             }
         }
-        let projects = projects
+        let mut projects = projects
             .iter()
             .map(|project| {
                 let mut owned = (0..cards.len())
@@ -145,7 +158,10 @@ impl ColumnLayout {
                     cards: owned,
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        projects.sort_by_key(|entry| {
+            entry.cards.is_empty() && !departing.contains(&entry.project.as_str())
+        });
         Self { leads, projects }
     }
 }
@@ -488,6 +504,91 @@ mod layout_tests {
         // worker is an ordinary card of its project.
         assert!(layout.leads[0].cards().is_empty());
         assert_eq!(layout.projects[0].cards, vec![1]);
+    }
+
+    #[test]
+    fn occupied_projects_precede_empty_ones_in_saved_order() {
+        let projects = ["shika", "rivet", "dotfiles", "selfroom"];
+        let cards = [task("shika", 3), task("selfroom", 3)];
+        let layout = ColumnLayout::new(&projects, &cards, &[]);
+        assert_eq!(
+            layout
+                .projects
+                .iter()
+                .map(|p| p.project.as_str())
+                .collect::<Vec<_>>(),
+            ["shika", "selfroom", "rivet", "dotfiles"]
+        );
+        // Status changes and additional cards do not reorder projects.
+        let cards = [task("shika", 3), task("selfroom", 0), task("selfroom", 1)];
+        assert_eq!(
+            ColumnLayout::new(&projects, &cards, &[]).projects[0].project,
+            "shika"
+        );
+        // Removing the last card restores the saved order among empty groups.
+        let layout = ColumnLayout::new(&projects, &cards[..1], &[]);
+        assert_eq!(
+            layout
+                .projects
+                .iter()
+                .map(|p| p.project.as_str())
+                .collect::<Vec<_>>(),
+            projects
+        );
+        assert_eq!(
+            ColumnLayout::new(&projects, &[], &[]).projects,
+            projects
+                .iter()
+                .map(|p| ProjectEntry {
+                    project: (*p).into(),
+                    cards: vec![],
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn only_cards_in_the_projects_section_promote_a_project() {
+        let cards = [lead("a", Some("la"), 2), worker("b", "la", 0), task("c", 3)];
+        let layout = ColumnLayout::new(&["a", "b", "c"], &cards, &[]);
+        assert_eq!(
+            layout
+                .projects
+                .iter()
+                .map(|p| p.project.as_str())
+                .collect::<Vec<_>>(),
+            ["c", "a", "b"]
+        );
+        assert_eq!(layout.leads[0].workers, [1]);
+        // Once the Lead stops its worker becomes an ordinary project card.
+        let layout = ColumnLayout::new(&["a", "b", "c"], &cards[1..], &[]);
+        assert_eq!(
+            layout
+                .projects
+                .iter()
+                .map(|p| p.project.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "c", "a"]
+        );
+    }
+
+    #[test]
+    fn a_project_waits_for_its_last_card_exit_before_moving_down() {
+        let projects = ["a", "b", "c"];
+        let cards = [task("c", 3)];
+        let layout = ColumnLayout::with_departing(&projects, &cards, &[], &["b"]);
+        assert_eq!(
+            layout
+                .projects
+                .iter()
+                .map(|p| p.project.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "c", "a"]
+        );
+        assert_eq!(
+            ColumnLayout::new(&projects, &cards, &[]).projects[0].project,
+            "c"
+        );
     }
 
     #[test]
