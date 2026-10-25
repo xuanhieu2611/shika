@@ -18,6 +18,27 @@ for arg in "$@"; do
             ;;
     esac
 done
+if [ "$distribution" = true ]; then
+    # Panic locations in dependencies otherwise expose the release Mac's home
+    # and checkout paths even after symbols are stripped. Keep local builds
+    # unchanged and preserve caller flags, including Cargo's encoded form.
+    : "${HOME:?HOME must be set for a distribution build}"
+    separator=$(printf '\037')
+    if [ "${CARGO_ENCODED_RUSTFLAGS+x}" != x ]; then
+        CARGO_ENCODED_RUSTFLAGS=$(
+            # Cargo splits RUSTFLAGS on whitespace, without shell expansion.
+            set -f
+            for flag in ${RUSTFLAGS:-}; do
+                printf '%s%s' "$flag" "$separator"
+            done
+        )
+    elif [ -n "$CARGO_ENCODED_RUSTFLAGS" ]; then
+        CARGO_ENCODED_RUSTFLAGS="$CARGO_ENCODED_RUSTFLAGS$separator"
+    fi
+    # The later, more specific checkout mapping wins over the home mapping.
+    CARGO_ENCODED_RUSTFLAGS="${CARGO_ENCODED_RUSTFLAGS}--remap-path-prefix=$HOME=/build/home${separator}--remap-path-prefix=$(pwd -P)=/build/shika"
+    export CARGO_ENCODED_RUSTFLAGS
+fi
 if [ "$profile" = debug ]; then
     cargo build -p shika
 else
