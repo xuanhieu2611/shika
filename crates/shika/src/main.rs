@@ -5934,6 +5934,23 @@ impl Shika {
             )
     }
 
+    /// Keep the app name and column toggle together on every title surface.
+    fn title_identity(&self, chrome: &Chrome, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_size(px(13.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(chrome.ink_1)
+                    .child("Shika"),
+            )
+            .child(self.column_toggle(chrome.ink_3, chrome.ink_1, chrome.hover, chrome, cx))
+    }
+
     /// Where the title bar's content starts on the left: after the traffic
     /// lights, or near the edge in full screen, where macOS hides them.
     fn title_inset(window: &Window) -> Pixels {
@@ -5963,14 +5980,7 @@ impl Shika {
             .gap(px(8.))
             .pl(inset)
             .pr(px(14.))
-            .child(
-                div()
-                    .text_size(px(13.5))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(chrome.ink_1)
-                    .child("Shika"),
-            )
-            .child(self.column_toggle(chrome.ink_3, chrome.ink_1, chrome.hover, chrome, cx));
+            .child(self.title_identity(chrome, cx));
         self.title_drag(row, cx)
     }
 
@@ -6886,7 +6896,7 @@ impl Shika {
             return chat;
         }
         // With the column hidden, this row is the whole title bar: it starts
-        // after the traffic lights with the button that shows the column.
+        // after the traffic lights with the wordmark and column toggle.
         let show_column = self.column.hidden.then(|| {
             div()
                 .flex_none()
@@ -6895,13 +6905,7 @@ impl Shika {
                 .items_center()
                 .pl(Self::title_inset(window))
                 .pr(px(4.))
-                .child(self.column_toggle(
-                    chrome.term_dim,
-                    chrome.term_white,
-                    chrome.term_hover,
-                    chrome,
-                    cx,
-                ))
+                .child(self.title_identity(chrome, cx))
         });
         // Each child paints its own background, so a translucent terminal is
         // not stacked over a second translucent fill.

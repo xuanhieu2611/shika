@@ -1788,13 +1788,7 @@ impl Shika {
                 d.child(
                     div()
                         .pl(Self::title_inset(window))
-                        .child(self.column_toggle(
-                            chrome.term_dim,
-                            chrome.term_white,
-                            chrome.term_hover,
-                            chrome,
-                            cx,
-                        )),
+                        .child(self.title_identity(chrome, cx)),
                 )
             })
             .when(!self.column.hidden, |d| d.pl(px(20.)))
