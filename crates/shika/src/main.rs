@@ -2755,7 +2755,11 @@ impl Shika {
             }
             // The Lead keeps its title and has no CLI title file to read.
             if state.submission > 0 && card.lead.is_none() {
-                card.title_watch.start(now);
+                if card.launch_preset == "pi" {
+                    card.title_watch.start_for(now, TitleWatch::PI_FOR);
+                } else {
+                    card.title_watch.start(now);
+                }
             }
             let submission = if state.submission != card.submitted {
                 card.submitted = state.submission;

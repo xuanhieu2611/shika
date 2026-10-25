@@ -657,11 +657,16 @@ pub enum TitleWatch {
 impl TitleWatch {
     pub const EVERY: Duration = Duration::from_secs(2);
     pub const FOR: Duration = Duration::from_secs(120);
+    // Pi names via a tool in its normal turn, which may follow clarification.
+    pub const PI_FOR: Duration = Duration::from_secs(600);
     /// Starts once. Later calls change nothing.
     pub fn start(&mut self, now: Instant) {
+        self.start_for(now, Self::FOR);
+    }
+    pub fn start_for(&mut self, now: Instant, duration: Duration) {
         if *self == Self::Idle {
             *self = Self::Watching {
-                until: now + Self::FOR,
+                until: now + duration,
                 next: now + Self::EVERY,
                 checking: false,
             };
@@ -1170,6 +1175,19 @@ mod tests {
         assert!(!w.due(t0 + Duration::from_secs(5)));
         w.start(t0);
         assert_eq!(w, TitleWatch::Done);
+    }
+    #[test]
+    fn pi_title_watch_accepts_delayed_names_but_stays_bounded() {
+        let now = Instant::now();
+        let mut watch = TitleWatch::default();
+        watch.start_for(now, TitleWatch::PI_FOR);
+        assert!(watch.due(now + TitleWatch::FOR));
+        watch.checked(now + TitleWatch::FOR);
+        watch.start_for(now + TitleWatch::FOR, TitleWatch::PI_FOR);
+        assert!(!watch.due(now + TitleWatch::PI_FOR));
+        assert_eq!(watch, TitleWatch::Done);
+        watch.start_for(now, TitleWatch::PI_FOR);
+        assert_eq!(watch, TitleWatch::Done);
     }
     #[test]
     fn safe_close_protects_active_blocked_and_unprocessed_turns_not_drafts() {

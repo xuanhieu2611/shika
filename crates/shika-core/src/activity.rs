@@ -390,12 +390,21 @@ mod tests {
             const path = process.argv[2];
             process.env.SHIKA_ACTIVITY_FILE = path;
             let generation = 0;
+            let name;
+            let namingTool;
+            const named = [];
             async function load(version) {
-                const code = source.replace('import * as host from "@earendil-works/pi-coding-agent";', `const host = { VERSION: '${version}' };`);
+                const code = source.replace('import * as host from "@earendil-works/pi-coding-agent";', `const host = { VERSION: '${version}' };`)
+                    .replace('import { Type } from "@earendil-works/pi-ai";', 'const Type = { Object: x => x, String: x => x };');
                 const js = stripTypeScriptTypes(code);
                 const module = await import('data:text/javascript;base64,' + Buffer.from(js + `\n// ${generation++}`).toString('base64'));
                 const handlers = new Map();
-                module.default({ on: (event, handler) => handlers.set(event, handler) });
+                module.default({
+                    on: (event, handler) => handlers.set(event, handler),
+                    registerTool: tool => { namingTool = tool; },
+                    getSessionName: () => name,
+                    setSessionName: value => { name = value; named.push(value); },
+                });
                 return handlers;
             }
             for (const version of ['0.80.3', '0.79.99', 'unknown']) {
@@ -404,6 +413,18 @@ mod tests {
             }
             let handlers = await load('1.0.0');
             assert.equal(existsSync(path), false); // factory starts no resources
+            assert.equal(name, undefined);
+            assert.ok(namingTool.promptGuidelines[0].includes('before other tools'));
+            for (const value of ['', '  ', 'two\nlines', 'two\rlines', 'x'.repeat(81)]) {
+                await assert.rejects(namingTool.execute('id', { name: value }));
+            }
+            await namingTool.execute('id', { name: '  Fix Pi conversation naming  ' });
+            assert.equal(name, 'Fix Pi conversation naming');
+            await namingTool.execute('id', { name: 'Replace on later turn' });
+            assert.deepEqual(named, ['Fix Pi conversation naming']);
+            name = 'User supplied name';
+            await namingTool.execute('id', { name: 'Replace manual name' });
+            assert.equal(name, 'User supplied name');
             function report(seq, state) {
                 const bytes = readFileSync(path);
                 assert.ok(bytes.length <= 128);
@@ -416,6 +437,8 @@ mod tests {
             report(2, 'working'); // continuation remains working
             handlers.get('agent_settled')(); report(3, 'idle');
             handlers = await load('0.80.4');
+            await namingTool.execute('id', { name: 'Replace after reload' });
+            assert.equal(name, 'User supplied name');
             handlers.get('session_start')(); report(4, 'idle'); // reload
             handlers.get('agent_start')(); report(5, 'working');
             handlers.get('session_shutdown')(); report(6, 'idle');
