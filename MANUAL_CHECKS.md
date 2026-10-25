@@ -2,6 +2,18 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Occupied-first projects, 2026-10-24
+
+Projects with cards shown in Projects precede empty headers, retaining saved repository order within each tier. Last-card exits finish before demotion. Groups slide together over 220ms on the existing curve; Reduce Motion is instant. Leads, picker order, Settings order, selection, and saved projects are unchanged.
+
+Automated: 255 app tests pass, including occupied/empty ordering, Lead/worker placement, deferred demotion, animation endpoints, interrupted retargeting, and reduced motion. Formatting and strict workspace Clippy pass. Workspace validation passes 708 tests with one existing ignored after excluding the already-documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis`; the unfiltered run still fails that test.
+
+- PASS (limited native measurements): a temporary fixture using the production `project_motion` wrapper, opened with `open -n -W` as an ad hoc signed app with a unique fixture bundle ID, never opened Core or any app data. The last project moved monotonically from y=282 to y=194 while both empty headers moved down; header/group heights stayed fixed. Scrolling changed screen coordinates without starting another transition. Reversing the reorder after 70ms retargeted without returning to the original start and settled at y=194. The fixture and its logging are not shipped. This checks native wrapper layout, not complete task lifecycle or perceived smoothness.
+- [ ] In the full app with disposable repositories: start a first agent under an empty bottom project. Its header/cards slide above the empty projects; `j`/`k`, Cmd+]/Cmd+[, and numbered agent shortcuts follow the displayed order. Focus and the live terminal stay intact.
+- [ ] Close its last card: the existing shrink/collapse finishes before the project slides back among empty headers. Close failures, retries, multiple cards, rapid launches/closes, and stopping a Lead preserve the right groups and selection.
+- [ ] With a tall scrolled sidebar, new selection reveals its final position; manual scrolling and ordinary status redraws do not replay motion. Click moving headers/cards and confirm hitboxes track their visible positions.
+- [ ] Check full-app perceived smoothness in Shika Light, Shika Dark, a derived theme, and glass. Reduce Motion skips translation, including when enabled mid-animation; no terminal resize occurs. Native palette/focus/lifecycle acceptance remains pending.
+
 ## Local bundle ID, 2026-10-24
 
 `scripts/bundle-app.sh` bundles are `com.hieule.shika.dev`; `release-app.sh` passes `--distribution` and keeps `com.hieule.shika`. Notifications start for any bundle ID. Formatting, strict Clippy, and workspace tests pass (249 app, 386 core, 67 terminal; one existing ignored) except the machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis`.
