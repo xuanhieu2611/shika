@@ -1,6 +1,7 @@
 // Loaded only by Shika's explicit --extension argument. No global installation.
 import * as host from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
 import { writeFileSync, renameSync, unlinkSync, openSync, readSync, closeSync, constants } from "node:fs";
 
 export default function (pi: ExtensionAPI) {
@@ -11,6 +12,32 @@ export default function (pi: ExtensionAPI) {
   if (!version) return;
   const [major, minor, patch] = version.slice(1).map(Number);
   if (major === 0 && (minor < 80 || (minor === 80 && patch < 4))) return;
+
+  // The model names its own session during the normal turn, not through an
+  // extra model request. Never overwrite a name from /name or another extension.
+  pi.registerTool({
+    name: "shika_name_session",
+    label: "Name session",
+    description: "Give this unnamed Pi conversation a short, descriptive task title. Call early, before investigating or changing files. Does not edit files or run Git.",
+    promptGuidelines: [
+      "At the start of a task, call shika_name_session with a concise title (3 to 8 words) describing the user's goal, before other tools. Summarize the request, not an attachment path. If the goal is unclear, ask first and name it once understood. Existing session names are preserved; do not call again on later turns.",
+    ],
+    parameters: Type.Object({
+      name: Type.String({ description: "Short task title, one line, at most 80 characters", minLength: 1, maxLength: 80 }),
+    }),
+    async execute(_id, params) {
+      const current = pi.getSessionName();
+      if (current?.trim()) {
+        return { content: [{ type: "text", text: `Session already named: ${current}` }], details: undefined };
+      }
+      const name = params.name.trim();
+      if (!name || /[\r\n\u2028\u2029]/u.test(name) || [...name].length > 80) {
+        throw new Error("Use a nonempty, single-line title of at most 80 characters.");
+      }
+      pi.setSessionName(name);
+      return { content: [{ type: "text", text: `Session named: ${name}` }], details: undefined };
+    },
+  });
 
   let file: string | undefined;
   let seq = 0;

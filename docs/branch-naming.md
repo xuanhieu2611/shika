@@ -57,7 +57,7 @@ first Enter in the agent terminal
   PromptCapture.feed             reconstructs the first submitted line from keystrokes
   core.session_rename_from_prompt   branch -> prefix + slug(prompt), card title = prompt
   TitleWatch.start               polling begins (started by the first Enter)
-every 2 s, for up to 2 min, one check at a time
+every 2 s, for up to 2 min (10 min for Pi), one check at a time
   core.session_apply_cli_title
     CliHome.read                 read the CLI's own title; None means "not yet"
     if HEAD is still the task branch and the branch is not on a remote:
@@ -78,7 +78,7 @@ Both renames go through `rename_task_branch`, which adds the prefix, picks a fre
 | Slug, prefix cleanup, git checks | `crates/shika-core/src/worktree.rs`: `branch_slug`, `normalize_prefix`, `is_valid_branch`, `head_branch`, `is_published`, `rename_branch` |
 | "Already applied" flag | `Session::cli_titled` in `crates/shika-core/src/session.rs` |
 | Prefix setting | `Settings::branch_prefix` in `crates/shika-core/src/settings.rs`, stored as `branchPrefix` in `settings.json` |
-| Polling schedule | `TitleWatch` in `crates/shika/src/model.rs` (checks every `EVERY` = 2 s for `FOR` = 120 s) |
+| Polling schedule | `TitleWatch` in `crates/shika/src/model.rs` (checks every `EVERY` = 2 s for `FOR` = 120 s, or `PI_FOR` = 600 s for Pi) |
 | Polling and UI updates | `Shika::tick` in `crates/shika/src/main.rs` (look for `title_checks`) |
 | First-line capture | `PromptCapture` in `crates/shika/src/model.rs` |
 | Settings row | `Shika::prefix_row` and `PREFIX_ROW` in `crates/shika/src/main.rs` |
@@ -125,7 +125,9 @@ These are **private files, not a public API**. They were found by inspecting rea
 
 ### Pi
 
-- Pi does not generate a conversation name. A name exists only after `/name`, `--name`, or `pi.setSessionName()` from an extension. Of the sessions inspected on 2026-10-05, none had one. When none is set, the prompt name stays.
+- Pi has no built-in automatic title generation. Shika's bundled, session-local extension exposes `shika_name_session` and instructs the model to call it early with a short task summary, before other tools. It calls Pi's official `setSessionName()` API during the normal turn, with no separate model request. No user installation or global configuration change is needed; Pi outside Shika is unaffected.
+- The tool preserves an existing name (including `/name`, `--name`, another extension, or an earlier turn), trims and validates a single-line title of at most 80 Unicode characters, and never runs Git. Reload reads the current name via Pi rather than resetting an in-memory once flag. Instructions guide the model but cannot guarantee it calls the tool; prompt naming remains the fallback.
+- Pi gets a bounded ten-minute title discovery window from the first submission to allow clarification or slow startup. Other CLIs keep two minutes. The ordinary once-only title application, manual display override, and published-branch safeguards remain unchanged. Naming API/tool contracts were checked against the installed Pi extension declarations and session-name example on 2026-10-24.
 - Directory: `PI_CODING_AGENT_SESSION_DIR` if set, otherwise `<PI_CODING_AGENT_DIR or ~/.pi/agent>/sessions/--<path>--/`.
 - `<path>`: the absolute working directory with the leading separator removed and `/`, `\`, and `:` replaced by `-`. `/Users/x/code/shika/.worktrees/shika-draft-18db` becomes `--Users-x-code-shika-.worktrees-shika-draft-18db--`.
 - One `<timestamp>_<session-id>.jsonl` per session. The name is a line like `{"type":"session_info","name":"Opacity and blur"}`.
@@ -137,9 +139,9 @@ The CLIs record the resolved working directory, so under `/tmp` they record `/pr
 
 ## Guarantees
 
-- Shika only reads the CLIs' files. It never writes, locks, or deletes them.
+- Shika's title reader only reads the CLIs' files. It never writes, locks, or deletes them. Pi's session-local naming tool asks Pi itself to save a name through its official API.
 - A missing, unreadable, or unexpected file is "no title yet", not an error.
-- No title within two minutes leaves the prompt name in place.
+- No title within two minutes (ten for Pi) leaves the prompt name in place.
 - A git failure while applying a title (for example a corrupt repository) stops the watch for that card and shows a toast. The card keeps working.
 
 ## Debugging
@@ -168,7 +170,7 @@ If these find nothing, check whether the CLI moved its files, then update `cli_t
 
 **A title exists but the branch did not change.** Check, in order:
 
-- The watch ran out. It stops two minutes after the first Enter.
+- The watch ran out. It stops two minutes after the first Enter, or ten minutes for Pi.
 - The branch is on a remote. `git rev-parse --abbrev-ref @{upstream}`, and `git for-each-ref "refs/remotes/*/$(git branch --show-current)"`.
 - HEAD is not the task branch (the user ran `git switch`).
 - The title has no ASCII letters or digits, so it produced no slug.

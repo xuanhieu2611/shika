@@ -190,6 +190,8 @@ The epoch and notification budget remain available after Ready. Strong work with
 
 Core adds an explicit `--extension` path only to Pi's launch. The extension lives in a unique mode-0700 temporary directory with a child-only `SHIKA_ACTIVITY_FILE`. It does not edit user/global Pi configuration, repository files, or launch arguments for other providers. Installation failure leaves the original launch unchanged.
 
+The same extension also registers Pi's `shika_name_session` tool and early-naming prompt guidelines. Naming uses Pi's official session API, not activity metadata, does not trigger another model request, and preserves existing names across turns/reload. See [branch naming](branch-naming.md#pi). The lifecycle version guard also gates naming on unsupported hosts.
+
 The extension writes tiny atomic JSON snapshots `{seq,state}` containing no prompts, output, credentials, or conversation history. It registers no long-lived resources in its factory. Reports follow this lifecycle:
 
 ```text

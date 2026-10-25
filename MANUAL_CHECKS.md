@@ -594,6 +594,17 @@ Remaining native acceptance checks (leave unchecked until performed):
 - [ ] A turn the CLI starts itself (2026-10-17 fix): a Lead that runs `shika wait` in the background and settles, then replies when the wait returns, shows that reply as a Lead bubble with no author bubble, goes Working then Ready, posts one notification, and keeps it after relaunch. Covered by core tests and a recorded fixture only.
 - [ ] Native Forget deletes Shika chat and saved conversation binding while memory remains; project removal removes its chat; non-Claude Leads and all workers remain unchanged real terminals.
 
+## Pi session naming (2026-10-24)
+
+Automated: bundled extension factory tests cover title validation, preservation of existing names across calls/reload, and unchanged lifecycle reporting; title reader and bounded delayed-title watch tests pass. Installed Pi's real extension loader successfully loads the bundled tool. Strict workspace Clippy and formatting pass. Workspace tests pass with `path_env::tests::finder_launch_path_resolves_installed_clis` skipped: the unfiltered run fails that environment-sensitive test because Claude resolves to `/opt/homebrew/bin/claude`.
+
+Not yet verified with an authenticated model or native app:
+
+- [ ] In an isolated app with a disposable repository, submit a screenshot-path-first request in Pi. Confirm the model calls `shika_name_session` early, Pi saves a descriptive title, and Shika updates the card and unpublished branch.
+- [ ] Later turns and `/reload` preserve the title; manual Shika card names remain intact, and published branches never rename.
+- [ ] A title set after two minutes but before ten is discovered; a skipped tool leaves the prompt fallback without an error.
+- [ ] Pi outside Shika has no Shika naming tool or instructions; a fresh Shika Pi launch needs no user extension setup.
+
 ## Column sections and quiet title bar (2026-10-24)
 
 Implemented; `cargo test -p shika` and clippy pass. The GUI checks below are not yet done.
