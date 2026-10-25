@@ -18,7 +18,9 @@ Shika handles the worktrees, branches, and terminals. Every task isolated. Every
 
 <br>
 
-![Shika in frosted glass over a desktop wallpaper, with three projects, a Claude Code agent terminal, and a Cursor CLI agent working](docs/images/shika-native.png)
+![Shika with disposable sample projects and a simulated Codex session](site/img/demo-poster.png)
+
+*Sample projects and simulated CLI output. This capture shows an earlier interface.*
 
 ## Why Shika
 

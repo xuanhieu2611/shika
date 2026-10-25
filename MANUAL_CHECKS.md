@@ -2,6 +2,16 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Privacy audit and 0.11.0 packaging, 2026-10-24
+
+- PASS: replaced the personal README screenshot with the existing disposable-project capture, labeled as simulated output and an earlier interface. Added repository ignore rules for local notes/worktrees, Claude local settings, and signing-key exports. Historical objects and old releases were deliberately left unchanged.
+- PASS: Gitleaks 8.30.1 scanned all reachable Git patches after fetching origin/tags and a current tracked-file export. Its three historical alerts and one current alert are the same deliberately synthetic documentation token. Personal-path/email searches, commit identities, public screenshot pixels/metadata, and GitHub issue/PR titles/bodies were reviewed. No real credential was identified; this is not a guarantee about forks, caches, comments, attachments, or every historical image.
+- PASS: formatting, strict workspace/all-targets Clippy, and bundled dependency notices. Final parallel workspace validation: 720 passed, one existing ignored, and the documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` excluded. The unfiltered run failed that existing assertion. An intermediate run during the full distribution rebuild also hit two usage-collector deadlines; both passed in the final parallel run after the build finished.
+- PASS: six isolated shell-prefix checks cover distribution remapping with spaces in paths, whitespace/globs in caller flags, encoded flags and precedence, and unchanged local release/debug flags. Shell syntax and Git whitespace checks pass.
+- PASS: `scripts/release-app.sh` built 0.11.0 (build 11), kept `com.hieule.shika`, embedded Sparkle, signed, notarized, and stapled the DMG; Gatekeeper accepted it as Notarized Developer ID. Strict nested signature verification passed. The executable and all bundled files contain neither the release Mac's home nor checkout path; dependency source locations use generic remapped paths.
+- PASS: `scripts/appcast.sh` signed and verified the feed against published build 10. The enclosure points to v0.11.0, matches the final DMG size, and carries its EdDSA signature. This checks packaging, not an installed-app update/relaunch.
+- Native acceptance for background images, title-bar alignment, CLI marks, full-app project reordering, and updater restart remains open below. No normal app data or authenticated provider session was used for this release validation.
+
 ## Centered title bar and background image, 2026-10-24
 
 Title bar: terminal tabs are 42 high on the bottom line with their label lifted 4, so tab labels, `+`, Close task, the Changes toggle, and the Changes title row sit on the bar's middle line (y 24) with the traffic lights and wordmark. Background image: Settings > Appearance > Background image and Image effect, the Adjust dialog, and the backdrop behind glass; see `docs/background-image.md`.
@@ -450,7 +460,8 @@ Contributor overview, safety limits, implementation map, and debugging: [docs/br
 - PASS: `cargo fmt --all --check`, parallel `cargo test --workspace --locked --offline` (205 tests), and strict workspace/all-targets Clippy. The upstream `block` future-compatibility warning remains.
 - PASS: Debug app bundle builds, includes Shika's MIT license plus Heroicons, Octicons, and JetBrains Mono notices, and passes `codesign --verify --deep --strict`.
 - Native README/poster/share screenshot captured using isolated data and disposable `storefront`/`routekit` repositories. CLI output is simulated, explicitly captioned, and image metadata is stripped. This does not validate real provider flows or close outstanding GUI checks above.
-- 2026-10-17: the README screenshot (`docs/images/shika-native.png`) was replaced with the author's real capture of the app in frosted glass, resized to 2400px wide. The entry above now describes only the poster/share image.
+- 2026-10-17: the README screenshot was replaced with the author's real capture of the app in frosted glass, resized to 2400px wide. The entry above then described only the poster/share image.
+- 2026-10-24: removed that personal capture from the current tree after a privacy audit. The README again uses `site/img/demo-poster.png`, explicitly captioned as sample projects, simulated CLI output, and an earlier interface. Historical copies remain; no Git history was rewritten.
 - Browser prototype checked with independent shell buffers (`git diff` and `pwd`), switching back to retained output, and the dirty-close dialog hiding Push. Component checks also cover tab ownership, pinned agent close, focus restoration, Codex/Pi picker choices, three-card cap, and simulated commit/push close behavior. Browser-reserved shortcuts can require visible controls.
 
 ## Lead agent spike

@@ -30,9 +30,9 @@ Related: [AGENTS.md](../AGENTS.md) for the build scripts and [MANUAL_CHECKS.md](
 ## Releasing
 
 1. Bump `CFBundleShortVersionString` and `CFBundleVersion` in `assets/macos/Info.plist`, and the crate versions (then `cargo update -w`).
-2. `scripts/release-app.sh` builds, embeds Sparkle, signs, notarizes, and staples `target/release/Shika.dmg`. Before building, it checks that the keychain's Sparkle key matches `SUPublicEDKey`.
+2. `scripts/release-app.sh` builds, embeds Sparkle, signs, notarizes, and staples `target/release/Shika.dmg`. Before building, it checks that the keychain's Sparkle key matches `SUPublicEDKey`. Distribution builds remap Rust source paths to `/build/home` and `/build/shika`, including dependencies, so panic locations do not publish the release Mac's home or checkout paths. Local builds keep their source paths. Caller Rust flags are preserved; changing the distribution flags rebuilds dependencies.
 3. Write the release notes as Markdown, then run `scripts/appcast.sh notes.md`. It signs the final DMG and writes and signs `target/release/appcast.xml`. It refuses to run when the build number is not above the one in the published feed.
-4. Publish both files to one release, marked latest:
+4. Before uploading, inspect the final app's executable for personal source paths (stripping symbols alone does not remove panic locations), and use only disposable sample projects in public screenshots and logs. Developer ID signing necessarily exposes the certificate's public identity. Publish both files to one release, marked latest:
 
    ```sh
    gh release create v0.3.0 target/release/Shika.dmg target/release/appcast.xml \
