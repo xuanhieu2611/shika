@@ -7063,6 +7063,7 @@ impl Shika {
                         d.child(
                             div()
                                 .id(("shell-close", tab))
+                    .pb(px(TAB_LABEL_LIFT))
                                 .flex_none()
                                 .size(px(16.))
                                 .flex()
@@ -7151,7 +7152,7 @@ impl Shika {
                             .justify_end()
                             .pr(px(4.))
                             .child(
-                                div().h(px(TAB_HEIGHT)).flex().items_center().child(
+                                div().h(px(CONTROL_BAND)).flex().items_center().child(
                                     div()
                                         .id("new-terminal")
                                         .occlude()
@@ -7192,7 +7193,7 @@ impl Shika {
                         // Closed, the Changes toggle follows 8 after Close task.
                         .pr(px(if self.changes.open { 12. } else { 8. }))
                         .child(
-                            div().h(px(TAB_HEIGHT)).flex().items_center().child(
+                            div().h(px(CONTROL_BAND)).flex().items_center().child(
                                 div()
                                     .id("close")
                                     .occlude()
@@ -7235,7 +7236,7 @@ impl Shika {
                             .pr(px(12.))
                             .child(
                                 div()
-                                    .h(px(TAB_HEIGHT))
+                                    .h(px(CONTROL_BAND))
                                     .flex()
                                     .items_center()
                                     .child(self.changes_toggle(chrome, cx)),
@@ -7453,16 +7454,9 @@ impl Shika {
                                             .flex_none()
                                             .h_full()
                                             .flex()
-                                            .flex_col()
-                                            .justify_end()
+                                            .items_center()
                                             .pr(px(12.))
-                                            .child(
-                                                div()
-                                                    .h(px(TAB_HEIGHT))
-                                                    .flex()
-                                                    .items_center()
-                                                    .child(self.changes_toggle(chrome, cx)),
-                                            ),
+                                            .child(self.changes_toggle(chrome, cx)),
                                     )
                                 }),
                             cx,
@@ -9236,8 +9230,16 @@ const COLUMN_HANDLE_WIDTH: f32 = 8.;
 const BAR_HEIGHT: f32 = 48.;
 /// Six base-branch rows. The list scrolls after that.
 const BASE_LIST_MAX: f32 = 220.;
-/// A terminal tab, sitting on the bottom of the 48px header.
-const TAB_HEIGHT: f32 = 34.;
+/// A terminal tab, sitting on the bottom line of the 48px header and
+/// reaching to 5px under its top.
+const TAB_HEIGHT: f32 = 42.;
+/// Lifts a tab's label off the tab's own middle onto the bar's middle line,
+/// where the traffic lights, the wordmark, and every header control sit.
+/// The tab ends on the 1px bottom line, so its box is 5..47.
+const TAB_LABEL_LIFT: f32 = BAR_HEIGHT - 2. - TAB_HEIGHT;
+/// A header control's band: the bar above its 1px bottom line, minus the
+/// same 1px on top, so a control centered in it sits on the bar's middle.
+const CONTROL_BAND: f32 = BAR_HEIGHT - 2.;
 /// The radius of a tab's top corners and of the concave flares that turn its
 /// sides into the bottom line. The flares reach this far past the tab.
 const TAB_FLARE: f32 = 7.;

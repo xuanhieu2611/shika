@@ -21,7 +21,9 @@
 //! the look is under Changes panel in `design/DESIGN.md`.
 
 use crate::appearance::{Chrome, DiffColors, with_alpha};
-use crate::{BAR_HEIGHT, KeyTip, MIN_TERMINAL_WIDTH, MONO, Shika, TAB_HEIGHT, UI_FONT, kbd, model};
+use crate::{
+    BAR_HEIGHT, CONTROL_BAND, KeyTip, MIN_TERMINAL_WIDTH, MONO, Shika, UI_FONT, kbd, model,
+};
 use gpui::{
     AnyElement, AppContext, Context, FocusHandle, Focusable, FontWeight, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render, Rgba, ScrollWheelEvent,
@@ -1617,7 +1619,7 @@ impl Shika {
             .border_color(chrome.term_line)
             .child(
                 div()
-                    .h(px(TAB_HEIGHT))
+                    .h(px(CONTROL_BAND))
                     .flex()
                     .items_center()
                     .gap(px(10.))
