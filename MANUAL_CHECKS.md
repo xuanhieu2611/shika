@@ -2,6 +2,21 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Centered title bar and background image, 2026-10-24
+
+Title bar: terminal tabs are 42 high on the bottom line with their label lifted 4, so tab labels, `+`, Close task, the Changes toggle, and the Changes title row sit on the bar's middle line (y 24) with the traffic lights and wordmark. Background image: Settings > Appearance > Background image and Image effect, the Adjust dialog, and the backdrop behind glass; see `docs/background-image.md`.
+
+Automated: 262 app tests pass, including framing cover/pan/zoom-around-pointer math, effect raster size and BGRA order, shared Dither/None rasters, and refusal of undecodable bytes; core tests cover managed names (no path escapes), fresh copies, pruning, lenient `background` loading, and framing/effect ranges. Formatting and strict workspace Clippy pass. Workspace tests pass except the machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis`. `Cargo.lock` gains no crate: `image` uses the version and a subset of the formats GPUI already enables.
+
+Not yet seen natively: the agent shell that built this could not capture the screen (no Screen Recording permission), so every check below is open.
+
+- [ ] Header in Shika Dark, Shika Light, a derived theme, and glass: tab labels, `+`, Close task, the Changes toggle (header, empty-state strip, and open panel title) share the traffic lights' middle line; the active tab's outline and flares still meet the bottom line; hover shapes still fit beside the active tab; the column-hidden header keeps the wordmark aligned.
+- [ ] Choose a PNG, a JPEG, and a large photo: each shows behind the column at 70% when opacity was 100%, crossfades in, and survives a relaunch. Moving or deleting the original changes nothing. A text file renamed `.png` shows the unreadable message and leaves the current image.
+- [ ] Apply to: Sidebar shows the image only behind the column; Sidebar and terminal shows it behind both, same crop, still while the column resizes or hides and the Changes panel opens.
+- [ ] Each effect in light and dark; ASCII, Halftone, and Scanlines switch paper with the theme side; blur steps soften the image; opacity 100% and Reduce transparency paint solid; removing the image returns to desktop glass with the blur radius.
+- [ ] Adjust: drag pans and stops at the edges, scroll and pinch zoom around the pointer, the track and `-`/`+` zoom, arrows and `h j k l` pan, `0` resets, Apply saves and returns to the image row, Cancel and Escape drop the draft, focus returns to where Settings opened.
+- [ ] `backgrounds/` keeps only the current copy after Replace and Remove; Settings shows "Image unavailable" with Replace and Remove after the copy is deleted.
+
 ## Occupied-first projects, 2026-10-24
 
 Projects with cards shown in Projects precede empty headers, retaining saved repository order within each tier. Last-card exits finish before demotion. Groups slide together over 220ms on the existing curve; Reduce Motion is instant. Leads, picker order, Settings order, selection, and saved projects are unchanged.

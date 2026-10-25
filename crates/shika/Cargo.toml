@@ -18,6 +18,9 @@ shika-terminal = { path = "../shika-terminal" }
 unicode-width = "0.2.2"
 # Native task-name editing moves and deletes whole graphemes.
 unicode-segmentation = "1.13.3"
+# Decodes the background image and builds its effects. The same version and
+# a subset of the formats GPUI already enables, so it adds no crate.
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"

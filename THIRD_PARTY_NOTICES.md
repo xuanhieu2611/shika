@@ -1,6 +1,6 @@
 # Third-party notices
 
-Shika's code is [MIT licensed](LICENSE). The following artwork, fonts, and color themes retain their own copyright and license notices.
+Shika's code is [MIT licensed](LICENSE). The following artwork, fonts, code, and color themes retain their own copyright and license notices.
 
 ## Native app
 
@@ -10,6 +10,7 @@ Shika's code is [MIT licensed](LICENSE). The following artwork, fonts, and color
 | Branch icon (`git-branch-16`), embedded in `crates/shika/src/main.rs` | [Octicons](https://github.com/primer/octicons) | [MIT, GitHub Inc.](assets/licenses/Octicons-MIT.txt) |
 | CLI marks for Claude Code, Codex, and Cursor CLI (`claude`, `codex`, `cursor`, mono), embedded in `crates/shika/src/agent_marks.rs` | [Lobe Icons](https://github.com/lobehub/lobe-icons) | [MIT, LobeHub](assets/licenses/LobeIcons-MIT.txt) |
 | CLI mark for Pi, redrawn in one color from `pi-logo.ts`, embedded in `crates/shika/src/agent_marks.rs` | [Pi](https://github.com/earendil-works/pi) | [MIT, Mario Zechner](assets/licenses/Pi-MIT.txt) |
+| Background image decoding and effects (Dither, ASCII, Halftone, Scanlines), ported from `crates/ui/src/new_thread_background_effects.rs` into `crates/shika/src/background.rs` | [Zeron](https://github.com/zeronsh/zeron) | [MIT, Wing](assets/licenses/Zeron-MIT.txt) |
 | Sparkle 2.10.0, embedded in release builds for software updates | [Sparkle](https://github.com/sparkle-project/Sparkle/tree/2.10.0) | [MIT, Andy Matuschak and contributors, with bsdiff, sais-lite, and ed25519 notices](assets/licenses/Sparkle-MIT.txt) |
 | JetBrains Mono v2.304, bundled terminal font | [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono/tree/v2.304) | [SIL Open Font License 1.1](assets/fonts/OFL.txt) |
 

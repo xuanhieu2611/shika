@@ -30,6 +30,8 @@ pub enum Error {
     ReadSettings,
     #[error("Could not save settings.")]
     SaveSettings,
+    #[error("Could not save the image. Check that the app data folder is writable.")]
+    SaveBackground,
 
     #[error("Could not run git.{}", detail(.0))]
     Git(Option<String>),

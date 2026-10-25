@@ -77,6 +77,180 @@ impl Default for Appearance {
     }
 }
 
+/// The treatment the background image gets before Shika paints it. The same
+/// five as Zeron's background effects, with fixed values.
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum BackgroundEffect {
+    #[default]
+    None,
+    Dither,
+    Ascii,
+    Halftone,
+    Scanlines,
+}
+
+impl BackgroundEffect {
+    /// The effects in Settings order, left to right.
+    pub const ALL: [BackgroundEffect; 5] = [
+        BackgroundEffect::None,
+        BackgroundEffect::Dither,
+        BackgroundEffect::Ascii,
+        BackgroundEffect::Halftone,
+        BackgroundEffect::Scanlines,
+    ];
+
+    /// One segment left (`-1`) or right (`1`), stopping at the ends.
+    pub fn step(self, delta: i64) -> Self {
+        let at = Self::ALL.iter().position(|e| *e == self).unwrap_or(0) as i64;
+        let next = (at + delta.signum()).clamp(0, Self::ALL.len() as i64 - 1);
+        Self::ALL[next as usize]
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Dither => "Dither",
+            Self::Ascii => "ASCII",
+            Self::Halftone => "Halftone",
+            Self::Scanlines => "Scanlines",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::None => "Shows the original image.",
+            Self::Dither => "Rebuilds the image with a dithered color palette.",
+            Self::Ascii => "Recreates the image with colored characters.",
+            Self::Halftone => "Recreates the image with colored print dots.",
+            Self::Scanlines => "Adds a pronounced horizontal display-line texture.",
+        }
+    }
+}
+
+/// An unknown effect, or a value that is not a string, shows the image as is
+/// rather than breaking the file.
+impl<'de> Deserialize<'de> for BackgroundEffect {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(
+            match serde_json::Value::deserialize(deserializer)?.as_str() {
+                Some("dither") => Self::Dither,
+                Some("ascii") => Self::Ascii,
+                Some("halftone") => Self::Halftone,
+                Some("scanlines") => Self::Scanlines,
+                _ => Self::None,
+            },
+        )
+    }
+}
+
+/// Where the image sits once it covers the window. It is scaled to cover,
+/// then by `zoom`; the focal point picks which part of the overflow shows.
+/// Whole numbers keep the file exact: focal points in ten-thousandths (0 is
+/// the left or top edge, 10000 the right or bottom) and zoom in hundredths.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BackgroundFraming {
+    #[serde(deserialize_with = "saturating_u16")]
+    pub focal_x: u16,
+    #[serde(deserialize_with = "saturating_u16")]
+    pub focal_y: u16,
+    #[serde(deserialize_with = "saturating_u16")]
+    pub zoom: u16,
+}
+
+impl BackgroundFraming {
+    pub const MAX_FOCAL: u16 = 10_000;
+    pub const MIN_ZOOM: u16 = 100;
+    pub const MAX_ZOOM: u16 = 400;
+
+    /// The focal point as fractions, 0 to 1.
+    pub fn focal(self) -> (f32, f32) {
+        let fraction = |v: u16| f32::from(v.min(Self::MAX_FOCAL)) / f32::from(Self::MAX_FOCAL);
+        (fraction(self.focal_x), fraction(self.focal_y))
+    }
+
+    /// The zoom as a multiplier, 1 to 4.
+    pub fn zoom_factor(self) -> f32 {
+        f32::from(self.zoom.clamp(Self::MIN_ZOOM, Self::MAX_ZOOM)) / 100.
+    }
+
+    /// Fractions and a multiplier, rounded and pulled into range. Nonsense
+    /// takes the centered default.
+    pub fn from_parts(focal_x: f32, focal_y: f32, zoom: f32) -> Self {
+        let default = Self::default();
+        let focal = |v: f32, fallback: u16| {
+            if v.is_finite() {
+                (v.clamp(0., 1.) * f32::from(Self::MAX_FOCAL)).round() as u16
+            } else {
+                fallback
+            }
+        };
+        let zoom = if zoom.is_finite() {
+            (zoom * 100.)
+                .round()
+                .clamp(f32::from(Self::MIN_ZOOM), f32::from(Self::MAX_ZOOM)) as u16
+        } else {
+            default.zoom
+        };
+        Self {
+            focal_x: focal(focal_x, default.focal_x),
+            focal_y: focal(focal_y, default.focal_y),
+            zoom,
+        }
+    }
+
+    /// Values from a hand-edited file, pulled into range.
+    pub fn clamped(self) -> Self {
+        Self {
+            focal_x: self.focal_x.min(Self::MAX_FOCAL),
+            focal_y: self.focal_y.min(Self::MAX_FOCAL),
+            zoom: self.zoom.clamp(Self::MIN_ZOOM, Self::MAX_ZOOM),
+        }
+    }
+}
+
+impl Default for BackgroundFraming {
+    fn default() -> Self {
+        Self {
+            focal_x: Self::MAX_FOCAL / 2,
+            focal_y: Self::MAX_FOCAL / 2,
+            zoom: Self::MIN_ZOOM,
+        }
+    }
+}
+
+/// The picked background image. `file` names Shika's own copy in the app
+/// data's `backgrounds/` folder, so moving or deleting the original changes
+/// nothing; `name` is the original file name, shown in Settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Background {
+    pub file: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub effect: BackgroundEffect,
+    #[serde(default)]
+    pub framing: BackgroundFraming,
+}
+
+/// `background` as saved. A value that is not a usable record, or one whose
+/// file is not a plain name inside `backgrounds/`, is no image rather than a
+/// broken file.
+fn background_or_none<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Background>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value::<Background>(value)
+        .ok()
+        .filter(|b| crate::background::is_managed_name(&b.file))
+        .map(|b| Background {
+            framing: b.framing.clamped(),
+            ..b
+        }))
+}
+
 /// The agent column beside the terminal. It takes a share of the window's
 /// width, so it keeps its proportion as the window resizes. A drag on its
 /// edge sets the share, and it can be hidden so the terminal fills the
@@ -486,6 +660,14 @@ pub struct Settings {
     /// Only chords the user changed are written.
     #[serde(default, skip_serializing_if = "KeyOverrides::is_empty")]
     pub keys: KeyOverrides,
+    /// The background image painted behind the translucent column, and the
+    /// terminal when translucency covers it. Missing means none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "background_or_none"
+    )]
+    pub background: Option<Background>,
 }
 
 impl Default for Settings {
@@ -500,6 +682,7 @@ impl Default for Settings {
             changes: Changes::default(),
             agents: AgentSettings::default(),
             keys: KeyOverrides::default(),
+            background: None,
         }
     }
 }
@@ -605,6 +788,16 @@ mod tests {
             changes: Changes { width: 610 },
             agents: AgentSettings::default(),
             keys: KeyOverrides::default(),
+            background: Some(Background {
+                file: "background-1-2-3.png".into(),
+                name: "Sky.png".into(),
+                effect: BackgroundEffect::Halftone,
+                framing: BackgroundFraming {
+                    focal_x: 2500,
+                    focal_y: 7500,
+                    zoom: 200,
+                },
+            }),
         };
         file.save(&settings).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -622,6 +815,9 @@ mod tests {
         assert!(text.contains("\"changes\": {"));
         assert!(text.contains("\"width\": 610"));
         assert!(!text.contains("open"));
+        assert!(text.contains("\"background\": {"));
+        assert!(text.contains("\"effect\": \"halftone\""));
+        assert!(text.contains("\"focalX\": 2500"));
         assert_eq!(file.load().unwrap(), settings);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -683,6 +879,71 @@ mod tests {
         assert!(!text.contains("\"claude\""));
         assert_eq!(file.load().unwrap().agents, settings.agents);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn background_loads_leniently_and_none_is_not_written() {
+        let path = temp_file("background");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let load = |json: &str| {
+            fs::write(&path, json).unwrap();
+            SettingsFile::open(path.clone()).load().unwrap().background
+        };
+        // A path outside the backgrounds folder never loads.
+        assert_eq!(
+            load(r#"{ "background": { "file": "../../etc/passwd" } }"#),
+            None
+        );
+        assert_eq!(load(r#"{ "background": "sky.png" }"#), None);
+        assert_eq!(load(r#"{ "background": { "name": "Sky.png" } }"#), None);
+        let loaded = load(
+            r#"{ "background": { "file": "background-1.png", "effect": "sepia",
+                 "framing": { "focalX": 99999, "zoom": 9 } } }"#,
+        )
+        .unwrap();
+        assert_eq!(loaded.name, "");
+        assert_eq!(loaded.effect, BackgroundEffect::None);
+        assert_eq!(loaded.framing.focal_x, BackgroundFraming::MAX_FOCAL);
+        assert_eq!(loaded.framing.focal_y, 5000);
+        assert_eq!(loaded.framing.zoom, BackgroundFraming::MIN_ZOOM);
+        let file = SettingsFile::open(path.clone());
+        file.save(&Settings::default()).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("background"));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn background_framing_and_effects_stay_in_range() {
+        let centered = BackgroundFraming::default();
+        assert_eq!(centered.focal(), (0.5, 0.5));
+        assert_eq!(centered.zoom_factor(), 1.);
+        let framing = BackgroundFraming::from_parts(0.25, 1.5, 2.345);
+        assert_eq!(
+            (framing.focal_x, framing.focal_y, framing.zoom),
+            (2500, 10000, 235)
+        );
+        assert_eq!(
+            BackgroundFraming::from_parts(f32::NAN, -1., f32::INFINITY),
+            BackgroundFraming {
+                focal_x: 5000,
+                focal_y: 0,
+                zoom: 100
+            }
+        );
+        assert_eq!(
+            BackgroundFraming::from_parts(0.5, 0.5, 9.).zoom_factor(),
+            4.
+        );
+        assert_eq!(BackgroundEffect::None.step(-1), BackgroundEffect::None);
+        assert_eq!(BackgroundEffect::None.step(1), BackgroundEffect::Dither);
+        assert_eq!(
+            BackgroundEffect::Scanlines.step(1),
+            BackgroundEffect::Scanlines
+        );
+        assert_eq!(
+            BackgroundEffect::Scanlines.step(-3),
+            BackgroundEffect::Halftone
+        );
     }
 
     #[test]

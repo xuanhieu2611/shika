@@ -53,6 +53,7 @@
 
 mod activity;
 mod agents;
+mod background;
 mod cli_title;
 pub mod control;
 mod diff;
@@ -99,8 +100,9 @@ pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::{ChecksState, MAX_PR_BODY_CHARS, PrChecks, PublishPreview, PublishedPr};
 pub use session::{DiffStat, LaunchOptions, Session, SessionGitState, WorkerEnv, task_title};
 pub use settings::{
-    AgentSettings, Appearance, Changes, Column, DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize,
-    KeyOverrides, Settings, ThemeMode, ThemeSettings, Translucency,
+    AgentSettings, Appearance, Background, BackgroundEffect, BackgroundFraming, Changes, Column,
+    DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, KeyOverrides, Settings, ThemeMode,
+    ThemeSettings, Translucency,
 };
 pub use usage::{
     UsageCalendar, UsageCalendarDay, UsageDay, UsageReport, UsageTotals, UsageWeek, format_tokens,
@@ -259,6 +261,25 @@ impl Core {
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
         self.settings.save(settings)
+    }
+
+    /// Save `bytes`, already decoded by the app, as a new background copy and
+    /// return its file name for [`Background::file`]. `original` is the
+    /// picked file's name. Blocking: writes a file.
+    pub fn store_background(&self, bytes: &[u8], original: &str) -> Result<String> {
+        background::store(&self.data_dir, bytes, original)
+    }
+
+    /// Where the copy named `file` lives, or None for a name Shika never
+    /// writes.
+    pub fn background_path(&self, file: &str) -> Option<PathBuf> {
+        background::path(&self.data_dir, file)
+    }
+
+    /// Remove every background copy but `keep`, the one settings name.
+    /// Blocking: reads and removes files.
+    pub fn prune_backgrounds(&self, keep: Option<&str>) {
+        background::prune(&self.data_dir, keep)
     }
 
     /// Saves the git root of a folder the user picked. A nested folder

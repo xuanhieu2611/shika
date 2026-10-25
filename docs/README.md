@@ -14,6 +14,7 @@ These guides explain why features exist, how they are implemented, and where to 
 | [Token usage](token-usage.md) | Local Claude Code and Codex token totals, the daily file, and Settings > Usage |
 | [Terminal tabs](terminal-tabs.md) | Task-local agent/shell tabs, PTY ownership, startup, selection, close, and hidden terminals |
 | [Changes panel](changes-panel.md) | The read-only diff beside the terminal: decision, refresh without watching, caps and performance, width beside the column, debugging, and guardrails |
+| [Background image](background-image.md) | The optional picture behind the glass: decisions, Shika's managed copy, effects ported from Zeron, framing and the Adjust dialog, debugging, and extending |
 | [Keyboard flow](keyboard-flow.md) | Native shortcuts, terminal/card focus, overlay restoration, and selection scrolling |
 | [Worktree preparation](worktree-preparation.md) | Feature evolution and decisions, per-project first-New onboarding, Settings editor, suggestions, consent/state routing, copy/setup lifecycle, debugging, and contribution guardrails |
 | [Confirmed PR publishing](publishing.md) | Decision rationale, recorded-base targeting, approved-tree checks, commit/push/gh lifecycle, debugging, retries, and contribution guardrails |

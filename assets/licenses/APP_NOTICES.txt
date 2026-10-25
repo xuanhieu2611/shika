@@ -19,6 +19,11 @@ CLI mark for Pi: the pi logo from pi-logo.ts, Mario Zechner.
 https://github.com/earendil-works/pi
 MIT license: licenses/Pi-MIT.txt inside the app bundle.
 
+Background image effects (Dither, ASCII, Halftone, Scanlines) and image decoding,
+ported from Zeron's new-thread background, Wing.
+https://github.com/zeronsh/zeron
+MIT license: licenses/Zeron-MIT.txt inside the app bundle.
+
 Claude and Claude Code are trademarks of Anthropic, PBC. Codex is a trademark
 of OpenAI. Cursor is a trademark of Anysphere, Inc. The Pi name and logo belong
 to the Pi project.
