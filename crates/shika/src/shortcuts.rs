@@ -132,6 +132,8 @@ pub struct Binding {
 const RESERVED: &[(&str, &str)] = &[
     ("cmd-n", "New agent"),
     ("cmd-l", "New Lead"),
+    ("cmd-o", "Add project"),
+    ("cmd-shift-b", "Base branch"),
     ("cmd-t", "New terminal tab"),
     ("cmd-shift-p", "Create PR"),
     ("cmd-shift-a", "Switch agent"),
@@ -576,6 +578,18 @@ mod tests {
                 assert!(seen.insert(chord(default)), "{}", command.id);
             }
         }
+    }
+
+    #[test]
+    fn add_project_and_base_branch_are_fixed_chords() {
+        assert_eq!(reserved_name("cmd-o"), Some("Add project"));
+        assert_eq!(reserved_name("cmd-shift-b"), Some("Base branch"));
+        let refused = assign(
+            &KeyOverrides::default(),
+            "toggleChanges",
+            Some("cmd-o".into()),
+        );
+        assert!(refused.is_err());
     }
 
     #[test]

@@ -21,6 +21,44 @@ pub fn adjacent_tab(active: usize, shells: usize, forward: bool) -> usize {
     }
 }
 
+/// What the selection puts on screen, as far as typing goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// Nothing is selected.
+    Nothing,
+    /// A project header with no card: the empty terminal area.
+    Header,
+    /// A saved Lead with no process: its row, no input.
+    RestingLead,
+    /// A card whose setup failed: it shows output and a Retry button only.
+    FailedCard,
+    /// A card with a terminal or Lead chat. A card still creating counts:
+    /// its terminal is on screen and drops typing by design, but the
+    /// author's next keys must never move the list.
+    Card,
+}
+
+impl Shown {
+    /// Whether focus belongs on what is shown. Otherwise nothing on screen
+    /// can take typing, and the cards get focus.
+    pub fn takes_typing(self) -> bool {
+        self == Shown::Card
+    }
+}
+
+/// The project a project-scoped command (New, Lead, Base branch) aims at when
+/// the author clicked a project header while a terminal stayed on screen: the
+/// recorded project, but only while the selection is still the one it was
+/// recorded under.
+pub fn header_target<'a, S: PartialEq>(
+    target: Option<&'a (String, Option<S>)>,
+    selection: Option<&S>,
+) -> Option<&'a str> {
+    target
+        .filter(|(_, recorded)| recorded.as_ref() == selection)
+        .map(|(project, _)| project.as_str())
+}
+
 /// What the column's ordering needs to know about one card.
 pub struct Placement<'a> {
     pub project: &'a str,
@@ -1580,5 +1618,34 @@ mod lead_tests {
         let find = Discovery::new(std::time::SystemTime::now(), t0);
         assert!(!find.due(t0 + Duration::from_secs(600), false));
         assert!(find.due(t0 + Duration::from_secs(600), true));
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_shown_card_takes_typing() {
+        assert!(Shown::Card.takes_typing());
+        for shown in [
+            Shown::Nothing,
+            Shown::Header,
+            Shown::RestingLead,
+            Shown::FailedCard,
+        ] {
+            assert!(!shown.takes_typing(), "{shown:?}");
+        }
+    }
+
+    #[test]
+    fn a_header_target_lasts_until_the_selection_changes() {
+        let target = ("api".to_string(), Some(3));
+        assert_eq!(header_target(Some(&target), Some(&3)), Some("api"));
+        assert_eq!(header_target(Some(&target), Some(&4)), None);
+        assert_eq!(header_target(Some(&target), None), None);
+        assert_eq!(header_target::<i32>(None, Some(&3)), None);
+        let none_selected: (String, Option<i32>) = ("api".into(), None);
+        assert_eq!(header_target(Some(&none_selected), None), Some("api"));
     }
 }
