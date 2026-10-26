@@ -791,6 +791,9 @@ struct Shika {
     lead_snippets: HashMap<String, String>,
     snippets_requested: std::collections::HashSet<String>,
     chat_questions: Vec<(String, String, shika_core::ChatQuestion)>,
+    /// When the confirmation dialog on screen appeared, to ignore keys that
+    /// were already in flight.
+    dialog_grace: model::DialogGrace,
     selection: Option<Selection>,
     focus: FocusHandle,
     catalog: Option<CliCatalog>,
@@ -935,6 +938,7 @@ impl Shika {
             lead_snippets: HashMap::new(),
             snippets_requested: Default::default(),
             chat_questions: Vec::new(),
+            dialog_grace: model::DialogGrace::default(),
             selection,
             focus: cx.focus_handle(),
             catalog: None,
@@ -2647,6 +2651,7 @@ impl Shika {
             cx.notify();
         }
         let now = Instant::now();
+        self.observe_dialog(now);
         let mut changed = self.drain_update_notice(cx);
         // The Lead's shika commands run here, with the rest of the state.
         self.drain_control(window, cx);
@@ -4829,6 +4834,126 @@ impl Shika {
             self.message(e.to_string());
         }
     }
+    /// Which confirmation dialog is on screen, for the input grace window.
+    /// Text-entry dialogs, the picker, and Settings have none.
+    fn dialog_identity(&self) -> Option<model::DialogId> {
+        fn hash(text: &str) -> u64 {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut hasher);
+            hasher.finish()
+        }
+        Some(match self.overlay.as_ref()? {
+            Overlay::Close { index, .. } => ("close", *index as u64),
+            Overlay::SwitchedClose { index, .. } => ("switched-close", *index as u64),
+            Overlay::LeadClose { project, step, .. } => (
+                "lead-close",
+                hash(project) ^ matches!(step, model::LeadClose::Forget { .. }) as u64,
+            ),
+            Overlay::RestingMenu { project, .. } => ("resting-menu", hash(project)),
+            Overlay::RemoveProject(id) => ("remove-project", hash(id)),
+            Overlay::RemoveLeftover(i) => ("remove-leftover", *i as u64),
+            Overlay::Preparation { project, .. } => ("preparation", hash(project)),
+            Overlay::LeadQuestion(dialog) => ("lead-question", dialog.identity()),
+            _ => return None,
+        })
+    }
+    /// Starts the grace window for a confirmation dialog newly on screen.
+    /// Called from render, the tick, and every key, so a dialog is noticed
+    /// whichever comes first.
+    fn observe_dialog(&mut self, now: Instant) {
+        let id = self.dialog_identity();
+        self.dialog_grace.observe(id, now);
+    }
+    /// Whether a key is dropped because the confirmation dialog has just
+    /// appeared. Escape always works. Mouse clicks are not keys.
+    fn dialog_ignores_key(&mut self, key: &str) -> bool {
+        let now = Instant::now();
+        self.observe_dialog(now);
+        key != "escape" && self.dialog_grace.active(now)
+    }
+    /// The Command chords that choose in a confirmation dialog. True when
+    /// the keystroke belonged to one (acted on or deliberately dropped), so
+    /// terminals and cards never see it while the dialog is open.
+    fn dialog_chord_key(
+        &mut self,
+        chord: model::DialogChord,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        use model::DialogChord::{Delete, Discard, Primary};
+        if !matches!(
+            self.overlay,
+            Some(
+                Overlay::Close { .. }
+                    | Overlay::SwitchedClose { .. }
+                    | Overlay::LeadClose { .. }
+                    | Overlay::RestingMenu { .. }
+                    | Overlay::RemoveProject(_)
+                    | Overlay::RemoveLeftover(_)
+            )
+        ) {
+            return false;
+        }
+        if self.dialog_ignores_key("") || self.busy {
+            return true;
+        }
+        match (&self.overlay, chord) {
+            (Some(Overlay::Close { index, .. }), Discard) => {
+                let i = *index;
+                self.finish_close(i, 1, window, cx);
+            }
+            (Some(Overlay::Close { index, state }), Primary) if state.can_push() => {
+                let i = *index;
+                self.finish_close(i, 2, window, cx);
+            }
+            (Some(Overlay::SwitchedClose { index, .. }), Primary) => {
+                let i = *index;
+                self.finish_close(i, 3, window, cx);
+            }
+            (Some(Overlay::LeadClose { .. }), Delete) => self.forget_lead_from_dialog(window, cx),
+            (Some(Overlay::RestingMenu { .. }), Delete) => self.forget_from_menu(window, cx),
+            (Some(Overlay::RemoveProject(id)), Delete) => {
+                let id = id.clone();
+                self.remove_project(id, cx);
+            }
+            (Some(Overlay::RemoveLeftover(i)), Delete) => {
+                let i = *i;
+                self.remove_leftover(i, cx);
+            }
+            _ => {}
+        }
+        true
+    }
+    /// Forget from the Lead's close dialog. From the Stop step, a worktree
+    /// with something to lose first shows the Forget step with those facts;
+    /// otherwise, and from the Forget step, the Lead is forgotten.
+    fn forget_lead_from_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Overlay::LeadClose { step, .. }) = &mut self.overlay else {
+            return;
+        };
+        if matches!(step, model::LeadClose::Stop { .. }) && step.discards() {
+            *step = step.forget();
+            cx.notify();
+        } else {
+            self.finish_lead_close(true, window, cx);
+        }
+    }
+    /// Whether the author has stopped typing in every terminal (agent and
+    /// shell) and Lead chat input. A dialog that opens on its own waits for
+    /// this, so keystrokes meant for a prompt never land in it.
+    fn author_quiet(&self, now: Instant, cx: &gpui::App) -> bool {
+        let terminals = self.cards.iter().flat_map(|card| {
+            std::iter::once(&card.agent)
+                .chain(card.shells.iter())
+                .map(|pane| lock(&pane.state).last_typed)
+        });
+        let chats = self
+            .lead_chats
+            .values()
+            .map(|chat| chat.read(cx).last_typed);
+        model::typing_quiet(terminals.chain(chats), now, control::BELL_TYPING_QUIET)
+    }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.overlay, Some(Overlay::LeadQuestion(_))) {
             self.chat_question_key(event, window, cx);
@@ -5117,6 +5242,18 @@ impl Shika {
             cx.notify();
             return;
         }
+        if let Some(chord) = model::dialog_chord(
+            &stroke.key,
+            stroke.modifiers.platform,
+            stroke.modifiers.control,
+            stroke.modifiers.alt,
+            stroke.modifiers.shift,
+        ) && self.dialog_chord_key(chord, window, cx)
+        {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if stroke.modifiers.platform
             || stroke.modifiers.control
             || stroke.modifiers.alt
@@ -5126,6 +5263,10 @@ impl Shika {
         }
         let key = stroke.key.as_str();
         if self.overlay.is_some() {
+            if self.dialog_ignores_key(key) {
+                cx.stop_propagation();
+                return;
+            }
             if self.busy {
                 return;
             }
@@ -5215,44 +5356,30 @@ impl Shika {
                     "escape" => self.cancel_overlay(window, cx),
                     _ => {}
                 },
-                Some(Overlay::Close { index, state }) => {
-                    let i = *index;
-                    let can_push = state.can_push();
-                    match key {
-                        "d" => self.finish_close(i, 1, window, cx),
-                        "p" if can_push => self.finish_close(i, 2, window, cx),
-                        "escape" => self.cancel_overlay(window, cx),
-                        _ => {}
+                // Escape, and Enter to Stop the Lead, are the only plain keys
+                // here. The destructive and publishing choices are Command
+                // chords, handled by `dialog_chord_key`.
+                Some(Overlay::Close { .. } | Overlay::RestingMenu { .. }) => {
+                    if key == "escape" {
+                        self.cancel_overlay(window, cx);
                     }
                 }
-                Some(Overlay::RestingMenu { .. }) => match key {
-                    "enter" => self.forget_from_menu(window, cx),
-                    "escape" => self.cancel_overlay(window, cx),
-                    _ => {}
-                },
                 Some(Overlay::LeadClose { step, .. }) => {
                     let stopping = matches!(step, model::LeadClose::Stop { .. });
                     match key {
-                        "enter" => self.finish_lead_close(!stopping, window, cx),
-                        "f" if stopping => *step = step.forget(),
+                        "enter" if stopping => self.finish_lead_close(false, window, cx),
                         "escape" => self.cancel_overlay(window, cx),
                         _ => {}
                     }
                 }
-                Some(Overlay::SwitchedClose { index, .. }) => {
-                    let i = *index;
-                    match key {
-                        "enter" => self.finish_close(i, 3, window, cx),
-                        "escape" => self.cancel_overlay(window, cx),
-                        _ => {}
+                Some(Overlay::SwitchedClose { .. }) => {
+                    if key == "escape" {
+                        self.cancel_overlay(window, cx);
                     }
                 }
-                Some(Overlay::RemoveLeftover(i)) => {
-                    let i = *i;
-                    match key {
-                        "d" => self.remove_leftover(i, cx),
-                        "escape" => self.overlay = Some(Overlay::Leftovers),
-                        _ => {}
+                Some(Overlay::RemoveLeftover(_)) => {
+                    if key == "escape" {
+                        self.overlay = Some(Overlay::Leftovers);
                     }
                 }
                 Some(Overlay::Leftovers) => {
@@ -5272,12 +5399,9 @@ impl Shika {
                         _ => {}
                     }
                 }
-                Some(Overlay::RemoveProject(id)) => {
-                    let id = id.clone();
-                    match key {
-                        "r" | "enter" => self.remove_project(id, cx),
-                        "escape" => self.cancel_overlay(window, cx),
-                        _ => {}
+                Some(Overlay::RemoveProject(_)) => {
+                    if key == "escape" {
+                        self.cancel_overlay(window, cx);
                     }
                 }
                 Some(Overlay::Settings { row, edit, .. }) => {
@@ -7698,7 +7822,7 @@ impl Shika {
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
                     .child("Forget Lead")
-                    .child(kbd("\u{2318}\u{21e7}W", chrome.sunken, chrome.ink_3))
+                    .child(kbd("\u{2318}\u{232b}", chrome.sunken, chrome.ink_3))
                     .on_click(cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
                         this.forget_from_menu(window, cx);
@@ -7732,7 +7856,7 @@ impl Shika {
             } else {
                 &[
                     ("j k", "choose"),
-                    ("\u{21a9}", "set"),
+                    ("\u{21b5}", "set"),
                     ("\u{232b}", "clear"),
                     ("[ ]", "section"),
                     ("esc", "done"),
@@ -8507,15 +8631,12 @@ impl Shika {
                 panel.child(if stopping {
                     buttons
                         .child(
-                            dialog_button("forget-lead", "Forget", "f", chrome).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    if let Some(Overlay::LeadClose { step, .. }) = &mut this.overlay
-                                    {
-                                        *step = step.forget();
+                            dialog_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if !this.busy {
+                                        this.forget_lead_from_dialog(window, cx);
                                     }
-                                    cx.notify();
-                                }),
-                            ),
+                                })),
                         )
                         .child(primary_button("stop-lead", "Stop", "↵", chrome).on_click(
                             cx.listener(|this, _, window, cx| {
@@ -8524,9 +8645,10 @@ impl Shika {
                         ))
                 } else {
                     buttons.child(
-                        primary_button("forget-lead", "Forget", "↵", chrome).on_click(cx.listener(
-                            |this, _, window, cx| this.finish_lead_close(true, window, cx),
-                        )),
+                        primary_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.finish_lead_close(true, window, cx)
+                            })),
                     )
                 })
             }
@@ -8863,19 +8985,19 @@ impl Shika {
                 let buttons = if can_push {
                     buttons
                         .child(
-                            dialog_button("discard", "Discard changes", "d", chrome)
+                            dialog_button("discard", "Discard changes", "\u{2318}D", chrome)
                                 .on_click(discard),
                         )
                         .child(
-                            primary_button("push", "Push changes", "p", chrome).on_click(
-                                cx.listener(move |this, _, window, cx| {
+                            primary_button("push", "Push changes", "\u{2318}\u{21b5}", chrome)
+                                .on_click(cx.listener(move |this, _, window, cx| {
                                     this.finish_close(i, 2, window, cx)
-                                }),
-                            ),
+                                })),
                         )
                 } else {
                     buttons.child(
-                        primary_button("discard", "Discard changes", "d", chrome).on_click(discard),
+                        primary_button("discard", "Discard changes", "\u{2318}D", chrome)
+                            .on_click(discard),
                     )
                 };
                 panel.child(buttons)
@@ -8903,11 +9025,15 @@ impl Shika {
                     dialog_buttons()
                         .child(self.cancel_button("Cancel", chrome, cx))
                         .child(
-                            primary_button("close-switched", "Close task", "↵", chrome).on_click(
-                                cx.listener(move |this, _, window, cx| {
-                                    this.finish_close(i, 3, window, cx)
-                                }),
-                            ),
+                            primary_button(
+                                "close-switched",
+                                "Close task",
+                                "\u{2318}\u{21b5}",
+                                chrome,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.finish_close(i, 3, window, cx),
+                            )),
                         ),
                 )
             }
@@ -8979,7 +9105,12 @@ impl Shika {
                     ))
                     .child(
                         dialog_buttons().child(self.cancel_button("Cancel", chrome, cx)).child(
-                            primary_button("remove-project", "Remove project", "r", chrome)
+                            primary_button(
+                                "remove-project",
+                                "Remove project",
+                                "\u{2318}\u{232b}",
+                                chrome,
+                            )
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.remove_project(id.clone(), cx)
                                 })),
@@ -9004,10 +9135,15 @@ impl Shika {
                         dialog_buttons()
                             .child(self.cancel_button("Cancel", chrome, cx))
                             .child(
-                                primary_button("remove-confirm", "Discard worktree", "d", chrome)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.remove_leftover(i, cx)
-                                    })),
+                                primary_button(
+                                    "remove-confirm",
+                                    "Discard worktree",
+                                    "\u{2318}\u{232b}",
+                                    chrome,
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.remove_leftover(i, cx)),
+                                ),
                             ),
                     )
             }
@@ -9994,6 +10130,7 @@ impl Render for Shika {
             self.ensure_lead_chat(&project, window, cx);
         }
         self.sync_window_backdrop(window, cx);
+        self.observe_dialog(Instant::now());
         let cards_focused = self.focus.is_focused(window);
         let chrome = self.chrome(window);
         let backdrop = self.backdrop_layers(&chrome, window, cx);

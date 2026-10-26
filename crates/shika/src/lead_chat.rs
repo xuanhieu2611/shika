@@ -1553,7 +1553,7 @@ impl Shika {
     }
     pub(crate) fn drain_lead_chats(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
-        if self.overlay.is_none() && !self.chat_questions.is_empty() {
+        if self.overlay.is_none() && !self.chat_questions.is_empty() && self.author_quiet(now, cx) {
             let (id, project, question) = self.chat_questions.remove(0);
             if self
                 .cards
