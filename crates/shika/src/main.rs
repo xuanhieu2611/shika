@@ -64,6 +64,8 @@ gpui::actions!(
         NewAgent,
         NewTerminal,
         NewLead,
+        AddProject,
+        BaseBranch,
         CreatePr,
         SwitchAgent,
         CloseTerminal,
@@ -800,6 +802,10 @@ struct Shika {
     overlay: Option<Overlay>,
     /// Non-workflow overlays return to the surface that opened them.
     overlay_return_focus: Option<FocusHandle>,
+    /// A project header clicked while a terminal stayed on screen: where
+    /// New, Lead, and Base branch aim until the selection next changes. The
+    /// selection it was recorded under makes that check (`model::header_target`).
+    project_target: Option<(String, Option<Selection>)>,
     /// The background image from settings, painted behind the glass.
     background: Option<shika_core::Background>,
     /// The image's rasters on screen and the one being built.
@@ -948,6 +954,7 @@ impl Shika {
                 Some(Overlay::Leftovers)
             },
             overlay_return_focus: None,
+            project_target: None,
             background,
             backdrop: background::Backdrop::default(),
             window_backdrop_dirty: false,
@@ -1149,7 +1156,16 @@ impl Shika {
             .and_then(|catalog| catalog.presets.iter().find(|p| p.id == id))
             .map_or(id, |preset| preset.name.as_str())
     }
+    /// The project a clicked header aimed project commands at, while the
+    /// selection is still the one it was clicked under.
+    fn target_project(&self) -> Option<&str> {
+        model::header_target(self.project_target.as_ref(), self.selection.as_ref())
+            .filter(|id| self.projects.iter().any(|p| p.id == *id))
+    }
     fn project_id(&self) -> Option<String> {
+        if let Some(project) = self.target_project() {
+            return Some(project.to_string());
+        }
         match &self.selection {
             Some(Selection::Project(p) | Selection::Resting(p)) => Some(p.clone()),
             Some(Selection::Card(i)) => self.cards.get(*i).map(|c| c.project.clone()),
@@ -1267,10 +1283,11 @@ impl Shika {
         self.select_agent_keeping_surface(row, window, cx);
     }
     fn restore_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let focus = self
-            .overlay_return_focus
-            .take()
-            .unwrap_or_else(|| self.focus.clone());
+        let Some(focus) = self.overlay_return_focus.take() else {
+            // Nothing was saved: land on what can be typed into.
+            self.land_focus(window, cx);
+            return;
+        };
         let cards = focus == self.focus;
         let changes = self.changes.open && focus == self.changes.focus;
         let selected_terminal = self
@@ -1295,13 +1312,69 @@ impl Shika {
             // Never restore focus to the old task's now-hidden terminal.
             self.focus_terminal(window, cx);
         } else {
+            self.land_focus(window, cx);
+        }
+    }
+    /// `focus_shown` when no dialog is up; the cards when one is, since
+    /// dialogs take their keys through them.
+    fn land_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay.is_some() {
+            window.focus(&self.focus, cx);
+        } else {
+            self.focus_shown(window, cx);
+        }
+    }
+    /// A click on a project header. With a terminal or Lead chat on screen it
+    /// changes neither that nor the focus: the project only becomes the target
+    /// of New, Lead, and Base branch until the selection changes. Otherwise
+    /// the header is selected and the cards get the focus.
+    fn click_project(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shown().takes_typing() {
+            self.project_target = Some((project, self.selection.clone()));
+        } else {
+            self.project_target = None;
+            self.selection = Some(Selection::Project(project));
             window.focus(&self.focus, cx);
         }
+        cx.notify();
     }
     fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
+        self.focus_pane(window, cx);
+    }
+    /// What the selection puts on screen, as far as typing goes.
+    fn shown(&self) -> model::Shown {
+        match &self.selection {
+            None => model::Shown::Nothing,
+            Some(Selection::Project(_)) => model::Shown::Header,
+            Some(Selection::Resting(_)) => model::Shown::RestingLead,
+            Some(Selection::Card(i)) => match self.cards.get(*i) {
+                None => model::Shown::Nothing,
+                Some(card) if card.launch_error.is_some() => model::Shown::FailedCard,
+                Some(_) => model::Shown::Card,
+            },
+        }
+    }
+    /// Focus follows what can be typed into. The cards get it only when
+    /// nothing on screen can take typing (the author's Ctrl+Q is the other
+    /// way there). For the places that lose their focus without being asked:
+    /// a task closing, a Lead stopping, a setup cancelled, a launch started.
+    /// An open dialog keeps the focus it took. Unlike `focus_terminal`, a
+    /// running launch does not hold it back: the card being created is on
+    /// screen and keeps the keys, so `j` cannot move the selection away.
+    fn focus_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self.shown().takes_typing() {
+            self.focus_pane(window, cx);
+        } else {
+            window.focus(&self.focus, cx);
+        }
+    }
+    fn focus_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(chat) = self.selected_chat() {
             window.focus(&chat.focus_handle(cx), cx);
             cx.notify();
@@ -1330,10 +1403,10 @@ impl Shika {
             window.focus(&self.focus, cx);
             cx.notify();
         } else {
-            self.add_project(cx);
+            self.add_project(window, cx);
         }
     }
-    fn add_project(&mut self, cx: &mut Context<Self>) {
+    fn add_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -1344,7 +1417,7 @@ impl Shika {
             prompt: Some("Add project".into()),
         });
         let core = self.core.clone();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = paths.await
                 && let Some(path) = paths.into_iter().next()
             {
@@ -1352,12 +1425,15 @@ impl Shika {
                     .background_executor()
                     .spawn(async move { core.add_project(&path) })
                     .await;
-                let _ = this.update(cx, |this, cx| {
+                let _ = this.update_in(cx, |this, window, cx| {
                     match result {
                         Ok(added) => {
                             this.projects = this.core.projects().unwrap_or_default();
                             this.refresh_bases(vec![added.project.id.clone()], cx);
                             this.selection = Some(Selection::Project(added.project.id));
+                            // The new header shows nothing to type into, so
+                            // the hidden terminal must not keep the focus.
+                            this.focus_shown(window, cx);
                             if let Some(note) = added.note {
                                 this.message(note);
                             }
@@ -1750,6 +1826,7 @@ impl Shika {
     }
 
     fn remove_card(&mut self, index: usize) {
+        self.project_target = None;
         self.cards.remove(index);
         self.selection = match self.selection.take() {
             Some(Selection::Card(at)) if at > index => Some(Selection::Card(at - 1)),
@@ -1771,6 +1848,7 @@ impl Shika {
     /// for [`model::EXIT`]. Selection is the caller's. With macOS Reduce
     /// motion the card goes at once.
     fn depart(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.project_target = None;
         let project = self.cards[index].project.clone();
         // It leaves from the group it was shown in, before the card that
         // followed it there.
@@ -1960,7 +2038,10 @@ impl Shika {
         });
         if author {
             self.selection = Some(Selection::Card(index));
-            window.focus(&self.focus, cx);
+            // The new card's terminal takes the keys now. It drops typing
+            // during copy and setup, but `j` can no longer move the selection
+            // away while it runs, so completion focus still lands.
+            self.focus_pane(window, cx);
         }
         cx.notify();
         let core = self.core.clone();
@@ -2545,7 +2626,7 @@ impl Shika {
                             model::RESUME_EXIT_KEPT.into()
                         });
                         if focused && this.overlay.is_none() {
-                            window.focus(&this.focus, cx);
+                            this.focus_shown(window, cx);
                         }
                     }
                     Err(e) => this.message(e.to_string()),
@@ -2733,7 +2814,7 @@ impl Shika {
                         || card.agent.view.focus_handle(cx).is_focused(window);
                     self.remove_card(i);
                     if return_to_cards {
-                        window.focus(&self.focus, cx);
+                        self.focus_shown(window, cx);
                     }
                     changed = true;
                 }
@@ -3210,7 +3291,7 @@ impl Shika {
         })
         .detach();
     }
-    /// The Base branch dialog for one project, from `b` or its header label.
+    /// The Base branch dialog for one project, from Cmd+Shift+B or its header label.
     fn open_base(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;
@@ -3929,7 +4010,7 @@ impl Shika {
         }
         if self.cards[index].launch_error.is_some() {
             self.remove_card(index);
-            window.focus(&self.focus, cx);
+            self.focus_shown(window, cx);
             cx.notify();
             return;
         }
@@ -4136,7 +4217,12 @@ impl Shika {
                             }
                             _ => this.overlay_return_focus = None,
                         }
-                        window.focus(&this.focus, cx);
+                        // A dialog asking again keeps the focus it needs.
+                        if this.overlay.is_some() {
+                            window.focus(&this.focus, cx);
+                        } else {
+                            this.focus_shown(window, cx);
+                        }
                     }
                 }
                 this.settle_lead_dialog(window, cx);
@@ -4299,7 +4385,7 @@ impl Shika {
                         }
                         this.overlay = None;
                         this.overlay_return_focus = None;
-                        window.focus(&this.focus, cx);
+                        this.focus_shown(window, cx);
                     }
                     Err(e) => {
                         if let Some(index) = index {
@@ -5469,20 +5555,10 @@ impl Shika {
         match key {
             "j" | "down" => self.move_selection(1, window, cx),
             "k" | "up" => self.move_selection(-1, window, cx),
-            "a" => self.add_project(cx),
-            "r" => self.retry_preparation(window, cx),
             "enter" => match self.selection.clone() {
                 Some(Selection::Resting(project)) => self.resume_lead(project, window, cx),
                 _ => self.focus_terminal(window, cx),
             },
-            "b" => {
-                if self.busy || self.selection.is_none() {
-                    return;
-                }
-                if let Some(project) = self.project_id() {
-                    self.open_base(project, window, cx);
-                }
-            }
             _ => return,
         }
         cx.stop_propagation();
@@ -6168,10 +6244,10 @@ impl Shika {
                 icon_button(
                     "add-project",
                     Some(FOLDER_PLUS_ICON),
-                    "Add project  a",
+                    "Add project  \u{2318}O",
                     chrome,
                 )
-                .on_click(cx.listener(|this, _, _, cx| this.add_project(cx))),
+                .on_click(cx.listener(|this, _, window, cx| this.add_project(window, cx))),
             )
             .child(
                 icon_button("new-agent", None, "New agent  \u{2318}N", chrome)
@@ -6193,7 +6269,8 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = project.id.clone();
-        let selected = self.selection == Some(Selection::Project(id.clone()));
+        let selected = self.selection == Some(Selection::Project(id.clone()))
+            || self.target_project() == Some(id.as_str());
         let plus_kept = self.selected_project() == Some(id.as_str());
         let group = SharedString::from(format!("project-group-{id}"));
         let hover = chrome.hover;
@@ -6204,6 +6281,7 @@ impl Shika {
         let base_id = id.clone();
         let base_name = self.bases.get(&id).and_then(|b| b.name.clone());
         let base_group = SharedString::from(format!("base-group-{id}"));
+        let base_chord = shortcuts::display("cmd-shift-b");
         let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
         let path = SharedString::from(model::tilde(&project.path, home));
         let header = div()
@@ -6226,9 +6304,7 @@ impl Shika {
                 if this.busy || this.overlay.is_some() {
                     return;
                 }
-                this.selection = Some(Selection::Project(select_id.clone()));
-                window.focus(&this.focus, cx);
-                cx.notify();
+                this.click_project(select_id.clone(), window, cx);
             }))
             // The path is in the name's tooltip, not on the row.
             .child(
@@ -6267,7 +6343,7 @@ impl Shika {
                             cx.new(|_| KeyTip {
                                 bg: tip_bg,
                                 fg: tip_fg,
-                                text: "Base branch  b".into(),
+                                text: format!("Base branch  {base_chord}").into(),
                             })
                             .into()
                         })
@@ -6677,9 +6753,9 @@ impl Shika {
         let hints: &[(&str, &str)] = if card.closing {
             &[]
         } else if card.creating {
-            &[("↵", "view setup"), ("c", "cancel")]
+            &[("↵", "view setup"), ("\u{2318}\u{21e7}W", "cancel")]
         } else if card.launch_error.is_some() {
-            &[("r", "retry"), ("c", "close")]
+            &[("\u{2318}\u{21e7}W", "close")]
         } else {
             match card.status {
                 Status::Ready => &[("↵", "read")],
@@ -6902,7 +6978,12 @@ impl Shika {
                         return;
                     }
                     this.selection = Some(Selection::Card(i));
-                    this.focus_terminal(window, cx);
+                    if this.busy {
+                        // The old terminal is hidden now; the cards hold the keys.
+                        window.focus(&this.focus, cx);
+                    } else {
+                        this.focus_terminal(window, cx);
+                    }
                 }))
             });
         // The selected card is a soft wash over the column, like a hover,
@@ -7508,10 +7589,10 @@ impl Shika {
                             },
                         )
                         .child(div().flex_none().text_color(chrome.term_faint).child(
-                            if card.creating && cards_focused {
+                            if card.creating {
                                 "setup is non-interactive"
                             } else if card.launch_error.is_some() && cards_focused {
-                                "r retry setup"
+                                "retry setup below"
                             } else if cards_focused {
                                 "↵ type here"
                             } else {
@@ -7529,7 +7610,7 @@ impl Shika {
                             .py(px(8.))
                             .text_size(px(12.5))
                             .child(
-                                dialog_button("retry-setup", "Retry setup", "r", chrome).on_click(
+                                notice_secondary("retry-setup", "Retry setup", chrome).on_click(
                                     cx.listener(|this, _, window, cx| {
                                         this.retry_preparation(window, cx)
                                     }),
@@ -10214,10 +10295,19 @@ impl Render for Shika {
                 .child(self.footer(&chrome, width, cx))
         });
         let mut root = div()
-            .track_focus(&self.focus)
             .key_context("Shika")
             .on_action(cx.listener(|this, _: &NewAgent, window, cx| this.picker(window, cx)))
             .on_action(cx.listener(|this, _: &NewLead, window, cx| this.new_lead(window, cx)))
+            .on_action(cx.listener(|this, _: &AddProject, window, cx| {
+                if !this.busy && this.overlay.is_none() {
+                    this.add_project(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &BaseBranch, window, cx| {
+                if let Some(project) = this.project_id() {
+                    this.open_base(project, window, cx);
+                }
+            }))
             .on_action(
                 cx.listener(|this, _: &NewTerminal, window, cx| this.new_shell(true, window, cx)),
             )
@@ -10296,6 +10386,14 @@ impl Render for Shika {
             .text_size(px(12.))
             .line_height(gpui::relative(1.3))
             .text_color(chrome.ink_1)
+            // The cards' focus handle sits on an element with no size, so no
+            // mouse-down can land on it: GPUI focuses a tracked element on any
+            // click it did not prevent, which sent a stray click in the
+            // column, the title bar, or the footer's gaps to the card list and
+            // stopped the author's typing from reaching the terminal. It is
+            // still inside the root, so key context, actions, and the capture
+            // handler apply when the cards have focus.
+            .child(div().absolute().size_0().track_focus(&self.focus))
             .children(backdrop)
             .children(sidebar)
             .child(self.terminal_side(&chrome, cards_focused, home.as_deref(), window, cx))
@@ -10340,6 +10438,8 @@ fn install_keys(cx: &mut App, keys: &KeyOverrides) {
     let mut bindings = vec![
         gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
         gpui::KeyBinding::new("cmd-l", NewLead, Some("Shika")),
+        gpui::KeyBinding::new("cmd-o", AddProject, Some("Shika")),
+        gpui::KeyBinding::new("cmd-shift-b", BaseBranch, Some("Shika")),
         gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
         gpui::KeyBinding::new("cmd-shift-p", CreatePr, Some("Shika")),
         gpui::KeyBinding::new("cmd-shift-a", SwitchAgent, Some("Shika")),
@@ -10404,11 +10504,13 @@ fn install_menus(cx: &mut App) {
     cx.set_menus([
         gpui::Menu::new("Shika").items(app_menu),
         gpui::Menu::new("Agent").items([
+            gpui::MenuItem::action("Add project…", AddProject),
             gpui::MenuItem::action("New agent", NewAgent),
             gpui::MenuItem::action("New Lead…", NewLead),
             gpui::MenuItem::action("New terminal tab", NewTerminal),
             gpui::MenuItem::action("Create PR", CreatePr),
             gpui::MenuItem::action("Switch agent…", SwitchAgent),
+            gpui::MenuItem::action("Base branch…", BaseBranch),
             gpui::MenuItem::action("Close terminal tab", CloseTerminal),
             gpui::MenuItem::action("Rename task…", RenameTask),
             gpui::MenuItem::action("Close task", CloseTask),
