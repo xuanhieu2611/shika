@@ -2219,10 +2219,13 @@ impl Shika {
                         this.cards[index].session = Some(session);
                         this.cards[index].launch_control = None;
                         // Completion never steals focus from another card or
-                        // an overlay opened while installation was running.
+                        // an overlay opened while installation was running,
+                        // nor from the cards the author returned to with Ctrl+Q.
                         if this.selection == Some(Selection::Card(index))
                             && this.overlay.is_none()
                             && !matches!(finished, Launch::LeadRestart { focus: false, .. })
+                            && (!this.focus.is_focused(window)
+                                || matches!(finished, Launch::LeadRestart { focus: true, .. }))
                         {
                             this.focus_terminal(window, cx);
                         }
