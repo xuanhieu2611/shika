@@ -46,7 +46,7 @@ Shika has no telemetry or model API integration. Your CLIs connect to their prov
 
 ## Quick start
 
-1. **Add a project.** Press `a` and pick a Git repository.
+1. **Add a project.** Press Cmd+O and pick a Git repository.
 2. **Start an agent.** Press Cmd+N, pick a CLI, and write your prompt. The first prompt names the task and its branch.
 3. **Move between tasks** with `j` / `k`. Enter focuses the terminal; Ctrl+Q returns to the cards.
 4. **Review and ship.** Cmd+T opens a shell in the task's worktree. Commit and push there, or press Cmd+Shift+P to create a PR. Cmd+Shift+W closes the task.

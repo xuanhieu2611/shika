@@ -292,7 +292,8 @@ closed
 ```
 
 - When Close would not need to ask (clean, nothing unpublished, not working or blocked), the worker is closed directly and the command prints `closed`. No dialog appears.
-- Otherwise the normal close dialog opens on that card: discard, push when the tree is clean, safe-close for an active or blocked turn, or branch-switch recovery. Shika never chooses. The command blocks until the author decides, then prints what happened.
+- Otherwise the normal close dialog opens on that card: discard (Cmd+D), push when the tree is clean (Cmd+Enter), safe-close for an active or blocked turn, or branch-switch recovery (Cmd+Enter). Shika never chooses. The command blocks until the author decides, then prints what happened.
+- The dialog does not open while the author is typing. It opens once nothing was typed in any terminal (agent or shell) or Lead chat input for 3 seconds, with no overlay open and Shika not busy; until then nothing is selected. After 120 seconds the command is refused: `refused: The author kept typing or had another dialog open. Try again later.` The command is also refused, while waiting, if the worker or the Lead goes away.
 
 | Outcome | Output | Exit |
 | --- | --- | --- |
@@ -372,7 +373,7 @@ The actual executable path is substituted and shell-quoted, including spaces and
 
 ### How `close` resolves
 
-`Shika::control_close` runs the refusal checks, stores a `LeadDialog` (Lead id, task id, the reply channel, the outcome and last error) in `Shika::lead_dialog`, selects the card, and calls `close`. The flow records what happens: `lead_dialog_succeeded` (`finish_close` success with `close_outcome`) and `lead_dialog_failed` (close failure). `Shika::settle_lead_dialog` answers once the dialog is no longer on screen and no flow is still running. It runs after every place a dialog can end (the flows, `cancel_overlay`) and on every tick, so a dialog that disappears another way (the card or project removed) still answers: `dialog_reply` gives the outcome if there is one, else the last error, else `The Lead was closed before the author answered.` or `The task is no longer in Shika.`, else `The author cancelled.` If the app quits, the reply channel drops and the client gets `Shika stopped handling this command.` If the Lead card goes away first, the client is answered at once and any dialog stays open for the author.
+`Shika::control_close` runs the refusal checks and stores a `LeadDialog` (Lead id, task id, the reply channel, the outcome and last error, and `deferred`) in `Shika::lead_dialog` at once, so the one-dialog gate holds. If `author_quiet` is false it selects nothing and waits: `resume_deferred_close` runs on every tick, refuses after `DEFER_LIMIT` (120 seconds) or when the worker or Lead is gone, and otherwise, once quiet with no overlay and not busy, clears `deferred` and calls `start_lead_close`, which selects the card and calls `close`. The flow records what happens: `lead_dialog_succeeded` (`finish_close` success with `close_outcome`) and `lead_dialog_failed` (close failure). `Shika::settle_lead_dialog` answers once the dialog is no longer on screen and no flow is still running. It runs after every place a dialog can end (the flows, `cancel_overlay`) and on every tick, so a dialog that disappears another way (the card or project removed) still answers: `dialog_reply` gives the outcome if there is one, else the last error, else `The Lead was closed before the author answered.` or `The task is no longer in Shika.`, else `The author cancelled.` If the app quits, the reply channel drops and the client gets `Shika stopped handling this command.` If the Lead card goes away first, the client is answered at once and any dialog stays open for the author.
 
 ## Output and exit codes
 
