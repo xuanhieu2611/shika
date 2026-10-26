@@ -18,6 +18,16 @@ pub struct QuestionDialog {
     custom: Entity<NameInput>,
     error: Option<String>,
 }
+impl QuestionDialog {
+    /// Names this question among the dialogs the input grace window tells
+    /// apart: the request and which of its questions is showing.
+    pub fn identity(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (&self.session, &self.question.request_id, self.at).hash(&mut hasher);
+        hasher.finish()
+    }
+}
 impl Shika {
     pub(super) fn open_chat_question(
         &mut self,
@@ -27,9 +37,10 @@ impl Shika {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A question arriving under another author dialog waits in the chat
-        // inbox; never overwrite a dialog or automatically answer it.
-        if self.overlay.is_some() {
+        // A question arriving under another author dialog, or while the
+        // author is typing, waits in the chat inbox; never overwrite a dialog,
+        // let keystrokes land in it, or automatically answer it.
+        if self.overlay.is_some() || !self.author_quiet(std::time::Instant::now(), cx) {
             self.chat_questions.push((session, project, question));
             return;
         }
@@ -120,6 +131,10 @@ impl Shika {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.dialog_ignores_key(&event.keystroke.key) {
+            cx.stop_propagation();
+            return;
+        }
         let Some(Overlay::LeadQuestion(dialog)) = &mut self.overlay else {
             return;
         };
