@@ -64,6 +64,8 @@ gpui::actions!(
         NewAgent,
         NewTerminal,
         NewLead,
+        AddProject,
+        BaseBranch,
         CreatePr,
         SwitchAgent,
         CloseTerminal,
@@ -791,12 +793,20 @@ struct Shika {
     lead_snippets: HashMap<String, String>,
     snippets_requested: std::collections::HashSet<String>,
     chat_questions: Vec<(String, String, shika_core::ChatQuestion)>,
-    selection: Option<Selection>,
+    /// When the confirmation dialog on screen appeared, to ignore keys that
+    /// were already in flight.
+    dialog_grace: model::DialogGrace,
+    selection: model::Tracked<Option<Selection>>,
     focus: FocusHandle,
     catalog: Option<CliCatalog>,
     overlay: Option<Overlay>,
     /// Non-workflow overlays return to the surface that opened them.
     overlay_return_focus: Option<FocusHandle>,
+    /// A project header clicked while a terminal stayed on screen: where
+    /// New, Lead, and Base branch aim until the selection next changes. The
+    /// selection epoch it was recorded under makes that check, so any change
+    /// ends it (`model::Tracked`, `model::header_target`).
+    project_target: Option<(String, u64)>,
     /// The background image from settings, painted behind the glass.
     background: Option<shika_core::Background>,
     /// The image's rasters on screen and the one being built.
@@ -935,7 +945,8 @@ impl Shika {
             lead_snippets: HashMap::new(),
             snippets_requested: Default::default(),
             chat_questions: Vec::new(),
-            selection,
+            dialog_grace: model::DialogGrace::default(),
+            selection: model::Tracked::new(selection),
             focus: cx.focus_handle(),
             catalog: None,
             overlay: if leftovers.is_empty() {
@@ -944,6 +955,7 @@ impl Shika {
                 Some(Overlay::Leftovers)
             },
             overlay_return_focus: None,
+            project_target: None,
             background,
             backdrop: background::Backdrop::default(),
             window_backdrop_dirty: false,
@@ -1106,7 +1118,7 @@ impl Shika {
         };
     }
     fn selected_card(&self) -> Option<usize> {
-        match self.selection {
+        match *self.selection {
             Some(Selection::Card(i)) if i < self.cards.len() => Some(i),
             _ => None,
         }
@@ -1114,7 +1126,7 @@ impl Shika {
     /// The project the selection belongs to: a selected header, a card of
     /// it (its own, its Lead, or a worker of its Lead), or its resting Lead.
     fn selected_project(&self) -> Option<&str> {
-        match &self.selection {
+        match &*self.selection {
             Some(Selection::Project(id) | Selection::Resting(id)) => Some(id),
             Some(Selection::Card(i)) => self.cards.get(*i).map(|c| c.project.as_str()),
             None => None,
@@ -1122,7 +1134,7 @@ impl Shika {
     }
     /// The project whose resting Lead is selected.
     fn selected_resting(&self) -> Option<&str> {
-        match &self.selection {
+        match &*self.selection {
             Some(Selection::Resting(project)) => Some(project),
             _ => None,
         }
@@ -1145,8 +1157,24 @@ impl Shika {
             .and_then(|catalog| catalog.presets.iter().find(|p| p.id == id))
             .map_or(id, |preset| preset.name.as_str())
     }
+    /// The project a clicked header aimed project commands at, while the
+    /// selection is still the one it was clicked under.
+    fn target_project(&self) -> Option<&str> {
+        model::header_target(self.project_target.as_ref(), self.selection.epoch())
+            .filter(|id| self.projects.iter().any(|p| p.id == *id))
+    }
+    /// The project a project-scoped command aims at: the clicked header's,
+    /// else the shown one. Anything describing what is on screen uses
+    /// [`Self::shown_project`].
     fn project_id(&self) -> Option<String> {
-        match &self.selection {
+        if let Some(project) = self.target_project() {
+            return Some(project.to_string());
+        }
+        self.shown_project()
+    }
+    /// The project the selection belongs to, never the header target.
+    fn shown_project(&self) -> Option<String> {
+        match &*self.selection {
             Some(Selection::Project(p) | Selection::Resting(p)) => Some(p.clone()),
             Some(Selection::Card(i)) => self.cards.get(*i).map(|c| c.project.clone()),
             _ => self.projects.first().map(|p| p.id.clone()),
@@ -1218,7 +1246,7 @@ impl Shika {
         let Some(row) = adjacent_agent(&self.rows(), self.selection.as_ref(), delta) else {
             return;
         };
-        self.selection = Some(row);
+        self.selection.set(Some(row));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -1243,10 +1271,11 @@ impl Shika {
         let panel_focused = self.changes.open && self.changes.focus.is_focused(window);
         let terminal_focused = !self.focus.is_focused(window) && !panel_focused;
         let card = matches!(row, Selection::Card(_));
-        self.selection = Some(row);
+        self.selection.set(Some(row));
         if terminal_focused {
-            if card {
-                self.focus_terminal(window, cx);
+            if card && !self.busy {
+                // A failed-setup card shows no terminal that takes typing.
+                self.focus_shown(window, cx);
             } else {
                 window.focus(&self.focus, cx);
             }
@@ -1263,10 +1292,11 @@ impl Shika {
         self.select_agent_keeping_surface(row, window, cx);
     }
     fn restore_overlay_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let focus = self
-            .overlay_return_focus
-            .take()
-            .unwrap_or_else(|| self.focus.clone());
+        let Some(focus) = self.overlay_return_focus.take() else {
+            // Nothing was saved: land on what can be typed into.
+            self.land_focus(window, cx);
+            return;
+        };
         let cards = focus == self.focus;
         let changes = self.changes.open && focus == self.changes.focus;
         let selected_terminal = self
@@ -1291,13 +1321,94 @@ impl Shika {
             // Never restore focus to the old task's now-hidden terminal.
             self.focus_terminal(window, cx);
         } else {
+            self.land_focus(window, cx);
+        }
+    }
+    /// `focus_shown` when no dialog is up; the cards when one is, since
+    /// dialogs take their keys through them.
+    fn land_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay.is_some() {
+            window.focus(&self.focus, cx);
+        } else {
+            self.focus_shown(window, cx);
+        }
+    }
+    /// A click on a project header. With a terminal or Lead chat on screen it
+    /// changes neither that nor the focus: the project only becomes the target
+    /// of New, Lead, and Base branch until the selection changes. Otherwise
+    /// the header is selected and the cards get the focus.
+    fn click_project(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shown().takes_typing() {
+            self.project_target = Some((project, self.selection.epoch()));
+        } else {
+            self.project_target = None;
+            self.selection.set(Some(Selection::Project(project)));
             window.focus(&self.focus, cx);
         }
+        cx.notify();
     }
     fn focus_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
+        self.focus_pane(window, cx);
+    }
+    /// What the selection puts on screen, as far as typing goes.
+    fn shown(&self) -> model::Shown {
+        match &*self.selection {
+            None => model::Shown::Nothing,
+            Some(Selection::Project(_)) => model::Shown::Header,
+            Some(Selection::Resting(_)) => model::Shown::RestingLead,
+            Some(Selection::Card(i)) => match self.cards.get(*i) {
+                None => model::Shown::Nothing,
+                Some(card) if card.launch_error.is_some() => model::Shown::FailedCard,
+                Some(_) => model::Shown::Card,
+            },
+        }
+    }
+    /// Focus follows what can be typed into. The cards get it only when
+    /// nothing on screen can take typing (the author's Ctrl+Q is the other
+    /// way there). For the places that lose their focus without being asked:
+    /// a task closing, a Lead stopping, a setup cancelled, a launch started.
+    /// An open dialog keeps the focus it took. Unlike `focus_terminal`, a
+    /// running launch does not hold it back: the card being created is on
+    /// screen and keeps the keys, so `j` cannot move the selection away.
+    fn focus_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self.shown().takes_typing() {
+            self.focus_pane(window, cx);
+        } else {
+            window.focus(&self.focus, cx);
+        }
+    }
+    /// `focus_shown` for a place that loses its focus unasked, except that an
+    /// author who was on the cards (Ctrl+Q) or the Changes panel stays there.
+    /// `was` is the focus from before the event; only focus that pointed at
+    /// something now gone or hidden is replaced.
+    fn land_after(
+        &mut self,
+        was: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if let Some(was) = was {
+            if was == self.focus {
+                window.focus(&self.focus, cx);
+                return;
+            }
+            if self.changes.open && was == self.changes.focus {
+                window.focus(&self.changes.focus, cx);
+                return;
+            }
+        }
+        self.focus_shown(window, cx);
+    }
+    fn focus_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(chat) = self.selected_chat() {
             window.focus(&chat.focus_handle(cx), cx);
             cx.notify();
@@ -1326,13 +1437,14 @@ impl Shika {
             window.focus(&self.focus, cx);
             cx.notify();
         } else {
-            self.add_project(cx);
+            self.add_project(window, cx);
         }
     }
-    fn add_project(&mut self, cx: &mut Context<Self>) {
+    fn add_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
+        let was = window.focused(cx);
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -1340,7 +1452,7 @@ impl Shika {
             prompt: Some("Add project".into()),
         });
         let core = self.core.clone();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = paths.await
                 && let Some(path) = paths.into_iter().next()
             {
@@ -1348,12 +1460,16 @@ impl Shika {
                     .background_executor()
                     .spawn(async move { core.add_project(&path) })
                     .await;
-                let _ = this.update(cx, |this, cx| {
+                let _ = this.update_in(cx, |this, window, cx| {
                     match result {
                         Ok(added) => {
                             this.projects = this.core.projects().unwrap_or_default();
                             this.refresh_bases(vec![added.project.id.clone()], cx);
-                            this.selection = Some(Selection::Project(added.project.id));
+                            this.selection
+                                .set(Some(Selection::Project(added.project.id)));
+                            // The new header shows nothing to type into, so
+                            // the hidden terminal must not keep the focus.
+                            this.land_after(was, window, cx);
                             if let Some(note) = added.note {
                                 this.message(note);
                             }
@@ -1505,7 +1621,7 @@ impl Shika {
         let Some(index) = self.lead_card(project) else {
             return false;
         };
-        self.selection = Some(Selection::Card(index));
+        self.selection.set(Some(Selection::Card(index)));
         self.focus_terminal(window, cx);
         cx.notify();
         true
@@ -1746,8 +1862,9 @@ impl Shika {
     }
 
     fn remove_card(&mut self, index: usize) {
+        self.project_target = None;
         self.cards.remove(index);
-        self.selection = match self.selection.take() {
+        let next = match self.selection.clone() {
             Some(Selection::Card(at)) if at > index => Some(Selection::Card(at - 1)),
             Some(Selection::Card(at)) if at == index => {
                 if self.cards.is_empty() {
@@ -1760,6 +1877,7 @@ impl Shika {
             }
             selection => selection,
         };
+        self.selection.set(next);
         self.last_revealed_selection = None;
     }
 
@@ -1767,6 +1885,7 @@ impl Shika {
     /// for [`model::EXIT`]. Selection is the caller's. With macOS Reduce
     /// motion the card goes at once.
     fn depart(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.project_target = None;
         let project = self.cards[index].project.clone();
         // It leaves from the group it was shown in, before the card that
         // followed it there.
@@ -1955,8 +2074,11 @@ impl Shika {
             lead_run: None,
         });
         if author {
-            self.selection = Some(Selection::Card(index));
-            window.focus(&self.focus, cx);
+            self.selection.set(Some(Selection::Card(index)));
+            // The new card's terminal takes the keys now. It drops typing
+            // during copy and setup, but `j` can no longer move the selection
+            // away while it runs, so completion focus still lands.
+            self.focus_pane(window, cx);
         }
         cx.notify();
         let core = self.core.clone();
@@ -2134,10 +2256,15 @@ impl Shika {
                         this.cards[index].session = Some(session);
                         this.cards[index].launch_control = None;
                         // Completion never steals focus from another card or
-                        // an overlay opened while installation was running.
-                        if this.selection == Some(Selection::Card(index))
+                        // an overlay opened while installation was running,
+                        // nor from the cards the author returned to with Ctrl+Q
+                        // or the Changes panel.
+                        if *this.selection == Some(Selection::Card(index))
                             && this.overlay.is_none()
                             && !matches!(finished, Launch::LeadRestart { focus: false, .. })
+                            && ((!this.focus.is_focused(window)
+                                && !(this.changes.open && this.changes.focus.is_focused(window)))
+                                || matches!(finished, Launch::LeadRestart { focus: true, .. }))
                         {
                             this.focus_terminal(window, cx);
                         }
@@ -2496,7 +2623,7 @@ impl Shika {
                 .is_focused(window);
         Some((
             index,
-            self.selection == Some(Selection::Card(index)),
+            *self.selection == Some(Selection::Card(index)),
             focused,
         ))
     }
@@ -2541,7 +2668,7 @@ impl Shika {
                             model::RESUME_EXIT_KEPT.into()
                         });
                         if focused && this.overlay.is_none() {
-                            window.focus(&this.focus, cx);
+                            this.focus_shown(window, cx);
                         }
                     }
                     Err(e) => this.message(e.to_string()),
@@ -2603,7 +2730,7 @@ impl Shika {
                     // The new card is pushed last; a selected old Lead hands
                     // its selection over.
                     if was_selected {
-                        this.selection = Some(Selection::Card(this.cards.len()));
+                        this.selection.set(Some(Selection::Card(this.cards.len())));
                     }
                     this.begin_launch(
                         project,
@@ -2647,6 +2774,7 @@ impl Shika {
             cx.notify();
         }
         let now = Instant::now();
+        self.observe_dialog(now);
         let mut changed = self.drain_update_notice(cx);
         // The Lead's shika commands run here, with the rest of the state.
         self.drain_control(window, cx);
@@ -2724,11 +2852,16 @@ impl Shika {
                             .as_ref()
                             .is_some_and(|c| c.is_cancelled()))
                 {
-                    let return_to_cards = self.selection == Some(Selection::Card(i))
-                        || card.agent.view.focus_handle(cx).is_focused(window);
+                    // Only focus that was in this card's terminals is lost;
+                    // the cards and the Changes panel keep theirs.
+                    let lost = card.agent.view.focus_handle(cx).is_focused(window)
+                        || card
+                            .shells
+                            .iter()
+                            .any(|pane| pane.view.focus_handle(cx).is_focused(window));
                     self.remove_card(i);
-                    if return_to_cards {
-                        window.focus(&self.focus, cx);
+                    if lost {
+                        self.focus_shown(window, cx);
                     }
                     changed = true;
                 }
@@ -2986,7 +3119,7 @@ impl Shika {
                 .iter()
                 .position(|c| c.session.as_ref().is_some_and(|s| s.id == id))
             {
-                self.selection = Some(Selection::Card(i));
+                self.selection.set(Some(Selection::Card(i)));
                 cx.activate(true);
                 window.activate_window();
                 // A notification means this agent needs typing. Card focus
@@ -3205,7 +3338,7 @@ impl Shika {
         })
         .detach();
     }
-    /// The Base branch dialog for one project, from `b` or its header label.
+    /// The Base branch dialog for one project, from Cmd+Shift+B or its header label.
     fn open_base(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;
@@ -3763,7 +3896,7 @@ impl Shika {
         card.session = Some(session);
         self.overlay = None;
         self.overlay_return_focus = None;
-        self.selection = Some(Selection::Card(index));
+        self.selection.set(Some(Selection::Card(index)));
         self.cards[index].reveal_active_tab();
         let handle = self.cards[index].agent.view.focus_handle(cx);
         window.focus(&handle, cx);
@@ -3894,7 +4027,7 @@ impl Shika {
         if let Some(index) = index {
             let panel_focused = self.changes.open && self.changes.focus.is_focused(window);
             let terminal_focused = !self.focus.is_focused(window) && !panel_focused;
-            self.selection = Some(Selection::Card(index));
+            self.selection.set(Some(Selection::Card(index)));
             if terminal_focused {
                 // Never leave a hidden, previously selected terminal focused.
                 self.focus_terminal(window, cx);
@@ -3923,8 +4056,9 @@ impl Shika {
             return;
         }
         if self.cards[index].launch_error.is_some() {
+            let was = window.focused(cx);
             self.remove_card(index);
-            window.focus(&self.focus, cx);
+            self.land_after(was, window, cx);
             cx.notify();
             return;
         }
@@ -4116,6 +4250,7 @@ impl Shika {
                     outcome => {
                         let forgotten = matches!(outcome, LeadCloseOutcome::Done) && forget;
                         this.lead_departed(session.as_deref(), &project, forgotten, cx);
+                        let was = this.overlay_return_focus.clone();
                         this.overlay = None;
                         match outcome {
                             LeadCloseOutcome::Changed(loss) => {
@@ -4131,7 +4266,12 @@ impl Shika {
                             }
                             _ => this.overlay_return_focus = None,
                         }
-                        window.focus(&this.focus, cx);
+                        // A dialog asking again keeps the focus it needs.
+                        if this.overlay.is_some() {
+                            window.focus(&this.focus, cx);
+                        } else {
+                            this.land_after(was, window, cx);
+                        }
                     }
                 }
                 this.settle_lead_dialog(window, cx);
@@ -4168,7 +4308,7 @@ impl Shika {
             });
         }
         self.leftovers = self.core.leftovers_list().unwrap_or_default();
-        let before = self.selection.take();
+        let before = self.selection.clone();
         let mine = match (&before, index) {
             (Some(Selection::Card(at)), Some(index)) => *at == index,
             (Some(Selection::Resting(p)), _) => p == project,
@@ -4181,7 +4321,7 @@ impl Shika {
             (Some(Selection::Card(at)), Some(index)) if at > index => Some(Selection::Card(at - 1)),
             (other, _) => other,
         };
-        self.selection = if !mine {
+        let next = if !mine {
             shifted
         } else if !forgotten {
             Some(Selection::Resting(project.to_string()))
@@ -4192,6 +4332,7 @@ impl Shika {
                 index.unwrap_or(0).min(self.cards.len() - 1),
             ))
         };
+        self.selection.set(next);
         self.last_revealed_selection = self.selection.clone();
     }
 
@@ -4280,21 +4421,22 @@ impl Shika {
                         this.lead_dialog_succeeded(&task_id, control::close_outcome(action).into());
                         if let Some(index) = index {
                             this.depart(index, cx);
-                            this.selection = if this.cards.is_empty() {
+                            let next = if this.cards.is_empty() {
                                 this.projects
                                     .first()
                                     .map(|p| Selection::Project(p.id.clone()))
                             } else {
                                 Some(Selection::Card(index.min(this.cards.len() - 1)))
                             };
+                            this.selection.set(next);
                             // The replacement takes the closed card's place.
                             // Revealing it would undo manual scrolling during
                             // the row's exit. A Lead restore still reveals.
                             this.last_revealed_selection = this.selection.clone();
                         }
                         this.overlay = None;
-                        this.overlay_return_focus = None;
-                        window.focus(&this.focus, cx);
+                        let was = this.overlay_return_focus.take();
+                        this.land_after(was, window, cx);
                     }
                     Err(e) => {
                         if let Some(index) = index {
@@ -4350,7 +4492,7 @@ impl Shika {
         self.overlay = None;
         if let Some(i) = shell {
             self.overlay_return_focus = None;
-            self.selection = Some(Selection::Card(i));
+            self.selection.set(Some(Selection::Card(i)));
             if let Some(i) = self.selected_card() {
                 if self.cards[i].active_tab == 0 {
                     self.toggle(true, window, cx);
@@ -4386,10 +4528,11 @@ impl Shika {
                         this.chat_questions
                             .retain(|(_, project, _)| project != &removed_id);
                         this.bases.remove(&removed_id);
-                        this.selection = this
+                        let next = this
                             .projects
                             .first()
                             .map(|p| Selection::Project(p.id.clone()));
+                        this.selection.set(next);
                         this.leftovers = this.core.leftovers_list().unwrap_or_default();
                         this.overlay = None;
                     }
@@ -4829,6 +4972,126 @@ impl Shika {
             self.message(e.to_string());
         }
     }
+    /// Which confirmation dialog is on screen, for the input grace window.
+    /// Text-entry dialogs, the picker, and Settings have none.
+    fn dialog_identity(&self) -> Option<model::DialogId> {
+        fn hash(text: &str) -> u64 {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            text.hash(&mut hasher);
+            hasher.finish()
+        }
+        Some(match self.overlay.as_ref()? {
+            Overlay::Close { index, .. } => ("close", *index as u64),
+            Overlay::SwitchedClose { index, .. } => ("switched-close", *index as u64),
+            Overlay::LeadClose { project, step, .. } => (
+                "lead-close",
+                hash(project) ^ matches!(step, model::LeadClose::Forget { .. }) as u64,
+            ),
+            Overlay::RestingMenu { project, .. } => ("resting-menu", hash(project)),
+            Overlay::RemoveProject(id) => ("remove-project", hash(id)),
+            Overlay::RemoveLeftover(i) => ("remove-leftover", *i as u64),
+            Overlay::Preparation { project, .. } => ("preparation", hash(project)),
+            Overlay::LeadQuestion(dialog) => ("lead-question", dialog.identity()),
+            _ => return None,
+        })
+    }
+    /// Starts the grace window for a confirmation dialog newly on screen.
+    /// Called from render, the tick, and every key, so a dialog is noticed
+    /// whichever comes first.
+    fn observe_dialog(&mut self, now: Instant) {
+        let id = self.dialog_identity();
+        self.dialog_grace.observe(id, now);
+    }
+    /// Whether a key is dropped because the confirmation dialog has just
+    /// appeared. Escape always works. Mouse clicks are not keys.
+    fn dialog_ignores_key(&mut self, key: &str) -> bool {
+        let now = Instant::now();
+        self.observe_dialog(now);
+        key != "escape" && self.dialog_grace.active(now)
+    }
+    /// The Command chords that choose in a confirmation dialog. True when
+    /// the keystroke belonged to one (acted on or deliberately dropped), so
+    /// terminals and cards never see it while the dialog is open.
+    fn dialog_chord_key(
+        &mut self,
+        chord: model::DialogChord,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        use model::DialogChord::{Delete, Discard, Primary};
+        if !matches!(
+            self.overlay,
+            Some(
+                Overlay::Close { .. }
+                    | Overlay::SwitchedClose { .. }
+                    | Overlay::LeadClose { .. }
+                    | Overlay::RestingMenu { .. }
+                    | Overlay::RemoveProject(_)
+                    | Overlay::RemoveLeftover(_)
+            )
+        ) {
+            return false;
+        }
+        if self.dialog_ignores_key("") || self.busy {
+            return true;
+        }
+        match (&self.overlay, chord) {
+            (Some(Overlay::Close { index, .. }), Discard) => {
+                let i = *index;
+                self.finish_close(i, 1, window, cx);
+            }
+            (Some(Overlay::Close { index, state }), Primary) if state.can_push() => {
+                let i = *index;
+                self.finish_close(i, 2, window, cx);
+            }
+            (Some(Overlay::SwitchedClose { index, .. }), Primary) => {
+                let i = *index;
+                self.finish_close(i, 3, window, cx);
+            }
+            (Some(Overlay::LeadClose { .. }), Delete) => self.forget_lead_from_dialog(window, cx),
+            (Some(Overlay::RestingMenu { .. }), Delete) => self.forget_from_menu(window, cx),
+            (Some(Overlay::RemoveProject(id)), Delete) => {
+                let id = id.clone();
+                self.remove_project(id, cx);
+            }
+            (Some(Overlay::RemoveLeftover(i)), Delete) => {
+                let i = *i;
+                self.remove_leftover(i, cx);
+            }
+            _ => {}
+        }
+        true
+    }
+    /// Forget from the Lead's close dialog. From the Stop step, a worktree
+    /// with something to lose first shows the Forget step with those facts;
+    /// otherwise, and from the Forget step, the Lead is forgotten.
+    fn forget_lead_from_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Overlay::LeadClose { step, .. }) = &mut self.overlay else {
+            return;
+        };
+        if matches!(step, model::LeadClose::Stop { .. }) && step.discards() {
+            *step = step.forget();
+            cx.notify();
+        } else {
+            self.finish_lead_close(true, window, cx);
+        }
+    }
+    /// Whether the author has stopped typing in every terminal (agent and
+    /// shell) and Lead chat input. A dialog that opens on its own waits for
+    /// this, so keystrokes meant for a prompt never land in it.
+    fn author_quiet(&self, now: Instant, cx: &gpui::App) -> bool {
+        let terminals = self.cards.iter().flat_map(|card| {
+            std::iter::once(&card.agent)
+                .chain(card.shells.iter())
+                .map(|pane| lock(&pane.state).last_typed)
+        });
+        let chats = self
+            .lead_chats
+            .values()
+            .map(|chat| chat.read(cx).last_typed);
+        model::typing_quiet(terminals.chain(chats), now, control::BELL_TYPING_QUIET)
+    }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.overlay, Some(Overlay::LeadQuestion(_))) {
             self.chat_question_key(event, window, cx);
@@ -5117,6 +5380,18 @@ impl Shika {
             cx.notify();
             return;
         }
+        if let Some(chord) = model::dialog_chord(
+            &stroke.key,
+            stroke.modifiers.platform,
+            stroke.modifiers.control,
+            stroke.modifiers.alt,
+            stroke.modifiers.shift,
+        ) && self.dialog_chord_key(chord, window, cx)
+        {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if stroke.modifiers.platform
             || stroke.modifiers.control
             || stroke.modifiers.alt
@@ -5126,6 +5401,10 @@ impl Shika {
         }
         let key = stroke.key.as_str();
         if self.overlay.is_some() {
+            if self.dialog_ignores_key(key) {
+                cx.stop_propagation();
+                return;
+            }
             if self.busy {
                 return;
             }
@@ -5215,44 +5494,30 @@ impl Shika {
                     "escape" => self.cancel_overlay(window, cx),
                     _ => {}
                 },
-                Some(Overlay::Close { index, state }) => {
-                    let i = *index;
-                    let can_push = state.can_push();
-                    match key {
-                        "d" => self.finish_close(i, 1, window, cx),
-                        "p" if can_push => self.finish_close(i, 2, window, cx),
-                        "escape" => self.cancel_overlay(window, cx),
-                        _ => {}
+                // Escape, and Enter to Stop the Lead, are the only plain keys
+                // here. The destructive and publishing choices are Command
+                // chords, handled by `dialog_chord_key`.
+                Some(Overlay::Close { .. } | Overlay::RestingMenu { .. }) => {
+                    if key == "escape" {
+                        self.cancel_overlay(window, cx);
                     }
                 }
-                Some(Overlay::RestingMenu { .. }) => match key {
-                    "enter" => self.forget_from_menu(window, cx),
-                    "escape" => self.cancel_overlay(window, cx),
-                    _ => {}
-                },
                 Some(Overlay::LeadClose { step, .. }) => {
                     let stopping = matches!(step, model::LeadClose::Stop { .. });
                     match key {
-                        "enter" => self.finish_lead_close(!stopping, window, cx),
-                        "f" if stopping => *step = step.forget(),
+                        "enter" if stopping => self.finish_lead_close(false, window, cx),
                         "escape" => self.cancel_overlay(window, cx),
                         _ => {}
                     }
                 }
-                Some(Overlay::SwitchedClose { index, .. }) => {
-                    let i = *index;
-                    match key {
-                        "enter" => self.finish_close(i, 3, window, cx),
-                        "escape" => self.cancel_overlay(window, cx),
-                        _ => {}
+                Some(Overlay::SwitchedClose { .. }) => {
+                    if key == "escape" {
+                        self.cancel_overlay(window, cx);
                     }
                 }
-                Some(Overlay::RemoveLeftover(i)) => {
-                    let i = *i;
-                    match key {
-                        "d" => self.remove_leftover(i, cx),
-                        "escape" => self.overlay = Some(Overlay::Leftovers),
-                        _ => {}
+                Some(Overlay::RemoveLeftover(_)) => {
+                    if key == "escape" {
+                        self.overlay = Some(Overlay::Leftovers);
                     }
                 }
                 Some(Overlay::Leftovers) => {
@@ -5272,12 +5537,9 @@ impl Shika {
                         _ => {}
                     }
                 }
-                Some(Overlay::RemoveProject(id)) => {
-                    let id = id.clone();
-                    match key {
-                        "r" | "enter" => self.remove_project(id, cx),
-                        "escape" => self.cancel_overlay(window, cx),
-                        _ => {}
+                Some(Overlay::RemoveProject(_)) => {
+                    if key == "escape" {
+                        self.cancel_overlay(window, cx);
                     }
                 }
                 Some(Overlay::Settings { row, edit, .. }) => {
@@ -5345,20 +5607,12 @@ impl Shika {
         match key {
             "j" | "down" => self.move_selection(1, window, cx),
             "k" | "up" => self.move_selection(-1, window, cx),
-            "a" => self.add_project(cx),
-            "r" => self.retry_preparation(window, cx),
             "enter" => match self.selection.clone() {
                 Some(Selection::Resting(project)) => self.resume_lead(project, window, cx),
+                // A failed setup has no terminal to enter: Enter retries.
+                _ if self.shown() == model::Shown::FailedCard => self.retry_preparation(window, cx),
                 _ => self.focus_terminal(window, cx),
             },
-            "b" => {
-                if self.busy || self.selection.is_none() {
-                    return;
-                }
-                if let Some(project) = self.project_id() {
-                    self.open_base(project, window, cx);
-                }
-            }
             _ => return,
         }
         cx.stop_propagation();
@@ -6044,10 +6298,10 @@ impl Shika {
                 icon_button(
                     "add-project",
                     Some(FOLDER_PLUS_ICON),
-                    "Add project  a",
+                    "Add project  \u{2318}O",
                     chrome,
                 )
-                .on_click(cx.listener(|this, _, _, cx| this.add_project(cx))),
+                .on_click(cx.listener(|this, _, window, cx| this.add_project(window, cx))),
             )
             .child(
                 icon_button("new-agent", None, "New agent  \u{2318}N", chrome)
@@ -6069,7 +6323,8 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let id = project.id.clone();
-        let selected = self.selection == Some(Selection::Project(id.clone()));
+        let selected = *self.selection == Some(Selection::Project(id.clone()))
+            || self.target_project() == Some(id.as_str());
         let plus_kept = self.selected_project() == Some(id.as_str());
         let group = SharedString::from(format!("project-group-{id}"));
         let hover = chrome.hover;
@@ -6080,6 +6335,7 @@ impl Shika {
         let base_id = id.clone();
         let base_name = self.bases.get(&id).and_then(|b| b.name.clone());
         let base_group = SharedString::from(format!("base-group-{id}"));
+        let base_chord = shortcuts::display("cmd-shift-b");
         let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
         let path = SharedString::from(model::tilde(&project.path, home));
         let header = div()
@@ -6102,9 +6358,7 @@ impl Shika {
                 if this.busy || this.overlay.is_some() {
                     return;
                 }
-                this.selection = Some(Selection::Project(select_id.clone()));
-                window.focus(&this.focus, cx);
-                cx.notify();
+                this.click_project(select_id.clone(), window, cx);
             }))
             // The path is in the name's tooltip, not on the row.
             .child(
@@ -6143,7 +6397,7 @@ impl Shika {
                             cx.new(|_| KeyTip {
                                 bg: tip_bg,
                                 fg: tip_fg,
-                                text: "Base branch  b".into(),
+                                text: format!("Base branch  {base_chord}").into(),
                             })
                             .into()
                         })
@@ -6392,7 +6646,7 @@ impl Shika {
                 if this.busy || this.overlay.is_some() {
                     return;
                 }
-                this.selection = Some(Selection::Resting(click.clone()));
+                this.selection.set(Some(Selection::Resting(click.clone())));
                 this.resume_lead(click.clone(), window, cx);
             }));
         let base = if selected {
@@ -6553,9 +6807,9 @@ impl Shika {
         let hints: &[(&str, &str)] = if card.closing {
             &[]
         } else if card.creating {
-            &[("↵", "view setup"), ("c", "cancel")]
+            &[("↵", "view setup"), ("\u{2318}\u{21e7}W", "cancel")]
         } else if card.launch_error.is_some() {
-            &[("r", "retry"), ("c", "close")]
+            &[("↵", "retry"), ("\u{2318}\u{21e7}W", "close")]
         } else {
             match card.status {
                 Status::Ready => &[("↵", "read")],
@@ -6777,8 +7031,13 @@ impl Shika {
                     if this.busy || this.overlay.is_some() {
                         return;
                     }
-                    this.selection = Some(Selection::Card(i));
-                    this.focus_terminal(window, cx);
+                    this.selection.set(Some(Selection::Card(i)));
+                    if this.busy {
+                        // The old terminal is hidden now; the cards hold the keys.
+                        window.focus(&this.focus, cx);
+                    } else {
+                        this.focus_shown(window, cx);
+                    }
                 }))
             });
         // The selected card is a soft wash over the column, like a hover,
@@ -6840,7 +7099,7 @@ impl Shika {
                     let entity = entity.clone();
                     window.on_next_frame(move |_, cx| {
                         let _ = entity.update(cx, |this, cx| {
-                            if this.selection == selection {
+                            if *this.selection == selection {
                                 scroll.set_offset(scroll.offset() + gpui::point(px(0.), px(delta)));
                                 cx.notify();
                             }
@@ -7384,10 +7643,10 @@ impl Shika {
                             },
                         )
                         .child(div().flex_none().text_color(chrome.term_faint).child(
-                            if card.creating && cards_focused {
+                            if card.creating {
                                 "setup is non-interactive"
                             } else if card.launch_error.is_some() && cards_focused {
-                                "r retry setup"
+                                "↵ retry setup"
                             } else if cards_focused {
                                 "↵ type here"
                             } else {
@@ -7405,7 +7664,7 @@ impl Shika {
                             .py(px(8.))
                             .text_size(px(12.5))
                             .child(
-                                dialog_button("retry-setup", "Retry setup", "r", chrome).on_click(
+                                notice_secondary("retry-setup", "Retry setup", chrome).on_click(
                                     cx.listener(|this, _, window, cx| {
                                         this.retry_preparation(window, cx)
                                     }),
@@ -7698,7 +7957,7 @@ impl Shika {
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
                     .child("Forget Lead")
-                    .child(kbd("\u{2318}\u{21e7}W", chrome.sunken, chrome.ink_3))
+                    .child(kbd("\u{2318}\u{232b}", chrome.sunken, chrome.ink_3))
                     .on_click(cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
                         this.forget_from_menu(window, cx);
@@ -7732,7 +7991,7 @@ impl Shika {
             } else {
                 &[
                     ("j k", "choose"),
-                    ("\u{21a9}", "set"),
+                    ("\u{21b5}", "set"),
                     ("\u{232b}", "clear"),
                     ("[ ]", "section"),
                     ("esc", "done"),
@@ -8507,15 +8766,12 @@ impl Shika {
                 panel.child(if stopping {
                     buttons
                         .child(
-                            dialog_button("forget-lead", "Forget", "f", chrome).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    if let Some(Overlay::LeadClose { step, .. }) = &mut this.overlay
-                                    {
-                                        *step = step.forget();
+                            dialog_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if !this.busy {
+                                        this.forget_lead_from_dialog(window, cx);
                                     }
-                                    cx.notify();
-                                }),
-                            ),
+                                })),
                         )
                         .child(primary_button("stop-lead", "Stop", "↵", chrome).on_click(
                             cx.listener(|this, _, window, cx| {
@@ -8524,9 +8780,10 @@ impl Shika {
                         ))
                 } else {
                     buttons.child(
-                        primary_button("forget-lead", "Forget", "↵", chrome).on_click(cx.listener(
-                            |this, _, window, cx| this.finish_lead_close(true, window, cx),
-                        )),
+                        primary_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.finish_lead_close(true, window, cx)
+                            })),
                     )
                 })
             }
@@ -8863,19 +9120,19 @@ impl Shika {
                 let buttons = if can_push {
                     buttons
                         .child(
-                            dialog_button("discard", "Discard changes", "d", chrome)
+                            dialog_button("discard", "Discard changes", "\u{2318}D", chrome)
                                 .on_click(discard),
                         )
                         .child(
-                            primary_button("push", "Push changes", "p", chrome).on_click(
-                                cx.listener(move |this, _, window, cx| {
+                            primary_button("push", "Push changes", "\u{2318}\u{21b5}", chrome)
+                                .on_click(cx.listener(move |this, _, window, cx| {
                                     this.finish_close(i, 2, window, cx)
-                                }),
-                            ),
+                                })),
                         )
                 } else {
                     buttons.child(
-                        primary_button("discard", "Discard changes", "d", chrome).on_click(discard),
+                        primary_button("discard", "Discard changes", "\u{2318}D", chrome)
+                            .on_click(discard),
                     )
                 };
                 panel.child(buttons)
@@ -8903,11 +9160,15 @@ impl Shika {
                     dialog_buttons()
                         .child(self.cancel_button("Cancel", chrome, cx))
                         .child(
-                            primary_button("close-switched", "Close task", "↵", chrome).on_click(
-                                cx.listener(move |this, _, window, cx| {
-                                    this.finish_close(i, 3, window, cx)
-                                }),
-                            ),
+                            primary_button(
+                                "close-switched",
+                                "Close task",
+                                "\u{2318}\u{21b5}",
+                                chrome,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.finish_close(i, 3, window, cx),
+                            )),
                         ),
                 )
             }
@@ -8979,7 +9240,12 @@ impl Shika {
                     ))
                     .child(
                         dialog_buttons().child(self.cancel_button("Cancel", chrome, cx)).child(
-                            primary_button("remove-project", "Remove project", "r", chrome)
+                            primary_button(
+                                "remove-project",
+                                "Remove project",
+                                "\u{2318}\u{232b}",
+                                chrome,
+                            )
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.remove_project(id.clone(), cx)
                                 })),
@@ -9004,10 +9270,15 @@ impl Shika {
                         dialog_buttons()
                             .child(self.cancel_button("Cancel", chrome, cx))
                             .child(
-                                primary_button("remove-confirm", "Discard worktree", "d", chrome)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.remove_leftover(i, cx)
-                                    })),
+                                primary_button(
+                                    "remove-confirm",
+                                    "Discard worktree",
+                                    "\u{2318}\u{232b}",
+                                    chrome,
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.remove_leftover(i, cx)),
+                                ),
                             ),
                     )
             }
@@ -9994,11 +10265,12 @@ impl Render for Shika {
             self.ensure_lead_chat(&project, window, cx);
         }
         self.sync_window_backdrop(window, cx);
+        self.observe_dialog(Instant::now());
         let cards_focused = self.focus.is_focused(window);
         let chrome = self.chrome(window);
         let backdrop = self.backdrop_layers(&chrome, window, cx);
         let home = home_dir();
-        let reveal_selection = self.selection != self.last_revealed_selection;
+        let reveal_selection = *self.selection != self.last_revealed_selection;
         self.last_revealed_selection = self.selection.clone();
         // The Changes panel follows the selected card. Closed, this is a no-op.
         self.sync_changes(cx);
@@ -10077,10 +10349,19 @@ impl Render for Shika {
                 .child(self.footer(&chrome, width, cx))
         });
         let mut root = div()
-            .track_focus(&self.focus)
             .key_context("Shika")
             .on_action(cx.listener(|this, _: &NewAgent, window, cx| this.picker(window, cx)))
             .on_action(cx.listener(|this, _: &NewLead, window, cx| this.new_lead(window, cx)))
+            .on_action(cx.listener(|this, _: &AddProject, window, cx| {
+                if !this.busy && this.overlay.is_none() {
+                    this.add_project(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &BaseBranch, window, cx| {
+                if let Some(project) = this.project_id() {
+                    this.open_base(project, window, cx);
+                }
+            }))
             .on_action(
                 cx.listener(|this, _: &NewTerminal, window, cx| this.new_shell(true, window, cx)),
             )
@@ -10159,6 +10440,14 @@ impl Render for Shika {
             .text_size(px(12.))
             .line_height(gpui::relative(1.3))
             .text_color(chrome.ink_1)
+            // The cards' focus handle sits on an element with no size, so no
+            // mouse-down can land on it: GPUI focuses a tracked element on any
+            // click it did not prevent, which sent a stray click in the
+            // column, the title bar, or the footer's gaps to the card list and
+            // stopped the author's typing from reaching the terminal. It is
+            // still inside the root, so key context, actions, and the capture
+            // handler apply when the cards have focus.
+            .child(div().absolute().size_0().track_focus(&self.focus))
             .children(backdrop)
             .children(sidebar)
             .child(self.terminal_side(&chrome, cards_focused, home.as_deref(), window, cx))
@@ -10203,6 +10492,8 @@ fn install_keys(cx: &mut App, keys: &KeyOverrides) {
     let mut bindings = vec![
         gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
         gpui::KeyBinding::new("cmd-l", NewLead, Some("Shika")),
+        gpui::KeyBinding::new("cmd-o", AddProject, Some("Shika")),
+        gpui::KeyBinding::new("cmd-shift-b", BaseBranch, Some("Shika")),
         gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
         gpui::KeyBinding::new("cmd-shift-p", CreatePr, Some("Shika")),
         gpui::KeyBinding::new("cmd-shift-a", SwitchAgent, Some("Shika")),
@@ -10267,11 +10558,13 @@ fn install_menus(cx: &mut App) {
     cx.set_menus([
         gpui::Menu::new("Shika").items(app_menu),
         gpui::Menu::new("Agent").items([
+            gpui::MenuItem::action("Add project…", AddProject),
             gpui::MenuItem::action("New agent", NewAgent),
             gpui::MenuItem::action("New Lead…", NewLead),
             gpui::MenuItem::action("New terminal tab", NewTerminal),
             gpui::MenuItem::action("Create PR", CreatePr),
             gpui::MenuItem::action("Switch agent…", SwitchAgent),
+            gpui::MenuItem::action("Base branch…", BaseBranch),
             gpui::MenuItem::action("Close terminal tab", CloseTerminal),
             gpui::MenuItem::action("Rename task…", RenameTask),
             gpui::MenuItem::action("Close task", CloseTask),

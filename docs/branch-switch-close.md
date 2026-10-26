@@ -22,7 +22,7 @@ Normal Close first checks branch identity as before. When it detects a mismatch,
 - The worktree must have no uncommitted tracked or non-ignored untracked work.
 - Neither branch may contain commits outside the accepted base and all local remote-tracking refs.
 
-If verification succeeds, a confirmation names both branches and says: "No unpublished work was found. Closing removes the worktree and stops all task terminals. Both local branches will be kept." An active agent gets an additional warning. Enter or Close task confirms; Escape or Cancel leaves the task and terminals running and restores the opening focus.
+If verification succeeds, a confirmation names both branches and says: "No unpublished work was found. Closing removes the worktree and stops all task terminals. Both local branches will be kept." An active agent gets an additional warning. Cmd+Enter or Close task confirms (bare Enter does nothing, and keys other than Escape are ignored for the first 300ms); Escape or Cancel leaves the task and terminals running and restores the opening focus.
 
 Confirmation removes the worktree, journal entry, and card and stops all task-owned PTYs. It does not delete either local branch or modify remote branches. The card title, recorded branch, and folder are not renamed by this recovery path.
 

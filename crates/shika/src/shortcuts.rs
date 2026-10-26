@@ -132,6 +132,8 @@ pub struct Binding {
 const RESERVED: &[(&str, &str)] = &[
     ("cmd-n", "New agent"),
     ("cmd-l", "New Lead"),
+    ("cmd-o", "Add project"),
+    ("cmd-shift-b", "Base branch"),
     ("cmd-t", "New terminal tab"),
     ("cmd-shift-p", "Create PR"),
     ("cmd-shift-a", "Switch agent"),
@@ -160,6 +162,8 @@ const RESERVED: &[(&str, &str)] = &[
     ("cmd-shift-up", "Select to the start of the text"),
     ("cmd-shift-down", "Select to the end of the text"),
     ("cmd-backspace", "Delete to line start"),
+    ("cmd-d", "Discard in a dialog"),
+    ("cmd-enter", "Confirm in a dialog"),
 ];
 
 /// The chord bound to `id`, as the user should read it (`⌘R`). None when
@@ -575,6 +579,33 @@ mod tests {
                 assert_eq!(reserved_name(default), None, "{}", command.id);
                 assert!(seen.insert(chord(default)), "{}", command.id);
             }
+        }
+    }
+
+    #[test]
+    fn add_project_and_base_branch_are_fixed_chords() {
+        assert_eq!(reserved_name("cmd-o"), Some("Add project"));
+        assert_eq!(reserved_name("cmd-shift-b"), Some("Base branch"));
+        let refused = assign(
+            &KeyOverrides::default(),
+            "toggleChanges",
+            Some("cmd-o".into()),
+        );
+        assert!(refused.is_err());
+    }
+
+    #[test]
+    fn dialog_chords_are_reserved() {
+        assert_eq!(reserved_name("cmd-d"), Some("Discard in a dialog"));
+        assert_eq!(reserved_name("cmd-enter"), Some("Confirm in a dialog"));
+        assert_eq!(reserved_name("cmd-backspace"), Some("Delete to line start"));
+        for chord in ["cmd-d", "cmd-enter"] {
+            let refused = assign(
+                &KeyOverrides::default(),
+                "toggleChanges",
+                Some(chord.into()),
+            );
+            assert!(refused.is_err(), "{chord}");
         }
     }
 

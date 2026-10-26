@@ -19,6 +19,8 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+Shift+R` | Rename the selected live task, without renaming Git | Dialog; completion/cancel restores previous focus and selection |
 | `Cmd+Shift+P` | Preview commit, push, and Create PR for the task's original base | Dialog; cancel/completion restores previous focus |
 | `Cmd+Shift+A` | Switch the selected task to another agent, in the same worktree | Dialog; cancel restores previous focus; confirm focuses the new agent terminal |
+| `Cmd+O` | Add project (Agent > Add project…, the folder-plus button's tooltip). Fixed; Settings > Keyboard refuses it | The added project's header is selected, which shows nothing typeable, so the cards take focus (`focus_shown`) |
+| `Cmd+Shift+B` | Base branch for the clicked header's project, else the selected one, else the first (Agent > Base branch…, the branch click's tooltip). Fixed | Dialog; completion/cancel restores previous focus |
 | `Cmd+T` | New independent shell tab in this task's worktree | New shell; startup input is queued |
 | `Cmd+W` | Close selected shell tab. On the pinned agent it does nothing and does not close the task | Preceding tab if the closed view had focus; otherwise preserve focus |
 | `Cmd+Shift+W` | Close the selected task. Same path as the Close task button: cancel setup, remove a failed card, or the safe-close flow | Unchanged until close finishes; a clean idle task closes immediately |
@@ -32,11 +34,22 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+N` | Open New for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
 | `Cmd+L` | Start the selected project's Lead (Agent > New Lead…), show it when the project already has one, or resume its saved one | Picker in Lead mode only when the project has no saved Lead (same keys as New; Tab changes project). A live Lead is selected and its terminal focused at once. A saved (resting) Lead starts in its saved CLI with no picker, and its new card is selected with the terminal focused; if that CLI is missing or off in Settings, the picker opens instead. See [lead-agent.md](lead-agent.md) |
 
-These are the defaults. Settings, Keyboard, can change Hide or show changes, Show or hide usage, Go to agent 1 through 9, and Go to tab 1 through 9. A new Command chord replaces the old one. Go to agent N selects the Nth card in the column (Leads section first, then the projects), skipping project headers, and does nothing when that card is not there. Agent rows start with no chord. The other shortcuts in this table stay fixed.
+These are the defaults. Settings, Keyboard, can change Hide or show changes, Show or hide usage, Go to agent 1 through 9, and Go to tab 1 through 9. A new Command chord replaces the old one. Go to agent N selects the Nth card in the column (Leads section first, then the projects), skipping project headers, and does nothing when that card is not there. Agent rows start with no chord. The other shortcuts in this table stay fixed; `shortcuts::RESERVED` holds Cmd+O and Cmd+Shift+B so Keyboard cannot take them.
 
 Next/previous agent skips project headers, crosses projects, and wraps. Each task keeps its selected tab and all terminal contents. New creates only the pinned CLI tab; the header `+` adds shells on demand. Shell labels are monotonically numbered, and individual close controls stop their PTYs without changing git or closing the task. Close task retains the safe-close flow and stops every owned PTY. With no valid selection, next chooses the first agent and previous the last. With no agents, navigation does nothing. With one agent, it stays selected.
 
 These actions do nothing while the app is busy or any overlay is open. A Lead has no shell tabs, Create PR, or agent switch: `Cmd+T`, `Cmd+Shift+P`, and `Cmd+Shift+A` show a short message on its card. Workers started by a Lead (`shika new`) never take selection or focus from the author. `Cmd+N` uses the first project when nothing is selected and opens Add project when there are no projects.
+
+## Accidental typing
+
+The author types prompts into agent terminals all day. Typing that was not meant for Shika must never trigger anything in it (decided 2026-10-25). That extends the Command ownership boundary (below) from shortcuts to dialogs and focus:
+
+- **Dialog choices are exact Command chords.** Discard is `Cmd+D`, Push is `Cmd+Enter` (offered only with a clean tree), branch-switch Close is `Cmd+Enter`, and Forget, Remove project, and Remove leftover worktree are `Cmd+Delete`. A plain letter or bare Enter never discards, publishes, forgets, or removes. "Exact" means Command and nothing else: Shift, Option, or Control with the key does nothing. The chords exist only while their dialog is open and are swallowed there, so a terminal never sees them; there are no global bindings. `Cmd+D` and `Cmd+Enter` are reserved in Settings > Keyboard (as `Cmd+Delete` already was), since GPUI runs a binding before the dialog's key handler. Enter still stops a Lead ("Stop the Lead?" keeps the conversation). Escape cancels everywhere. The Stop dialog goes straight to Forget with `Cmd+Delete`: at once when the Lead's worktree has nothing to lose, otherwise to the Forget step with the facts, where a second `Cmd+Delete` confirms. The Leftovers list keeps `d` and Enter to open its confirmation, which is not a destructive choice.
+- **A grace period for keys already in flight.** Close, branch-switch Close, the Lead's Stop and Forget, the resting-Lead menu, Remove project, Remove leftover, worktree setup approval, and a Lead question ignore every key except Escape for 300ms after they appear. The window starts again when the dialog's identity changes (Stop to the Forget step, the next question). Mouse clicks are unaffected, and text-entry dialogs, the picker, and Settings have no grace.
+- **Dialogs that appear on their own wait.** A Close requested by the Lead (`shika close`) and a Lead chat question open only after nothing has been typed in any terminal (agent or shell) or Lead chat input for 3 seconds (`BELL_TYPING_QUIET`, the doorbell's quiet), with no overlay open and Shika not busy. Questions wait in the existing inbox, first come, first served. `shika close` registers its pending dialog at once, so the one-dialog gate holds, selects nothing until it opens, and is not the Lead's dialog until then (a Close the author opens on that worker meanwhile behaves as their own, and the Lead's request is refused once if the worker goes away), is refused if the worker or Lead goes away, and after 120 seconds is refused with "The author kept typing or had another dialog open. Try again later."
+- **Focus follows what can take typing.** A stray click on empty column, the title bar, footer gaps, or any chrome never moves focus. After a successful Close, a Lead Stop or Forget, an exited Lead resting, a cancelled-setup or launch-error card going away, Add project, and a dialog dismissed with no saved focus, focus lands on the shown terminal or chat input, but only when focus pointed at something now gone or hidden: an author on the cards or the Changes panel stays there, and setup finishing never takes focus from either. The cards get it only by Ctrl+Q, or when nothing shown takes typing (no selection, a project header, a resting Lead, a failed-setup card). A Lead-requested Close still returns focus to the Lead.
+- **A header click does not leave the terminal.** With a live card or Lead chat on screen, clicking a project header changes neither the screen nor the focus. The project becomes the target of `Cmd+N`, `Cmd+L`, and Base branch until the selection changes in any way (a counter, so leaving a card and coming back does not revive it), and its header is drawn selected. Only those commands use the target; the Lead chat header and everything else describing what is shown follow the selected card. With nothing typeable shown, the header is selected and the cards take focus as before.
+- **The card list takes few keys.** Only `j`, `k`, the arrows, and Enter. Plain `a`, `b`, and `r` are gone (Add project and Base branch are Command chords). Enter on a failed-setup card retries it.
 
 ## Settings sections
 
@@ -75,12 +88,12 @@ Implementation: `Overlay::CardMenu`, `CardMenu::target_index`, `open_card_menu`,
 ## What did not change
 
 - `j`/`k` and arrows navigate cards while the cards are focused, skipping project headers. An empty project is not a stop. They do not focus the terminal, so a second `j` still moves.
-- Clicking a card selects it and focuses its shown terminal. A notification click activates the window and does the same. The next keystroke is typed there.
+- Clicking a card selects it and focuses its shown terminal. A notification click activates the window and does the same. The next keystroke is typed there. A click elsewhere in the chrome moves no focus, and a project header click keeps a shown terminal focused (see Accidental typing).
 - `Enter` enters the selected task's currently shown terminal while the cards have focus.
-- `Ctrl+Q` returns from the terminal to the cards.
-- `a`, `b`, and `r` retain their card actions. Plain `n` and `c` do nothing. `g` is not a shortcut.
+- `Ctrl+Q` returns from the terminal to the cards. It is the deliberate way there: nothing else sends focus to the list while a terminal or chat is shown, and a late setup completion does not pull it back.
+- The cards take only `j`, `k`, the arrows, and Enter. Plain `a`, `b`, `r`, `n`, `c`, and `g` do nothing; Add project and Base branch are `Cmd+O` and `Cmd+Shift+B`, and Enter on a failed-setup card retries it (so does the button).
 - Escape reaches the CLI when a terminal is focused. It is not an app-wide escape-to-navigation key. It closes the Changes panel only while the panel itself has focus.
-- Verified branch-switch Close has a separate confirmation: Enter closes while keeping both local branches, Escape restores the opening focus. Unsafe recovery is blocked rather than offering Push/Discard; see [branch-switch-close.md](branch-switch-close.md).
+- Verified branch-switch Close has a separate confirmation: Cmd+Enter closes while keeping both local branches (bare Enter does nothing), Escape restores the opening focus. Unsafe recovery is blocked rather than offering Push/Discard; see [branch-switch-close.md](branch-switch-close.md).
 - Close cancellation still routes dirty or unpushed work to the task shell. It is a workflow transition, not generic focus restoration.
 - Cards remain sorted by attention within each project. This improvement does not stabilize their order during status changes.
 - One terminal is visible at a time. Hidden views and PTYs stay alive. The Changes panel is a read-only diff beside it, not a second terminal.
@@ -94,6 +107,8 @@ Command provides a useful ownership boundary: Shika owns its Command shortcuts; 
 
 A multiplexer prefix would add a keyboard mode and an extra step to frequent transitions. It also needs cancellation, conflict handling, and a way to send the prefix itself into the terminal. Being a developer does not imply wanting that trade-off.
 
+The same boundary covers dialogs: an exact Command chord is deliberate, a letter or Enter might be the tail of a prompt. See [Accidental typing](#accidental-typing).
+
 The decision is one interaction model with a small, predictable default shortcut set. Settings can replace a few of those Command chords. It does not add a second mode, and a plain key still belongs to the cards or the CLI.
 
 ## Implementation map
@@ -105,10 +120,18 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 | Action definitions | `gpui::actions!`, `SelectTerminal` | `NewAgent`, `CloseTask`, `SwitchAgent`, `NextAgent`, `PreviousAgent`, and the numbered tab jump |
 | Shortcut registration | `main`, `cx.bind_keys` | Command bindings scoped to the `Shika` key context |
 | Action dispatch | `Shika::render`, root `.key_context("Shika")` and `.on_action` | Routes actions from cards or descendant terminal views; handlers guard busy/overlay state |
-| Existing keys | `Shika::key` | Plain-key navigation, overlay editing, and terminal `Ctrl+Q` escape hatch |
+| Existing keys | `Shika::key` | Plain-key navigation (`j`, `k`, arrows, Enter), overlay editing, and terminal `Ctrl+Q` escape hatch |
+| Dialog chords | `model::dialog_chord`, `model::DialogChord` (`Primary` Cmd+Enter, `Discard` Cmd+D, `Delete` Cmd+Delete), `Shika::dialog_chord_key`, `forget_lead_from_dialog` | Matches exact Command-only chords while a confirmation dialog is open, acts or deliberately drops them, and stops propagation so terminals never see them. Called in `Shika::key` before the plain-key path |
+| Input grace | `model::DIALOG_GRACE` (300ms), `DialogGrace`, `Shika::dialog_identity`, `observe_dialog`, `dialog_ignores_key`, `QuestionDialog::identity` | Starts a window when a confirmation dialog (new identity) appears; every key but Escape is dropped while it runs. Observed from render, the tick, and every key |
+| Typing gate | `Shika::author_quiet`, `model::typing_quiet`, `control::BELL_TYPING_QUIET` | True when no terminal (agent or shell) or Lead chat input saw typing for 3 seconds. Shared with the doorbell |
+| Deferred dialogs | `Shika::control_close`, `resume_deferred_close`, `start_lead_close`, `LeadDialog::deferred`, `DEFER_LIMIT`; `open_chat_question`, `drain_lead_chats`, `chat_questions` in `lead_chat.rs` / `lead_chat_question.rs` | A Lead's Close and chat questions wait for `author_quiet`, no overlay, and not busy; retried on the tick |
+| Focus landing | `Shika::focus_shown`, `land_focus`, `focus_pane`, `focus_terminal`, `shown`, `model::Shown` (`takes_typing`) | Puts focus on what is shown and typeable; the cards only when `Shown` says nothing takes typing |
+| Stray clicks | `Shika::render`: the cards `FocusHandle` is tracked by a zero-size child (`div().absolute().size_0().track_focus(&self.focus)`); the root keeps `key_context`, actions, and the capture handler | No mouse-down can land on a tracked element, so a click on chrome never focuses the list |
+| Header target | `Shika::project_target`, `click_project`, `target_project`, `project_id`, `model::header_target` | A header click with a terminal shown records the project for New, Lead, and Base branch; valid only while the selection equals the one recorded. Cleared on card removal |
+| Add project, Base branch | `AddProject`, `BaseBranch` actions, `install_keys`, Agent menu, `shortcuts::RESERVED` | `Cmd+O` and `Cmd+Shift+B`; both fixed
 | Navigation order | `column_layout`, `rows`, `adjacent_agent`, `model::ColumnLayout` | Leads section first (each Lead, then its workers), then project-grouped, status-sorted traversal; agent-only navigation skips headers |
 | Focus-preserving navigation | `move_agent`, `focus_terminal` | Changes selection and, only when needed, focuses the destination task's shown terminal |
-| Overlay restoration | `overlay_return_focus`, `restore_overlay_focus` | Stores a `FocusHandle`, restores it once, defaults to card focus when none was saved |
+| Overlay restoration | `overlay_return_focus`, `restore_overlay_focus` | Stores a `FocusHandle`, restores it once, and falls back to `land_focus` (the shown terminal or chat) when none was saved |
 | Overlay entry/exit | `picker`, `picker_for`, `open_settings`, `open_base`, `cancel_overlay`, `apply_base`, `launch`, `switch_agent`, `confirm_switch` | Captures focus before opening; restores on dismissal; launch and a confirmed switch intentionally clear restoration |
 | Terminal switching | `toggle`, `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `Card::active_pane` | Task-local tabs, pinned agent, independent shells, selected-view focus and asynchronous PTY teardown |
 | Shell startup | `Pane::new`, `bind_host`, `Host::write` | Queues startup input; binds/resizes PTY and drains queued bytes in order |
@@ -123,7 +146,7 @@ All app paths below are in `crates/shika/src/main.rs` unless stated otherwise. U
 
 ### Agent navigation
 
-A resting Lead (a saved Lead with no process) is a row in the Leads section and a stop for `j`/`k`, Cmd+] / Cmd+[, and Go to agent N (`Selection::Resting`). It has no terminal: moving onto it from a terminal with Cmd+] lands on the cards, and moving off it with the cards focused keeps them. **Enter** on a selected resting Lead (cards focused), a click on the row, and a click on the resting terminal area resume it (`resume_lead`); the new Lead card is selected and its terminal focused. **Cmd+Shift+W** on a selected Lead opens "Stop the Lead?" (Enter stops, `f` goes to Forget, Escape cancels); on a selected resting Lead it opens "Forget the Lead?" directly (Enter forgets). Right-click or Control-click on a resting row opens a one-item menu, Forget Lead `⌘⇧W`. Rename (`⌘⇧R`) does nothing for a Lead. These keys do nothing while a dialog is open.
+A resting Lead (a saved Lead with no process) is a row in the Leads section and a stop for `j`/`k`, Cmd+] / Cmd+[, and Go to agent N (`Selection::Resting`). It has no terminal: moving onto it from a terminal with Cmd+] lands on the cards (nothing there takes typing), and moving off it with the cards focused keeps them. **Enter** on a selected resting Lead (cards focused), a click on the row, and a click on the resting terminal area resume it (`resume_lead`); the new Lead card is selected and its terminal focused. **Cmd+Shift+W** on a selected Lead opens "Stop the Lead?" (Enter stops, `Cmd+Delete` forgets, Escape cancels); on a selected resting Lead it opens "Forget the Lead?" directly (`Cmd+Delete` forgets, bare Enter does nothing). Right-click or Control-click on a resting row opens a one-item menu, Forget Lead `⌘⌫` (`Cmd+Shift+W` still opens the Forget step; bare Enter does nothing). Rename (`⌘⇧R`) does nothing for a Lead. These keys do nothing while a dialog is open.
 
 `rows()` follows the column from top to bottom, from `column_layout()` (pure ordering in `model::ColumnLayout`). When a project has a live or resting Lead, the Leads section comes first: for each such project in project order, the Lead card and then the workers it started, sorted by attention (a resting Lead is one row with no workers). It has no headers. The Projects section follows: groups with cards first, empty headers below, preserving saved repository order within each tier. Each header precedes its own cards (not Leads, not workers of a live Lead), sorted by attention. All navigation uses this display order, not the saved repository list. A last card's exit keeps its project in the occupied tier until the exit finishes. When a Lead closes, its workers return to their project's list at once and can promote that project. Leads retain saved project order; picker and Settings order are unchanged. `adjacent_agent()` walks that order in the requested direction until it finds a card. `move_selection()` uses it for `j`/`k` and the arrows, so those keys never land on a header. `move_agent()` uses the same walk for Cmd+] / Cmd+[, guards overlay/busy state, records whether cards had focus, selects the result, and focuses its terminal only if the user was already in a terminal.
 
@@ -136,6 +159,8 @@ Before a picker, Settings, or Base branch overlay takes card focus, its opener c
 Base branch apply runs asynchronously with `spawn_in` / `update_in`, allowing successful completion to restore focus through the same window. Errors leave the dialog open. A new-agent launch discards the saved handle because it intentionally changes selection and focuses the new agent.
 
 Do not apply restoration indiscriminately to Close: dirty/unpushed cancellation is deliberately routed into the shell for committing or pushing.
+
+When nothing was saved, or a task, Lead, or card goes away under the focus, the destination is `focus_shown`, not the cards. `land_focus` is the version for restoration: with a dialog still open it focuses the cards (dialogs take their keys through them), otherwise it calls `focus_shown`. `focus_terminal` keeps its busy guard; `focus_shown` does not, because the card being created is on screen and must hold the keys (`j` would otherwise move the selection away). New focuses the new card's agent terminal at once; typing during copy and setup is dropped by design. Completion focuses only if the cards do not have focus, so a Ctrl+Q in the meantime stands (a Lead restart that asked for focus is the exception).
 
 ### Shell startup
 
@@ -182,6 +207,10 @@ A successful Close records its replacement selection as already revealed. When a
 | Early shell typing goes to agent, or startup steals focus | Check `new_shell`'s immediate focus and completion branch, then `pending_input` / `bind_host`. |
 | Selected row remains offscreen | Check sidebar tracking, selection-change detection, selected-row canvas prepaint, `reveal_delta`, and the deferred callback's selection guard. Test with enough projects to overflow the sidebar. |
 | Manual scrolling snaps back | Verify reveal is triggered by selection changes only, not every render/tick. |
+| A dialog was chosen by a stray key, or ignores real ones | `dialog_chord_key` and `model::dialog_chord` for the chord, `dialog_identity` for what counts as a new dialog, `dialog_ignores_key` for the 300ms window. A dialog that ignores everything for a moment is the grace, not a bug. |
+| A Lead's close dialog or question never opens | `author_quiet` (any terminal or chat typed in the last 3 seconds), an open overlay, `busy`, then `resume_deferred_close`'s 120 second limit. Questions sit in `chat_questions`. |
+| Focus lands on the cards, or a click moved it | `focus_shown` and `Shown`, the zero-size focus child in `render`, and whether the call site used `window.focus(&self.focus)` directly. |
+| Cmd+O, Cmd+Shift+B, or a dialog chord does nothing in a real window | `install_keys`, the Agent menu key equivalents (a menu item with the same key can take the event first), and whether the `Shika` context is active. |
 | A panel key reaches the CLI, or Escape in the panel lands in the wrong place | The panel's key context and focus at the time of the key; the panel's saved return handle, consumed once on close. |
 
 Reproduce with a built `.app`, disposable repositories, local bare remotes, and an isolated data directory. Never use a contributor's or author's normal app data for automated testing:
@@ -210,6 +239,12 @@ Automated coverage added or extended:
 - `selection_reveal_moves_only_the_clipped_edge`: visible, top-clipped, bottom-clipped, and oversized rows.
 - `command_is_left_to_the_app` and `control_tab_is_left_to_the_app`: Command combinations, Ctrl+Tab, and Ctrl+Shift+Tab remain excluded from terminal key encoding.
 - Existing `startup_query_replies_and_typeahead_survive_until_pty_binding`: startup input and terminal replies queue in order before binding.
+- `only_a_bare_command_chord_chooses_in_a_dialog`: exact Cmd+Enter, Cmd+D, and Cmd+Delete; plain keys, Shift, Control, Option, and other letters give nothing.
+- `a_dialog_ignores_keys_for_a_moment_after_it_appears` and `another_dialog_starts_its_own_window`: the 300ms window, no extension on re-observation, a new identity or a returning dialog starts again.
+- `typing_is_quiet_only_when_every_input_is`: the 3 second gate over several input stamps.
+- `only_a_shown_card_takes_typing` and `a_header_target_lasts_until_the_selection_changes` (`focus_tests`): which selections take focus, and the header target's validity.
+- `add_project_and_base_branch_are_fixed_chords` (`shortcuts.rs`): Keyboard refuses Cmd+O and Cmd+Shift+B.
+- `lead_tests` Stop facts: the added Forget line.
 
 These are unit tests, not proof of native shortcut dispatch, actual focus restoration, or rendered scrolling. Implementation validation passed 166 workspace tests, formatting, strict Clippy, a debug bundle build, and strict signature verification. The hands-on keyboard-flow checks remain unverified in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow); do not report them as passed without exercising them.
 
@@ -224,6 +259,10 @@ For a keyboard contribution, exercise the agent and multiple shell tabs, both fo
 - Keep app shortcuts out of the terminal encoder. Preserve plain typing, Escape, and supported CLI bindings.
 - Keep the busy/overlay guards when adding action entry points, including menus.
 - Focus restoration is the default for non-workflow overlays; explicit workflow transitions may intentionally choose another destination.
+- A new destructive or publishing dialog choice needs an exact Command chord, matched in `dialog_chord_key`, shown on its button as a Command key cap, and swallowed so terminals never see it. Never a plain letter or bare Enter.
+- A new confirmation dialog goes into `dialog_identity` so it gets the 300ms grace. A new dialog the app or the Lead opens on its own must use `author_quiet` and wait with the same retry-on-tick pattern; never open one into a moment of typing.
+- Never land focus on the cards implicitly. Use `focus_shown` (or `land_focus` under a dialog); call `window.focus(&self.focus, ...)` only for Ctrl+Q, a dialog that takes its keys through the cards, or a state where `Shown` says nothing takes typing. Do not give any chrome element the cards' focus handle, or a click on it will focus the list.
+- A new card-list plain key needs an author decision; the list takes only `j`, `k`, the arrows, and Enter. Use a Command chord and reserve it in `shortcuts.rs`.
 - Use existing theme tokens, `KeyTip`, menu conventions, and key hints. Do not add styling values for keyboard behavior.
 - Do not add animation delays to frequent keyboard transitions.
 - Update `design/DESIGN.md`, `AGENTS.md`, this document, and relevant acceptance checks when changing the documented behavior. Keep acceptance evidence separate from intended behavior.

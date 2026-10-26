@@ -216,7 +216,7 @@ Shika does not infer a dev command, start a browser/server, assign ports, or man
 
 A nonzero command stops the sequence. Copy errors, timeout, configuration changes, and cancellation also stop preparation. The agent is not launched into an incomplete environment. The card shows setup stages and output, with Cancel setup while running and Retry setup after failure.
 
-- `⌘⇧W` cancels setup or closes a failed card, from the cards or the terminal. `r` retries a failed setup from the cards. Ctrl+Q returns from the terminal to the cards.
+- `⌘⇧W` cancels setup or closes a failed card, from the cards or the terminal. Enter on a failed card with the cards focused, or its Retry setup button, retries a failed setup (plain `r` does nothing). A creating card is hinted `↵ view setup` and `⌘⇧W cancel`, a failed one `↵ retry` and `⌘⇧W close`. New focuses the card's terminal at once and typing during setup is dropped; finishing does not take focus back from the cards after Ctrl+Q. Ctrl+Q returns from the terminal to the cards.
 - Retry creates a **fresh** worktree, with approval again if configuration changed. It never layers another installation on a failed tree.
 - Ordinary descendant processes are stopped on completion, timeout, or cancellation, before the agent starts or cleanup runs. Processes that deliberately leave the process group are unsupported.
 - A provably untouched failed task is removed, including its ignored setup artifacts. Tracked edits, nonignored untracked files, commits, pushed work, a changed branch, or an unverifiable state keep the tree journaled in Leftover worktrees for inspection and explicit cleanup. Do not use ignored files as the only copy of valuable work.

@@ -21,6 +21,72 @@ pub fn adjacent_tab(active: usize, shells: usize, forward: bool) -> usize {
     }
 }
 
+/// What the selection puts on screen, as far as typing goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// Nothing is selected.
+    Nothing,
+    /// A project header with no card: the empty terminal area.
+    Header,
+    /// A saved Lead with no process: its row, no input.
+    RestingLead,
+    /// A card whose setup failed: it shows output and a Retry button only.
+    FailedCard,
+    /// A card with a terminal or Lead chat. A card still creating counts:
+    /// its terminal is on screen and drops typing by design, but the
+    /// author's next keys must never move the list.
+    Card,
+}
+
+impl Shown {
+    /// Whether focus belongs on what is shown. Otherwise nothing on screen
+    /// can take typing, and the cards get focus.
+    pub fn takes_typing(self) -> bool {
+        self == Shown::Card
+    }
+}
+
+/// A value whose every change is counted. Reads go through `Deref`; the only
+/// way to write is [`Tracked::set`], which bumps the epoch when the value
+/// differs. A header target records the epoch, so it ends on any change, even
+/// one that later returns to the value it was recorded under.
+pub struct Tracked<T> {
+    value: T,
+    epoch: u64,
+}
+
+impl<T: PartialEq> Tracked<T> {
+    pub fn new(value: T) -> Self {
+        Tracked { value, epoch: 0 }
+    }
+    pub fn set(&mut self, value: T) {
+        if self.value != value {
+            self.value = value;
+            self.epoch += 1;
+        }
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+}
+
+impl<T> std::ops::Deref for Tracked<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+/// The project a project-scoped command (New, Lead, Base branch) aims at when
+/// the author clicked a project header while a terminal stayed on screen: the
+/// recorded project, but only while the selection epoch is the one it was
+/// recorded under.
+pub fn header_target(target: Option<&(String, u64)>, epoch: u64) -> Option<&str> {
+    target
+        .filter(|(_, recorded)| *recorded == epoch)
+        .map(|(project, _)| project.as_str())
+}
+
 /// What the column's ordering needs to know about one card.
 pub struct Placement<'a> {
     pub project: &'a str,
@@ -306,6 +372,81 @@ fn one_line(text: &str, max: usize) -> String {
     }
 }
 
+/// How long a confirmation dialog ignores keys after it appears, so keys
+/// already in flight (the author was typing) never choose for them.
+pub const DIALOG_GRACE: Duration = Duration::from_millis(300);
+
+/// Which dialog is on screen: a kind and what it is about.
+pub type DialogId = (&'static str, u64);
+
+/// When the current confirmation dialog first appeared. A different dialog,
+/// or the same kind about something else, starts a new window.
+#[derive(Default)]
+pub struct DialogGrace {
+    seen: Option<(DialogId, Instant)>,
+}
+
+impl DialogGrace {
+    /// Records the confirmation dialog on screen now (None when there is
+    /// none), starting the window when it is not the one seen before.
+    pub fn observe(&mut self, id: Option<DialogId>, now: Instant) {
+        match (id, self.seen) {
+            (None, _) => self.seen = None,
+            (Some(id), Some((seen, _))) if id == seen => {}
+            (Some(id), _) => self.seen = Some((id, now)),
+        }
+    }
+
+    /// Whether the dialog seen last is still inside its window.
+    pub fn active(&self, now: Instant) -> bool {
+        self.seen
+            .is_some_and(|(_, at)| now.duration_since(at) < DIALOG_GRACE)
+    }
+}
+
+/// Whether nothing was typed at any of `stamps` within `quiet` of `now`.
+pub fn typing_quiet(
+    stamps: impl IntoIterator<Item = Option<Instant>>,
+    now: Instant,
+    quiet: Duration,
+) -> bool {
+    stamps
+        .into_iter()
+        .flatten()
+        .all(|at| now.duration_since(at) >= quiet)
+}
+
+/// The Command chords that choose in a confirmation dialog. A plain letter
+/// or a bare Enter never chooses a destructive or publishing action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialogChord {
+    /// Cmd+Enter: push, or close after a branch switch.
+    Primary,
+    /// Cmd+D: discard.
+    Discard,
+    /// Cmd+Delete (GPUI's `backspace`): forget, remove.
+    Delete,
+}
+
+/// The chord a keystroke is, when it is exactly Command and one of the keys.
+pub fn dialog_chord(
+    key: &str,
+    platform: bool,
+    control: bool,
+    alt: bool,
+    shift: bool,
+) -> Option<DialogChord> {
+    if !platform || control || alt || shift {
+        return None;
+    }
+    match key {
+        "enter" => Some(DialogChord::Primary),
+        "d" => Some(DialogChord::Discard),
+        "backspace" => Some(DialogChord::Delete),
+        _ => None,
+    }
+}
+
 /// What the Lead's close dialog says. Stop keeps the conversation; Forget
 /// deletes the worktree and the link to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -342,6 +483,7 @@ impl LeadClose {
                 facts.push(
                     "Its conversation is kept. Select it to resume. Workers it started stay as your tasks.",
                 );
+                facts.push("Forget deletes its worktree and Shika's chat history instead.");
                 facts
             }
             Self::Forget { working, loss } => {
@@ -1502,7 +1644,8 @@ mod lead_tests {
         assert_eq!(
             stop.facts(),
             vec![
-                "Its conversation is kept. Select it to resume. Workers it started stay as your tasks."
+                "Its conversation is kept. Select it to resume. Workers it started stay as your tasks.",
+                "Forget deletes its worktree and Shika's chat history instead.",
             ]
         );
         let busy = LeadClose::Stop {
@@ -1510,7 +1653,7 @@ mod lead_tests {
             loss: Default::default(),
         };
         assert_eq!(busy.facts()[0], "The agent is still working.");
-        assert_eq!(busy.facts().len(), 2);
+        assert_eq!(busy.facts().len(), 3);
 
         let forget = stop.forget();
         assert_eq!(
@@ -1575,10 +1718,110 @@ mod lead_tests {
     }
 
     #[test]
+    fn a_dialog_ignores_keys_for_a_moment_after_it_appears() {
+        let t0 = Instant::now();
+        let mut grace = DialogGrace::default();
+        assert!(!grace.active(t0));
+        grace.observe(Some(("close", 0)), t0);
+        assert!(grace.active(t0));
+        assert!(grace.active(t0 + DIALOG_GRACE - Duration::from_millis(1)));
+        assert!(!grace.active(t0 + DIALOG_GRACE));
+        // Seeing the same dialog again does not extend the window.
+        grace.observe(Some(("close", 0)), t0 + Duration::from_millis(250));
+        assert!(!grace.active(t0 + DIALOG_GRACE));
+    }
+
+    #[test]
+    fn another_dialog_starts_its_own_window() {
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_secs(5);
+        let mut grace = DialogGrace::default();
+        grace.observe(Some(("question", 1)), t0);
+        // The next question reuses the overlay but is a new dialog.
+        grace.observe(Some(("question", 2)), later);
+        assert!(grace.active(later));
+        // A dialog that went away and came back is new too.
+        let gone = later + Duration::from_secs(5);
+        grace.observe(None, gone);
+        assert!(!grace.active(gone));
+        let back = gone + Duration::from_secs(5);
+        grace.observe(Some(("question", 2)), back);
+        assert!(grace.active(back));
+    }
+
+    #[test]
+    fn typing_is_quiet_only_when_every_input_is() {
+        let t0 = Instant::now();
+        let quiet = Duration::from_secs(3);
+        let now = t0 + Duration::from_secs(10);
+        assert!(typing_quiet([], now, quiet));
+        assert!(typing_quiet([None, Some(t0)], now, quiet));
+        let recent = Some(now - Duration::from_secs(2));
+        assert!(!typing_quiet([Some(t0), recent], now, quiet));
+        assert!(!typing_quiet([recent, None], now, quiet));
+        assert!(typing_quiet([Some(now - quiet)], now, quiet));
+    }
+
+    #[test]
+    fn only_a_bare_command_chord_chooses_in_a_dialog() {
+        use DialogChord::*;
+        assert_eq!(
+            dialog_chord("enter", true, false, false, false),
+            Some(Primary)
+        );
+        assert_eq!(dialog_chord("d", true, false, false, false), Some(Discard));
+        assert_eq!(
+            dialog_chord("backspace", true, false, false, false),
+            Some(Delete)
+        );
+        // Plain keys and extra modifiers never choose.
+        assert_eq!(dialog_chord("enter", false, false, false, false), None);
+        assert_eq!(dialog_chord("d", false, false, false, false), None);
+        assert_eq!(dialog_chord("backspace", false, false, false, false), None);
+        assert_eq!(dialog_chord("d", true, false, false, true), None);
+        assert_eq!(dialog_chord("enter", true, true, false, false), None);
+        assert_eq!(dialog_chord("backspace", true, false, true, false), None);
+        assert_eq!(dialog_chord("p", true, false, false, false), None);
+    }
+
+    #[test]
     fn discovery_waits_for_the_first_submission() {
         let t0 = Instant::now();
         let find = Discovery::new(std::time::SystemTime::now(), t0);
         assert!(!find.due(t0 + Duration::from_secs(600), false));
         assert!(find.due(t0 + Duration::from_secs(600), true));
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_shown_card_takes_typing() {
+        assert!(Shown::Card.takes_typing());
+        for shown in [
+            Shown::Nothing,
+            Shown::Header,
+            Shown::RestingLead,
+            Shown::FailedCard,
+        ] {
+            assert!(!shown.takes_typing(), "{shown:?}");
+        }
+    }
+
+    #[test]
+    fn a_header_target_ends_on_any_selection_change() {
+        let mut selection = Tracked::new(Some(3));
+        let target = ("api".to_string(), selection.epoch());
+        assert_eq!(header_target(Some(&target), selection.epoch()), Some("api"));
+        selection.set(Some(3));
+        assert_eq!(header_target(Some(&target), selection.epoch()), Some("api"));
+        selection.set(Some(4));
+        assert_eq!(header_target(Some(&target), selection.epoch()), None);
+        selection.set(Some(3));
+        assert_eq!(header_target(Some(&target), selection.epoch()), None);
+        assert_eq!(*selection, Some(3));
+        assert_eq!(header_target(None, selection.epoch()), None);
     }
 }

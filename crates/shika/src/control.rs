@@ -39,7 +39,7 @@ const BELL_BATCH: Duration = Duration::from_millis(1500);
 
 /// The doorbell stays quiet this long after the author last typed in the
 /// Lead's terminal.
-const BELL_TYPING_QUIET: Duration = Duration::from_secs(3);
+pub(crate) const BELL_TYPING_QUIET: Duration = Duration::from_secs(3);
 
 /// A restarted Lead's terminal must have been quiet this long before the
 /// summary is typed: the CLI has drawn its prompt and can take input.
@@ -853,7 +853,14 @@ pub struct LeadDialog {
     /// The last failure the flow reported. The dialog stays open for a retry,
     /// so it is only sent if the author then gives up.
     error: Option<String>,
+    /// Set while the dialog waits for the author to stop typing: when the
+    /// request came in. Nothing is selected or opened until then.
+    deferred: Option<Instant>,
 }
+
+/// The longest a Lead's dialog waits for the author to stop typing, or for
+/// another dialog to close, before the request is refused.
+const DEFER_LIMIT: Duration = Duration::from_secs(120);
 
 /// Why a Lead's dialog cannot open right now, from the state of Shika alone.
 /// `open` names an overlay already on screen. None when it may go ahead.
@@ -1060,6 +1067,7 @@ impl Shika {
         while let Some(incoming) = self.control.as_ref().and_then(Server::next) {
             self.handle_control(incoming, window, cx);
         }
+        self.resume_deferred_close(window, cx);
         self.settle_lead_dialog(window, cx);
         let now = Instant::now();
         self.resolve_waiters(now);
@@ -1387,14 +1395,89 @@ impl Shika {
             let _ = reply.send(refused(format!("No task {task} in this project.")));
             return;
         };
+        let now = Instant::now();
+        let quiet = self.author_quiet(now, cx);
         self.lead_dialog = Some(LeadDialog {
             lead_id: lead_id.to_string(),
             task,
             reply,
             outcome: None,
             error: None,
+            // The author is typing: keystrokes meant for a prompt must not
+            // land in a Close dialog. [`Self::resume_deferred_close`] opens
+            // it once they stop.
+            deferred: (!quiet).then_some(now),
         });
-        self.selection = Some(Selection::Card(index));
+        if !quiet {
+            cx.notify();
+            return;
+        }
+        self.start_lead_close(index, window, cx);
+    }
+
+    /// Opens the Close flow a Lead asked for, once the author is not typing.
+    /// Refuses the request when the worker went away or changed, another
+    /// dialog stays open too long, or the author keeps typing.
+    fn resume_deferred_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = &self.lead_dialog else {
+            return;
+        };
+        let Some(since) = dialog.deferred else {
+            return;
+        };
+        let now = Instant::now();
+        let refusal = if now.duration_since(since) >= DEFER_LIMIT {
+            Some("The author kept typing or had another dialog open. Try again later.".to_string())
+        } else {
+            let project = self
+                .cards
+                .iter()
+                .find(|card| {
+                    card.session
+                        .as_ref()
+                        .is_some_and(|s| s.id == dialog.lead_id)
+                })
+                .map(|card| card.project.clone());
+            match project {
+                None => Some("The Lead is gone.".to_string()),
+                Some(project) => {
+                    self.worker_refusal(&dialog.lead_id, &project, &dialog.task, "close")
+                }
+            }
+        };
+        if let Some(reason) = refusal {
+            if let Some(dialog) = self.lead_dialog.take() {
+                let _ = dialog.reply.send(refused(reason));
+            }
+            cx.notify();
+            return;
+        }
+        if self.busy || self.overlay.is_some() || !self.author_quiet(now, cx) {
+            return;
+        }
+        let task = dialog.task.clone();
+        let Some(index) = self
+            .cards
+            .iter()
+            .position(|card| card.session.as_ref().is_some_and(|s| s.id == task))
+        else {
+            if let Some(dialog) = self.lead_dialog.take() {
+                let _ = dialog
+                    .reply
+                    .send(refused(format!("No task {task} in this project.")));
+            }
+            return;
+        };
+        if let Some(dialog) = &mut self.lead_dialog {
+            dialog.deferred = None;
+        }
+        self.start_lead_close(index, window, cx);
+    }
+
+    /// Selects the worker and runs the ordinary Close flow for a Lead's
+    /// `close`.
+    fn start_lead_close(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.selection.set(Some(Selection::Card(index)));
         self.close(window, cx);
         // The flow starts with `busy` set. If neither that nor a dialog
         // appeared, nothing will ever answer, so answer now.
@@ -1446,26 +1529,39 @@ impl Shika {
     }
 
     /// Records that the pending dialog for `task` succeeded.
+    /// A request still deferred has no dialog yet: a Close on `task` is the
+    /// author's own and is not recorded.
     pub(crate) fn lead_dialog_succeeded(&mut self, task: &str, outcome: String) {
-        if let Some(dialog) = self.lead_dialog.as_mut().filter(|d| d.task == task) {
+        if let Some(dialog) = self
+            .lead_dialog
+            .as_mut()
+            .filter(|d| d.task == task && d.deferred.is_none())
+        {
             dialog.outcome = Some(outcome);
         }
     }
 
     /// Records the latest failure of the pending dialog for `task`.
     pub(crate) fn lead_dialog_failed(&mut self, task: &str, error: String) {
-        if let Some(dialog) = self.lead_dialog.as_mut().filter(|d| d.task == task) {
+        if let Some(dialog) = self
+            .lead_dialog
+            .as_mut()
+            .filter(|d| d.task == task && d.deferred.is_none())
+        {
             dialog.error = Some(error);
         }
     }
 
-    /// Whether the pending Lead dialog is about the card at `index`.
+    /// Whether the pending Lead dialog is about the card at `index`. Not
+    /// while the request is deferred: nothing of the Lead's is open yet.
     pub(crate) fn lead_dialog_is_for(&self, index: usize) -> bool {
         self.lead_dialog.as_ref().is_some_and(|dialog| {
-            self.cards
-                .get(index)
-                .and_then(|card| card.session.as_ref())
-                .is_some_and(|s| s.id == dialog.task)
+            dialog.deferred.is_none()
+                && self
+                    .cards
+                    .get(index)
+                    .and_then(|card| card.session.as_ref())
+                    .is_some_and(|s| s.id == dialog.task)
         })
     }
 
@@ -1491,13 +1587,18 @@ impl Shika {
             .cards
             .iter()
             .any(|card| card.session.as_ref().is_some_and(|s| s.id == dialog.task));
-        let running = self.lead_dialog_open(&dialog.task) || (self.busy && self.overlay.is_none());
+        let running = dialog.deferred.is_some()
+            || self.lead_dialog_open(&dialog.task)
+            || (self.busy && self.overlay.is_none());
         if running && lead.is_some() && task_open {
             return;
         }
         let Some(dialog) = self.lead_dialog.take() else {
             return;
         };
+        // Never opened: the author's own Close or a removal ended it, and
+        // selection and focus were never taken from the Lead.
+        let was_deferred = dialog.deferred.is_some();
         let _ = dialog.reply.send(dialog_reply(
             dialog.outcome,
             dialog.error,
@@ -1505,9 +1606,10 @@ impl Shika {
             task_open,
         ));
         if let Some(lead) = lead
+            && !was_deferred
             && self.overlay.is_none()
         {
-            self.selection = Some(Selection::Card(lead));
+            self.selection.set(Some(Selection::Card(lead)));
             // The dialog scrolled to the worker, so bring the Lead back
             // into view even when Close kept the scroll for its replacement.
             self.last_revealed_selection = None;

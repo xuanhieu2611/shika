@@ -18,6 +18,16 @@ pub struct QuestionDialog {
     custom: Entity<NameInput>,
     error: Option<String>,
 }
+impl QuestionDialog {
+    /// Names this question among the dialogs the input grace window tells
+    /// apart: the request and which of its questions is showing.
+    pub fn identity(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (&self.session, &self.question.request_id, self.at).hash(&mut hasher);
+        hasher.finish()
+    }
+}
 impl Shika {
     pub(super) fn open_chat_question(
         &mut self,
@@ -27,12 +37,28 @@ impl Shika {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A question arriving under another author dialog waits in the chat
-        // inbox; never overwrite a dialog or automatically answer it.
-        if self.overlay.is_some() {
+        // A question arriving under another author dialog, or while the
+        // author is typing, waits in the chat inbox; never overwrite a dialog,
+        // let keystrokes land in it, or automatically answer it.
+        // Questions stay first come, first served: a new one never passes
+        // one already waiting.
+        if self.overlay.is_some()
+            || !self.chat_questions.is_empty()
+            || !self.author_quiet(std::time::Instant::now(), cx)
+        {
             self.chat_questions.push((session, project, question));
             return;
         }
+        self.show_chat_question(session, question, window, cx);
+    }
+    /// Opens the dialog for a question the queue has already cleared.
+    pub(super) fn show_chat_question(
+        &mut self,
+        session: String,
+        question: ChatQuestion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let custom = cx.new(|cx| NameInput::new(String::new(), self.chrome(window), cx));
         self.overlay_return_focus = window.focused(cx);
         self.overlay = Some(Overlay::LeadQuestion(QuestionDialog {
@@ -106,7 +132,7 @@ impl Shika {
             .iter()
             .position(|c| c.session.as_ref().is_some_and(|s| s.id == dialog.session))
         {
-            self.selection = Some(Selection::Card(index));
+            self.selection.set(Some(Selection::Card(index)));
             self.overlay_return_focus = None;
             self.focus_terminal(window, cx);
         } else {
@@ -120,6 +146,10 @@ impl Shika {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.dialog_ignores_key(&event.keystroke.key) {
+            cx.stop_propagation();
+            return;
+        }
         let Some(Overlay::LeadQuestion(dialog)) = &mut self.overlay else {
             return;
         };

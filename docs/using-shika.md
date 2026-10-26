@@ -7,8 +7,8 @@ The user guide: what Shika does on your machine, every shortcut, and the everyda
 
 ## How it works
 
-1. **Add a project.** Press `a` and pick a Git repository. A nested folder becomes the repository root.
-2. **Start an agent.** Press Cmd+N and pick a CLI. Shika creates a fresh branch and worktree under that repository's `.worktrees/`, started from the project's base branch (`b` changes it).
+1. **Add a project.** Press Cmd+O and pick a Git repository. A nested folder becomes the repository root.
+2. **Start an agent.** Press Cmd+N and pick a CLI. Shika creates a fresh branch and worktree under that repository's `.worktrees/`, started from the project's base branch (Cmd+Shift+B changes it).
 3. **Write your prompt** in the terminal. The first prompt names the task and branch.
 4. **Switch between tasks** with `j` / `k`. Enter focuses the terminal; Ctrl+Q returns to the cards. Ready means the agent finished its turn, so check the terminal for its result.
 5. **Review and ship.** Press Cmd+T for a shell in that task's worktree. Test there, then commit and push yourself, or press Cmd+Shift+P to create a PR.
@@ -22,11 +22,8 @@ On the cards (the column has focus):
 
 | Keys | Action |
 | --- | --- |
-| `a` | Add a project |
-| `b` | Change the selected project's base branch |
 | `j` / `k` or the arrows | Move between cards |
 | Enter | Focus the selected terminal, or resume a resting Lead |
-| `r` | Retry a card whose worktree setup failed |
 | Right-click a card | Rename task or Close task |
 
 From anywhere:
@@ -34,6 +31,7 @@ From anywhere:
 | Keys | Action |
 | --- | --- |
 | Ctrl+Q | Return from the terminal to the cards |
+| Cmd+O | Add a project |
 | Cmd+N | New agent in the selected project |
 | Cmd+L | New Lead for the selected project, or resume its saved Lead |
 | Cmd+] / Cmd+[ | Next / previous agent |
@@ -42,6 +40,7 @@ From anywhere:
 | Cmd+1 to Cmd+9 | Jump to a tab (Cmd+1 is the agent) |
 | Cmd+Shift+P | Create PR |
 | Cmd+Shift+A | Switch agent: start another CLI in the same worktree |
+| Cmd+Shift+B | Change the project's base branch |
 | Cmd+Shift+R | Rename the task (not its Git branch) |
 | Cmd+Shift+W | Close the task |
 | Cmd+B | Hide or show the column |
@@ -49,7 +48,7 @@ From anywhere:
 | Cmd+Shift+U | Open Settings on Usage, or close it |
 | Cmd+, | Settings |
 
-Settings > Keyboard can change the Changes panel and Usage chords, and can point Cmd+1 to Cmd+9 at agents (the Nth card in the column) instead of tabs. Typing in a terminal or text field never runs card keys. Contributor details are in [keyboard flow](keyboard-flow.md).
+Settings > Keyboard can change the Changes panel and Usage chords, and can point Cmd+1 to Cmd+9 at agents (the Nth card in the column) instead of tabs. Typing in a terminal or text field never runs card keys, and a stray click never moves focus out of the terminal. Dialog choices that throw work away or publish it are Command chords (Cmd+D, Cmd+Enter, Cmd+Delete), never a plain letter or bare Enter. Contributor details are in [keyboard flow](keyboard-flow.md).
 
 ## Supported agents
 
