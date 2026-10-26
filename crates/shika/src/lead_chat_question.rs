@@ -40,10 +40,25 @@ impl Shika {
         // A question arriving under another author dialog, or while the
         // author is typing, waits in the chat inbox; never overwrite a dialog,
         // let keystrokes land in it, or automatically answer it.
-        if self.overlay.is_some() || !self.author_quiet(std::time::Instant::now(), cx) {
+        // Questions stay first come, first served: a new one never passes
+        // one already waiting.
+        if self.overlay.is_some()
+            || !self.chat_questions.is_empty()
+            || !self.author_quiet(std::time::Instant::now(), cx)
+        {
             self.chat_questions.push((session, project, question));
             return;
         }
+        self.show_chat_question(session, question, window, cx);
+    }
+    /// Opens the dialog for a question the queue has already cleared.
+    pub(super) fn show_chat_question(
+        &mut self,
+        session: String,
+        question: ChatQuestion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let custom = cx.new(|cx| NameInput::new(String::new(), self.chrome(window), cx));
         self.overlay_return_focus = window.focused(cx);
         self.overlay = Some(Overlay::LeadQuestion(QuestionDialog {
@@ -117,7 +132,7 @@ impl Shika {
             .iter()
             .position(|c| c.session.as_ref().is_some_and(|s| s.id == dialog.session))
         {
-            self.selection = Some(Selection::Card(index));
+            self.selection.set(Some(Selection::Card(index)));
             self.overlay_return_focus = None;
             self.focus_terminal(window, cx);
         } else {

@@ -162,6 +162,8 @@ const RESERVED: &[(&str, &str)] = &[
     ("cmd-shift-up", "Select to the start of the text"),
     ("cmd-shift-down", "Select to the end of the text"),
     ("cmd-backspace", "Delete to line start"),
+    ("cmd-d", "Discard in a dialog"),
+    ("cmd-enter", "Confirm in a dialog"),
 ];
 
 /// The chord bound to `id`, as the user should read it (`⌘R`). None when
@@ -590,6 +592,21 @@ mod tests {
             Some("cmd-o".into()),
         );
         assert!(refused.is_err());
+    }
+
+    #[test]
+    fn dialog_chords_are_reserved() {
+        assert_eq!(reserved_name("cmd-d"), Some("Discard in a dialog"));
+        assert_eq!(reserved_name("cmd-enter"), Some("Confirm in a dialog"));
+        assert_eq!(reserved_name("cmd-backspace"), Some("Delete to line start"));
+        for chord in ["cmd-d", "cmd-enter"] {
+            let refused = assign(
+                &KeyOverrides::default(),
+                "toggleChanges",
+                Some(chord.into()),
+            );
+            assert!(refused.is_err(), "{chord}");
+        }
     }
 
     #[test]

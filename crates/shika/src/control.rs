@@ -1477,7 +1477,7 @@ impl Shika {
     /// Selects the worker and runs the ordinary Close flow for a Lead's
     /// `close`.
     fn start_lead_close(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.selection = Some(Selection::Card(index));
+        self.selection.set(Some(Selection::Card(index)));
         self.close(window, cx);
         // The flow starts with `busy` set. If neither that nor a dialog
         // appeared, nothing will ever answer, so answer now.
@@ -1529,26 +1529,39 @@ impl Shika {
     }
 
     /// Records that the pending dialog for `task` succeeded.
+    /// A request still deferred has no dialog yet: a Close on `task` is the
+    /// author's own and is not recorded.
     pub(crate) fn lead_dialog_succeeded(&mut self, task: &str, outcome: String) {
-        if let Some(dialog) = self.lead_dialog.as_mut().filter(|d| d.task == task) {
+        if let Some(dialog) = self
+            .lead_dialog
+            .as_mut()
+            .filter(|d| d.task == task && d.deferred.is_none())
+        {
             dialog.outcome = Some(outcome);
         }
     }
 
     /// Records the latest failure of the pending dialog for `task`.
     pub(crate) fn lead_dialog_failed(&mut self, task: &str, error: String) {
-        if let Some(dialog) = self.lead_dialog.as_mut().filter(|d| d.task == task) {
+        if let Some(dialog) = self
+            .lead_dialog
+            .as_mut()
+            .filter(|d| d.task == task && d.deferred.is_none())
+        {
             dialog.error = Some(error);
         }
     }
 
-    /// Whether the pending Lead dialog is about the card at `index`.
+    /// Whether the pending Lead dialog is about the card at `index`. Not
+    /// while the request is deferred: nothing of the Lead's is open yet.
     pub(crate) fn lead_dialog_is_for(&self, index: usize) -> bool {
         self.lead_dialog.as_ref().is_some_and(|dialog| {
-            self.cards
-                .get(index)
-                .and_then(|card| card.session.as_ref())
-                .is_some_and(|s| s.id == dialog.task)
+            dialog.deferred.is_none()
+                && self
+                    .cards
+                    .get(index)
+                    .and_then(|card| card.session.as_ref())
+                    .is_some_and(|s| s.id == dialog.task)
         })
     }
 
@@ -1583,6 +1596,9 @@ impl Shika {
         let Some(dialog) = self.lead_dialog.take() else {
             return;
         };
+        // Never opened: the author's own Close or a removal ended it, and
+        // selection and focus were never taken from the Lead.
+        let was_deferred = dialog.deferred.is_some();
         let _ = dialog.reply.send(dialog_reply(
             dialog.outcome,
             dialog.error,
@@ -1590,9 +1606,10 @@ impl Shika {
             task_open,
         ));
         if let Some(lead) = lead
+            && !was_deferred
             && self.overlay.is_none()
         {
-            self.selection = Some(Selection::Card(lead));
+            self.selection.set(Some(Selection::Card(lead)));
             // The dialog scrolled to the worker, so bring the Lead back
             // into view even when Close kept the scroll for its replacement.
             self.last_revealed_selection = None;

@@ -46,16 +46,44 @@ impl Shown {
     }
 }
 
+/// A value whose every change is counted. Reads go through `Deref`; the only
+/// way to write is [`Tracked::set`], which bumps the epoch when the value
+/// differs. A header target records the epoch, so it ends on any change, even
+/// one that later returns to the value it was recorded under.
+pub struct Tracked<T> {
+    value: T,
+    epoch: u64,
+}
+
+impl<T: PartialEq> Tracked<T> {
+    pub fn new(value: T) -> Self {
+        Tracked { value, epoch: 0 }
+    }
+    pub fn set(&mut self, value: T) {
+        if self.value != value {
+            self.value = value;
+            self.epoch += 1;
+        }
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+}
+
+impl<T> std::ops::Deref for Tracked<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
 /// The project a project-scoped command (New, Lead, Base branch) aims at when
 /// the author clicked a project header while a terminal stayed on screen: the
-/// recorded project, but only while the selection is still the one it was
+/// recorded project, but only while the selection epoch is the one it was
 /// recorded under.
-pub fn header_target<'a, S: PartialEq>(
-    target: Option<&'a (String, Option<S>)>,
-    selection: Option<&S>,
-) -> Option<&'a str> {
+pub fn header_target(target: Option<&(String, u64)>, epoch: u64) -> Option<&str> {
     target
-        .filter(|(_, recorded)| recorded.as_ref() == selection)
+        .filter(|(_, recorded)| *recorded == epoch)
         .map(|(project, _)| project.as_str())
 }
 
@@ -1783,13 +1811,17 @@ mod focus_tests {
     }
 
     #[test]
-    fn a_header_target_lasts_until_the_selection_changes() {
-        let target = ("api".to_string(), Some(3));
-        assert_eq!(header_target(Some(&target), Some(&3)), Some("api"));
-        assert_eq!(header_target(Some(&target), Some(&4)), None);
-        assert_eq!(header_target(Some(&target), None), None);
-        assert_eq!(header_target::<i32>(None, Some(&3)), None);
-        let none_selected: (String, Option<i32>) = ("api".into(), None);
-        assert_eq!(header_target(Some(&none_selected), None), Some("api"));
+    fn a_header_target_ends_on_any_selection_change() {
+        let mut selection = Tracked::new(Some(3));
+        let target = ("api".to_string(), selection.epoch());
+        assert_eq!(header_target(Some(&target), selection.epoch()), Some("api"));
+        selection.set(Some(3));
+        assert_eq!(header_target(Some(&target), selection.epoch()), Some("api"));
+        selection.set(Some(4));
+        assert_eq!(header_target(Some(&target), selection.epoch()), None);
+        selection.set(Some(3));
+        assert_eq!(header_target(Some(&target), selection.epoch()), None);
+        assert_eq!(*selection, Some(3));
+        assert_eq!(header_target(None, selection.epoch()), None);
     }
 }

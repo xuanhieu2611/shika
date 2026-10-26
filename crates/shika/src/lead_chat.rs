@@ -1554,13 +1554,13 @@ impl Shika {
     pub(crate) fn drain_lead_chats(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
         if self.overlay.is_none() && !self.chat_questions.is_empty() && self.author_quiet(now, cx) {
-            let (id, project, question) = self.chat_questions.remove(0);
+            let (id, _, question) = self.chat_questions.remove(0);
             if self
                 .cards
                 .iter()
                 .any(|c| c.session.as_ref().is_some_and(|s| s.id == id))
             {
-                self.open_chat_question(id, project, question, window, cx);
+                self.show_chat_question(id, question, window, cx);
             }
         }
         for index in 0..self.cards.len() {
@@ -1735,7 +1735,7 @@ impl Shika {
         }
     }
     pub(crate) fn selected_chat(&self) -> Option<&Entity<LeadChat>> {
-        let project = match &self.selection {
+        let project = match &*self.selection {
             Some(Selection::Card(i)) if self.cards.get(*i).is_some_and(|c| c.chat) => {
                 &self.cards[*i].project
             }
@@ -1761,7 +1761,7 @@ impl Shika {
     ) -> Option<gpui::AnyElement> {
         let chat = self.selected_chat()?.clone();
         chat.update(cx, |chat, cx| chat.set_chrome(*chrome, cx));
-        let project = self.project_id()?;
+        let project = self.shown_project()?;
         let project_name = self
             .projects
             .iter()
