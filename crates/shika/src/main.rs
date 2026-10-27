@@ -2404,35 +2404,6 @@ impl Shika {
         })
         .detach();
     }
-    /// Close cancellation uses this to land on a shell. It is not a key.
-    fn toggle(&mut self, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.selected_card() else {
-            return;
-        };
-        if self.cards[index].creating || self.busy || self.overlay.is_some() {
-            return;
-        }
-        if self.cards[index].active_tab != 0 {
-            self.cards[index].active_tab = 0;
-            self.cards[index].reveal_active_tab();
-            if focus {
-                self.focus_terminal(window, cx);
-            }
-            cx.notify();
-            return;
-        }
-        if !self.cards[index].shells.is_empty() {
-            self.cards[index].active_tab = 1;
-            self.cards[index].reveal_active_tab();
-            if focus {
-                self.focus_terminal(window, cx);
-            }
-            cx.notify();
-            return;
-        }
-        self.new_shell(focus, window, cx);
-    }
-
     fn new_shell(&mut self, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
             return;
@@ -4610,29 +4581,10 @@ impl Shika {
         self.commit_setting_edit(window, cx);
         self.key_recording = false;
         self.key_note = None;
-        let shell = match &self.overlay {
-            // A Lead that asked for the dialog gets selection and focus back.
-            Some(Overlay::Close { index, state })
-                if (state.dirty || state.unpushed) && !self.lead_dialog_is_for(*index) =>
-            {
-                Some(*index)
-            }
-            _ => None,
-        };
         self.overlay = None;
-        if let Some(i) = shell {
-            self.overlay_return_focus = None;
-            self.selection.set(Some(Selection::Card(i)));
-            if let Some(i) = self.selected_card() {
-                if self.cards[i].active_tab == 0 {
-                    self.toggle(true, window, cx);
-                } else {
-                    self.focus_terminal(window, cx);
-                }
-            }
-        } else {
-            self.restore_overlay_focus(window, cx);
-        }
+        // The shown tab stays. A Lead that asked for Close still takes
+        // selection and focus back in settle_lead_dialog.
+        self.restore_overlay_focus(window, cx);
         self.settle_lead_dialog(window, cx);
         cx.notify();
     }
