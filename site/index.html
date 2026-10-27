@@ -201,7 +201,7 @@
         <article class="cell cell-tree">
           <div class="cell-copy">
             <h3>One git worktree per agent.</h3>
-            <p>Agents never touch your main checkout or each other. Worktrees live in <code>.worktrees/</code>, kept out of git by the repo's local exclude, not your <code>.gitignore</code>.</p>
+            <p>Each task runs in its own worktree, away from your checkout and from every other task. Worktrees live in <code>.worktrees/</code>, kept out of git by the repo's local exclude, not your <code>.gitignore</code>.</p>
           </div>
           <div class="cell-visual">
 <pre class="tree" aria-label="A repository with three agent worktrees"><span class="d">~/code/</span>routekit
