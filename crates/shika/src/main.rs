@@ -804,6 +804,14 @@ enum Overlay {
     },
 }
 impl Overlay {
+    /// Appearance previews and pointer menus leave the underlying app unaltered.
+    fn dims_background(&self) -> bool {
+        !matches!(
+            self,
+            Self::Settings { .. } | Self::Adjust(_) | Self::CardMenu(_) | Self::RestingMenu { .. }
+        )
+    }
+
     /// How a refusal names this overlay to a Lead.
     fn name(&self) -> &'static str {
         match self {
@@ -8989,8 +8997,8 @@ impl Shika {
         panel
     }
 
-    /// The pointer menu, or the picker/dialogs near the top. No overlay dims
-    /// the window: Settings previews opacity and blur on it, and the rest match.
+    /// Pointer menus and appearance previews stay undimmed. Other modal
+    /// overlays reuse the dialog shadow as a full-window scrim.
     fn overlay_view(
         &self,
         overlay: &Overlay,
@@ -9708,6 +9716,7 @@ impl Shika {
             .absolute()
             .occlude()
             .inset_0()
+            .when(overlay.dims_background(), |d| d.bg(chrome.dialog_shadow))
             .flex()
             .items_start()
             .justify_center()
@@ -11044,6 +11053,44 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+
+    #[test]
+    fn modal_scrim_preserves_appearance_previews_and_pointer_menus() {
+        for section in SettingsSection::ALL {
+            assert!(
+                !Overlay::Settings {
+                    section,
+                    row: 0,
+                    edit: None,
+                    usage: None,
+                }
+                .dims_background()
+            );
+        }
+        assert!(
+            !Overlay::RestingMenu {
+                project: "demo".into(),
+                position: gpui::point(px(10.), px(10.)),
+            }
+            .dims_background()
+        );
+        assert!(
+            Overlay::Picker {
+                project: "demo".into(),
+                index: 0,
+                mode: PickerMode::Task,
+            }
+            .dims_background()
+        );
+        assert!(Overlay::CheckoutClose { index: 0 }.dims_background());
+        assert!(
+            Overlay::Quit {
+                previous: None,
+                focus: None,
+            }
+            .dims_background()
+        );
+    }
 
     #[test]
     fn exiting_row_keeps_its_gap_until_collapse_and_leaves_no_final_jump() {
