@@ -304,7 +304,7 @@ closed
 | The author cancelled | `refused: The author cancelled.` | 1 |
 | The close failed and the author cancelled, or the task vanished | `error: <text>` | 2 |
 
-Refusals (`Shika::control_close`: `dialog_gate_refusal`, then `worker_refusal`): unknown task, not started by this Lead (`... so it cannot close it.`), still being set up, being published by a `pr` (`The Lead is publishing this task. ...`), any overlay open (`Shika has <overlay> open. ...`), busy, or another Lead dialog pending. The Lead itself, the author's cards, and other projects' cards are never closable this way. Closing a worker frees one of the 4 worker slots. Selection and focus return to the Lead afterwards (a cancelled Close does not take the author to the worker's shell, as it does when they cancel it themselves), and the client has no read timeout.
+Refusals (`Shika::control_close`: `dialog_gate_refusal`, then `worker_refusal`): unknown task, not started by this Lead (`... so it cannot close it.`), still being set up, being published by a `pr` (`The Lead is publishing this task. ...`), any overlay open (`Shika has <overlay> open. ...`), busy, or another Lead dialog pending. The Lead itself, the author's cards, and other projects' cards are never closable this way. Closing a worker frees one of the 4 worker slots. Selection and focus return to the Lead afterwards. The worker's shown tab stays, and the client has no read timeout.
 
 ### `shika memory`, `shika remember <text...>`, `shika forget <n>`
 

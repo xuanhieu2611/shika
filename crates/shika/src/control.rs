@@ -1552,19 +1552,6 @@ impl Shika {
         }
     }
 
-    /// Whether the pending Lead dialog is about the card at `index`. Not
-    /// while the request is deferred: nothing of the Lead's is open yet.
-    pub(crate) fn lead_dialog_is_for(&self, index: usize) -> bool {
-        self.lead_dialog.as_ref().is_some_and(|dialog| {
-            dialog.deferred.is_none()
-                && self
-                    .cards
-                    .get(index)
-                    .and_then(|card| card.session.as_ref())
-                    .is_some_and(|s| s.id == dialog.task)
-        })
-    }
-
     /// Answers the waiting `close` once its dialog is gone and no
     /// flow is still running, then gives the selection and focus back to the
     /// Lead, since the author was talking to it. Called from every place a

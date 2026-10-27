@@ -68,7 +68,7 @@ All UI symbols below are in `crates/shika/src/main.rs` unless otherwise noted. S
 | Task UI state | `Card`, `Card::active_pane` | Own agent and shell panes; resolve the selected terminal |
 | Terminal pane | `Pane`, `Pane::new` | Own one GPUI `TerminalView`, terminal engine, and shared `HostState` per PTY |
 | Header rendering | `terminal_side`, `TAB_HEIGHT`, `TAB_FLARE`, `TAB_LEAD`, `paint_active_tab`, `tab_shape`, `tab_canvas`, `Card::reveal_active_tab`, `Card::hovered_tab`, `KeyTip`, `title_drag`; `appearance.rs`: `Chrome::term_tab`, `over_to_match` | Tab strip, shell close/add controls, metadata row, task close, and drag behavior |
-| Tab actions | `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `toggle`, `SelectTerminal` | Shell startup, selection, numbered jump, removal, focus, and the close-cancel shell route |
+| Tab actions | `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `SelectTerminal` | Shell startup, selection, numbered jump, removal, and focus |
 | Native dispatch | `gpui::actions!`, `Shika::render`, `main` | Root action handlers, Shika key context, key bindings, and Agent menu |
 | Focus and scroll | `focus_terminal`, `Card::tab_scroll`, `move_agent` | Focus the selected view and reveal tabs without resetting manual scrolling on every render |
 | Selection arithmetic | `crates/shika/src/model.rs`: `adjacent_tab`, `tab_after_close` | GPUI-independent wrap and removal rules |
@@ -134,7 +134,7 @@ PTY teardown runs on the background executor, not the UI thread. `Core::close_sh
 
 Normal task-close checks and discard/push choices retain branch identity protection. The separate [branch-switch close recovery](branch-switch-close.md) checks both branches and offers explicit confirmation when safe; it preserves both branches and removes only the worktree/card. `hang_up` closes the agent and **all** PTYs recorded in that session's `shell_ptys` on either close path.
 
-Canceling Close for dirty or unpushed work preserves an already-selected shell. From the agent it selects the first remaining shell, or creates one if none exists, so the user can inspect/commit work. This is deliberate workflow routing, not generic overlay focus restoration.
+Canceling Close leaves the shown tab alone and restores the focus from before the dialog. It does not select or create a shell, including when the tree is dirty or commits are unpushed.
 
 Quit does not delete worktrees, and terminal tabs are not persisted. Project removal and task cleanup continue through core's existing lifecycle paths. Closing a shell alone never runs git or changes the journal.
 
@@ -150,6 +150,7 @@ Quit does not delete worktrees, and terminal tabs are not persisted. Project rem
 | Startup completion steals focus | Successful completion must bind only; failure must test whether its view is still focused |
 | Switching tasks lands on the agent instead of a shell | `Card::active_tab`, `Card::active_pane`, `move_agent`, and `focus_terminal` |
 | Closing a tab selects the wrong pane | One-based tab position versus zero-based `shells` index; `tab_after_close`; do not use label number as an index |
+| Close cancellation opens or selects a shell | `cancel_overlay` restores opening focus; it must not change `active_tab` or call `new_shell` |
 | A closed shell survives or another process stops | Captured session/PTY IDs, `forget_shell` ownership check, `close_shell`, and `PtyHub::close`; distinguish normal PTY children from deliberately detached processes |
 | Cmd+W closes a task/window, or a shortcut reaches the CLI | Root Shika action context/handlers, native bindings, conflicting terminal bindings, and `key_for` |
 | Many tabs hide the active tab or task-close control | `terminal_side` flex/overflow structure and `tab_scroll.scroll_to_item`; `+` and Close must remain outside the scrolling strip |
