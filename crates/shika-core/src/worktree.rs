@@ -47,6 +47,20 @@ pub struct JournalEntry {
     /// its session did not survive. Missing in older entries means false.
     #[serde(default, skip_serializing_if = "is_false")]
     pub started_by_lead: bool,
+    /// Small recovery hint, never terminal output or conversation contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoveryMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryMetadata {
+    pub cli: String,
+    pub started_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -102,6 +116,31 @@ impl Journal {
             }
         }
         if changed {
+            save(&self.path, &entries)?;
+        }
+        Ok(())
+    }
+
+    pub fn replace(&self, entry: &JournalEntry) -> Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut entries = load(&self.path)?;
+        let target = entries
+            .iter_mut()
+            .find(|e| e.path == entry.path)
+            .ok_or(Error::UnknownLeftover)?;
+        *target = entry.clone();
+        save(&self.path, &entries)
+    }
+
+    pub fn set_recovery(&self, path: &Path, recovery: RecoveryMetadata) -> Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut entries = load(&self.path)?;
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry.path == path)
+            .ok_or(Error::UnknownLeftover)?;
+        if entry.recovery.as_ref() != Some(&recovery) {
+            entry.recovery = Some(recovery);
             save(&self.path, &entries)?;
         }
         Ok(())
@@ -2353,6 +2392,7 @@ mod tests {
             path: "/tmp/demo/.worktrees/shika-draft-one".into(),
             base_ref: Some("refs/remotes/origin/dev".into()),
             started_by_lead: false,
+            recovery: None,
         };
         journal.add(&entry).unwrap();
         let again = Journal::open(scratch.path.join("worktrees.json"));
@@ -2363,6 +2403,7 @@ mod tests {
                 path: "/tmp/demo/.worktrees/shika-draft-two".into(),
                 base_ref: None,
                 started_by_lead: true,
+                recovery: None,
             })
             .unwrap();
         again.remove_path(&entry.path).unwrap();

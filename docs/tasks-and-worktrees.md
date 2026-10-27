@@ -8,11 +8,11 @@ Related guides: [branch-naming.md](branch-naming.md) for how the draft branch ge
 
 - A project is a local git repository. A nested folder becomes the repository root (`git rev-parse --show-toplevel`), and Shika says so.
 - Projects persist in `projects.json` as `{ id, name, path, baseBranch?, approvedPreparation?, worktreeSetupReviewed? }`. The last two fields separate local setup consent from the onboarding preference; see [preparation state](worktree-preparation.md#configuration-consent-and-onboarding-state). The name is the folder name.
-- Live sessions do not persist. Relaunch shows the projects and an empty terminal. Session ids, titles, status, and PTY ids are memory only.
+- Live sessions do not persist or auto-launch. Relaunch shows projects and offers leftover worktrees. A small journal hint allows explicit recovery below; terminal buffers, status, tabs, and PTY ids remain memory only.
 
 ## A new task
 
-Cmd+N always creates one fresh worktree per task. The one exception is an explicitly started [checkout session](#checkout), one per project, which owns no git state. Shika never reuses an old worktree, because reuse is how stale files leak into the next task. Tasks in one repository are independent; Shika does not resolve conflicts between agents.
+Cmd+N always creates one fresh worktree per task. The one exception is an explicitly started [checkout session](#checkout), one per project, which owns no git state. New never reuses an old worktree, because reuse is how stale files leak into the next task. Explicit Reopen continues an existing task instead of creating a new one. Tasks in one repository are independent; Shika does not resolve conflicts between agents.
 
 Before allocation, author New may offer [first-use setup review](worktree-preparation.md#first-new) or approval of an existing config. Cancelling allocates nothing. This does not change the fresh-worktree lifecycle below.
 
@@ -110,10 +110,20 @@ Close task is available from the terminal header, the Agent menu, Cmd+Shift+W, o
 
 ## Quit, crash, and leftovers
 
-- Quit stops the PTYs and keeps every worktree. Shika never deletes work on its own.
-- `worktrees.json` journals each task as `{ projectId, branch, path, baseRef? }`. It is for cleanup, not a session history.
-- On the next launch, journaled worktrees with no live session are listed as leftovers. Each is removed only when the user asks. Removal follows a branch the user renamed since quit, and a path that no longer exists can still be forgotten.
+- Cmd+Q, Shika > Quit Shika, and the window close button ask **Quit Shika?**. Exact Cmd+Enter confirms after the 300ms key grace; plain Enter, repeated Cmd+Q, and modified confirmation chords do nothing. Escape/Cancel restores the previous dialog and its focus. Busy short operations refuse Quit until they finish. Confirmation cancels preparation with worktree preservation, checkpoints small recovery hints off-thread, then stops PTYs. A checkpoint failure keeps the app open with an error. Force quit/crash cannot be guarded. Shika never deletes work on its own.
+- `worktrees.json` journals `{ projectId, branch, path, baseRef?, startedByLead?, recovery? }`. `recovery` is only `{ cli, startedMs, conversation?, title? }`: agent id, launch epoch, exact conversation id when found, and the task name at confirmed quit. The launch hint is written before PTY spawn and replaced on Switch agent. No transcripts or terminal buffers, no new data file, process, watcher, or polling. Removal of the task/journal entry removes its hint; the CLI's own history remains under its own retention rules.
+- On the next launch, journaled worktrees with no live session are listed as leftovers. Each has **Reopen** and **Remove worktree**. `j`/`k` chooses, Enter inspects Reopen, `d` opens the existing destructive confirmation; removal still requires Cmd+Delete. A missing path can still be forgotten.
 - Worktrees still being prepared are not leftovers; see [worktree-preparation.md](worktree-preparation.md).
+
+### Reopen an unfinished task
+
+Reopen checks the original project and worktree in the background, then offers enabled/installed agents. The previous agent is selected when available. Exact Cmd+Enter starts **Resume agent** if its exact conversation is available, otherwise **Start fresh**; a separate Start fresh button is always available when resume is offered. Plain Enter does not launch. Escape/Cancel returns to the leftovers list. Selecting another agent starts a fresh conversation in the same worktree.
+
+The small hint discovers ids only at confirmed quit or explicit Reopen, from metadata tied to that worktree and launch epoch: Claude/Pi filenames, Cursor's bounded `meta.json`, and Codex's local thread index (excluding known subagents). No conversation content is read or copied. Saved ids must still belong to that cwd. Missing/changed/unreadable formats, deleted history, an unavailable original CLI, and legacy entries without hints offer fresh-agent recovery instead. A force quit may lose the latest display name, but the pre-spawn hint still enables best-effort discovery. Codex recovery needs its thread index; no full historical scan is added.
+
+Core rechecks under the operations lock before launch: journal ownership, not live or preparing, a real directory and gitfile, registration, exact Git root, matching common directory, admin backlink, and the task's branch identity. External renames are followed only with the existing reflog proof; branch switches, detached HEAD, broken/redirected `.git`, symlink paths, and detached Lead leftovers are refused without modification. Re-add a removed project first. Existing files, staged changes, commits, branch and base stay. No fetch, setup, checkout, reset, cleanup, or automatic renaming. The recovered card is author-owned, with one agent terminal and no old Lead-control environment. A failed spawn leaves the hint available for retry. If the CLI itself refuses resume after starting, its exited card and worktree stay; **Start fresh…** opens Switch agent with an empty prompt, rather than silently discarding context or looping.
+
+Recovery is explicit, not automatic session restoration. Lead recovery and checkout sessions retain their own lifecycles. New still creates a fresh task.
 
 ## Code map
 
@@ -121,6 +131,7 @@ Close task is available from the terminal header, the Agent menu, Cmd+Shift+W, o
 | --- | --- |
 | `shika-core/src/worktree.rs` | `create_draft`, `resolve_base`, `configured_ref`, `known_branches`, `fetch_target`, `fetch_branch`, `is_dirty`, `git_state`, `diff_stat`, `push`, `remove_worktree`, `remove_draft`, and the journal (`Journal`) |
 | `shika-core/src/lib.rs` | `Core::add_project`, `project_base`, `project_branches`, `prefetch_base`, `create_session`, `session_git_state`, `session_diff_stat`, `session_close`, `session_discard`, `session_push_and_close`, `leftovers_list`, `leftover_remove` |
+| `shika-core/src/recovery.rs`, `shika/src/recovery.rs` | `leftover_recovery`, `reopen_leftover`, `checkpoint_sessions`; Quit confirmation, recovery dialog and launch routing |
 | `shika-core/src/session.rs` | `SessionKind::{Task, Checkout, Lead}`, `Session::is_checkout`; checkout sessions own no git state |
 | `shika-core/src/lib.rs` | `create_checkout_session`, `checkout_session`, `checkout_head`, `session_stop_checkout`; checkout guards for naming, diff baselines, publishing, and worktree-only Close APIs |
 | `shika-core/src/worktree.rs`, `diff.rs` | `checkout_head`, bounded repository-root reads, and `HEAD` diff comparison |
@@ -134,6 +145,6 @@ Close task is available from the terminal header, the Agent menu, Cmd+Shift+W, o
 
 - Test only with disposable repositories, local bare remotes, and `--data-dir`. Never against personal projects or the normal app data.
 - A change to what counts as dirty, unpushed, or "nothing to lose" changes what Close may delete. Add a regression test for each case it touches, including a branch with no upstream.
-- Do not add automatic cleanup, worktree reuse, or a fallback to a different base branch.
+- Do not add automatic cleanup, implicit worktree reuse for New, or a fallback to a different base branch. Reopen must prove journal and Git identity, retain the recorded base, and never rerun setup.
 - Checkout regression tests must prove no git writes on dirty Close, no branch rename, one-per-project enforcement, `HEAD` diff isolation, and Lead refusal. Keep native acceptance separate in `MANUAL_CHECKS.md`.
 - Update this guide and the short [AGENTS.md](../AGENTS.md) handoff when the behavior changes.

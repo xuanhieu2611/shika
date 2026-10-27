@@ -227,6 +227,101 @@ impl CliHome {
 }
 
 impl CliHome {
+    /// Discover an exact conversation only in this worktree and launch epoch.
+    /// Reads directory metadata (and Cursor's small meta.json), not transcripts.
+    pub(crate) fn task_conversation(
+        &self,
+        cli: &str,
+        worktree: &Path,
+        since: SystemTime,
+    ) -> Option<String> {
+        if cli == "codex" {
+            let seconds = i64::try_from(since.duration_since(UNIX_EPOCH).ok()?.as_secs()).ok()?;
+            let ms = seconds.checked_mul(1000)?;
+            return self.codex_session_since(worktree, ms);
+        }
+        cwd_forms(worktree).into_iter().find_map(|cwd| {
+            let root = match cli {
+                "claude" => self.claude_project_dir(&cwd),
+                "pi" => self.pi_root().join(pi_session_folder(&cwd)),
+                "cursor" => {
+                    let hash = Md5::digest(cwd.to_string_lossy().as_bytes());
+                    let hash: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+                    self.home.join(".cursor/chats").join(hash)
+                }
+                _ => return None,
+            };
+            let mut candidates: Vec<_> = fs::read_dir(root)
+                .ok()?
+                .filter_map(|entry| entry.ok())
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if !begun_since(&path, Some(since)) {
+                        return None;
+                    }
+                    if entry.file_type().ok()?.is_symlink() {
+                        return None;
+                    }
+                    let id = if cli == "cursor" {
+                        let meta = cursor_meta(&path)?;
+                        if meta["cwd"].as_str().map(Path::new) != Some(cwd.as_path()) {
+                            return None;
+                        }
+                        entry.file_name().to_str()?.to_string()
+                    } else {
+                        if !entry.file_type().ok()?.is_file()
+                            || path.extension()?.to_str()? != "jsonl"
+                        {
+                            return None;
+                        }
+                        let stem = path.file_stem()?.to_str()?;
+                        if cli == "pi" {
+                            stem.rsplit_once('_')?.1.to_string()
+                        } else {
+                            stem.to_string()
+                        }
+                    };
+                    crate::agents::valid_conversation_id(&id)
+                        .then_some((fs::metadata(path).ok()?.modified().ok()?, id))
+                })
+                .collect();
+            candidates.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+            candidates.into_iter().next().map(|(_, id)| id)
+        })
+    }
+
+    /// Stricter than Lead existence checks: a recovered task id must belong
+    /// to this exact cwd. Missing/unreadable metadata means fresh fallback.
+    pub(crate) fn task_session_exists(&self, cli: &str, id: &str, worktree: &Path) -> bool {
+        cwd_forms(worktree).into_iter().any(|cwd| match cli {
+            "claude" => self
+                .claude_project_dir(&cwd)
+                .join(format!("{id}.jsonl"))
+                .is_file(),
+            "pi" => self.pi_has(&cwd, id),
+            "cursor" => {
+                let hash = Md5::digest(cwd.to_string_lossy().as_bytes());
+                let hash: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+                cursor_meta(&self.home.join(".cursor/chats").join(hash).join(id))
+                    .is_some_and(|meta| meta["cwd"].as_str().map(Path::new) == Some(cwd.as_path()))
+            }
+            "codex" => newest_state_db(&self.codex_root())
+                .and_then(|db| {
+                    Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
+                })
+                .and_then(|conn| {
+                    conn.query_row(
+                        "SELECT 1 FROM threads WHERE id = ?1 AND cwd = ?2 AND archived = 0",
+                        (id, cwd.to_string_lossy().as_ref()),
+                        |_| Ok(()),
+                    )
+                    .ok()
+                })
+                .is_some(),
+            _ => false,
+        })
+    }
+
     /// Whether the preset's CLI still stores conversation `id` that was started
     /// in `cwd`. None when the CLI keeps nothing Shika can read (Cursor) or the
     /// preset is unknown; callers then assume it exists. Read-only.
@@ -338,6 +433,17 @@ impl CliHome {
             }
         })
     }
+}
+
+fn cursor_meta(dir: &Path) -> Option<Value> {
+    use std::io::Read;
+    let file = fs::File::open(dir.join("meta.json")).ok()?;
+    let mut bytes = Vec::new();
+    file.take(16 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 16 * 1024 {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Whether the conversation stored at `path` began at or after `since`, by
@@ -470,6 +576,58 @@ mod tests {
         let hash = Md5::digest(cwd.as_bytes());
         let hash: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
         home.join(".cursor/chats").join(hash)
+    }
+
+    #[test]
+    fn task_recovery_ids_are_scoped_to_cwd_epoch_and_metadata_not_transcripts() {
+        let scratch = Scratch::new();
+        let home = CliHome::at(scratch.0.clone());
+        let cwd = Path::new(WORKTREE);
+        let claude = home.claude_project_dir(cwd);
+        let pi = home.pi_root().join(pi_session_folder(cwd));
+        let cursor = cursor_dir(&scratch.0, WORKTREE);
+        fs::create_dir_all(&claude).unwrap();
+        fs::create_dir_all(&pi).unwrap();
+        fs::create_dir_all(cursor.join("old-chat")).unwrap();
+        fs::write(claude.join("old-chat.jsonl"), "not read").unwrap();
+        fs::write(pi.join("timestamp_old-chat.jsonl"), "not read").unwrap();
+        fs::write(
+            cursor.join("old-chat/meta.json"),
+            format!(r#"{{"cwd":{WORKTREE:?}}}"#),
+        )
+        .unwrap();
+        let since = instant_after_this();
+        for cli in ["claude", "pi", "cursor"] {
+            assert_eq!(home.task_conversation(cli, cwd, since), None);
+        }
+        fs::write(claude.join("exact-chat.jsonl"), "not a transcript").unwrap();
+        fs::write(pi.join("timestamp_exact-chat.jsonl"), "not a transcript").unwrap();
+        fs::create_dir_all(cursor.join("exact-chat")).unwrap();
+        fs::write(
+            cursor.join("exact-chat/meta.json"),
+            format!(r#"{{"cwd":{WORKTREE:?}}}"#),
+        )
+        .unwrap();
+        for cli in ["claude", "pi", "cursor"] {
+            assert_eq!(
+                home.task_conversation(cli, cwd, since).as_deref(),
+                Some("exact-chat")
+            );
+            assert!(home.task_session_exists(cli, "exact-chat", cwd));
+            assert!(!home.task_session_exists(cli, "exact-chat", Path::new("/tmp/another-repo")));
+        }
+        fs::write(claude.join("--unsafe.jsonl"), "not read").unwrap();
+        assert_eq!(
+            home.task_conversation("claude", cwd, since).as_deref(),
+            Some("exact-chat")
+        );
+        fs::write(
+            cursor.join("exact-chat/meta.json"),
+            r#"{"cwd":"/tmp/different-checkout"}"#,
+        )
+        .unwrap();
+        assert_eq!(home.task_conversation("cursor", cwd, since), None);
+        assert!(!home.task_session_exists("cursor", "exact-chat", cwd));
     }
 
     #[test]
@@ -991,6 +1149,18 @@ mod tests {
             home.codex_session_since(cwd, 9_000).as_deref(),
             Some("newest")
         );
+        assert_eq!(
+            home.task_conversation(
+                "codex",
+                cwd,
+                UNIX_EPOCH + std::time::Duration::from_secs(10)
+            )
+            .as_deref(),
+            Some("newest")
+        );
+        assert!(home.task_session_exists("codex", "newest", cwd));
+        assert!(!home.task_session_exists("codex", "elsewhere", cwd));
+        assert!(!home.task_session_exists("codex", "archived", cwd));
         assert_eq!(home.codex_session_since(cwd, 12_001), None);
         assert_eq!(home.codex_session_since(Path::new("/nowhere"), 0), None);
     }

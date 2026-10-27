@@ -242,6 +242,7 @@ impl Core {
                 path: path.clone(),
                 base_ref: base.reference.clone(),
                 started_by_lead: false,
+                recovery: None,
             }),
             Err(err) => Err(err),
         };

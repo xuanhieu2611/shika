@@ -95,6 +95,27 @@ pub(crate) fn launch_flags(preset: &CliPreset, worktree: &Path) -> Vec<String> {
     args
 }
 
+/// Ordinary task recovery. Checked against each installed CLI's --help.
+/// Never use a latest-session picker: recovery names one exact conversation.
+pub(crate) fn task_resume_flags(preset: &CliPreset, worktree: &Path, id: &str) -> Vec<String> {
+    let mut args = launch_flags(preset, worktree);
+    match preset.id.as_str() {
+        "codex" => {
+            args.insert(0, "resume".into());
+            args.push(id.into());
+        }
+        "pi" => {
+            args.push("--session".into());
+            args.push(id.into());
+        }
+        _ => {
+            args.push("--resume".into());
+            args.push(id.into());
+        }
+    }
+    args
+}
+
 /// How one Lead start addresses its conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Conversation {
@@ -315,6 +336,30 @@ mod tests {
         for id in ["claude", "cursor", "pi"] {
             let preset = preset(id);
             assert_eq!(launch_flags(&preset, path), preset.args, "{id}");
+        }
+    }
+
+    #[test]
+    fn recovered_tasks_use_exact_resume_ids_without_lead_instructions() {
+        let cwd = Path::new("/tmp/disposable/.worktrees/task");
+        for cli in ["claude", "codex", "cursor", "pi"] {
+            let preset = preset(cli);
+            let args = task_resume_flags(&preset, cwd, "exact-id");
+            let mut expected = launch_flags(&preset, cwd);
+            match cli {
+                "codex" => {
+                    expected.insert(0, "resume".into());
+                    expected.push("exact-id".into());
+                }
+                "pi" => expected.extend(["--session".into(), "exact-id".into()]),
+                _ => expected.extend(["--resume".into(), "exact-id".into()]),
+            }
+            assert_eq!(args, expected, "{cli}");
+            assert!(
+                !args
+                    .iter()
+                    .any(|s| s.contains("system-prompt") || s.contains("developer_instructions"))
+            );
         }
     }
 

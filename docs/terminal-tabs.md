@@ -37,7 +37,7 @@ With tools:     Pi   │ Shell × │ Shell 2   +                [Close task c]
 - A shell's `×` closes only that shell. There is no confirmation dialog; the tooltip warns that closing stops its processes. Save work in terminal tools before closing their tabs.
 - The agent has no individual close control, including after its process exits. Close task remains the separate task/worktree lifecycle action.
 - An exited shell tab remains available for reading its output until explicitly closed. There is no automatic shell restart.
-- Live tabs are memory only. Relaunch restores projects, not sessions or terminal tabs. Quit retains worktrees for the existing leftovers flow.
+- Live tabs are memory only. Relaunch restores projects, not live sessions or terminal tabs. Quit asks before stopping terminals and retains worktrees. Explicit [Reopen](tasks-and-worktrees.md#reopen-an-unfinished-task) starts one agent terminal in the existing worktree, with conversation recovery when available, never old shell tabs.
 
 ### Controls and focus
 
