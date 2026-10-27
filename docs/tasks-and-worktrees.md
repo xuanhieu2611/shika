@@ -12,6 +12,8 @@ Related guides: [branch-naming.md](branch-naming.md) for how the draft branch ge
 
 ## A new task
 
+New also offers [Terminal](terminal-tasks.md): the same fresh worktree and approved preparation, then a pinned login shell instead of an agent. Generated names stay until explicit naming or an agent is started; shell commands never name branches. Reopen can start a fresh Terminal in an existing verified worktree without an installed agent.
+
 Cmd+N always creates one fresh worktree per task. The one exception is an explicitly started [checkout session](#checkout), one per project, which owns no git state. New never reuses an old worktree, because reuse is how stale files leak into the next task. Explicit Reopen continues an existing task instead of creating a new one. Tasks in one repository are independent; Shika does not resolve conflicts between agents.
 
 Before allocation, author New may offer [first-use setup review](worktree-preparation.md#first-new) or approval of an existing config. Cancelling allocates nothing. This does not change the fresh-worktree lifecycle below.

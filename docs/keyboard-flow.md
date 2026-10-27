@@ -56,7 +56,7 @@ The author types prompts into agent terminals all day. Typing that was not meant
 
 Settings (`Cmd-,`) is Appearance, Keyboard, Agents, and Projects. `j`/`k` move within the section. `[` and `]` change section. Appearance keeps its row keys. On Keyboard, Enter or a click on the chord records the next Command shortcut, Delete clears that row, and Escape cancels the recording. A chord already used by another Keyboard row moves to the new row. A chord used by a fixed shortcut, such as New agent, or by text editing, such as Cmd+Left or Cmd+Delete, is refused: a binding is matched before a focused text field sees the key. A saved override with such a chord no longer binds. On Agents, `h` turns the selected CLI off and `l` turns it on. Projects lists repositories by name/path; Enter or a click opens that project's Worktree setup. Escape closes Settings, except inside setup where it returns to Projects.
 
-New lists only CLIs that are on the login-shell PATH and turned on. Number keys match that list. When none are available, Enter opens Settings on Agents and keeps the focus return New captured, so Done still restores it.
+New lists CLIs that are on the login-shell PATH and turned on, followed by Terminal in ordinary task mode. Number keys match that list. Terminal works without an installed agent and uses the same focus restoration and setup flow. Lead and checkout pickers remain agent-only; when those lists are empty, Enter opens Settings on Agents and keeps New's focus return. See [Terminal tasks](terminal-tasks.md).
 
 Other improvements:
 

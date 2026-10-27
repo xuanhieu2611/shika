@@ -707,3 +707,18 @@ Native acceptance, not established by in-process GPUI injection:
 
 Additional native polish checks remain open:
 - [ ] Confirm native picker cancellation restores the opening focus, initial Rename selection, the checkout tooltip, Asking Close, and long-branch/narrow-window/glass layouts.
+
+## Terminal tasks
+
+Implemented ordinary New > Terminal with generated names, normal approved preparation, a pinned interactive login shell, no agent capture/activity, and ordinary Changes/Create PR/safe Close. Switch agent keeps the original shell as an additional tab; Reopen can start a fresh Terminal with no installed agents. See [the contract](docs/terminal-tasks.md).
+
+Automated validation: 763 workspace tests passed with the existing environment-sensitive `path_env::tests::finder_launch_path_resolves_installed_clis` explicitly skipped (plus one existing ignored test). The unfiltered run reproduced the already-recorded `/opt/homebrew/bin/claude` versus `.local/bin/claude` assertion above. Formatting, strict workspace/all-targets Clippy, debug bundling and strict signature verification passed. New tests cover picker scope/order and agent-free choice, shell-input capture isolation, generated-branch display, no-agent creation, naming/rename/diff/dirty Close, shell recovery without setup, shell preservation and failed switching, and preparation consent/order/failure preservation. Tests do not establish native acceptance.
+
+Native checks still pending, using disposable repositories and isolated `--data-dir` only:
+
+- [ ] New picker numbers, mouse and keyboard launch, no-installed/all-disabled agents, Escape/focus, project Tab, and setup onboarding cancel/skip/save/approval/retry for Terminal.
+- [ ] Generated card name/branch, pinned Terminal tab, extra shell numbering/close, startup typeahead, hidden output draining, and no status/timer/notification after commands, manual CLI launch or shell exit.
+- [ ] Rename, Changes refresh, Create PR, dirty/unpushed/branch-switch Close and cancellation, with no loss of running terminal programs on cancel.
+- [ ] Switch agent with empty/nonempty prompt preserves the original terminal, programs, output and draft plus other shells; failed start leaves all unchanged. Draft naming begins only after explicit agent launch.
+- [ ] Quit/relaunch/Reopen Terminal with no agent installed retains files/name/base, runs no setup, restores no old programs, and confirms only with exact Cmd+Enter after the grace.
+- [ ] Light, dark and a derived theme; opaque/glass, narrow windows and hidden column. No native GUI checks claimed for this change.

@@ -8,6 +8,8 @@ For manual **Rename task**, see [task-names.md](task-names.md): it changes the c
 
 ## What the user sees
 
+Exception: [Terminal tasks](terminal-tasks.md) keep their generated branch and display name; shell commands and manually launched CLIs never trigger naming. Starting an agent explicitly through Switch agent enables ordinary draft naming if the branch has not already been named. Rename task remains display-only.
+
 1. **New** creates `<repo>/.worktrees/shika-draft-<id>` on branch `shika-draft-<id>` and starts the CLI there.
 2. **First Enter.** The first line typed in the agent terminal names the card and renames the branch to a slug of that line, for example `okay-we-need-a-way-to-blur`.
 3. **About a second later.** The CLI's own session title replaces both, once: the card shows "Shika background opacity and blur" and the branch becomes `background-opacity-and-blur`.

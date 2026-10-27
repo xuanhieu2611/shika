@@ -1208,9 +1208,11 @@ pub fn diff_stat_parts(
     )
 }
 /// The branch a card shows on line two: none while the task is still on its
-/// `shika-draft-<id>` branch, which nobody has named yet.
+/// `shika-draft-<id>` branch, except for Terminal tasks whose generated
+/// branch is their stable name until an agent is explicitly started.
 pub fn card_branch(session: &shika_core::Session) -> Option<&str> {
-    (!session.on_draft_branch() && !session.branch.is_empty()).then_some(session.branch.as_str())
+    ((!session.on_draft_branch() || session.is_terminal()) && !session.branch.is_empty())
+        .then_some(session.branch.as_str())
 }
 /// A path with the home directory written as `~`.
 pub fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
@@ -1310,6 +1312,9 @@ mod tests {
     #[test]
     fn a_draft_card_shows_no_branch_until_it_is_named() {
         assert_eq!(card_branch(&session_on("shika-draft-18db")), None);
+        let mut terminal = session_on("shika-draft-18db");
+        terminal.preset_id = "terminal".into();
+        assert_eq!(card_branch(&terminal), Some("shika-draft-18db"));
         let mut checkout = session_on("");
         checkout.kind = shika_core::SessionKind::Checkout;
         assert_eq!(card_branch(&checkout), None);

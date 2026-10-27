@@ -119,14 +119,20 @@ impl Core {
             None
         };
         let env = self.path_env();
-        let preset = agents::presets_from(env)
-            .into_iter()
-            .find(|p| p.id == preset_id)
-            .ok_or(Error::UnknownCli)?;
-        let program = preset
-            .path
-            .clone()
-            .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+        let terminal = preset_id == "terminal";
+        let (preset, program) = if terminal {
+            (agents::terminal_choice(), crate::path_env::user_shell())
+        } else {
+            let preset = agents::presets_from(env)
+                .into_iter()
+                .find(|p| p.id == preset_id)
+                .ok_or(Error::UnknownCli)?;
+            let program = preset
+                .path
+                .clone()
+                .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+            (preset, program)
+        };
         let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
         let (entry, project) = self.recovery_entry(path)?;
         if entry != preview {
@@ -158,7 +164,16 @@ impl Core {
             Some(id) => agents::task_resume_flags(&preset, path, id),
             None => agents::launch_flags(&preset, path),
         };
-        let opened = self.open_agent(&preset, program, path, size, None, true, args, None, sink);
+        let opened = if terminal {
+            self.ptys
+                .open(
+                    session::shell_request(&program, path, env.path(), size),
+                    sink,
+                )
+                .map(|pty| (pty, None))
+        } else {
+            self.open_agent(&preset, program, path, size, None, true, args, None, sink)
+        };
         let (pty, activity) = match opened {
             Ok(opened) => opened,
             Err(err) => {

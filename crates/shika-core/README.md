@@ -91,6 +91,8 @@ Live sessions, status, tabs, and PTY ids are memory only. The journal's optional
 
 ### Draft worktrees and the base
 
+`create_terminal_with_preparation` shares the ordinary `create_task` lifecycle below, but directly opens `session::shell_request` instead of a provider. It needs no installed CLI or agent flags/integrations. The reserved `terminal` launch metadata is not in the CLI catalog; `Session::is_terminal()` distinguishes its pinned shell. Switching to an agent transfers that primary PTY into authoritative `shell_ptys` without stopping it. Recovery can open a fresh shell with no setup. See [Terminal tasks](../../docs/terminal-tasks.md).
+
 `create_session` (and `create_session_with_preparation`) does, in order:
 
 1. Validate the prompt, if any (see [Launch options](#launch-options-and-the-positional-prompt)).

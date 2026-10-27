@@ -74,6 +74,18 @@ impl CliCatalog {
     }
 }
 
+/// Launch metadata for the shell-only choice. Never part of the agent catalog,
+/// discovery, Settings, Lead selection, or agent switching.
+pub fn terminal_choice() -> CliPreset {
+    CliPreset {
+        id: "terminal".into(),
+        name: "Terminal".into(),
+        binary: String::new(),
+        args: Vec::new(),
+        path: None,
+    }
+}
+
 /// Binary names the login-shell PATH must resolve at startup.
 pub fn binaries() -> Vec<&'static str> {
     PRESETS.iter().map(|preset| preset.binary).collect()

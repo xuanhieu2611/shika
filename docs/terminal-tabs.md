@@ -1,6 +1,6 @@
 # Task-scoped terminal tabs
 
-Shika starts each task with one pinned agent terminal. Developers can add independent shell terminals in the same worktree when they need to review code, edit files, or run tools. Tabs belong to a task, not to a global terminal workspace. Only one terminal is visible at a time.
+Shika starts each task with one pinned agent terminal, or a pinned login shell when New > Terminal is chosen (see [Terminal tasks](terminal-tasks.md)). Developers can add independent shell terminals in the same worktree when they need to review code, edit files, or run tools. Tabs belong to a task, not to a global terminal workspace. Only one terminal is visible at a time.
 
 Start here before changing terminal-tab behavior. This document records the product decision, which replaced the original fixed Agent/Shell toggle. [design/DESIGN.md](../design/DESIGN.md) governs appearance. [keyboard-flow.md](keyboard-flow.md) explains app-wide focus and keyboard routing. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#task-scoped-terminal-tabs) separates validation evidence from intended behavior.
 
@@ -29,7 +29,7 @@ With tools:     Pi   │ Shell × │ Shell 2   +                [Close task c]
                project  branch              [Create PR ⌘⇧P]     focus hint
 ```
 
-- New creates only the pinned CLI tab, labeled with the agent preset name.
+- New creates only the pinned CLI tab, labeled with the agent preset name. Terminal tasks instead start with a pinned Terminal tab, also without an individual close control. Starting an agent later keeps that original shell as an additional numbered tab.
 - `+` creates a new login shell with its starting cwd in this task's worktree. Users run their own tools there; Shika does not automatically launch an editor or git UI.
 - Clicking a tab selects and focuses its terminal. Switching cards preserves each card's selected tab and terminal contents.
 - Hidden views remain alive and output continues to drain. Switching tabs does not suspend or restart processes.

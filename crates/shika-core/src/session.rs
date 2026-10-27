@@ -68,6 +68,11 @@ pub struct Session {
 }
 
 impl Session {
+    /// Shell-only task. The pinned PTY is a shell, not a detected agent.
+    pub fn is_terminal(&self) -> bool {
+        self.preset_id == "terminal"
+    }
+
     pub fn is_lead(&self) -> bool {
         self.kind == SessionKind::Lead
     }
@@ -408,6 +413,10 @@ impl SessionStore {
             .find(|session| session.id == id)
             .ok_or(Error::UnknownSession)?;
         let old = session.pty.ok_or(Error::LeadUnsupported)?;
+        if session.is_terminal() {
+            // Attaching an agent keeps the original shell and its programs alive.
+            session.shell_ptys.push(old);
+        }
         // A task nobody has named yet still reads "New <CLI>": follow the CLI.
         if !session.manual_title && session.title == format!("New {}", session.preset_name) {
             session.title = format!("New {preset_name}");

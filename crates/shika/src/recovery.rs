@@ -109,7 +109,7 @@ impl Shika {
                 match result {
                     Ok(entry) if matches!(this.overlay, Some(Overlay::Leftovers)) => {
                         let index = this
-                            .offered_presets()
+                            .recovery_choices()
                             .iter()
                             .position(|p| entry.recovery.as_ref().is_some_and(|r| r.cli == p.id))
                             .unwrap_or(0);
@@ -136,7 +136,7 @@ impl Shika {
         let Some(Overlay::Recover { entry, index }) = &self.overlay else {
             return;
         };
-        let Some(preset) = self.offered_presets().get(*index).cloned() else {
+        let Some(preset) = self.recovery_choices().get(*index).cloned() else {
             return;
         };
         let project = self
@@ -168,7 +168,8 @@ impl Shika {
         let Some(Overlay::Recover { entry, index }) = &self.overlay else {
             unreachable!()
         };
-        let presets = self.offered_presets();
+        let presets = self.recovery_choices();
+        let terminal = presets.get(*index).is_some_and(|p| p.id == "terminal");
         let can_resume = presets.get(*index).is_some_and(|p| {
             entry
                 .recovery
@@ -179,7 +180,9 @@ impl Shika {
             .child(dialog_title(div()).child("Reopen worktree?"))
             .child(dialog_text(chrome).font_family(MONO).child(entry.branch.clone()))
             .child(dialog_text(chrome).child("Keeps its branch, commits, and uncommitted files. Setup is not run again."))
-            .child(dialog_text(chrome).child(if can_resume {
+            .child(dialog_text(chrome).child(if terminal {
+                "Open a new login shell in this worktree. Previous shell programs are not restored."
+            } else if can_resume {
                 "Resume the saved agent conversation, or start a fresh agent in this worktree."
             } else {
                 "No saved conversation is available for this agent. Start fresh in the same worktree."
@@ -220,7 +223,9 @@ impl Shika {
             buttons = buttons.child(
                 primary_button(
                     "start-recovery",
-                    if can_resume {
+                    if terminal {
+                        "Open terminal"
+                    } else if can_resume {
                         "Resume agent"
                     } else {
                         "Start fresh"
