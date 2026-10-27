@@ -1,6 +1,6 @@
 # Tasks and worktrees
 
-The core lifecycle every other feature builds on: a project, a fresh worktree per task, the git checks Close relies on, and leftovers after quit. Read this before changing worktree creation, the base branch, the dirty or unpushed checks, Close, or leftovers.
+The core lifecycle every other feature builds on: a project, a fresh worktree per task, the git checks Close relies on, and leftovers after quit. Read this before changing worktree creation, checkout sessions, the base branch, the dirty or unpushed checks, Close, or leftovers.
 
 Related guides: [branch-naming.md](branch-naming.md) for how the draft branch gets its name, [branch-switch-close.md](branch-switch-close.md) for Close after the user switched branches, [worktree-preparation.md](worktree-preparation.md) for optional setup before the CLI starts, [publishing.md](publishing.md) for Create PR, and [terminal-tabs.md](terminal-tabs.md) for PTY ownership. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md) records acceptance evidence.
 
@@ -12,7 +12,7 @@ Related guides: [branch-naming.md](branch-naming.md) for how the draft branch ge
 
 ## A new task
 
-One agent, one fresh worktree. Shika never reuses an old worktree, because reuse is how stale files leak into the next task. Tasks in one repository are independent; Shika does not resolve conflicts between agents.
+Cmd+N always creates one fresh worktree per task. The one exception is an explicitly started [checkout session](#checkout), one per project, which owns no git state. Shika never reuses an old worktree, because reuse is how stale files leak into the next task. Tasks in one repository are independent; Shika does not resolve conflicts between agents.
 
 Before allocation, author New may offer [first-use setup review](worktree-preparation.md#first-new) or approval of an existing config. Cancelling allocates nothing. This does not change the fresh-worktree lifecycle below.
 
@@ -40,9 +40,31 @@ A fresh worktree is a folder the CLI has never seen, so some CLIs stop on a trus
 | Pi | 1.1.0 | none (a fresh repository has no project resources to approve) | `--approve` is already passed |
 | Claude Code | 2.1.296 | "Is this a project you created or one you trust?" | none. `--help` documents no interactive trust flag; only `-p` skips it. Shika passes nothing, and the dialog stays. |
 
-Codex notes. The override is a per-process config layer, so `~/.codex/config.toml` is never written (checked before and after every run). The dotted form `-c 'projects."<path>".trust_level="trusted"'` is silently ignored by 0.161.0; the inline table is required. Trusting the worktree path alone is enough, so the repository root is not trusted. The path is resolved with `canonicalize` first because Codex compares it with its working directory, and it is escaped as a TOML basic string. The arguments are built by `agents::launch_flags` for every Codex launch: author tasks, Lead workers, and the Lead. The prompt stays the last argument. Recheck the dialog and `--help` before changing this, because the `-c` key shape is not a documented contract.
+Codex notes. The override is a per-process config layer, so `~/.codex/config.toml` is never written (checked before and after every run). The dotted form `-c 'projects."<path>".trust_level="trusted"'` is silently ignored by 0.161.0; the inline table is required. Trusting the worktree path alone is enough, so the repository root is not trusted. The path is resolved with `canonicalize` first because Codex compares it with its working directory, and it is escaped as a TOML basic string. The arguments are built by `agents::launch_flags` for every Codex launch: author tasks, checkout sessions, Lead workers, and the Lead. For a checkout session the override names the repository root instead of a worktree. The prompt stays the last argument. Recheck the dialog and `--help` before changing this, because the `-c` key shape is not a documented contract.
 
 The folder keeps its `shika-draft-<id>` name for the life of the task, because the agent is already running inside it. Only the branch is renamed.
+
+## Checkout
+
+Decided 2026-10-26: Shika stays worktree-first. A checkout session is a quiet utility for questions about the repository folder the author added, on whatever branch it currently has checked out. It is documented, not advertised as a feature on the landing page or in README bullets. Call it "checkout", not "main" or "primary"; the author's branch may be `dev`.
+
+### Start and display
+
+- **Cmd+Shift+N** or **Agent > New Agent in Checkout** opens the ordinary CLI picker titled **In checkout**. Settings > Keyboard can rebind the chord. Entry is inert while busy or under an overlay; there is no column or project-header `+` variant.
+- Targeting follows Cmd+N: clicked project header, else selected card's project, else first project; with no projects, Add project opens. Tab changes projects in the picker. Its footer shows the project and current branch. Escape restores the opening focus.
+- **One per project**, enforced in core. If one already exists, the action selects it and focuses its shown terminal, including when Tab moved the picker to that project before confirmation.
+- The CLI starts with no prompt in the repository root, Waiting until the author types. It gets the usual launch flags and environment: login-shell `PATH`, `PWD` set to the root, and the same `GIT_*` removals as worktree tasks. Codex's per-process trust override names that root and writes no global config.
+- No base fetch, worktree allocation, preparation, setup onboarding, or journal entry. Shika creates or renames no branch. First-prompt and CLI-title discovery still name the card, and manual rename still works.
+- The card stays first in its project group. Line two shows the CLI mark, a checkout icon with tooltip "Runs in your checkout, no worktree", and the checked-out branch (short commit when detached). The terminal header shows the repository path and branch, read-only. Branch reads run off-thread on selection and Ready, not on a poll or every redraw.
+- Status, notifications, elapsed timer, shell tabs, Switch agent, rename, diff stat, and Changes work as on ordinary cards. Shells and a switched CLI stay in the checkout. Create PR is unavailable: no button, and the shortcut/menu cannot publish it. The author's own git workflow applies.
+
+### Diff and Close
+
+Diff stat and Changes compare against **`HEAD`**, including non-ignored untracked files: uncommitted work only, including edits already present before launch. Committing clears those changes from the diff. Upstream comparison would include old unpushed commits; a start snapshot would add state for little benefit. This is a warning light for working-tree changes, not attribution to the agent. Reads are bounded to the repository root and never fall through to a surrounding repository on a missing or broken `.git`.
+
+Close stops every session PTY and removes the card, with no git read or write: no dirty/unpushed gate, discard, push, worktree removal, or branch deletion. Idle Close is immediate even with dirty files or unpublished commits. Working or Asking opens **Stop the agent?**, confirmed only with exact **Cmd+Enter**, with the 300ms key guard; Escape cancels and restores focus. **Never offer Discard**: this is the author's own working copy, not a disposable worktree. Core refuses worktree-only discard, push, and branch-switch recovery APIs for this session.
+
+Quit stops the session; it is not restored and never becomes a leftover. A Lead cannot start, list, read, send to, or close it; workers always use fresh worktrees and the doorbell ignores checkout sessions. Worktree tasks continue to use their own working trees, not checkout edits. Git's normal branch-occupancy checks keep a branch held by a worktree from being checked out here too.
 
 ## The base branch
 
@@ -59,6 +81,8 @@ A running task keeps the full ref it started from, in memory and as `baseRef` in
 
 ## What a task compares against
 
+The following rules apply to worktree tasks; [checkout sessions](#diff-and-close) use `HEAD` and never gate Close on git state.
+
 The diff stat, Close's checks, and Create PR's default target use the task's `baseRef`. If it no longer resolves, or there is none (the HEAD fallback), they use the default branch: `origin/HEAD`, `main`, `master`, then the main checkout's HEAD, refusing when that checkout is on the task branch.
 
 - **Dirty** means `git status --porcelain` is not empty.
@@ -67,6 +91,8 @@ The diff stat, Close's checks, and Create PR's default target use the task's `ba
 Git reads for the diff stat use `GIT_OPTIONAL_LOCKS=0` and take no core lock.
 
 ## Push and Close
+
+The discard/push rules below apply only to worktree tasks. Checkout sessions use [Stop only](#diff-and-close), never Discard.
 
 Close task is available from the terminal header, the Agent menu, Cmd+Shift+W, or a card's right-click / Control-click menu. Every entry uses the same safe-close flow. The context menu targets the clicked card, not the current selection, and adds no always-visible card control. See [keyboard-flow.md](keyboard-flow.md#card-context-menu) for focus and dismissal.
 
@@ -95,6 +121,12 @@ Close task is available from the terminal header, the Agent menu, Cmd+Shift+W, o
 | --- | --- |
 | `shika-core/src/worktree.rs` | `create_draft`, `resolve_base`, `configured_ref`, `known_branches`, `fetch_target`, `fetch_branch`, `is_dirty`, `git_state`, `diff_stat`, `push`, `remove_worktree`, `remove_draft`, and the journal (`Journal`) |
 | `shika-core/src/lib.rs` | `Core::add_project`, `project_base`, `project_branches`, `prefetch_base`, `create_session`, `session_git_state`, `session_diff_stat`, `session_close`, `session_discard`, `session_push_and_close`, `leftovers_list`, `leftover_remove` |
+| `shika-core/src/session.rs` | `SessionKind::{Task, Checkout, Lead}`, `Session::is_checkout`; checkout sessions own no git state |
+| `shika-core/src/lib.rs` | `create_checkout_session`, `checkout_session`, `checkout_head`, `session_stop_checkout`; checkout guards for naming, diff baselines, publishing, and worktree-only Close APIs |
+| `shika-core/src/worktree.rs`, `diff.rs` | `checkout_head`, bounded repository-root reads, and `HEAD` diff comparison |
+| `shika-core/src/control.rs` | Lead visibility and targeting exclude checkout sessions |
+| `shika/src/checkout.rs` | `new_in_checkout`, `start_checkout`, existing-card focus, selection/Ready branch-read coalescing |
+| `shika/src/main.rs`, `model.rs`, `shortcuts.rs` | `NewInCheckout`, `PickerMode::Checkout`, `Launch::Checkout`, `Overlay::CheckoutClose`, checkout-first ordering, and rebindable `newInCheckout` chord |
 | `shika-core/src/projects.rs` | `projects.json` |
 | `shika-core/src/pty.rs`, `path_env.rs` | Child environment and the login-shell `PATH` |
 
@@ -103,4 +135,5 @@ Close task is available from the terminal header, the Agent menu, Cmd+Shift+W, o
 - Test only with disposable repositories, local bare remotes, and `--data-dir`. Never against personal projects or the normal app data.
 - A change to what counts as dirty, unpushed, or "nothing to lose" changes what Close may delete. Add a regression test for each case it touches, including a branch with no upstream.
 - Do not add automatic cleanup, worktree reuse, or a fallback to a different base branch.
+- Checkout regression tests must prove no git writes on dirty Close, no branch rename, one-per-project enforcement, `HEAD` diff isolation, and Lead refusal. Keep native acceptance separate in `MANUAL_CHECKS.md`.
 - Update this guide and the short [AGENTS.md](../AGENTS.md) handoff when the behavior changes.

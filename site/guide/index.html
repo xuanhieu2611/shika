@@ -144,10 +144,11 @@
 
       <section class="guide-section" id="work">
         <h2>Where the work lives</h2>
-        <p>Each task is its own worktree under <code>.worktrees/</code> in the repository. Agents can edit the same repo at the same time, and the main checkout stays as you left it. Shika lists <code>.worktrees/</code> in the repository's <code>.git/info/exclude</code>, so <code>git status</code> on the main checkout skips it. Your <code>.gitignore</code> stays as it is.</p>
+        <p>Each task started with New is its own worktree under <code>.worktrees/</code> in the repository. These worktrees let agents edit the same repo at the same time without changing your checkout. Shika lists <code>.worktrees/</code> in the repository's <code>.git/info/exclude</code>, so <code>git status</code> on the main checkout skips it. Your <code>.gitignore</code> stays as it is.</p>
         <p>The folder keeps the draft name it was created with. The branch starts as that name too. The first prompt renames the branch, and the CLI's session title can rename it once more. A prefix from Settings, if you set one, is added to those generated names.</p>
         <p>New starts from the project's base branch. Shika uses <code>origin/&lt;base&gt;</code> when that ref exists, otherwise the local branch. With no base set, it uses <code>origin/HEAD</code>, then <code>main</code>, then <code>master</code>, then whatever the main checkout has checked out. Press <kbd>b</kbd>, or click the branch after the project path, to change it for the next task. A card keeps the base it started from. If that branch cannot be found, New stops and names it.</p>
         <p>A new worktree has no upstream. Nothing is on the remote until you push.</p>
+        <p>For a quick question in the repository folder you added, use <kbd>⌘⇧N</kbd> or Agent > New Agent in Checkout. The In checkout picker starts one session per project; invoking it again focuses that card. It shows the current branch and runs without a new branch or setup. It is not read-only: the agent can edit your files. Shika never renames your branch or offers Create PR here; Changes compares uncommitted work against <code>HEAD</code>. Close stops the agent and shells without discarding files, asking Stop the agent? with <kbd>⌘↵</kbd> if a turn is active or blocked. New still always creates a worktree. Settings > Keyboard can rebind the checkout shortcut.</p>
       </section>
 
       <section class="guide-section" id="working">
@@ -221,6 +222,7 @@
             <tr><th scope="row"><kbd>↵</kbd></th><td>Focus the terminal</td></tr>
             <tr><th scope="row"><kbd>⌃Q</kbd></th><td>Return to the cards</td></tr>
             <tr><th scope="row"><kbd>⌘]</kbd> <kbd>⌘[</kbd></th><td>Next or previous agent, including from the terminal</td></tr>
+            <tr><th scope="row"><kbd>⌘⇧N</kbd></th><td>New Agent in Checkout, or focus its existing card</td></tr>
             <tr><th scope="row"><kbd>⌘⇧R</kbd></th><td>Rename the task. The branch stays.</td></tr>
             <tr><th scope="row"><kbd>⌘⇧W</kbd></th><td>Close the task</td></tr>
             <tr><th scope="row"><kbd>⌘B</kbd></th><td>Hide or show the column</td></tr>

@@ -9,7 +9,7 @@ These guides explain why features exist, how they are implemented, and where to 
 | Guide | Read when working on |
 | --- | --- |
 | [Using Shika](using-shika.md) | The user guide: every shortcut, supported agents and launch arguments, the Lead, worktree preparation, renaming, Create PR, and Close |
-| [Tasks and worktrees](tasks-and-worktrees.md) | Projects, worktree creation, base branch, dirty and unpushed checks, Close, and leftovers |
+| [Tasks and worktrees](tasks-and-worktrees.md) | Projects, worktree creation, checkout sessions, base branch, dirty and unpushed checks, Close, and leftovers |
 | [Agent activity and elapsed turns](agent-activity.md) | Timer-reset root cause, hybrid state detection, lifecycle reports, notifications, safe Close, and debugging |
 | [Token usage](token-usage.md) | Local Claude Code and Codex token totals, the daily file, and Settings > Usage |
 | [Terminal tabs](terminal-tabs.md) | Task-local agent/shell tabs, PTY ownership, startup, selection, close, and hidden terminals |

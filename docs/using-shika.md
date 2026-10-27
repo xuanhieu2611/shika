@@ -33,6 +33,7 @@ From anywhere:
 | Ctrl+Q | Return from the terminal to the cards |
 | Cmd+O | Add a project |
 | Cmd+N | New agent in the selected project |
+| Cmd+Shift+N | New Agent in Checkout, or focus its existing checkout card |
 | Cmd+L | New Lead for the selected project, or resume its saved Lead |
 | Cmd+] / Cmd+[ | Next / previous agent |
 | Cmd+T / Cmd+W | Add a shell tab / close the selected shell tab |
@@ -48,7 +49,7 @@ From anywhere:
 | Cmd+Shift+U | Open Settings on Usage, or close it |
 | Cmd+, | Settings |
 
-Settings > Keyboard can change the Changes panel and Usage chords, and can point Cmd+1 to Cmd+9 at agents (the Nth card in the column) instead of tabs. Typing in a terminal or text field never runs card keys, and a stray click never moves focus out of the terminal. Dialog choices that throw work away or publish it are Command chords (Cmd+D, Cmd+Enter, Cmd+Delete), never a plain letter or bare Enter. Contributor details are in [keyboard flow](keyboard-flow.md).
+Settings > Keyboard can change the New Agent in Checkout, Changes panel, and Usage chords, and can point Cmd+1 to Cmd+9 at agents (the Nth card in the column) instead of tabs. Typing in a terminal or text field never runs card keys, and a stray click never moves focus out of the terminal. Dialog choices that throw work away or publish it are Command chords (Cmd+D, Cmd+Enter, Cmd+Delete), never a plain letter or bare Enter. Contributor details are in [keyboard flow](keyboard-flow.md).
 
 ## Supported agents
 
@@ -67,6 +68,12 @@ Shika finds each CLI through your login shell's PATH, including when launched fr
 Settings > Appearance > Background image puts a picture of your own behind the glass, in place of the desktop: choose a file, pick an effect (None, Dither, ASCII, Halftone, or Scanlines), and Adjust to drag and zoom the crop. Background opacity sets how much of it shows, and Apply to picks the sidebar alone or the sidebar and terminal. Choosing an image at 100% opacity lowers it to 70% so the image shows. Shika keeps its own copy, so moving the original changes nothing.
 
 Settings > Agents turns each CLI on or off for New. [Switch agent](agent-switch.md) (Cmd+Shift+A) starts a different CLI in an idle task's worktree, to continue the work or review it.
+
+## An agent in your checkout
+
+For a quick question about the repository folder you added, press **Cmd+Shift+N** or choose **Agent > New Agent in Checkout**. Pick a CLI in **In checkout**; Tab changes projects. There is one checkout session per project, so invoking it again focuses the existing card. Cmd+N still always creates a fresh worktree.
+
+The checkout card sits first in its project and shows a checkout icon and the current branch. It runs directly in your folder, with no new branch or setup. It is not read-only: the agent can change your files. Shell tabs, Switch agent, and rename work normally, but Shika never renames your branch or offers Create PR here. Diff stat and Changes show uncommitted changes against `HEAD`, including edits already present at launch. Close only stops the agent and shells, asking **Stop the agent?** with **Cmd+Enter** if a turn is active or blocked; it never discards files or deletes branches. Quit leaves no leftover. See [checkout lifecycle](tasks-and-worktrees.md#checkout).
 
 ## The Lead
 
@@ -102,7 +109,7 @@ Create PR (Cmd+Shift+P) previews every non-ignored change and an editable title.
 
 ## Closing a task
 
-Close asks before discarding uncommitted work or unpushed commits, and offers push when the tree is clean. A `git push` keeps the card open, and Close never commits. A clean idle task on its own branch closes immediately. After a branch switch, Close can verify both branches and remove the worktree while keeping both local branches; unsafe or unverifiable work blocks that. See [branch-switch close](branch-switch-close.md) for the safety rules.
+For worktree tasks, Close asks before discarding uncommitted work or unpushed commits, and offers push when the tree is clean. A `git push` keeps the card open, and Close never commits. A clean idle task on its own branch closes immediately. After a branch switch, Close can verify both branches and remove the worktree while keeping both local branches; unsafe or unverifiable work blocks that. See [branch-switch close](branch-switch-close.md) for the safety rules.
 
 ## Changes and token usage
 
