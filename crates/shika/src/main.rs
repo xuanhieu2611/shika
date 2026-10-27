@@ -5,6 +5,7 @@ mod background;
 mod background_view;
 mod changes;
 mod chat_input;
+mod checkout;
 mod checks;
 mod control;
 mod control_client;
@@ -62,6 +63,7 @@ gpui::actions!(
         OpenSettings,
         CheckForUpdates,
         NewAgent,
+        NewInCheckout,
         NewTerminal,
         NewLead,
         AddProject,
@@ -399,6 +401,8 @@ fn open_terminal_link(uri: &str) -> Result<(), String> {
 enum Launch {
     /// New from the picker: nothing typed yet.
     Task,
+    /// An agent in the author's repository root, with no owned git state.
+    Checkout,
     /// `shika new`: the CLI starts with the Lead's prompt and the card is
     /// not selected, because the author is typing elsewhere.
     Worker(LaunchOptions),
@@ -563,6 +567,9 @@ struct Departing {
     key: u64,
 }
 impl Card {
+    fn is_checkout(&self) -> bool {
+        matches!(self.launch, Launch::Checkout)
+    }
     fn unseen(&self) -> bool {
         matches!(self.status, Status::Ready | Status::Asking) && self.seen != Some(self.since)
     }
@@ -673,6 +680,23 @@ impl SettingsSection {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PickerMode {
+    Task,
+    Lead,
+    Checkout,
+}
+
+impl PickerMode {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Task => "New agent",
+            Self::Lead => "New Lead",
+            Self::Checkout => "In checkout",
+        }
+    }
+}
+
 enum Overlay {
     LeadQuestion(lead_chat_question::QuestionDialog),
     WorktreeSetup(Box<worktree_setup::Editor>),
@@ -700,11 +724,14 @@ enum Overlay {
         index: usize,
         error: Option<String>,
     },
-    /// `lead` starts the project's Lead instead of a task.
     Picker {
         project: String,
         index: usize,
-        lead: bool,
+        mode: PickerMode,
+    },
+    /// Stops PTYs only. Never offers Discard or reads the checkout's git.
+    CheckoutClose {
+        index: usize,
     },
     Close {
         index: usize,
@@ -772,7 +799,9 @@ impl Overlay {
             Self::Publish { .. } => "the Create PR dialog",
             Self::SwitchAgent { .. } => "the Switch agent dialog",
             Self::Picker { .. } => "the New picker",
-            Self::Close { .. } | Self::SwitchedClose { .. } => "the Close task dialog",
+            Self::Close { .. } | Self::SwitchedClose { .. } | Self::CheckoutClose { .. } => {
+                "the Close task dialog"
+            }
             Self::RestingMenu { .. } => "a card menu",
             Self::LeadClose { .. } => "the Lead's Stop dialog",
             Self::Preparation { .. } => "the setup approval dialog",
@@ -791,6 +820,8 @@ struct Shika {
     /// First line of each project's latest Lead reply, for its card. Filled
     /// from live replies and one off-thread read of the saved history.
     lead_snippets: HashMap<String, String>,
+    checkout_heads: HashMap<String, checkout::Head>,
+    checkout_selection_epoch: u64,
     snippets_requested: std::collections::HashSet<String>,
     chat_questions: Vec<(String, String, shika_core::ChatQuestion)>,
     /// When the confirmation dialog on screen appeared, to ignore keys that
@@ -943,6 +974,8 @@ impl Shika {
             cards: vec![],
             lead_chats: HashMap::new(),
             lead_snippets: HashMap::new(),
+            checkout_heads: HashMap::new(),
+            checkout_selection_epoch: u64::MAX,
             snippets_requested: Default::default(),
             chat_questions: Vec::new(),
             dialog_grace: model::DialogGrace::default(),
@@ -1190,6 +1223,7 @@ impl Shika {
                 project: &c.project,
                 rank: c.status.rank(),
                 lead: c.lead.is_some(),
+                checkout: c.is_checkout(),
                 session: c.session.as_ref().map(|s| s.id.as_str()),
                 started_by: c.started_by.as_deref(),
             })
@@ -1432,7 +1466,7 @@ impl Shika {
             self.overlay = Some(Overlay::Picker {
                 project,
                 index: 0,
-                lead: false,
+                mode: PickerMode::Task,
             });
             window.focus(&self.focus, cx);
             cx.notify();
@@ -1486,21 +1520,21 @@ impl Shika {
         if self.busy {
             return;
         }
-        let (project, index, lead) = match &self.overlay {
+        let (project, index, mode) = match &self.overlay {
             Some(Overlay::Picker {
                 project,
                 index,
-                lead,
-            }) => (project.clone(), *index, *lead),
+                mode,
+            }) => (project.clone(), *index, *mode),
             _ => return,
         };
         let Some(preset) = self.offered_presets().into_iter().nth(index) else {
             return;
         };
-        if lead {
-            self.start_lead(project, preset, window, cx);
-        } else {
-            self.request_launch(project, preset, None, window, cx);
+        match mode {
+            PickerMode::Lead => self.start_lead(project, preset, window, cx),
+            PickerMode::Checkout => self.start_checkout(project, preset, window, cx),
+            PickerMode::Task => self.request_launch(project, preset, None, window, cx),
         }
     }
     /// Installed agents the user has left on, in preset order.
@@ -1604,7 +1638,7 @@ impl Shika {
         self.overlay = Some(Overlay::Picker {
             project,
             index: 0,
-            lead: true,
+            mode: PickerMode::Lead,
         });
         window.focus(&self.focus, cx);
         cx.notify();
@@ -1973,7 +2007,7 @@ impl Shika {
             Launch::Lead(env) | Launch::LeadRestart { launch: env, .. } => {
                 (None, Some(control::LeadState::new(env.token.clone())))
             }
-            Launch::Task => (None, None),
+            Launch::Task | Launch::Checkout => (None, None),
         };
         if author {
             self.overlay = None;
@@ -2067,7 +2101,12 @@ impl Shika {
             discard: false,
             launch_control: Some(control.clone()),
             launch_error: None,
-            stage: "Creating worktree...".into(),
+            stage: if matches!(launch, Launch::Checkout) {
+                "Starting agent..."
+            } else {
+                "Creating worktree..."
+            }
+            .into(),
             closing: false,
             next_agent: None,
             usage_exit_seen: false,
@@ -2140,6 +2179,9 @@ impl Shika {
                             *lock(&started_lead) = Some(start);
                             session
                         }),
+                        Launch::Checkout => {
+                            core.create_checkout_session(&project, &preset.id, size, sink)
+                        }
                         Launch::Worker(options) => core.create_session_with_preparation(
                             &project, &preset.id, size, sink, options, control, report,
                         ),
@@ -2272,8 +2314,14 @@ impl Shika {
                     }
                     Ok(session) => {
                         this.stop_cancelled_launch(session.id, cx);
-                        this.cards[index].launch_error =
-                            Some("Worktree preparation was cancelled.".into());
+                        this.cards[index].launch_error = Some(
+                            if this.cards[index].is_checkout() {
+                                "Agent start was cancelled."
+                            } else {
+                                "Worktree preparation was cancelled."
+                            }
+                            .into(),
+                        );
                         control::answer(
                             &reply,
                             control::failure_reply(&shika_core::Error::PreparationCancelled),
@@ -2784,7 +2832,7 @@ impl Shika {
         // Reconcile agent/shell branch renames independently of the one-shot
         // CLI title watch. Git runs off-thread, with only one batch in flight.
         if !self.branch_check_pending
-            && !self.cards.is_empty()
+            && self.cards.iter().any(|card| !card.is_checkout())
             && now.duration_since(self.branch_check_at) >= Duration::from_secs(2)
         {
             self.branch_check_at = now;
@@ -2793,7 +2841,7 @@ impl Shika {
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .spawn(async move {
-                        for session in core.sessions() {
+                        for session in core.sessions().into_iter().filter(|s| !s.is_checkout()) {
                             // A switched branch is deliberately not adopted.
                             // Close reports errors; polling does not spam toasts.
                             let _ = core.session_refresh_branch(&session.id);
@@ -2891,7 +2939,12 @@ impl Shika {
                     .as_ref()
                     .is_some_and(|c| c.is_cancelled())
                 {
-                    state.preparation_stage = "Cancelling setup...".into();
+                    state.preparation_stage = if card.is_checkout() {
+                        "Stopping agent..."
+                    } else {
+                        "Cancelling setup..."
+                    }
+                    .into();
                 }
                 if !state.preparation_stage.is_empty() && card.stage != state.preparation_stage {
                     card.stage = state.preparation_stage.clone();
@@ -2991,6 +3044,7 @@ impl Shika {
             }
             if matches!(card.launch_preset.as_str(), "claude" | "codex")
                 && (transition.ready || exited_now)
+                && !card.session.as_ref().is_some_and(Session::is_checkout)
                 && let Some(worktree) = card
                     .session
                     .as_ref()
@@ -3066,6 +3120,14 @@ impl Shika {
             .detach();
         }
         for id in ready {
+            if let Some(project) = self
+                .cards
+                .iter()
+                .find(|c| c.is_checkout() && c.session.as_ref().is_some_and(|s| s.id == id))
+                .map(|c| c.project.clone())
+            {
+                self.refresh_checkout_head(project, cx);
+            }
             // The Changes panel reads again at the same moment, if it shows
             // this task. No other refresh happens while it is open.
             if self.changes.shows(&id) {
@@ -3289,7 +3351,7 @@ impl Shika {
         self.overlay = Some(Overlay::Picker {
             project,
             index: 0,
-            lead: false,
+            mode: PickerMode::Task,
         });
         window.focus(&self.focus, cx);
         cx.notify();
@@ -3509,7 +3571,9 @@ impl Shika {
     /// a Lead's `shika pr` both ask this, so they never disagree.
     fn publish_blocker(&self, index: usize) -> Option<&'static str> {
         let card = &self.cards[index];
-        if card.lead.is_some() {
+        if card.is_checkout() {
+            Some("Checkout sessions do not publish.")
+        } else if card.lead.is_some() {
             Some("The Lead has no branch, so there is nothing to publish.")
         } else if card.creating || card.running() {
             Some("Wait for the agent to finish before publishing.")
@@ -3526,6 +3590,9 @@ impl Shika {
         let Some(index) = self.selected_card() else {
             return;
         };
+        if self.cards[index].is_checkout() {
+            return;
+        }
         if let Some(why) = self.publish_blocker(index) {
             self.message(why.into());
             cx.notify();
@@ -4079,6 +4146,17 @@ impl Shika {
         }
         let task_id = id.clone();
         let working = self.cards[index].running();
+        if self.cards[index].is_checkout() {
+            self.overlay_return_focus = window.focused(cx);
+            if working {
+                self.overlay = Some(Overlay::CheckoutClose { index });
+                window.focus(&self.focus, cx);
+                cx.notify();
+            } else {
+                self.finish_close(index, 0, window, cx);
+            }
+            return;
+        }
         let core = self.core.clone();
         self.overlay_return_focus = window.focused(cx);
         self.busy = true;
@@ -4381,6 +4459,10 @@ impl Shika {
         let Some(session) = self.cards.get(index).and_then(|c| c.session.as_ref()) else {
             return;
         };
+        // No numeric task action may turn Checkout's Stop into Discard/Push.
+        if session.is_checkout() && !matches!(action, 0 | 4) {
+            return;
+        }
         let id = session.id.clone();
         let task_id = id.clone();
         // Use the same check before showing choices and before removing the
@@ -4401,6 +4483,7 @@ impl Shika {
                     match action {
                         1 => core.session_discard(&id),
                         2 => core.session_push_and_close(&id),
+                        4 => core.session_stop_checkout(&id),
                         3 => match preview {
                             Some(preview) => core.session_close_switched(&id, &preview),
                             None => Err(shika_core::Error::CloseNeedsConfirmation),
@@ -4528,6 +4611,7 @@ impl Shika {
                         this.chat_questions
                             .retain(|(_, project, _)| project != &removed_id);
                         this.bases.remove(&removed_id);
+                        this.checkout_heads.remove(&removed_id);
                         let next = this
                             .projects
                             .first()
@@ -4983,6 +5067,7 @@ impl Shika {
         }
         Some(match self.overlay.as_ref()? {
             Overlay::Close { index, .. } => ("close", *index as u64),
+            Overlay::CheckoutClose { index } => ("checkout-close", *index as u64),
             Overlay::SwitchedClose { index, .. } => ("switched-close", *index as u64),
             Overlay::LeadClose { project, step, .. } => (
                 "lead-close",
@@ -5024,6 +5109,7 @@ impl Shika {
             self.overlay,
             Some(
                 Overlay::Close { .. }
+                    | Overlay::CheckoutClose { .. }
                     | Overlay::SwitchedClose { .. }
                     | Overlay::LeadClose { .. }
                     | Overlay::RestingMenu { .. }
@@ -5037,6 +5123,10 @@ impl Shika {
             return true;
         }
         match (&self.overlay, chord) {
+            (Some(Overlay::CheckoutClose { index }), Primary) => {
+                let i = *index;
+                self.finish_close(i, 4, window, cx);
+            }
             (Some(Overlay::Close { index, .. }), Discard) => {
                 let i = *index;
                 self.finish_close(i, 1, window, cx);
@@ -5457,10 +5547,14 @@ impl Shika {
                     return;
                 }
             }
-            // A project the picker moved to, to fetch its base branch.
+            // A project the picker moved to: fetch the base, or read checkout HEAD.
             let mut moved_to = None;
             match &mut self.overlay {
-                Some(Overlay::Picker { index, project, .. }) => {
+                Some(Overlay::Picker {
+                    index,
+                    project,
+                    mode,
+                }) => {
                     let len = offered_len;
                     let chosen = key.parse::<usize>().ok().filter(|n| (1..=len).contains(n));
                     match key {
@@ -5477,7 +5571,7 @@ impl Shika {
                         "tab" => {
                             if let Some(at) = self.projects.iter().position(|p| &p.id == project) {
                                 *project = self.projects[(at + 1) % self.projects.len()].id.clone();
-                                moved_to = Some(project.clone());
+                                moved_to = Some((project.clone(), *mode));
                             }
                         }
                         _ => {
@@ -5497,7 +5591,11 @@ impl Shika {
                 // Escape, and Enter to Stop the Lead, are the only plain keys
                 // here. The destructive and publishing choices are Command
                 // chords, handled by `dialog_chord_key`.
-                Some(Overlay::Close { .. } | Overlay::RestingMenu { .. }) => {
+                Some(
+                    Overlay::Close { .. }
+                    | Overlay::CheckoutClose { .. }
+                    | Overlay::RestingMenu { .. },
+                ) => {
                     if key == "escape" {
                         self.cancel_overlay(window, cx);
                     }
@@ -5594,8 +5692,12 @@ impl Shika {
                 | Some(Overlay::SwitchAgent { .. })
                 | None => {}
             }
-            if let Some(project) = moved_to {
-                self.prefetch_base(project, cx);
+            if let Some((project, mode)) = moved_to {
+                if mode == PickerMode::Checkout {
+                    self.refresh_checkout_head(project, cx);
+                } else {
+                    self.prefetch_base(project, cx);
+                }
             }
             cx.stop_propagation();
             cx.notify();
@@ -6806,6 +6908,8 @@ impl Shika {
         let separator = || div().flex_none().text_color(quiet_separator).child("·");
         let hints: &[(&str, &str)] = if card.closing {
             &[]
+        } else if card.creating && card.is_checkout() {
+            &[("\u{2318}\u{21e7}W", "cancel")]
         } else if card.creating {
             &[("↵", "view setup"), ("\u{2318}\u{21e7}W", "cancel")]
         } else if card.launch_error.is_some() {
@@ -6958,15 +7062,43 @@ impl Shika {
                         .child(notice),
                 )
             })
+            .when(card.is_checkout(), |d| {
+                let (bg, fg) = (chrome.toast_bg, chrome.toast_fg);
+                d.child(separator()).child(
+                    div()
+                        .id(SharedString::from(format!("checkout-{key}")))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .child(
+                            gpui::svg()
+                                .data(CHECKOUT_ICON)
+                                .size(px(12.))
+                                .text_color(quiet),
+                        )
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| KeyTip {
+                                bg,
+                                fg,
+                                text: "Runs in your checkout, no worktree".into(),
+                            })
+                            .into()
+                        }),
+                )
+            })
             .when_some(
-                card.session
-                    .as_ref()
-                    .filter(|_| card.lead.is_none())
-                    .and_then(model::card_branch),
+                if card.is_checkout() {
+                    self.checkout_branch(&card.project)
+                } else {
+                    card.session
+                        .as_ref()
+                        .filter(|_| card.lead.is_none())
+                        .and_then(model::card_branch)
+                },
                 |d, branch| {
                     // The branch truncates before the diff stat. A draft
                     // has no name yet, so line two shows only the CLI.
-                    d.child(separator()).child(
+                    d.when(!card.is_checkout(), |d| d.child(separator())).child(
                         div()
                             .min_w_0()
                             .truncate()
@@ -7244,7 +7376,12 @@ impl Shika {
                     .unwrap_or_else(|| card.stage.clone()),
             );
             let (project_name, branch, stage) = match card.session.as_ref() {
-                // A Lead and a checkout session have no task branch.
+                Some(s) if s.is_checkout() => (
+                    Some(path.clone()),
+                    self.checkout_branch(&card.project)
+                        .map(|branch| SharedString::from(branch.to_owned())),
+                    None,
+                ),
                 Some(s) => (
                     self.projects
                         .iter()
@@ -7506,7 +7643,9 @@ impl Shika {
                                     .text_color(chrome.term_fg)
                                     .cursor_pointer()
                                     .hover(move |style| style.bg(term_hover))
-                                    .child(if card.creating {
+                                    .child(if card.creating && card.is_checkout() {
+                                        "Cancel start"
+                                    } else if card.creating {
                                         "Cancel setup"
                                     } else {
                                         "Close task"
@@ -7555,6 +7694,7 @@ impl Shika {
                         .child(
                             div()
                                 .id("task-where")
+                                .when(card.is_checkout(), |d| d.flex_1())
                                 .min_w_0()
                                 .flex()
                                 .items_center()
@@ -7572,7 +7712,10 @@ impl Shika {
                                 .when_some(project_name, |d, name| {
                                     d.child(
                                         div()
-                                            .flex_none()
+                                            .when(!card.is_checkout(), |d| d.flex_none())
+                                            .min_w_0()
+                                            .truncate()
+                                            .when(card.is_checkout(), |d| d.font_family(MONO))
                                             .text_size(px(12.))
                                             .text_color(chrome.term_fg)
                                             .child(name),
@@ -7587,16 +7730,26 @@ impl Shika {
                                             .text_color(chrome.term_dim),
                                     )
                                     .child(
-                                        div().min_w_0().truncate().font_family(MONO).child(branch),
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .font_family(MONO)
+                                            .when(card.is_checkout(), |d| {
+                                                d.flex_none().max_w(gpui::relative(0.5))
+                                            })
+                                            .child(branch),
                                     )
                                 })
                                 .when_some(stage, |d, stage| {
                                     d.child(div().min_w_0().truncate().child(stage))
                                 }),
                         )
-                        .child(div().flex_1())
+                        .when(!card.is_checkout(), |d| d.child(div().flex_1()))
                         .when(
-                            card.session.is_some() && !card.creating && card.lead.is_none(),
+                            card.session.is_some()
+                                && !card.creating
+                                && card.lead.is_none()
+                                && !card.is_checkout(),
                             |d| {
                                 d.child(
                                     div()
@@ -7644,7 +7797,9 @@ impl Shika {
                             },
                         )
                         .child(div().flex_none().text_color(chrome.term_faint).child(
-                            if card.creating {
+                            if card.creating && card.is_checkout() {
+                                "starting agent"
+                            } else if card.creating {
                                 "setup is non-interactive"
                             } else if card.launch_error.is_some() && cards_focused {
                                 "↵ retry setup"
@@ -8520,17 +8675,20 @@ impl Shika {
         max_h: Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (prompt, index, error) = {
+        let (prompt, index, error, checkout) = {
             let Some(Overlay::SwitchAgent {
+                session_id,
                 prompt,
                 index,
                 error,
-                ..
             }) = &self.overlay
             else {
                 return dialog(chrome, max_h);
             };
-            (prompt.clone(), *index, error.clone())
+            let checkout = self.cards.iter().any(|card| {
+                card.is_checkout() && card.session.as_ref().is_some_and(|s| s.id == *session_id)
+            });
+            (prompt.clone(), *index, error.clone(), checkout)
         };
         prompt.update(cx, |input, _| input.set_chrome(*chrome));
         let presets = self.offered_presets();
@@ -8540,9 +8698,11 @@ impl Shika {
                 dialog_text(chrome)
                     .child("This stops the current agent only after the new one starts."),
             )
-            .child(dialog_text(chrome).child(
-                "The worktree, branch, commits, and uncommitted files stay. Shell tabs stay.",
-            ))
+            .child(dialog_text(chrome).child(if checkout {
+                "Your checkout, branch, commits, and uncommitted files stay. Shell tabs stay."
+            } else {
+                "The worktree, branch, commits, and uncommitted files stay. Shell tabs stay."
+            }))
             .child(dialog_text(chrome).child("No transcript is copied."))
             .child(dialog_text(chrome).child("Prompt"))
             .child(prompt.clone())
@@ -8792,11 +8952,23 @@ impl Shika {
                 self.worktree_setup_view(editor, chrome, max_h, window, cx)
             }
             Overlay::Adjust(adjust) => self.adjust_view(adjust, max_h, chrome, window, cx),
-            Overlay::Rename { input, error, .. } => {
+            Overlay::Rename {
+                target,
+                input,
+                error,
+            } => {
+                let checkout = self
+                    .cards
+                    .iter()
+                    .any(|card| card.agent.view.entity_id() == *target && card.is_checkout());
                 input.update(cx, |input, _| input.set_chrome(*chrome));
                 dialog(chrome, max_h)
                     .child(dialog_title(div()).child("Rename task"))
-                    .child(dialog_text(chrome).child("Changes the task name and future Create PR defaults. The branch and worktree stay unchanged."))
+                    .child(dialog_text(chrome).child(if checkout {
+                        "Changes the task name. Your checkout and branch stay unchanged."
+                    } else {
+                        "Changes the task name and future Create PR defaults. The branch and worktree stay unchanged."
+                    }))
                     .child(input.clone())
                     .when_some(error.as_ref(), |panel, error| panel.child(dialog_text(chrome).child(error.clone())))
                     .child(dialog_buttons()
@@ -8904,7 +9076,7 @@ impl Shika {
             Overlay::Picker {
                 project,
                 index,
-                lead,
+                mode,
             } => {
                 let name = self
                     .projects
@@ -8923,11 +9095,7 @@ impl Shika {
                             .pt(px(8.))
                             .px(px(10.))
                             .pb(px(10.))
-                            .child(dialog_title(div()).child(if *lead {
-                                "New Lead"
-                            } else {
-                                "New agent"
-                            }))
+                            .child(dialog_title(div()).child(mode.title()))
                             .child(
                                 div()
                                     .text_size(px(13.))
@@ -9035,19 +9203,28 @@ impl Shika {
                             "↵ start"
                         })
                         .child("esc cancel")
-                        .child(match self.bases.get(project).and_then(|b| b.name.clone()) {
-                            // Where New will start, so it is never a surprise.
-                            Some(name) => div()
-                                .flex()
-                                .gap(px(4.))
-                                .child(if *lead {
-                                    "reads a checkout of"
-                                } else {
-                                    "branches from"
-                                })
-                                .child(div().font_family(MONO).child(name)),
-                            None if *lead => div().child("reads a detached worktree"),
-                            None => div().child("creates a branch and a worktree"),
+                        .child(if *mode == PickerMode::Checkout {
+                            div().min_w_0().truncate().font_family(MONO).child(format!(
+                                "{name} · {}",
+                                self.checkout_branch(project).unwrap_or("Reading branch...")
+                            ))
+                        } else {
+                            match self.bases.get(project).and_then(|b| b.name.clone()) {
+                                // Where New will start, so it is never a surprise.
+                                Some(name) => div()
+                                    .flex()
+                                    .gap(px(4.))
+                                    .child(if *mode == PickerMode::Lead {
+                                        "reads a checkout of"
+                                    } else {
+                                        "branches from"
+                                    })
+                                    .child(div().font_family(MONO).child(name)),
+                                None if *mode == PickerMode::Lead => {
+                                    div().child("reads a detached worktree")
+                                }
+                                None => div().child("creates a branch and a worktree"),
+                            }
                         }),
                 )
             }
@@ -9090,6 +9267,16 @@ impl Shika {
                                     })),
                             ),
                     )
+            }
+            Overlay::CheckoutClose { index } => {
+                let i = *index;
+                dialog(chrome, max_h)
+                    .child(dialog_title(div()).child("Stop the agent?"))
+                    .child(dialog_text(chrome).child("The agent is still active. This stops its terminals. Your checkout and files stay unchanged."))
+                    .child(dialog_buttons()
+                        .child(self.cancel_button("Cancel", chrome, cx))
+                        .child(primary_button("stop-checkout", "Stop agent", "⌘↵", chrome)
+                            .on_click(cx.listener(move |this, _, window, cx| this.finish_close(i, 4, window, cx)))))
             }
             Overlay::Close { index, state } => {
                 let i = *index;
@@ -9592,6 +9779,8 @@ const FOLDER_PLUS_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" vie
 /// Shika at 16px.
 const COLUMN_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="#000" fill-rule="evenodd" d="M3 2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm3 1.5H3a.5.5 0 0 0-.5.5v8a.5.5 0 0 0 .5.5h3v-9Zm1.5 0v9H13a.5.5 0 0 0 .5-.5V4a.5.5 0 0 0-.5-.5H7.5Z"/></svg>"##;
 
+/// Original Shika glyph: a repository folder with a terminal prompt.
+const CHECKOUT_ICON: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5V3.5h5l1.5 2h6.5v7h-13V5Z"/><path d="m5 8 1.5 1.5L5 11m4 0h2"/></g></svg>"##;
 /// Octicons git-branch, before the base branch on a project header. Drawn as
 /// an alpha mask and tinted by the element's text color.
 /// MIT notice: assets/licenses/Octicons-MIT.txt.
@@ -10275,6 +10464,7 @@ impl Render for Shika {
         self.last_revealed_selection = self.selection.clone();
         // The Changes panel follows the selected card. Closed, this is a no-op.
         self.sync_changes(cx);
+        self.sync_checkout_selection(cx);
         let mut projects = div()
             .id("projects")
             .track_scroll(&self.sidebar_scroll)
@@ -10353,6 +10543,9 @@ impl Render for Shika {
             .key_context("Shika")
             .on_action(cx.listener(|this, _: &NewAgent, window, cx| this.picker(window, cx)))
             .on_action(cx.listener(|this, _: &NewLead, window, cx| this.new_lead(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &NewInCheckout, window, cx| this.new_in_checkout(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &AddProject, window, cx| {
                 if !this.busy && this.overlay.is_none() {
                     this.add_project(window, cx);
@@ -10517,6 +10710,8 @@ fn install_keys(cx: &mut App, keys: &KeyOverrides) {
         };
         if binding.id == "toggleChanges" {
             bindings.push(gpui::KeyBinding::new(chord, ToggleChanges, Some("Shika")));
+        } else if binding.id == "newInCheckout" {
+            bindings.push(gpui::KeyBinding::new(chord, NewInCheckout, Some("Shika")));
         } else if binding.id == "toggleUsage" {
             bindings.push(gpui::KeyBinding::new(chord, ToggleUsage, Some("Shika")));
         } else if let Some(index) = shortcuts::agent_slot(binding.id) {
@@ -10561,6 +10756,7 @@ fn install_menus(cx: &mut App) {
         gpui::Menu::new("Agent").items([
             gpui::MenuItem::action("Add project…", AddProject),
             gpui::MenuItem::action("New agent", NewAgent),
+            gpui::MenuItem::action("New Agent in Checkout", NewInCheckout),
             gpui::MenuItem::action("New Lead…", NewLead),
             gpui::MenuItem::action("New terminal tab", NewTerminal),
             gpui::MenuItem::action("Create PR", CreatePr),

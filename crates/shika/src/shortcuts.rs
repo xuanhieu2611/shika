@@ -14,10 +14,15 @@ pub struct Command {
     pub default: Option<&'static str>,
 }
 
-/// Hide or show changes, show or hide usage, then go to agent 1 through 9,
-/// then go to tab 1 through 9. Earlier rows win when two saved chords
+/// New in checkout, hide or show changes, show or hide usage, then go to
+/// agent 1 through 9 and tab 1 through 9. Earlier rows win when two saved chords
 /// collide.
 pub static COMMANDS: &[Command] = &[
+    Command {
+        id: "newInCheckout",
+        label: "New agent in checkout",
+        default: Some("cmd-shift-n"),
+    },
     Command {
         id: "toggleChanges",
         label: "Hide or show changes",
@@ -433,6 +438,27 @@ mod tests {
             bound_label(&overrides, "selectTab1").as_deref(),
             Some("\u{2318}1")
         );
+    }
+
+    #[test]
+    fn checkout_chord_can_be_rebound_cleared_or_given_to_another_action() {
+        let defaults = KeyOverrides::default();
+        assert_eq!(
+            bound_label(&defaults, "newInCheckout").as_deref(),
+            Some("⌘⇧N")
+        );
+        let next = assign(&defaults, "newInCheckout", Some("cmd-r".into())).unwrap();
+        assert_eq!(bound(&next, "newInCheckout"), Some(chord("cmd-r")));
+        assert!(
+            !bindings(&next)
+                .iter()
+                .any(|b| b.chord == Some(chord("cmd-shift-n")))
+        );
+        let cleared = assign(&next, "newInCheckout", None).unwrap();
+        assert_eq!(bound(&cleared, "newInCheckout"), None);
+        let moved = assign(&defaults, "selectAgent1", Some("cmd-shift-n".into())).unwrap();
+        assert_eq!(bound(&moved, "newInCheckout"), None);
+        assert_eq!(bound(&moved, "selectAgent1"), Some(chord("cmd-shift-n")));
     }
 
     #[test]
