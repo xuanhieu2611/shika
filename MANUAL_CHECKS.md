@@ -2,6 +2,18 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Quit guard and explicit recovery, 2026-10-26
+
+Automated disposable-Git/fake-PTY regressions cover dirty/staged files, commits, base and manual-title preservation, setup bypass even with invalid current config, exact saved-id resume across repeated reopen/quit, missing-history and legacy fresh fallback, failed-spawn rollback, unsafe/missing/redirected/symlink Git roots, verified external renames versus real branch switches, concurrent single ownership, and failed-Switch recovery-hint rollback. Provider fixtures exercise cwd/epoch matching, no transcript parsing, Codex subagent/archive exclusion, and exact resume arguments for all four CLIs. CLI flags were rechecked against installed `--help`. The unfiltered workspace run hit the existing machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` assertion (Claude now resolves to `/opt/homebrew/bin/claude`); the remaining workspace tests pass when that single test is skipped. Formatting, strict Clippy, a debug bundle and strict signature verification pass.
+
+Native smoke used a unique ad hoc bundle with an unconditional launcher bound to disposable app data, HOME/provider roots, a synthetic login-shell PATH and fake Claude binary. Its PID was checked as frontmost before input. No real agent/account or normal app data was used. Frames stayed outside the repo.
+
+- PASS (native): dark Leftovers displays Reopen beside Remove; Enter opens recovery without launching. Resume restores the task card/name/branch and starts the fake CLI with `--resume sample-conversation` in its original dirty worktree. The footer no longer counts it as a leftover.
+- PASS (native): Cmd+Q from the recovery dialog and from the running task opens Quit; repeated Cmd+Q, bare Enter, and Cmd+Shift+Enter do not quit. Escape returns to recovery, or back to the task terminal. Exact Cmd+Enter quits and retains the worktree/file and small recovery metadata. A subsequent launch has no live sessions until explicit Reopen.
+- PASS (native): deleting the synthetic provider history offers Start fresh, not Resume; confirmation launches the fake CLI without `--resume` and retains the same worktree and name. Inspected Quit and recovery in Shika Dark, Shika Light, and derived Dracula. The native window close button opens Quit instead of closing.
+- [ ] Native menu Quit via pointer, busy-operation refusal, 300ms in-flight chord stress, unsaved text/IME in a prior editor, setup cancellation and failed-checkpoint recovery. AX menu selection did not establish native menu action dispatch in this smoke; the Command shortcut and window close were observed.
+- [ ] Real authenticated conversation recall and private-format drift for Claude, Codex, Cursor CLI and Pi; unavailable/disabled CLI choice; refused-resume Start fresh… through Switch agent; many leftovers/agents, narrow windows, glass and Reduce transparency. Fake PTYs and fixture metadata do not establish these checks.
+
 ## Keyboard safety, 2026-10-25
 
 Implemented with unit tests for the chord matcher, the 300ms grace window, the typing gate, which selections take typing, and the header target. None of the GUI behavior below has been exercised by hand; nothing here is checked. Use a built `.app` with `open -n`, an isolated `--data-dir`, and a disposable repo with a bare remote. Confirm Shika's window is frontmost before synthetic keys.
@@ -90,7 +102,7 @@ A scratch copy outside the repository, built as an ad hoc signed `.app` with GPU
 - [ ] Ready/Working/Asking tasks: renaming leaves elapsed time, activity, seen state, PTYs, and unsent drafts alone; future activity and failed-check notifications and Close show the new name.
 - [ ] Rename before the first prompt and while CLI-title discovery is in flight: display name stays manual while automatic branch naming proceeds independently. Published branches, switched HEAD, and Close safety remain unchanged (core behavior is covered by tests).
 - [ ] Future Create PR previews prefill the new name; existing commits/PRs are unchanged. Preview/publish defaults and historical commit preservation are covered with real Git and fake gh.
-- [ ] Setup-running/failed Rename is disabled; disappearing target or lost opening focus falls back safely. Relaunch restores no sessions or manual names.
+- [ ] Setup-running/failed Rename is disabled; disappearing target or lost opening focus falls back safely. Relaunch auto-restores no live sessions; explicit Reopen preserves the name checkpointed at confirmed quit.
 
 ## Card exit rendering repair, 2026-10-13
 

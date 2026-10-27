@@ -87,6 +87,8 @@ pub enum Error {
     NothingToPush,
     #[error("That leftover is not in the journal, or is still in use.")]
     UnknownLeftover,
+    #[error("Could not reopen this worktree. {0}")]
+    RecoverWorktree(String),
 
     #[error("That CLI is not available.")]
     UnknownCli,

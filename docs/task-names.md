@@ -50,7 +50,7 @@ Not on its own. Nothing is committed by Rename task, and shell/agent-created com
 
 Prompt capture and CLI-title discovery cannot replace a manual name. You can rename again, but there is no reset-to-automatic action.
 
-The name is memory-only, like the live task itself. Shika does not restore sessions after relaunch, so it does not persist these display names or add them to the worktree cleanup journal. Git branch names and worktrees retain their existing lifecycle.
+The live name is memory-only until a confirmed quit checkpoints it in the worktree's small recovery hint. Explicit Reopen then keeps that name; it never auto-starts the task. A crash or force quit may lose the latest name, in which case recovery uses the branch. Rename itself still performs no filesystem operation. See [task recovery](tasks-and-worktrees.md#reopen-an-unfinished-task).
 
 ## Contributor implementation map
 

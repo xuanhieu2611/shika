@@ -18,6 +18,7 @@ mod model;
 mod name_input;
 mod notifications;
 mod project_motion;
+mod recovery;
 mod scrollbar;
 mod shortcuts;
 mod text_edit;
@@ -401,6 +402,10 @@ fn open_terminal_link(uri: &str) -> Result<(), String> {
 enum Launch {
     /// New from the picker: nothing typed yet.
     Task,
+    Recover {
+        path: PathBuf,
+        resume: bool,
+    },
     /// An agent in the author's repository root, with no owned git state.
     Checkout,
     /// `shika new`: the CLI starts with the Lead's prompt and the card is
@@ -412,7 +417,10 @@ enum Launch {
     /// refused. Not an author launch: it closes no overlay, takes no busy
     /// hold, and the selection and focus only follow the old Lead's.
     /// `focus`: the old Lead's terminal had focus.
-    LeadRestart { launch: LeadLaunch, focus: bool },
+    LeadRestart {
+        launch: LeadLaunch,
+        focus: bool,
+    },
 }
 
 struct Card {
@@ -761,6 +769,14 @@ enum Overlay {
         retry: Option<Arc<Mutex<HostState>>>,
     },
     Leftovers,
+    Recover {
+        entry: JournalEntry,
+        index: usize,
+    },
+    Quit {
+        previous: Option<Box<Overlay>>,
+        focus: Option<FocusHandle>,
+    },
     RemoveLeftover(usize),
     RemoveProject(String),
     /// `section` is Appearance, Keyboard, Agents, Projects, or Usage. `row` is the selected row
@@ -805,7 +821,10 @@ impl Overlay {
             Self::RestingMenu { .. } => "a card menu",
             Self::LeadClose { .. } => "the Lead's Stop dialog",
             Self::Preparation { .. } => "the setup approval dialog",
-            Self::Leftovers | Self::RemoveLeftover(_) => "the leftovers list",
+            Self::Leftovers | Self::RemoveLeftover(_) | Self::Recover { .. } => {
+                "the leftovers list"
+            }
+            Self::Quit { .. } => "the Quit dialog",
             Self::RemoveProject(_) => "the Remove project dialog",
             Self::Settings { .. } => "Settings",
             Self::Base { .. } => "the Base branch dialog",
@@ -2007,7 +2026,7 @@ impl Shika {
             Launch::Lead(env) | Launch::LeadRestart { launch: env, .. } => {
                 (None, Some(control::LeadState::new(env.token.clone())))
             }
-            Launch::Task | Launch::Checkout => (None, None),
+            Launch::Task | Launch::Checkout | Launch::Recover { .. } => (None, None),
         };
         if author {
             self.overlay = None;
@@ -2043,7 +2062,7 @@ impl Shika {
         {
             let mut host = lock(&state);
             host.preparing = configured;
-            if lead.is_some() {
+            if lead.is_some() || matches!(launch, Launch::Recover { .. }) {
                 host.keep_title();
             }
         }
@@ -2179,6 +2198,9 @@ impl Shika {
                             *lock(&started_lead) = Some(start);
                             session
                         }),
+                        Launch::Recover { path, resume } => {
+                            core.reopen_leftover(&path, &preset.id, resume, size, sink)
+                        }
                         Launch::Checkout => {
                             core.create_checkout_session(&project, &preset.id, size, sink)
                         }
@@ -2295,8 +2317,18 @@ impl Shika {
                                 });
                             }
                         }
+                        let recovered = matches!(finished, Launch::Recover { .. });
+                        let recovered_id = session.id.clone();
+                        if recovered {
+                            this.cards[index].title = model::card_title(&session.title);
+                            this.cards[index].named = true;
+                            this.cards[index].title_watch.finish();
+                        }
                         this.cards[index].session = Some(session);
                         this.cards[index].launch_control = None;
+                        if recovered {
+                            this.fetch_diff_stat(recovered_id, cx);
+                        }
                         // Completion never steals focus from another card or
                         // an overlay opened while installation was running,
                         // nor from the cards the author returned to with Ctrl+Q
@@ -3942,6 +3974,9 @@ impl Shika {
         card.agent = pane;
         card.preset = session.preset_name.clone();
         card.launch_preset = session.preset_id.clone();
+        if matches!(card.launch, Launch::Recover { .. }) {
+            card.launch = Launch::Task;
+        }
         card.usage_exit_seen = false;
         if !card.named {
             card.title = model::card_title(&session.title);
@@ -4536,6 +4571,10 @@ impl Shika {
         .detach();
     }
     fn cancel_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.overlay, Some(Overlay::Quit { .. })) {
+            self.cancel_quit(window, cx);
+            return;
+        }
         if matches!(self.overlay, Some(Overlay::LeadQuestion(_))) {
             self.answer_chat_question(true, window, cx);
             return;
@@ -5076,6 +5115,8 @@ impl Shika {
             Overlay::RestingMenu { project, .. } => ("resting-menu", hash(project)),
             Overlay::RemoveProject(id) => ("remove-project", hash(id)),
             Overlay::RemoveLeftover(i) => ("remove-leftover", *i as u64),
+            Overlay::Recover { .. } => ("recover", 0),
+            Overlay::Quit { .. } => ("quit", 0),
             Overlay::Preparation { project, .. } => ("preparation", hash(project)),
             Overlay::LeadQuestion(dialog) => ("lead-question", dialog.identity()),
             _ => return None,
@@ -5115,6 +5156,8 @@ impl Shika {
                     | Overlay::RestingMenu { .. }
                     | Overlay::RemoveProject(_)
                     | Overlay::RemoveLeftover(_)
+                    | Overlay::Recover { .. }
+                    | Overlay::Quit { .. }
             )
         ) {
             return false;
@@ -5123,6 +5166,8 @@ impl Shika {
             return true;
         }
         match (&self.overlay, chord) {
+            (Some(Overlay::Quit { .. }), Primary) => self.confirm_quit(window, cx),
+            (Some(Overlay::Recover { .. }), Primary) => self.start_recovery(false, window, cx),
             (Some(Overlay::CheckoutClose { index }), Primary) => {
                 let i = *index;
                 self.finish_close(i, 4, window, cx);
@@ -5183,13 +5228,19 @@ impl Shika {
         model::typing_quiet(terminals.chain(chats), now, control::BELL_TYPING_QUIET)
     }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.overlay, Some(Overlay::LeadQuestion(_))) {
-            self.chat_question_key(event, window, cx);
+        let stroke = &event.keystroke;
+        if stroke.modifiers.platform
+            && !stroke.modifiers.control
+            && !stroke.modifiers.alt
+            && !stroke.modifiers.shift
+            && stroke.key == "q"
+        {
+            self.request_quit(window, cx);
+            cx.stop_propagation();
             return;
         }
-        let stroke = &event.keystroke;
-        if stroke.modifiers.platform && stroke.key == "q" {
-            cx.quit();
+        if matches!(self.overlay, Some(Overlay::LeadQuestion(_))) {
+            self.chat_question_key(event, window, cx);
             return;
         }
         if matches!(self.overlay, Some(Overlay::WorktreeSetup(_))) {
@@ -5613,6 +5664,24 @@ impl Shika {
                         self.cancel_overlay(window, cx);
                     }
                 }
+                Some(Overlay::Quit { .. }) => {
+                    if key == "escape" {
+                        self.cancel_quit(window, cx);
+                    }
+                }
+                Some(Overlay::Recover { .. }) => {
+                    let len = self.offered_presets().len();
+                    if let Some(Overlay::Recover { index, .. }) = &mut self.overlay {
+                        match key {
+                            "j" | "down" if len > 0 => *index = (*index + 1) % len,
+                            "k" | "up" if len > 0 => *index = (*index + len - 1) % len,
+                            _ => {}
+                        }
+                    }
+                    if key == "escape" {
+                        self.overlay = Some(Overlay::Leftovers);
+                    }
+                }
                 Some(Overlay::RemoveLeftover(_)) => {
                     if key == "escape" {
                         self.overlay = Some(Overlay::Leftovers);
@@ -5627,7 +5696,10 @@ impl Shika {
                         "k" | "up" if len > 0 => {
                             self.leftover_selected = (self.leftover_selected + len - 1) % len
                         }
-                        "d" | "enter" if len > 0 => {
+                        "enter" if len > 0 => {
+                            self.inspect_leftover(self.leftover_selected.min(len - 1), window, cx);
+                        }
+                        "d" if len > 0 => {
                             self.overlay =
                                 Some(Overlay::RemoveLeftover(self.leftover_selected.min(len - 1)))
                         }
@@ -7810,6 +7882,36 @@ impl Shika {
                             },
                         )),
                 )
+                .when(
+                    matches!(card.launch, Launch::Recover { resume: true, .. })
+                        && lock(&card.agent.state).exited,
+                    |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(12.))
+                                .px(px(14.))
+                                .py(px(8.))
+                                .text_size(px(12.5))
+                                .child(
+                                    notice_secondary(
+                                        "recovery-start-fresh",
+                                        "Start fresh…",
+                                        chrome,
+                                    )
+                                    .gap(px(7.))
+                                    .child(kbd("⌘⇧A", chrome.sunken, chrome.ink_3))
+                                    .on_click(cx.listener(
+                                        |this, _, window, cx| this.switch_agent(window, cx),
+                                    )),
+                                )
+                                .child(div().flex_1().min_w_0().text_color(chrome.term_dim).child(
+                                    "The agent exited. Start a new conversation in this worktree.",
+                                )),
+                        )
+                    },
+                )
                 .when(card.launch_error.is_some(), |d| {
                     d.child(
                         div()
@@ -9360,11 +9462,13 @@ impl Shika {
                         ),
                 )
             }
+            Overlay::Quit { .. } => self.quit_dialog(chrome, max_h, cx),
+            Overlay::Recover { .. } => self.recovery_dialog(chrome, max_h, cx),
             Overlay::Leftovers => {
                 let mut panel = dialog(chrome, max_h)
                     .child(dialog_title(div()).child("Leftover worktrees"))
                     .child(dialog_text(chrome).child(
-                        "These sessions ended when Shika quit. Their work remains on disk.",
+                        "Their work remains on disk. Reopen a worktree to continue, or remove it to discard its work.",
                     ));
                 let mut rows = div().flex().flex_col().gap(px(2.)).mt(px(4.));
                 for (i, entry) in self.leftovers.iter().enumerate() {
@@ -9394,6 +9498,16 @@ impl Shika {
                                     ),
                             )
                             .child(
+                                secondary_button(SharedString::from(format!("reopen-{i}")), chrome)
+                                    .px(px(10.))
+                                    .py(px(4.))
+                                    .text_size(px(12.))
+                                    .child("Reopen")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.inspect_leftover(i, window, cx)
+                                    })),
+                            )
+                            .child(
                                 secondary_button(SharedString::from(format!("remove-{i}")), chrome)
                                     .px(px(10.))
                                     .py(px(4.))
@@ -9414,6 +9528,7 @@ impl Shika {
                         .gap_y(px(6.))
                         .mt(px(4.))
                         .child(hint("j k", "choose", chrome))
+                        .child(hint("↵", "reopen", chrome))
                         .child(hint("d", "remove", chrome))
                         .child(hint("esc", "keep worktrees", chrome)),
                 );
@@ -10541,6 +10656,7 @@ impl Render for Shika {
         });
         let mut root = div()
             .key_context("Shika")
+            .on_action(cx.listener(|this, _: &Quit, window, cx| this.request_quit(window, cx)))
             .on_action(cx.listener(|this, _: &NewAgent, window, cx| this.picker(window, cx)))
             .on_action(cx.listener(|this, _: &NewLead, window, cx| this.new_lead(window, cx)))
             .on_action(
@@ -10835,7 +10951,6 @@ fn main() -> anyhow::Result<()> {
             async {}
         })
         .detach();
-        cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -10896,6 +11011,20 @@ fn main() -> anyhow::Result<()> {
                 },
             )
             .expect("Open Shika window");
+        cx.on_action(move |_: &Quit, cx| {
+            // A native menu action may arrive while GPUI has the window out
+            // of its store for dispatch. Reenter it only after dispatch ends.
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |app, window, cx| app.request_quit(window, cx));
+            });
+        });
+        let _ = handle.update(cx, |_, window, cx| {
+            let app = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |window, cx| {
+                let _ = app.update(cx, |app, cx| app.request_quit(window, cx));
+                false
+            });
+        });
         // The blur radius needs the window on screen, which it is now.
         let _ = handle.update(cx, |_, window, _| {
             appearance::apply(&start, start_image, window)
