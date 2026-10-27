@@ -6855,8 +6855,8 @@ impl Shika {
     }
 
     /// The rows of one group: each card, with the exits of cards that left
-    /// it drawn where they were. A worker in the Leads section is indented
-    /// under its Lead.
+    /// it drawn where they were. Project cards and a worker under its Lead
+    /// are indented. A Lead card is not.
     #[allow(clippy::too_many_arguments)]
     fn card_rows(
         &self,
@@ -6897,7 +6897,8 @@ impl Shika {
             } else {
                 face.into_any_element()
             };
-            let indent = matches!(place, Home::Leads(_)) && card.lead.is_none();
+            let indent = matches!(place, Home::Project(_))
+                || (matches!(place, Home::Leads(_)) && card.lead.is_none());
             column = column.child(
                 card_row()
                     .when(indent, |d| d.pl(px(WORKER_INDENT)))
@@ -6934,7 +6935,8 @@ impl Shika {
             .card_view(&leaving.card, None, chrome, false, false, cx)
             .size_full();
         let exit = || gpui::Animation::new(model::EXIT);
-        let indent = matches!(leaving.home, Home::Leads(_)) && leaving.card.lead.is_none();
+        let indent = matches!(leaving.home, Home::Project(_))
+            || (matches!(leaving.home, Home::Leads(_)) && leaving.card.lead.is_none());
         card_row()
             .overflow_hidden()
             .when(indent, |d| d.pl(px(WORKER_INDENT)))
@@ -9751,7 +9753,8 @@ const SIGNAL_SLOT: f32 = 14.;
 /// A closed card shrinks toward its center to this size as it fades out.
 const EXIT_SCALE: f32 = 0.94;
 
-/// A worker under its Lead sits this far in from the column's content edge.
+/// Project cards and a worker under its Lead sit this far in from the
+/// column's content edge. A Lead card does not.
 const WORKER_INDENT: f32 = 16.;
 
 /// One key hint at the right end of the selected row's second line.
