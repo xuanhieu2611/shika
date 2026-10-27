@@ -719,7 +719,10 @@ enum Overlay {
     Publish {
         preview: PublishPreview,
         title: String,
+        /// Empty leaves the PR body to `gh --fill`.
+        body: Entity<chat_input::ChatInput>,
         target: String,
+        /// 0 is the title, 1 the description, 2 the target.
         row: usize,
         error: Option<String>,
     },
@@ -3629,10 +3632,23 @@ impl Shika {
                     Ok(preview) => {
                         let target = preview.target.clone().unwrap_or_default();
                         let title = preview.title.clone();
-                        let row = usize::from(target.is_empty());
+                        let row = if target.is_empty() { 2 } else { 0 };
+                        let chrome = this.chrome(window);
+                        let body = cx.new(|cx| {
+                            let mut input = chat_input::ChatInput::new(String::new(), chrome, cx);
+                            input.label("PR description".into());
+                            input.placeholder("Leave empty to use the commit messages.");
+                            input.field_id("pr-description");
+                            input.newline_on_enter();
+                            input.max_chars(shika_core::MAX_PR_BODY_CHARS);
+                            input.max_height(px(72.));
+                            input.style(chrome, false, true, Vec::new());
+                            input
+                        });
                         this.overlay = Some(Overlay::Publish {
                             preview,
                             title,
+                            body,
                             target,
                             row,
                             error: None,
@@ -3654,6 +3670,10 @@ impl Shika {
         if self.busy {
             return;
         }
+        let body_text = match &self.overlay {
+            Some(Overlay::Publish { body, .. }) => body.read(cx).value().to_string(),
+            _ => return,
+        };
         let Some(Overlay::Publish {
             preview,
             title,
@@ -3669,6 +3689,14 @@ impl Shika {
             || *target == preview.branch
         {
             *error = Some("Enter a title and choose a different, existing target branch.".into());
+            cx.notify();
+            return;
+        }
+        if body_text.contains('\0') || body_text.chars().count() > shika_core::MAX_PR_BODY_CHARS {
+            *error = Some(format!(
+                "The PR description must be text of at most {} characters.",
+                shika_core::MAX_PR_BODY_CHARS
+            ));
             cx.notify();
             return;
         }
@@ -3688,7 +3716,9 @@ impl Shika {
         self.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { core.session_publish(&preview, &target, &title) }).await;
+            let result = cx.background_executor().spawn(async move {
+                core.session_publish(&preview, &target, &title, Some(&body_text))
+            }).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
@@ -5374,40 +5404,81 @@ impl Shika {
             return;
         }
         if matches!(&self.overlay, Some(Overlay::Publish { .. })) {
-            if !self.busy {
-                match stroke.key.as_str() {
-                    "enter" => self.publish_pr(window, cx),
-                    "escape" => self.cancel_overlay(window, cx),
-                    "tab" => {
-                        if let Some(Overlay::Publish { row, .. }) = &mut self.overlay {
-                            *row = 1 - *row;
-                        }
+            if self.busy {
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            let (describing, composing) = match &self.overlay {
+                Some(Overlay::Publish { row, body, .. }) => (*row == 1, body.read(cx).composing()),
+                _ => (false, false),
+            };
+            // Composition belongs to the description field.
+            if describing && composing {
+                return;
+            }
+            let chord =
+                stroke.modifiers.platform || stroke.modifiers.control || stroke.modifiers.alt;
+            match stroke.key.as_str() {
+                "escape" => self.cancel_overlay(window, cx),
+                "tab" if !chord => {
+                    let body = if let Some(Overlay::Publish { row, body, .. }) = &mut self.overlay {
+                        *row = if stroke.modifiers.shift {
+                            (*row + 2) % 3
+                        } else {
+                            (*row + 1) % 3
+                        };
+                        (*row == 1).then(|| body.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(body) = body {
+                        window.focus(&body.focus_handle(cx), cx);
+                    } else {
+                        window.focus(&self.focus, cx);
                     }
-                    _ => {
-                        if let Some(Overlay::Publish {
-                            row,
-                            title,
-                            target,
-                            error,
-                            ..
-                        }) = &mut self.overlay
+                }
+                "enter" if describing => {
+                    let confirm = stroke.modifiers.platform
+                        && !stroke.modifiers.control
+                        && !stroke.modifiers.alt
+                        && !stroke.modifiers.shift;
+                    if confirm {
+                        self.publish_pr(window, cx);
+                    } else if chord {
+                        cx.stop_propagation();
+                        cx.notify();
+                        return;
+                    } else {
+                        return;
+                    }
+                }
+                "enter" => self.publish_pr(window, cx),
+                _ if describing => return,
+                _ => {
+                    if let Some(Overlay::Publish {
+                        row,
+                        title,
+                        target,
+                        error,
+                        ..
+                    }) = &mut self.overlay
+                    {
+                        let value = if *row == 0 { title } else { target };
+                        if stroke.key == "backspace" {
+                            value.pop();
+                        } else if !stroke.modifiers.platform
+                            && !stroke.modifiers.control
+                            && !stroke.modifiers.alt
+                            && let Some(typed) = &stroke.key_char
                         {
-                            let value = if *row == 0 { title } else { target };
-                            if stroke.key == "backspace" {
-                                value.pop();
-                            } else if !stroke.modifiers.platform
-                                && !stroke.modifiers.control
-                                && !stroke.modifiers.alt
-                                && let Some(typed) = &stroke.key_char
-                            {
-                                for ch in typed.chars().filter(|c| !c.is_control()) {
-                                    if value.len() < 256 {
-                                        value.push(ch);
-                                    }
+                            for ch in typed.chars().filter(|c| !c.is_control()) {
+                                if value.len() < 256 {
+                                    value.push(ch);
                                 }
                             }
-                            *error = None;
                         }
+                        *error = None;
                     }
                 }
             }
@@ -9042,28 +9113,100 @@ impl Shika {
             Overlay::Publish {
                 preview,
                 title,
+                body,
                 target,
                 row,
                 error,
             } => {
+                body.update(cx, |input, _| {
+                    input.style(*chrome, false, true, Vec::new());
+                });
+                let description = body.clone();
                 let mut panel = dialog(chrome, max_h)
                     .child(dialog_title(div()).child("Create PR?"))
-                    .child(dialog_text(chrome).font_family(MONO).child(format!("{}: {} → {}", preview.repository, preview.branch, if target.is_empty() { "choose target" } else { target })))
-                    .child(dialog_text(chrome).child("Stages all non-ignored changes, commits, pushes, and creates a PR. Does not merge or close the task."))
+                    .child(
+                        dialog_text(chrome)
+                            .font_family(MONO)
+                            .child(format!("{}: {}", preview.repository, preview.branch)),
+                    )
                     .child(dialog_text(chrome).child("Commit and PR title"))
-                    .child(text_field("pr-title", 360., *row == 0, chrome)
-                        .overflow_hidden().child(title.clone())
-                        .when(*row == 0, |d| d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus)))
-                        .on_click(cx.listener(|this, _, _, cx| { if !this.busy { if let Some(Overlay::Publish { row, .. }) = &mut this.overlay { *row = 0; } cx.notify(); } })))
+                    .child(
+                        text_field("pr-title", 360., *row == 0, chrome)
+                            .overflow_hidden()
+                            .child(title.clone())
+                            .when(*row == 0, |d| {
+                                d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if !this.busy {
+                                    if let Some(Overlay::Publish { row, .. }) = &mut this.overlay {
+                                        *row = 0;
+                                    }
+                                    window.focus(&this.focus, cx);
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(dialog_text(chrome).child("PR description"))
+                    .child(
+                        div()
+                            .id("pr-body-field")
+                            .w(px(360.))
+                            .px(px(8.))
+                            .py(px(4.))
+                            .rounded(px(6.))
+                            .bg(chrome.raised)
+                            .border_1()
+                            .border_color(if *row == 1 {
+                                chrome.focus
+                            } else {
+                                chrome.line_control
+                            })
+                            .cursor_text()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    if this.busy {
+                                        return;
+                                    }
+                                    let body = if let Some(Overlay::Publish { row, body, .. }) =
+                                        &mut this.overlay
+                                    {
+                                        *row = 1;
+                                        Some(body.clone())
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(body) = body {
+                                        window.focus(&body.focus_handle(cx), cx);
+                                    }
+                                    cx.notify();
+                                }),
+                            )
+                            .child(description),
+                    )
                     .child(dialog_text(chrome).child("PR target"))
-                    .child(text_field("pr-target", 360., *row == 1, chrome)
-                        .overflow_hidden().child(target.clone())
-                        .when(*row == 1, |d| d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus)))
-                        .on_click(cx.listener(|this, _, _, cx| { if !this.busy { if let Some(Overlay::Publish { row, .. }) = &mut this.overlay { *row = 1; } cx.notify(); } })));
+                    .child(
+                        text_field("pr-target", 360., *row == 2, chrome)
+                            .overflow_hidden()
+                            .child(target.clone())
+                            .when(*row == 2, |d| {
+                                d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if !this.busy {
+                                    if let Some(Overlay::Publish { row, .. }) = &mut this.overlay {
+                                        *row = 2;
+                                    }
+                                    window.focus(&this.focus, cx);
+                                    cx.notify();
+                                }
+                            })),
+                    );
                 if preview.target.is_none() {
                     panel = panel.child(dialog_text(chrome).child("The recorded base is not an existing GitHub branch. Choose a target explicitly."));
                 }
-                if *row == 1 {
+                if *row == 2 {
                     panel = panel.child(
                         div()
                             .id("pr-branches")
@@ -9099,11 +9242,10 @@ impl Shika {
                             ),
                     );
                 }
-                panel = panel
-                    .child(
-                        dialog_text(chrome).child(format!("{} changed files", preview.files.len())),
-                    )
-                    .child(
+                let file_count = preview.files.len();
+                panel = panel.child(dialog_text(chrome).child(publish_change_label(file_count)));
+                if file_count > 0 {
+                    panel = panel.child(
                         div()
                             .id("pr-files")
                             .max_h(px(BASE_LIST_MAX))
@@ -9112,28 +9254,44 @@ impl Shika {
                                 dialog_text(chrome).font_family(MONO).child(file.clone())
                             })),
                     );
+                }
                 if let Some(error) = error {
                     panel = panel.child(dialog_text(chrome).child(error.clone()));
                 }
-                panel.child(hint("tab", "switch field", chrome)).child(
-                    dialog_buttons()
-                        .child(self.cancel_button("Cancel", chrome, cx))
-                        .child(
-                            primary_button(
-                                "publish-pr",
-                                if self.busy {
-                                    "Publishing..."
-                                } else {
-                                    "Commit, push, create PR"
-                                },
-                                "↵",
-                                chrome,
-                            )
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.publish_pr(window, cx)),
+                panel
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(hint("tab", "switch field", chrome))
+                            .when(*row == 1, |hints| {
+                                hints.child(hint("enter", "new line", chrome))
+                            }),
+                    )
+                    .child(
+                        dialog_buttons()
+                            .child(self.cancel_button("Cancel", chrome, cx))
+                            .child(
+                                primary_button(
+                                    "publish-pr",
+                                    if self.busy {
+                                        "Publishing..."
+                                    } else {
+                                        "Commit, push, create PR"
+                                    },
+                                    if *row == 1 {
+                                        "\u{2318}\u{21a9}"
+                                    } else {
+                                        "\u{21a9}"
+                                    },
+                                    chrome,
+                                )
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.publish_pr(window, cx)),
+                                ),
                             ),
-                        ),
-                )
+                    )
             }
             Overlay::Picker {
                 project,
@@ -9995,6 +10153,16 @@ fn kbd(text: impl Into<SharedString>, bg: Rgba, fg: Rgba) -> gpui::Div {
         .text_size(px(10.5))
         .line_height(px(14.))
         .child(text.into())
+}
+
+/// The proposed new commit. Zero means the worktree is clean; commits already
+/// on the branch can still be published.
+fn publish_change_label(count: usize) -> String {
+    match count {
+        0 => "Nothing new to commit".into(),
+        1 => "1 changed file".into(),
+        n => format!("{n} changed files"),
+    }
 }
 
 /// A key cap and the verb it does, as in the footer: `⌘] ⌘[ move`. An empty
@@ -11005,6 +11173,13 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+
+    #[test]
+    fn publish_change_label_names_an_empty_commit_and_pluralizes() {
+        assert_eq!(publish_change_label(0), "Nothing new to commit");
+        assert_eq!(publish_change_label(1), "1 changed file");
+        assert_eq!(publish_change_label(2), "2 changed files");
+    }
 
     #[test]
     fn modal_scrim_preserves_appearance_previews_and_pointer_menus() {

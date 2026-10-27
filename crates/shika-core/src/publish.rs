@@ -1121,6 +1121,27 @@ mod tests {
         ));
     }
     #[test]
+    fn publish_writes_a_dialog_body_instead_of_fill() {
+        let f = Fixture::new();
+        f.edit();
+        let p = f.preview();
+        let target = p.target.clone().unwrap();
+        publish(
+            &f.git,
+            &f.gh,
+            "/usr/bin:/bin",
+            &f.session,
+            &p,
+            &target,
+            &p.title,
+            Some("Notes for review"),
+        )
+        .unwrap();
+        let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
+        assert!(calls.contains("--body Notes for review\n"));
+        assert!(!calls.contains("--fill"));
+    }
+    #[test]
     fn publish_now_takes_a_title_and_a_body_instead_of_fill() {
         let f = Fixture::new();
         f.edit();
