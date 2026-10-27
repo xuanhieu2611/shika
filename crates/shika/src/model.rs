@@ -1284,7 +1284,9 @@ mod tests {
             pty: None,
             shell_ptys: Vec::new(),
             cli_titled: false,
-            lead: false,
+            prompt_named: false,
+            agent_started: std::time::UNIX_EPOCH,
+            kind: shika_core::SessionKind::Task,
             started_by: None,
         }
     }

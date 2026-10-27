@@ -33,8 +33,8 @@ It is not:
 
 `Core` is `Send + Sync` and is shared as `Arc<Core>`. The crate docs in `src/lib.rs` list which methods block. The short version:
 
-- **Blocking** methods run git, the user's login shell, or setup commands, and can take seconds: `add_project`, `project_preparation_draft`, `save_project_preparation`, `save_and_approve_project_preparation`, `create_session`, `create_session_with_preparation`, `start_lead`, `start_claude_lead`, `confirm_lead_chat`, `lead_chat_page`, `stop_lead_chats`, `stop_lead`, `forget_lead`, `discover_lead_session`, `set_lead_session`, `lead_loss`, `saved_lead_session_exists`, `open_shell`, `session_switch_agent`, every `session_*` git method, `leftover_remove`, `remove_project`, the base-branch methods, and the first call to `path_env` or `cli_catalog` (the login shell gets up to 20 seconds). Call them from a background executor, never from the GPUI main thread.
-- **Quick** methods read a small JSON file, take a short lock, or queue bytes: `open`, `projects`, `settings`, `save_settings`, `worktree_journal`, `leftovers_list`, `sessions`, `session`, `lead_for_project`, `workers_of`, `saved_lead`, `set_lead_session`, `lost_workers`, `lead_memory`, `remember`, `forget_note`, `memory_path`, `write`, `resize`.
+- **Blocking** methods run git, the user's login shell, or setup commands, and can take seconds: `add_project`, `project_preparation_draft`, `save_project_preparation`, `save_and_approve_project_preparation`, `create_session`, `create_session_with_preparation`, `create_checkout_session`, `checkout_head`, `session_stop_checkout`, `start_lead`, `start_claude_lead`, `confirm_lead_chat`, `lead_chat_page`, `stop_lead_chats`, `stop_lead`, `forget_lead`, `discover_lead_session`, `set_lead_session`, `lead_loss`, `saved_lead_session_exists`, `open_shell`, `session_switch_agent`, every `session_*` git method, `leftover_remove`, `remove_project`, the base-branch methods, and the first call to `path_env` or `cli_catalog` (the login shell gets up to 20 seconds). Call them from a background executor, never from the GPUI main thread.
+- **Quick** methods read a small JSON file, take a short lock, or queue bytes: `open`, `projects`, `settings`, `save_settings`, `worktree_journal`, `leftovers_list`, `sessions`, `session`, `checkout_session`, `lead_for_project`, `workers_of`, `saved_lead`, `set_lead_session`, `lost_workers`, `lead_memory`, `remember`, `forget_note`, `memory_path`, `write`, `resize`.
 
 `Core::operations` is one mutex that serializes everything that changes worktrees, branches, the journal, or the live session list: creating and removing worktrees, close, discard, push, rename, publish, and `remove_project`. Take it for any new method that mutates those. Two kinds of work deliberately stay outside it:
 
@@ -51,8 +51,8 @@ All modules are private except `control`. The crate root re-exports the public s
 | --- | --- | --- |
 | `lib.rs` | `Core`: opens the data files and ties every module together. Crate-level threading docs. | `Core`, `app_data_dir`, `APP_IDENTIFIER`, `ProjectBase`, `SwitchedBranchClose` |
 | `control` | Wire protocol between the `shika` command and the app: request and reply types, JSON-line framing, argument parsing, text rendering, the per-run socket directory, the stable `shika` command link, token generator. Public module. | `Request`, `Command`, `Reply`, `TaskInfo`, `TaskStatus`, `PROTOCOL_VERSION`, `parse_args`, `render_text`, `send`, `read_request`, `write_reply`, `ControlDir`, `install_command`, `new_token` |
-| `session` | The in-memory session list (`SessionStore`), ids, launch argument rules, git facts for the close dialog, manual task names. | `Session`, `LaunchOptions`, `WorkerEnv`, `SessionGitState`, `DiffStat`, `task_title` |
-| `worktree` | Everything that runs git for a task: creating drafts, preparing the fixed Lead worktree, base resolution, fetch, the journal, dirty and unpushed checks, branch renames, diff stat and diff, removal. | `JournalEntry`, `KnownBranches`, `normalize_prefix` (as `normalize_branch_prefix`); `LeadWorktree`; internally `create_draft`, `prepare_lead_worktree`, `lead_worktree_path`, `resolve_base`, `git_cmd`, `read_only_git`, `GIT_REDIRECTS` |
+| `session` | The in-memory session list (`SessionStore`), session kinds, ids, launch argument rules, git facts for the close dialog, manual task names. | `Session`, `SessionKind`, `LaunchOptions`, `WorkerEnv`, `SessionGitState`, `DiffStat`, `task_title` |
+| `worktree` | Everything that runs git for a task: creating drafts, preparing the fixed Lead worktree, base resolution, fetch, the journal, dirty and unpushed checks, branch renames, diff stat and diff (against a `Baseline`), removal, and the checkout's HEAD read. | `JournalEntry`, `KnownBranches`, `CheckoutHead`, `normalize_prefix` (as `normalize_branch_prefix`); `LeadWorktree`; internally `create_draft`, `prepare_lead_worktree`, `lead_worktree_path`, `resolve_base`, `Baseline`, `checkout_head`, `git_cmd`, `read_only_git`, `GIT_REDIRECTS` |
 | `pty` | `portable-pty` wrapper: one reader thread and one writer thread per PTY, environment setup, exit events. | `PtyId`, `PtySize`, `PtyEvent`, `PtyExit`, `PtySink`; internally `PtyHub`, `SpawnRequest`, `CONTROL_VARS` |
 | `agents` | The four CLI presets, their launch flags, and the Lead's flags: system prompt and conversation id per CLI (`lead_flags`). | `CliPreset`, `CliCatalog` |
 | `lead` | A project's Lead: `start_lead` (fixed worktree, conversation choice, saved record), stop, forget, Codex id discovery, lost workers, Cursor's `create-chat`. | `LeadLaunch`, `LeadStart`, `LeadConversation`, `FreshReason`, `LostWorker`, `LeadLoss` |
@@ -107,14 +107,30 @@ A failed launch removes the worktree only when it is provably untouched. Changed
 
 ### Sessions
 
-A `Session` is one card: id, project, preset, title, branch, repo, worktree, `base_ref`, the optional agent `pty` (`None` only for Claude chat Leads), shell PTYs, `cli_titled`, `manual_title`, and the two Lead fields:
+A `Session` is one card: id, project, preset, title, branch, repo, worktree, `base_ref`, the optional agent `pty` (`None` only for Claude chat Leads), shell PTYs, `cli_titled`, `manual_title`, `prompt_named`, `agent_started`, and:
 
-- `lead: bool` - this session is its project's Lead.
-- `started_by: Option<String>` - the id of the Lead that started this worker. `None` for a card the author created.
+- `kind: SessionKind` - `Task` (its own draft worktree and branch), `Lead` (the project's Lead), or `Checkout` (the project's own folder; see [Checkout sessions](#checkout-sessions)). `is_lead()` and `is_checkout()` ask it.
+- `started_by: Option<String>` - the id of the Lead that started this worker. `None` for a card the author created, and always for a Lead or checkout session.
+
+`Session::named()` says whether the first prompt or the CLI's title has named the session: for a task, its branch left `shika-draft-<id>`; for a checkout session, `prompt_named` or `cli_titled`. Switch agent marks a named session `cli_titled` so the new CLI cannot rename it.
 
 Ids come from `session::new_id` (time-derived hex). `Core::taken_ids` feeds it every live id plus every id found in the journal, from both the branch name (`shika-draft-<id>`) and the worktree folder name (`shika-draft-<id>`, or `shika-lead-<id>` from older versions; the fixed `shika-lead` folder has no id). It uses the folder, not the branch, because a draft's branch can be renamed. This is what keeps draft and Lead ids from colliding.
 
 The first prompt line names the branch (`session_rename_from_prompt`), and a second later the CLI's own title renames it once (`session_apply_cli_title`, which reads the CLI's private files through `cli_title`). Rules and file formats: [branch-naming.md](../../docs/branch-naming.md). Manual names: [task-names.md](../../docs/task-names.md).
+
+### Checkout sessions
+
+`Core::create_checkout_session(project_id, preset_id, size, sink)` starts the CLI in the project's own folder, on whatever the author has checked out. It owns no git state:
+
+- **No worktree, branch, or journal.** `worktree` and `repo` are the repository root, `branch` is empty, `base_ref` is `None`. No base fetch, no preparation or its approval, no `info/exclude` write, nothing in `worktrees.json`, so nothing can become a leftover. A folder that is no longer the top of its own git checkout is refused before anything runs.
+- **Launch.** The preset's launch flags (`agents::launch_flags` on the root, so Codex's trust override names it), the usual PTY environment, no prompt and no `LaunchOptions`, so it waits for the author and can never be a Lead's worker or carry `SHIKA_*` variables.
+- **One per project.** `Error::CheckoutExists` while the project has one, checked under the operations lock. `checkout_session(project_id)` finds it.
+- **Naming.** `session_rename_from_prompt` sets only the title (`prompt_named`). `session_apply_cli_title` sets only the title, and reads only conversations begun since `agent_started` (`CliHome::read`'s `since`: file creation time, or Codex's `created_at_ms` to the second), because the author's own conversations share the folder. Manual rename works. No git runs for either.
+- **Diff.** `session_diff_stat` and `session_diff` compare against `HEAD` (`worktree::Baseline::Head`): uncommitted work only, read with `read_only_git` and `check_worktree` bounded to the root.
+- **Usage.** Not a token usage source: `open_agent` does not register it, and `record_token_usage` ignores any project's root, because the folder's provider history includes conversations outside Shika.
+- **Close.** `session_close(id, agent_working)` runs no git: idle, it stops every PTY and drops the session; with `agent_working`, `CloseNeedsConfirmation`. The confirmed close is `session_stop_checkout(id)`, which refuses anything else with `NotCheckout`. Discard, push, branch-switch close, git state, publishing, and PR checks refuse it with `CheckoutUnsupported`. There is never a Discard: the tree is the author's own work.
+- `checkout_head(project_id)` returns `CheckoutHead::Branch(name)` or `Detached(short commit)` for the card and the picker, with or without a session.
+- The app's control server hides it from every Lead command (`is_lead_visible`), and it is never a worker, so the doorbell never rings for it.
 
 ### Launch options and the positional prompt
 
@@ -139,9 +155,9 @@ A project has one Lead, and it outlives the app: a fixed worktree, a saved recor
 - **Stop, close, forget.** `stop_lead(lead_id)` hangs up the Lead's PTYs and drops the session, keeping the tree, the journal entry, and the record (workers stay live). `forget_lead(project_id, discard)` removes the tree, the journal entry, and the record of a Lead that is not live (`Error::LeadRunning` otherwise); a tree with uncommitted changes or commits on no ref needs `discard` (`Error::WorktreeHasChanges`), and anything that is not a real directory registered as this repository's worktree (including a symlink) is never touched or followed; `leftover_remove` of an empty-branch entry whose path is a symlink drops only the entry. `session_close`, `session_discard`, and the `close_session` compatibility helper refuse Leads with `LeadUnsupported`. Stop and Forget are the only Lead lifecycle paths, so task closing cannot bypass detached-commit protection.
 - **Leftovers.** The fixed tree of a project with a saved record is not offered by `leftovers_list`; `forget_lead` removes it. Without a record (the project was removed, or the record was cleared) it is an ordinary leftover. Old `shika-lead-<id>` trees are ordinary leftovers.
 - A second live Lead for a project is `Error::LeadExists`, checked again under the lock. A failed start removes a worktree it created (nothing ran in it) and leaves an older one alone, with its record.
-- The returned session has `lead: true`, the title `Lead`, and an empty `branch`.
+- The returned session has kind `SessionKind::Lead`, the title `Lead`, and an empty `branch`.
 
-Methods and how they treat a Lead (`refuse_lead` returns `Error::LeadUnsupported`):
+Methods and how they treat a Lead (`refuse_lead` returns `Error::LeadUnsupported`; `require_task` returns it for a Lead and `CheckoutUnsupported` for a checkout session):
 
 | Behavior | Methods |
 | --- | --- |
@@ -150,7 +166,7 @@ Methods and how they treat a Lead (`refuse_lead` returns `Error::LeadUnsupported
 | Work, with Lead rules | `stop_lead` keeps the tree and record. `forget_lead` removes them only after Stop, with `discard` required for edits or unreferenced commits. |
 | Unchanged | `session_dirty`, `session_set_title`, `cancel_session_start`, `close_shell`, `write`, `resize`, `leftover_remove` (an empty-branch entry removes the tree only) |
 
-Any new per-session method that assumes a branch must call `refuse_lead` or return an explicit Lead result, and the app must guard its callers (`Card::lead`). See [lead-agent.md](../../docs/lead-agent.md).
+Any new per-session method that assumes a branch must call `refuse_lead` or `require_task`, or return an explicit Lead and checkout result, and the app must guard its callers (`Card::lead`, `Session::is_checkout`). See [lead-agent.md](../../docs/lead-agent.md).
 
 `lead_for_project` finds the live Lead. `workers_of(lead_id)` returns the live sessions whose `started_by` is that id.
 
@@ -231,6 +247,7 @@ Do not break these. Each has a reason.
 - **Validate every conversation id before it becomes an argument** (`valid_conversation_id`): it comes from `projects.json` or a CLI, and must not read as a flag.
 - **Scrub `SHIKA_SOCKET` and `SHIKA_TOKEN` from every PTY except a Lead's.** This is what makes the worker tree one level deep.
 - **A Lead has no branch.** An empty `branch` is a signal, not an oversight: do not give it one, and guard new per-session features.
+- **A checkout session owns no git state.** Its `worktree` is the author's repository: never journal it, remove it, rename its branch, stage, commit, push, or discard there, and never let a Lead see it. Reads stay bounded to the root with `read_only_git`.
 - **A launch prompt reaches the CLI as one argument that cannot be a flag.** Keep `check_prompt` in front of every path that adds one.
 - **Core never talks to a model API and never blocks the PTY reader.** A `PtySink::send` that blocks stalls the CLI.
 - **Do not copy from Zed's `terminal` crates (GPL).** Terminal types stay in `shika-terminal`.
@@ -254,6 +271,8 @@ Tests never touch real app data or the user's repositories:
 - The agent CLI is a shell script (`fake_cli`, or `REPORTING_CLI`, which prints the last argument and the `SHIKA_*` and `PATH` it was given). `Core::open_with` takes a `PathEnv` built by the test-only `PathEnv::from_lookup`, so no login shell runs and no real CLI is needed.
 - `pty::tests` provides `channel_sink`, `collect_until`, and `collect_to_exit` for reading what a child printed.
 - The Lead tests in `lib.rs` include `a_lead_`, `restarting_a_lead_`, `codex_`, `cursor_`, `pi_`, `forgetting_a_lead_`, `stopping_`, `workers_get_`, `only_a_lead_started_workers_agent_`, and `leads_can_only_be_`. Review regressions also cover stale Codex discovery and broken or redirected Lead gitfiles (including colon-containing paths). They set `Core::cli_home` to a scratch home, so no test reads the real `~/.claude`, `~/.codex`, or `~/.pi`; the per-CLI flag tests are in `agents.rs`, the fixed-worktree git tests in `worktree.rs`, and the control protocol tests in `control.rs`.
+
+The checkout tests in `lib.rs` (`a_checkout_`, `closing_a_dirty_checkout_`, `a_project_has_at_most_one_checkout_session`, `a_folder_that_is_not_its_own_checkout_`) run git through a logging wrapper (`core_with_logged_git`) to prove close runs no git, and compare a lock-free snapshot of the repository's git state (`git_snapshot`) before and after.
 
 Preparation integration fixtures (`preparation_tests.rs`) reserve exclusive roots with `create_dir`, PID/timestamp/counter, and collision retries. This replaces timestamp-only `create_dir_all`, which let parallel fixtures share/delete each other's repositories. Do not regress to adopting existing roots, and retain parallel workspace validation. See [worktree-preparation.md](../../docs/worktree-preparation.md).
 

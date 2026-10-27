@@ -7244,13 +7244,14 @@ impl Shika {
                     .unwrap_or_else(|| card.stage.clone()),
             );
             let (project_name, branch, stage) = match card.session.as_ref() {
-                // A Lead has no branch.
+                // A Lead and a checkout session have no task branch.
                 Some(s) => (
                     self.projects
                         .iter()
                         .find(|p| p.id == card.project)
                         .map(|p| SharedString::from(p.name.clone())),
-                    (!s.lead).then(|| SharedString::from(s.branch.clone())),
+                    (s.kind == shika_core::SessionKind::Task)
+                        .then(|| SharedString::from(s.branch.clone())),
                     None,
                 ),
                 None => (None, None, Some(SharedString::from(card.stage.clone()))),

@@ -7,8 +7,23 @@ use crate::activity::ActivityBridge;
 use crate::error::{Error, Result};
 use crate::pty::{PtyId, PtySize, SpawnRequest};
 
-/// One card: an agent CLI running in its own worktree. Memory only; a
-/// relaunch starts with none.
+/// Where a session's CLI runs, which decides what core may do with its git.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    /// An ordinary card in its own `shika-draft-<id>` worktree and branch.
+    Task,
+    /// Its project's Lead: the fixed detached worktree, with an empty
+    /// `branch`. Only Stop and Forget end it.
+    Lead,
+    /// The project's own folder, on whatever the author has checked out. It
+    /// owns no git state: `worktree` is the repository root, `branch` is
+    /// empty, nothing is journaled, and core never writes to its git. At
+    /// most one per project.
+    Checkout,
+}
+
+/// One card: an agent CLI running in its own worktree, or in its project's
+/// checkout. Memory only; a relaunch starts with none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub id: String,
@@ -23,6 +38,7 @@ pub struct Session {
     /// The project's repository root, kept so closing never depends on the
     /// project list.
     pub repo: PathBuf,
+    /// Where the CLI runs. The repository root itself for a checkout session.
     pub worktree: PathBuf,
     /// The ref the task branch started from, such as `refs/remotes/origin/dev`.
     /// Close and the diff stat measure the task against it, so changing the
@@ -34,20 +50,47 @@ pub struct Session {
     pub shell_ptys: Vec<PtyId>,
     /// Whether the CLI's own session title has named the card and branch.
     pub cli_titled: bool,
-    /// This session is its project's Lead: it runs in a detached worktree and
-    /// has an empty `branch`. The app must not rename, publish, diff, or open
-    /// shells for it. Memory only.
-    pub lead: bool,
+    /// Whether the first prompt line has named a checkout session. A task
+    /// records the same thing by leaving its draft branch, which a checkout
+    /// session does not have, so this stays false for every other kind.
+    pub prompt_named: bool,
+    /// When the current agent process was started. A checkout session reads
+    /// CLI titles only from conversations begun since then, because the
+    /// author's own conversations share its folder.
+    pub agent_started: SystemTime,
+    /// A Lead must not be renamed, published, diffed, or given shells; a
+    /// checkout session must not have its branch renamed, be published, or
+    /// be discarded. Memory only.
+    pub kind: SessionKind,
     /// The Lead session id that started this worker. None for a card the
     /// author created. Memory only.
     pub started_by: Option<String>,
 }
 
 impl Session {
+    pub fn is_lead(&self) -> bool {
+        self.kind == SessionKind::Lead
+    }
+
+    pub fn is_checkout(&self) -> bool {
+        self.kind == SessionKind::Checkout
+    }
+
     /// True while the task is still on its `shika-draft-<id>` branch, which
-    /// is to say nobody has named it yet.
+    /// is to say nobody has named it yet. Always false for a Lead and a
+    /// checkout session, which have no task branch; see [`Session::named`].
     pub fn on_draft_branch(&self) -> bool {
         self.branch == format!("shika-draft-{}", self.id)
+    }
+
+    /// Whether the first prompt or the CLI's title has named the session, so
+    /// later prompts and a switched agent's title leave its name alone. A
+    /// Lead counts as named.
+    pub fn named(&self) -> bool {
+        match self.kind {
+            SessionKind::Checkout => self.prompt_named || self.cli_titled,
+            SessionKind::Task | SessionKind::Lead => !self.on_draft_branch(),
+        }
     }
 }
 
@@ -297,6 +340,21 @@ impl SessionStore {
         Ok(session.clone())
     }
 
+    /// Names a checkout session from its first prompt line. Its branch is
+    /// the author's, so only the title changes.
+    pub(crate) fn name_from_prompt(&self, id: &str, title: String) -> Result<Session> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
+        let session = sessions
+            .iter_mut()
+            .find(|session| session.id == id)
+            .ok_or(Error::UnknownSession)?;
+        if !session.manual_title {
+            session.title = title;
+        }
+        session.prompt_named = true;
+        Ok(session.clone())
+    }
+
     pub(crate) fn rename(&self, id: &str, branch: String, title: String) -> Result<Session> {
         let mut sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
         let session = sessions
@@ -329,20 +387,20 @@ impl SessionStore {
         Ok(session.clone())
     }
 
-    /// Point the session at a new agent process. The branch, title, worktree,
-    /// base ref, shells, and owner stay; an unnamed "New <CLI>" title takes
-    /// the new CLI's name. A task already named (its branch is no longer
-    /// `shika-draft-<id>`, or a CLI title was applied) gets `cli_titled`, so
-    /// neither the switch prompt nor the new CLI's title can rename it. A
-    /// task still on its draft branch keeps naming open, as New does.
-    /// Returns the previous agent PTY so the caller can stop it after the
-    /// new one is running.
+    /// Point the session at a new agent process, started at `started`. The
+    /// branch, title, worktree, base ref, shells, and owner stay; an unnamed
+    /// "New <CLI>" title takes the new CLI's name. A session already named
+    /// ([`Session::named`]) gets `cli_titled`, so neither the switch prompt
+    /// nor the new CLI's title can rename it. An unnamed one keeps naming
+    /// open, as New does. Returns the previous agent PTY so the caller can
+    /// stop it after the new one is running.
     pub(crate) fn retarget_agent(
         &self,
         id: &str,
         preset_id: String,
         preset_name: String,
         pty: PtyId,
+        started: SystemTime,
     ) -> Result<(Session, PtyId)> {
         let mut sessions = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
         let session = sessions
@@ -354,12 +412,13 @@ impl SessionStore {
         if !session.manual_title && session.title == format!("New {}", session.preset_name) {
             session.title = format!("New {preset_name}");
         }
-        if !session.on_draft_branch() {
+        if session.named() {
             session.cli_titled = true;
         }
         session.preset_id = preset_id;
         session.preset_name = preset_name;
         session.pty = Some(pty);
+        session.agent_started = started;
         Ok((session.clone(), old))
     }
 
@@ -464,9 +523,30 @@ mod tests {
             pty: Some(pty),
             shell_ptys: Vec::new(),
             cli_titled: false,
-            lead: false,
+            prompt_named: false,
+            agent_started: UNIX_EPOCH,
+            kind: SessionKind::Task,
             started_by: None,
         }
+    }
+
+    #[test]
+    fn a_checkout_session_is_named_by_its_prompt_or_cli_title_never_by_a_branch() {
+        let mut session = sample("1", "repo", PtyId(1));
+        session.kind = SessionKind::Checkout;
+        session.branch = String::new();
+        assert!(!session.on_draft_branch());
+        assert!(!session.named());
+        let store = SessionStore::new();
+        store.insert(session.clone());
+        let named = store
+            .name_from_prompt("1", "Where is the notification code".into())
+            .unwrap();
+        assert!(named.named());
+        assert_eq!(named.branch, "");
+        assert_eq!(named.title, "Where is the notification code");
+        session.cli_titled = true;
+        assert!(session.named());
     }
 
     #[test]

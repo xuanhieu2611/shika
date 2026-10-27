@@ -137,6 +137,20 @@ pub enum Error {
     /// publish, shell, and agent-switch operations refuse it.
     #[error("The Lead works in a detached worktree and has no branch, so it cannot do that.")]
     LeadUnsupported,
+    /// A second checkout session for one project. Two agents in one folder
+    /// is the collision worktrees exist to prevent.
+    #[error("This project already has an agent in its checkout.")]
+    CheckoutExists,
+    /// A checkout session owns no git state, so branch, publish, discard,
+    /// and push operations refuse it.
+    #[error(
+        "This agent runs in your checkout, and Shika leaves its git to you, so it cannot do that."
+    )]
+    CheckoutUnsupported,
+    /// [`crate::Core::session_stop_checkout`] on a task or Lead, which would
+    /// skip the checks their close makes.
+    #[error("Only an agent in the checkout can stop without a close check.")]
+    NotCheckout,
 
     #[error("Worktree preparation failed: {0}")]
     Preparation(String),

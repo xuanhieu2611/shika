@@ -761,6 +761,54 @@ pub fn head_branch(git: &Path, path_env: &str, worktree: &Path) -> Result<Option
     ))
 }
 
+/// What a project's checkout has checked out, for its checkout session's card
+/// and the picker footer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckoutHead {
+    /// A branch, including one with no commits yet.
+    Branch(String),
+    /// A detached HEAD, as its short commit id.
+    Detached(String),
+}
+
+impl CheckoutHead {
+    /// The branch name, or the short commit when detached.
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Branch(name) | Self::Detached(name) => name,
+        }
+    }
+}
+
+/// The checkout's HEAD: one git process, two when detached. A background
+/// read bounded to `repo` like the diff reads: no optional locks, and a
+/// folder whose `.git` is missing or that is not the top of its own checkout
+/// is an error, never a parent repository.
+pub fn checkout_head(git: &Path, path_env: &str, repo: &Path) -> Result<CheckoutHead> {
+    check_worktree(git, path_env, repo).map_err(Error::GitStatus)?;
+    let output = read_only_git(git, path_env, repo)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    if output.status.success() {
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok(CheckoutHead::Branch(name));
+    }
+    if output.status.code() != Some(1) {
+        return Err(Error::GitStatus(first_line(&output.stderr)));
+    }
+    let output = read_only_git(git, path_env, repo)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .map_err(|_| Error::GitStatus(None))?;
+    if !output.status.success() {
+        return Err(Error::GitStatus(first_line(&output.stderr)));
+    }
+    Ok(CheckoutHead::Detached(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
 /// The local remote-tracking ref of `branch` on origin. Git updates it on
 /// every push from this worktree, so it is the cheap signal that a new
 /// commit reached the PR.
@@ -1109,19 +1157,39 @@ fn default_branch(git: &Path, path_env: &str, repo: &Path, worktree: &Path) -> R
     Err(Error::GitStatus(None))
 }
 
-/// What the task changed against where its branch left its base (the
-/// recorded start ref, else the default branch):
-/// committed and uncommitted tracked edits, plus untracked files that are not
-/// ignored. Reads only; never stages anything or writes the index.
+/// What a diff of a session's tree is measured against.
+#[derive(Debug, Clone, Copy)]
+pub enum Baseline<'a> {
+    /// Where a task branch left its base: the recorded start ref, else the
+    /// default branch of `repo`. Commits and uncommitted work both count.
+    Task {
+        repo: &'a Path,
+        recorded: Option<&'a str>,
+    },
+    /// `HEAD`: uncommitted work only. A checkout session's baseline, since
+    /// the author's own commits there are not the session's.
+    Head,
+}
+
+/// The commit or ref `baseline` resolves to in `worktree`.
+fn resolve_baseline(git: &Path, path_env: &str, worktree: &Path, baseline: Baseline) -> String {
+    match baseline {
+        Baseline::Task { repo, recorded } => diff_base(git, path_env, repo, worktree, recorded),
+        Baseline::Head => "HEAD".into(),
+    }
+}
+
+/// What the session changed against `baseline`: tracked edits (and, for a
+/// task, its commits), plus untracked files that are not ignored. Reads
+/// only; never stages anything or writes the index.
 pub fn diff_stat(
     git: &Path,
     path_env: &str,
-    repo: &Path,
     worktree: &Path,
-    base: Option<&str>,
+    baseline: Baseline,
 ) -> Result<crate::DiffStat> {
     check_worktree(git, path_env, worktree).map_err(Error::GitStatus)?;
-    let base = diff_base(git, path_env, repo, worktree, base);
+    let base = resolve_baseline(git, path_env, worktree, baseline);
     // Comparing the base to the working tree covers commits and edits at once.
     let output = read_only_git(git, path_env, worktree)
         .args(["diff", "--numstat"])
@@ -1174,7 +1242,7 @@ const TASK_DIFF: [&str; 5] = [
 /// `diff.mnemonicPrefix`.
 const TASK_PATCH: [&str; 3] = ["-U3", "--src-prefix=a/", "--dst-prefix=b/"];
 
-/// The task's whole change for the Changes panel, measured exactly as
+/// The session's whole change for the Changes panel, measured exactly as
 /// [`diff_stat`] measures it. After the base is found, two git processes:
 /// the patch, streamed and parsed as it arrives, and the untracked list.
 /// Reads only, and only this worktree: one whose `.git` is missing or broken
@@ -1182,12 +1250,11 @@ const TASK_PATCH: [&str; 3] = ["-U3", "--src-prefix=a/", "--dst-prefix=b/"];
 pub fn session_diff(
     git: &Path,
     path_env: &str,
-    repo: &Path,
     worktree: &Path,
-    base: Option<&str>,
+    baseline: Baseline,
 ) -> Result<SessionDiff> {
     check_worktree(git, path_env, worktree).map_err(Error::ReadChanges)?;
-    let base = diff_base(git, path_env, repo, worktree, base);
+    let base = resolve_baseline(git, path_env, worktree, baseline);
     let untracked = untracked(git, path_env, worktree).map_err(Error::ReadChanges)?;
     let paths: Vec<&[u8]> = untracked
         .split(|byte| *byte == 0)
@@ -1312,8 +1379,9 @@ fn diff_base(
 /// `<repo>/.worktrees/<branch>`, so with its `.git` file missing, git would
 /// otherwise walk up and read the main checkout as if it were the task.
 /// `GIT_CEILING_DIRECTORIES` is the worktree's parent, which git resolves
-/// through symlinks. Every caller passes a task worktree root, never the main
-/// checkout; use [`git_cmd`] there.
+/// through symlinks. Callers pass the root of the tree they read: a task
+/// worktree, or a checkout session's repository root, which is bounded the
+/// same way so a broken `.git` never reads a repository around it.
 fn read_only_git(program: &Path, path_env: &str, worktree: &Path) -> Command {
     let mut cmd = git_cmd(program, path_env, worktree);
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
@@ -2110,8 +2178,75 @@ mod tests {
         (repo, draft)
     }
 
+    fn task(repo: &Path) -> Baseline<'_> {
+        Baseline::Task {
+            repo,
+            recorded: None,
+        }
+    }
+
     fn stat(repo: &Path, draft: &Draft) -> crate::DiffStat {
-        diff_stat(&git(), "", repo, &draft.path, None).unwrap()
+        diff_stat(&git(), "", &draft.path, task(repo)).unwrap()
+    }
+
+    #[test]
+    fn a_head_baseline_counts_only_uncommitted_work_in_the_checkout() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        // Ignore Shika's own folder, as New does, so tasks never show here.
+        fs::write(repo.join(".git/info/exclude"), ".worktrees/\n").unwrap();
+        fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        commit_all(&repo, "the author's own commit");
+        let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+        fs::write(draft.path.join("task.txt"), "task\n").unwrap();
+        assert_eq!(
+            diff_stat(&git(), "", &repo, Baseline::Head).unwrap(),
+            counts(0, 0, 0),
+            "commits are the author's, and a task's files are not the checkout's"
+        );
+        fs::write(repo.join("a.txt"), "one\n").unwrap();
+        fs::write(repo.join("new.txt"), "x\ny\n").unwrap();
+        assert_eq!(
+            diff_stat(&git(), "", &repo, Baseline::Head).unwrap(),
+            counts(2, 2, 1)
+        );
+        let changes = session_diff(&git(), "", &repo, Baseline::Head).unwrap();
+        assert_eq!(changes.files.len(), 2);
+        assert!(changes.files.iter().all(|file| file.key.base == "HEAD"));
+        git_ok(&repo, &["add", "-A"]);
+        git_ok(&repo, &["commit", "-m", "the author commits"]);
+        assert_eq!(
+            diff_stat(&git(), "", &repo, Baseline::Head).unwrap(),
+            counts(0, 0, 0),
+            "after the author commits, the stat goes away"
+        );
+        assert_eq!(porcelain(&repo), "", "reading never staged anything");
+    }
+
+    #[test]
+    fn checkout_head_names_the_branch_or_the_detached_commit() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        git_ok(&repo, &["checkout", "-b", "dev"]);
+        assert_eq!(
+            checkout_head(&git(), "", &repo).unwrap(),
+            CheckoutHead::Branch("dev".into())
+        );
+        git_ok(&repo, &["checkout", "--detach"]);
+        let short = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .unwrap();
+        let short = String::from_utf8_lossy(&short.stdout).trim().to_string();
+        let head = checkout_head(&git(), "", &repo).unwrap();
+        assert_eq!(head, CheckoutHead::Detached(short.clone()));
+        assert_eq!(head.label(), short);
+        // A folder inside the repository is not a checkout of its own.
+        let nested = repo.join("src");
+        fs::create_dir_all(&nested).unwrap();
+        assert!(checkout_head(&git(), "", &nested).is_err());
     }
 
     fn counts(files: usize, insertions: usize, deletions: usize) -> crate::DiffStat {
@@ -2257,7 +2392,7 @@ mod tests {
     }
 
     fn changes(repo: &Path, draft: &Draft) -> SessionDiff {
-        session_diff(&git(), "", repo, &draft.path, None).unwrap()
+        session_diff(&git(), "", &draft.path, task(repo)).unwrap()
     }
 
     fn file<'a>(diff: &'a SessionDiff, path: &str) -> &'a FileDiff {
@@ -2689,9 +2824,9 @@ mod tests {
     /// The reads that must fail, not fall through to the main checkout, when
     /// a task worktree has lost its `.git` file.
     fn assert_reads_fail(repo: &Path, draft: &Draft, key: &FileKey) {
-        let stat = diff_stat(&git(), "", repo, &draft.path, None);
+        let stat = diff_stat(&git(), "", &draft.path, task(repo));
         assert!(matches!(stat, Err(Error::GitStatus(_))), "{stat:?}");
-        let changes = session_diff(&git(), "", repo, &draft.path, None);
+        let changes = session_diff(&git(), "", &draft.path, task(repo));
         assert!(matches!(changes, Err(Error::ReadChanges(_))), "{changes:?}");
         let expanded = file_diff(&git(), "", &draft.path, key);
         assert!(
@@ -2710,7 +2845,7 @@ mod tests {
         // instead would look like "No changes".
         fs::remove_file(draft.path.join(".git")).unwrap();
         assert_reads_fail(&repo, &draft, &key);
-        let changes = session_diff(&git(), "", &repo, &draft.path, None).unwrap_err();
+        let changes = session_diff(&git(), "", &draft.path, task(&repo)).unwrap_err();
         assert!(
             changes.to_string().contains("not a git repository"),
             "{changes}"

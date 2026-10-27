@@ -142,7 +142,7 @@ impl Core {
     /// - **Environment.** `PATH` starts with `bin_dir`, plus `SHIKA_SOCKET` and
     ///   `SHIKA_TOKEN`. Every other PTY has those removed.
     ///
-    /// The session has `lead: true`, the title `Lead`, and an empty `branch`.
+    /// The session has kind `Lead`, the title `Lead`, and an empty `branch`.
     /// The app must not rename, publish, diff-stat, or open shells for it; the
     /// Core methods that would refuse it with [`Error::LeadUnsupported`]. A
     /// second live Lead for a project is [`Error::LeadExists`]. A failed start
@@ -308,6 +308,7 @@ impl Core {
             } else {
                 None
             };
+            let started = std::time::SystemTime::now();
             let (pty, activity) = if chat {
                 (None, None)
             } else {
@@ -317,6 +318,7 @@ impl Core {
                     &path,
                     size,
                     Some(&control),
+                    true,
                     args,
                     bootstrap,
                     sink,
@@ -377,7 +379,9 @@ impl Core {
                 pty,
                 shell_ptys: Vec::new(),
                 cli_titled: false,
-                lead: true,
+                prompt_named: false,
+                agent_started: started,
+                kind: crate::SessionKind::Lead,
                 started_by: None,
             };
             if let Some(activity) = activity {
@@ -438,7 +442,7 @@ impl Core {
         self.sessions
             .all()
             .into_iter()
-            .find(|session| session.lead && session.project_id == project_id)
+            .find(|session| session.is_lead() && session.project_id == project_id)
     }
 
     /// The live workers a Lead started, in creation order. Quick.
@@ -461,7 +465,7 @@ impl Core {
         let lead = self
             .sessions
             .get(lead_id)
-            .filter(|session| session.lead)
+            .filter(|session| session.is_lead())
             .ok_or(Error::UnknownSession)?;
         self.hang_up(&lead);
         self.sessions.remove(lead_id);
@@ -530,7 +534,11 @@ impl Core {
         lead_id: &str,
         since: SystemTime,
     ) -> Result<Option<String>> {
-        let Some(lead) = self.sessions.get(lead_id).filter(|session| session.lead) else {
+        let Some(lead) = self
+            .sessions
+            .get(lead_id)
+            .filter(|session| session.is_lead())
+        else {
             return Ok(None);
         };
         let project = self.projects.get(&lead.project_id)?;
