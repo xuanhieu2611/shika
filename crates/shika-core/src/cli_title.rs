@@ -3,7 +3,10 @@
 //! treats anything missing, unreadable, or unexpected as "no title yet".
 //!
 //! A card's worktree is new, so the only sessions stored for that folder are
-//! the card's own.
+//! the card's own. A checkout session's folder is the author's repository,
+//! where their own conversations live too, so its title is read only from
+//! conversations begun since its CLI started (the `since` of
+//! [`CliHome::read`]).
 //!
 //! The same readers answer two questions a Lead needs: whether a stored
 //! conversation id still exists ([`CliHome::session_exists`]), and which
@@ -11,6 +14,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use md5::{Digest, Md5};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -67,15 +71,24 @@ impl CliHome {
         }
     }
 
-    /// The session title the preset's CLI wrote for `worktree`, if any.
-    pub(crate) fn read(&self, preset_id: &str, worktree: &Path) -> Option<String> {
+    /// The session title the preset's CLI wrote for `worktree`, if any. With
+    /// `since`, only a conversation begun at or after it counts: its file was
+    /// created then (Claude Code, Pi, Cursor), or its thread row says so
+    /// (Codex, to the second). A conversation whose start cannot be read is
+    /// skipped then.
+    pub(crate) fn read(
+        &self,
+        preset_id: &str,
+        worktree: &Path,
+        since: Option<SystemTime>,
+    ) -> Option<String> {
         let title = cwd_forms(worktree)
             .into_iter()
             .find_map(|cwd| match preset_id {
-                "claude" => self.claude(&cwd),
-                "codex" => self.codex(&cwd),
-                "cursor" => self.cursor(&cwd),
-                "pi" => self.pi(&cwd),
+                "claude" => self.claude(&cwd, since),
+                "codex" => self.codex(&cwd, since),
+                "cursor" => self.cursor(&cwd, since),
+                "pi" => self.pi(&cwd, since),
                 _ => None,
             })?;
         let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -106,9 +119,10 @@ impl CliHome {
     /// `<config>/projects/<cwd with every non-alphanumeric as ->/<session>.jsonl`,
     /// with lines like `{"type":"ai-title","aiTitle":"Fix login flow",...}`.
     /// The newest session with a title wins, and its last title is current.
-    fn claude(&self, cwd: &Path) -> Option<String> {
+    fn claude(&self, cwd: &Path, since: Option<SystemTime>) -> Option<String> {
         jsonl_newest_first(&self.claude_project_dir(cwd))
             .into_iter()
+            .filter(|path| begun_since(path, since))
             .find_map(|path| {
                 let text = fs::read_to_string(path).ok()?;
                 text.lines()
@@ -122,12 +136,13 @@ impl CliHome {
 
     /// `~/.cursor/chats/<md5 of cwd>/<agent>/meta.json`, holding `cwd` and a
     /// `title` that stays null until the chat has been named.
-    fn cursor(&self, cwd: &Path) -> Option<String> {
+    fn cursor(&self, cwd: &Path, since: Option<SystemTime>) -> Option<String> {
         let hash = Md5::digest(cwd.to_string_lossy().as_bytes());
         let hash: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
         fs::read_dir(self.home.join(".cursor").join("chats").join(hash))
             .ok()?
             .filter_map(|entry| entry.ok())
+            .filter(|entry| begun_since(&entry.path(), since))
             .filter_map(|entry| {
                 let text = fs::read_to_string(entry.path().join("meta.json")).ok()?;
                 let meta: Value = serde_json::from_str(&text).ok()?;
@@ -144,16 +159,31 @@ impl CliHome {
     /// `$CODEX_HOME` or `~/.codex`, the highest `state_<n>.sqlite`. `threads.name`
     /// is the short conversation name. `title` is often the raw first message,
     /// so it is not read. Checked against Codex CLI 0.160.0 on 2026-10-05.
-    fn codex(&self, cwd: &Path) -> Option<String> {
+    fn codex(&self, cwd: &Path, since: Option<SystemTime>) -> Option<String> {
         let db = newest_state_db(&cwd.join(self.codex_root()))?;
         let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
         let cwd = cwd.to_string_lossy();
+        let Some(since) = since else {
+            return conn
+                .query_row(
+                    "SELECT name FROM threads
+                     WHERE cwd = ?1 AND name IS NOT NULL AND name != ''
+                     ORDER BY updated_at_ms DESC
+                     LIMIT 1",
+                    [cwd.as_ref()],
+                    |row| row.get(0),
+                )
+                .ok();
+        };
+        // Whole seconds: an older database records only `created_at`.
+        let since_ms = since.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64 * 1000;
         conn.query_row(
             "SELECT name FROM threads
              WHERE cwd = ?1 AND name IS NOT NULL AND name != ''
+               AND COALESCE(created_at_ms, created_at * 1000) >= ?2
              ORDER BY updated_at_ms DESC
              LIMIT 1",
-            [cwd.as_ref()],
+            (cwd.as_ref(), since_ms),
             |row| row.get(0),
         )
         .ok()
@@ -173,13 +203,14 @@ impl CliHome {
 
     /// Pi writes a name only when `/name`, `--name`, or an extension sets one:
     /// `{"type":"session_info","name":"..."}`. Checked against Pi 1.0.0 on 2026-10-05.
-    fn pi(&self, cwd: &Path) -> Option<String> {
+    fn pi(&self, cwd: &Path, since: Option<SystemTime>) -> Option<String> {
         let root = self.pi_root();
         let mut sessions: Vec<_> = fs::read_dir(root.join(pi_session_folder(cwd)))
             .ok()?
             .filter_map(|entry| entry.ok())
             .map(|entry| entry.path())
             .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+            .filter(|path| begun_since(path, since))
             .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
             .collect();
         sessions.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
@@ -307,6 +338,19 @@ impl CliHome {
             }
         })
     }
+}
+
+/// Whether the conversation stored at `path` began at or after `since`, by
+/// the file's creation time. Always true without `since`; false when the
+/// creation time cannot be read, so an unknown conversation never names a
+/// checkout session.
+fn begun_since(path: &Path, since: Option<SystemTime>) -> bool {
+    let Some(since) = since else {
+        return true;
+    };
+    fs::metadata(path)
+        .and_then(|meta| meta.created())
+        .is_ok_and(|created| created >= since)
 }
 
 /// `<cwd with every non-alphanumeric character replaced by ->`.
@@ -445,18 +489,120 @@ mod tests {
         .unwrap();
         let home = CliHome::at(scratch.0.clone());
         assert_eq!(
-            home.read("claude", Path::new(WORKTREE)).as_deref(),
+            home.read("claude", Path::new(WORKTREE), None).as_deref(),
             Some("Shika background opacity and blur")
         );
         // Cursor's reader does not look at Claude's files.
-        assert_eq!(home.read("cursor", Path::new(WORKTREE)), None);
+        assert_eq!(home.read("cursor", Path::new(WORKTREE), None), None);
+    }
+
+    /// After `since`, with time for the next file's creation to be later.
+    fn instant_after_this() -> SystemTime {
+        let since = SystemTime::now();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        since
+    }
+
+    #[test]
+    fn with_since_only_a_conversation_begun_after_it_names_the_session() {
+        let scratch = Scratch::new();
+        let dir = claude_dir(&scratch.0);
+        fs::create_dir_all(&dir).unwrap();
+        let title = |name: &str| format!("{{\"type\":\"ai-title\",\"aiTitle\":\"{name}\"}}\n");
+        fs::write(
+            dir.join("authors-own.jsonl"),
+            title("The author's own chat"),
+        )
+        .unwrap();
+        let since = instant_after_this();
+        let home = CliHome::at(scratch.0.clone());
+        assert_eq!(
+            home.read("claude", Path::new(WORKTREE), None).as_deref(),
+            Some("The author's own chat")
+        );
+        assert_eq!(home.read("claude", Path::new(WORKTREE), Some(since)), None);
+        // Touching the older conversation does not make it begin later.
+        fs::write(dir.join("authors-own.jsonl"), title("Renamed meanwhile")).unwrap();
+        assert_eq!(home.read("claude", Path::new(WORKTREE), Some(since)), None);
+        fs::write(
+            dir.join("ours.jsonl"),
+            title("Where is the notification code"),
+        )
+        .unwrap();
+        assert_eq!(
+            home.read("claude", Path::new(WORKTREE), Some(since))
+                .as_deref(),
+            Some("Where is the notification code")
+        );
+
+        let pi = pi_folder(&scratch.0.join(".pi/agent/sessions"));
+        fs::create_dir_all(&pi).unwrap();
+        let info = |name: &str| format!("{{\"type\":\"session_info\",\"name\":\"{name}\"}}\n");
+        fs::write(pi.join("old.jsonl"), info("Old Pi chat")).unwrap();
+        let since = instant_after_this();
+        assert_eq!(home.read("pi", Path::new(WORKTREE), Some(since)), None);
+        fs::write(pi.join("new.jsonl"), info("New Pi chat")).unwrap();
+        assert_eq!(
+            home.read("pi", Path::new(WORKTREE), Some(since)).as_deref(),
+            Some("New Pi chat")
+        );
+
+        let cursor = cursor_dir(&scratch.0, WORKTREE);
+        let meta =
+            |name: &str| format!(r#"{{"title":"{name}","cwd":"{WORKTREE}","updatedAtMs":1}}"#);
+        fs::create_dir_all(cursor.join("old")).unwrap();
+        fs::write(cursor.join("old/meta.json"), meta("Old Cursor chat")).unwrap();
+        let since = instant_after_this();
+        assert_eq!(home.read("cursor", Path::new(WORKTREE), Some(since)), None);
+        fs::create_dir_all(cursor.join("new")).unwrap();
+        fs::write(cursor.join("new/meta.json"), meta("New Cursor chat")).unwrap();
+        assert_eq!(
+            home.read("cursor", Path::new(WORKTREE), Some(since))
+                .as_deref(),
+            Some("New Cursor chat")
+        );
+    }
+
+    #[test]
+    fn with_since_codex_counts_only_threads_created_from_that_second() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join(".codex/state_1.sqlite");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (id TEXT, cwd TEXT, name TEXT, created_at INTEGER,
+                created_at_ms INTEGER, updated_at_ms INTEGER);",
+        )
+        .unwrap();
+        let since = UNIX_EPOCH + std::time::Duration::from_millis(1_000_500);
+        let row = |id: &str, name: &str, created_ms: i64, updated: i64| {
+            conn.execute(
+                "INSERT INTO threads VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (id, WORKTREE, name, created_ms / 1000, created_ms, updated),
+            )
+            .unwrap();
+        };
+        row("a", "Before the launch", 999_999, 90);
+        let home = CliHome::at(scratch.0.clone());
+        assert_eq!(home.read("codex", Path::new(WORKTREE), Some(since)), None);
+        row("b", "After the launch", 1_000_700, 10);
+        assert_eq!(
+            home.read("codex", Path::new(WORKTREE), Some(since))
+                .as_deref(),
+            Some("After the launch")
+        );
+        assert_eq!(
+            home.read("codex", Path::new(WORKTREE), None).as_deref(),
+            Some("Before the launch"),
+            "without since, the newest update wins as before"
+        );
     }
 
     #[test]
     fn claude_without_a_title_yet_is_none() {
         let scratch = Scratch::new();
         let home = CliHome::at(scratch.0.clone());
-        assert_eq!(home.read("claude", Path::new(WORKTREE)), None);
+        assert_eq!(home.read("claude", Path::new(WORKTREE), None), None);
         let dir = claude_dir(&scratch.0);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("a.jsonl"), "{\"type\":\"user\"}\n").unwrap();
@@ -465,13 +611,13 @@ mod tests {
             "{\"type\":\"ai-title\",\"aiTitle\":\"x\"}\n",
         )
         .unwrap();
-        assert_eq!(home.read("claude", Path::new(WORKTREE)), None);
+        assert_eq!(home.read("claude", Path::new(WORKTREE), None), None);
         fs::write(
             dir.join("b.jsonl"),
             "{\"type\":\"ai-title\",\"aiTitle\":\"  \"}\n",
         )
         .unwrap();
-        assert_eq!(home.read("claude", Path::new(WORKTREE)), None);
+        assert_eq!(home.read("claude", Path::new(WORKTREE), None), None);
     }
 
     #[test]
@@ -490,7 +636,7 @@ mod tests {
             ..CliHome::at(scratch.0.clone())
         };
         assert_eq!(
-            home.read("claude", Path::new(WORKTREE)).as_deref(),
+            home.read("claude", Path::new(WORKTREE), None).as_deref(),
             Some("Moved")
         );
     }
@@ -508,7 +654,7 @@ mod tests {
             format!(r#"{{"title":null,"cwd":"{WORKTREE}","updatedAtMs":5}}"#),
         )
         .unwrap();
-        assert_eq!(home.read("cursor", Path::new(WORKTREE)), None);
+        assert_eq!(home.read("cursor", Path::new(WORKTREE), None), None);
         fs::write(dir.join("broken/meta.json"), "{ nope").unwrap();
         fs::write(
             dir.join("new/meta.json"),
@@ -516,7 +662,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            home.read("cursor", Path::new(WORKTREE)).as_deref(),
+            home.read("cursor", Path::new(WORKTREE), None).as_deref(),
             Some("Setting Placement Query")
         );
         // A chat recorded for another folder is never used.
@@ -526,7 +672,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            home.read("cursor", Path::new(WORKTREE)).as_deref(),
+            home.read("cursor", Path::new(WORKTREE), None).as_deref(),
             Some("Setting Placement Query")
         );
     }
@@ -549,7 +695,7 @@ mod tests {
         .unwrap();
         let home = CliHome::at(scratch.0.clone());
         assert_eq!(
-            home.read("cursor", &through_link).as_deref(),
+            home.read("cursor", &through_link, None).as_deref(),
             Some("Resolved")
         );
     }
@@ -558,7 +704,7 @@ mod tests {
     fn an_unknown_cli_has_no_title() {
         let scratch = Scratch::new();
         assert_eq!(
-            CliHome::at(scratch.0.clone()).read("kiro", Path::new(WORKTREE)),
+            CliHome::at(scratch.0.clone()).read("kiro", Path::new(WORKTREE), None),
             None
         );
     }
@@ -601,11 +747,11 @@ mod tests {
         );
         let home = CliHome::at(scratch.0.clone());
         assert_eq!(
-            home.read("codex", Path::new(WORKTREE)).as_deref(),
+            home.read("codex", Path::new(WORKTREE), None).as_deref(),
             Some("Background opacity and blur")
         );
         fs::write(scratch.0.join(".codex/state_1.sqlite"), "not a database").unwrap();
-        assert_eq!(home.read("codex", Path::new(WORKTREE)), None);
+        assert_eq!(home.read("codex", Path::new(WORKTREE), None), None);
     }
 
     #[test]
@@ -627,10 +773,10 @@ mod tests {
             ..CliHome::at(scratch.0.clone())
         };
         assert_eq!(
-            home.read("codex", Path::new(WORKTREE)).as_deref(),
+            home.read("codex", Path::new(WORKTREE), None).as_deref(),
             Some("From the new file")
         );
-        assert_eq!(home.read("codex", Path::new("/missing")), None);
+        assert_eq!(home.read("codex", Path::new("/missing"), None), None);
     }
 
     fn pi_folder(sessions: &Path) -> PathBuf {
@@ -655,7 +801,7 @@ mod tests {
         )
         .unwrap();
         let home = CliHome::at(scratch.0.clone());
-        assert_eq!(home.read("pi", Path::new(WORKTREE)), None);
+        assert_eq!(home.read("pi", Path::new(WORKTREE), None), None);
         let named = dir.join("named.jsonl");
         fs::write(
             &named,
@@ -668,7 +814,7 @@ mod tests {
         filetime(&dir.join("plain.jsonl"), 30);
         // The newest file has no session name, so an older named file is used.
         assert_eq!(
-            home.read("pi", Path::new(WORKTREE)).as_deref(),
+            home.read("pi", Path::new(WORKTREE), None).as_deref(),
             Some("Opacity and blur")
         );
         fs::write(
@@ -677,7 +823,7 @@ mod tests {
         )
         .unwrap();
         filetime(&dir.join("blank.jsonl"), 40);
-        assert_eq!(home.read("pi", Path::new(WORKTREE)), None);
+        assert_eq!(home.read("pi", Path::new(WORKTREE), None), None);
     }
 
     #[test]
@@ -696,7 +842,7 @@ mod tests {
             ..CliHome::at(scratch.0.clone())
         };
         assert_eq!(
-            home.read("pi", Path::new(WORKTREE)).as_deref(),
+            home.read("pi", Path::new(WORKTREE), None).as_deref(),
             Some("Moved")
         );
     }
@@ -717,7 +863,7 @@ mod tests {
             ..CliHome::at(scratch.0.clone())
         };
         assert_eq!(
-            home.read("pi", Path::new(WORKTREE)).as_deref(),
+            home.read("pi", Path::new(WORKTREE), None).as_deref(),
             Some("Agent home")
         );
     }

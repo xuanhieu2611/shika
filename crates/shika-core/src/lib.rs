@@ -10,7 +10,8 @@
 //!
 //! - **Blocking.** [`Core::add_project`], [`Core::project_preparation_draft`],
 //!   [`Core::save_project_preparation`], [`Core::create_session`],
-//!   [`Core::create_session_with_preparation`], [`Core::start_lead`],
+//!   [`Core::create_session_with_preparation`], [`Core::create_checkout_session`],
+//!   [`Core::checkout_head`], [`Core::session_stop_checkout`], [`Core::start_lead`],
 //!   [`Core::forget_lead`], [`Core::discover_lead_session`], [`Core::set_lead_session`],
 //!   [`Core::open_shell`], [`Core::session_dirty`], [`Core::session_git_state`],
 //!   [`Core::session_diff_stat`], [`Core::session_diff`], [`Core::session_file_diff`],
@@ -31,7 +32,7 @@
 //! - **Quick.** [`Core::open`], [`Core::projects`], [`Core::settings`],
 //!   [`Core::save_settings`],
 //!   [`Core::worktree_journal`], [`Core::leftovers_list`],
-//!   [`Core::sessions`], [`Core::session`], [`Core::lead_for_project`],
+//!   [`Core::sessions`], [`Core::session`], [`Core::checkout_session`], [`Core::lead_for_project`],
 //!   [`Core::workers_of`], [`Core::saved_lead`], [`Core::lost_workers`], [`Core::mark_workers_reported`], [`Core::lead_has_changes`], [`Core::lead_loss`], [`Core::saved_lead_session_exists`], [`Core::start_usage_collection`], [`Core::record_token_usage`], [`Core::recover_token_usage`],
 //!   [`Core::write`], and [`Core::resize`]. They read a
 //!   small JSON file, take a short lock, or queue bytes, and are fine on the main thread. `write` never blocks on
@@ -78,7 +79,7 @@ mod worktree;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 pub use activity::{AgentActivity, AgentActivityState};
 pub use agents::{CliCatalog, CliPreset, picker_presets};
@@ -98,7 +99,9 @@ pub use preparation::{PreparationConfig, PreparationControl, PreparationDraft, P
 pub use projects::{Project, ProjectAdded, SavedLead};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::{ChecksState, MAX_PR_BODY_CHARS, PrChecks, PublishPreview, PublishedPr};
-pub use session::{DiffStat, LaunchOptions, Session, SessionGitState, WorkerEnv, task_title};
+pub use session::{
+    DiffStat, LaunchOptions, Session, SessionGitState, SessionKind, WorkerEnv, task_title,
+};
 pub use settings::{
     AgentSettings, Appearance, Background, BackgroundEffect, BackgroundFraming, Changes, Column,
     DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, FontSize, KeyOverrides, Settings, ThemeMode,
@@ -108,7 +111,7 @@ pub use usage::{
     UsageCalendar, UsageCalendarDay, UsageDay, UsageReport, UsageTotals, UsageWeek, format_tokens,
 };
 pub use worktree::normalize_prefix as normalize_branch_prefix;
-pub use worktree::{JournalEntry, KnownBranches, LeadWorktree};
+pub use worktree::{CheckoutHead, JournalEntry, KnownBranches, LeadWorktree};
 
 /// Verified branch-switch close preview. Confirmation is bound to these refs
 /// and commit tips, not to whichever branch happens to be active later.
@@ -141,10 +144,33 @@ pub struct ProjectBase {
 }
 
 fn refuse_lead(session: &Session) -> Result<()> {
-    if session.lead {
+    if session.is_lead() {
         Err(Error::LeadUnsupported)
     } else {
         Ok(())
+    }
+}
+
+/// For the operations only a task, with its own branch and worktree, has:
+/// branch-switch close, discard, push, and publishing.
+fn require_task(session: &Session) -> Result<()> {
+    match session.kind {
+        SessionKind::Task => Ok(()),
+        SessionKind::Lead => Err(Error::LeadUnsupported),
+        SessionKind::Checkout => Err(Error::CheckoutUnsupported),
+    }
+}
+
+/// What a session's diff stat and Changes are measured against: a task's
+/// start, or a checkout session's `HEAD`.
+fn baseline(session: &Session) -> worktree::Baseline<'_> {
+    if session.is_checkout() {
+        worktree::Baseline::Head
+    } else {
+        worktree::Baseline::Task {
+            repo: &session.repo,
+            recorded: session.base_ref.as_deref(),
+        }
     }
 }
 
@@ -735,12 +761,14 @@ impl Core {
             // original native CLI launch, with no config changes.
             // Only a Lead-started worker's agent gets the control variables;
             // its shell tabs never do.
+            let started = SystemTime::now();
             let (pty, activity) = self.open_agent(
                 &preset,
                 program,
                 &draft.path,
                 size,
                 options.control.as_ref(),
+                true,
                 agents::launch_flags(&preset, &draft.path),
                 options.prompt.as_deref(),
                 sink,
@@ -766,7 +794,9 @@ impl Core {
                 pty: Some(pty),
                 shell_ptys: Vec::new(),
                 cli_titled: false,
-                lead: false,
+                prompt_named: false,
+                agent_started: started,
+                kind: SessionKind::Task,
                 started_by: options.started_by.clone(),
             };
             if let Some(activity) = activity {
@@ -822,6 +852,96 @@ impl Core {
                 }
             }
         }
+    }
+
+    /// Starts `preset_id` in the project's own folder, on whatever the author
+    /// has checked out: no worktree, branch, base fetch, preparation, or
+    /// journal entry, and nothing in its git is written. The CLI gets the
+    /// usual environment and the preset's launch flags (Codex's trust
+    /// override names the repository root) and no prompt, so the session
+    /// waits for the author. It is never a Lead's worker and gets no control
+    /// variables. One per project: [`Error::CheckoutExists`] while the
+    /// project has one, checked under the operations lock. A folder that is
+    /// no longer the top of its own git checkout is refused before anything
+    /// runs. Blocking: runs git and spawns a process.
+    pub fn create_checkout_session(
+        &self,
+        project_id: &str,
+        preset_id: &str,
+        size: PtySize,
+        sink: impl PtySink,
+    ) -> Result<Session> {
+        let env = self.path_env();
+        let preset = agents::presets_from(env)
+            .into_iter()
+            .find(|preset| preset.id == preset_id)
+            .ok_or(Error::UnknownCli)?;
+        let program = preset
+            .path
+            .clone()
+            .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        let project = self.projects.get(project_id)?;
+        if self.checkout_session(project_id).is_some() {
+            return Err(Error::CheckoutExists);
+        }
+        worktree::checkout_head(&self.git()?, env.path(), &project.path)?;
+        let id = session::new_id(&self.taken_ids()?);
+        let started = SystemTime::now();
+        // Not a usage source: the folder also holds the author's own
+        // conversations, which Shika must not count.
+        let (pty, activity) = self.open_agent(
+            &preset,
+            program,
+            &project.path,
+            size,
+            None,
+            false,
+            agents::launch_flags(&preset, &project.path),
+            None,
+            sink,
+        )?;
+        let session = Session {
+            id,
+            project_id: project.id.clone(),
+            preset_id: preset.id,
+            title: format!("New {}", preset.name),
+            manual_title: false,
+            preset_name: preset.name,
+            branch: String::new(),
+            repo: project.path.clone(),
+            worktree: project.path.clone(),
+            base_ref: None,
+            pty: Some(pty),
+            shell_ptys: Vec::new(),
+            cli_titled: false,
+            prompt_named: false,
+            agent_started: started,
+            kind: SessionKind::Checkout,
+            started_by: None,
+        };
+        if let Some(activity) = activity {
+            self.sessions.remember_activity(&session.id, activity);
+        }
+        self.sessions.insert(session.clone());
+        Ok(session)
+    }
+
+    /// The project's live checkout session, if it has one. Quick.
+    pub fn checkout_session(&self, project_id: &str) -> Option<Session> {
+        self.sessions
+            .all()
+            .into_iter()
+            .find(|session| session.is_checkout() && session.project_id == project_id)
+    }
+
+    /// What the project's checkout has checked out: its branch, or the short
+    /// commit when detached. For the checkout session's card and the picker
+    /// footer, whether or not a session runs. Blocking but local: one or two
+    /// read-only git processes bounded to the repository root, no lock.
+    pub fn checkout_head(&self, project_id: &str) -> Result<CheckoutHead> {
+        let project = self.projects.get(project_id)?;
+        worktree::checkout_head(&self.git()?, self.path_env().path(), &project.path)
     }
 
     /// Ids already used by a live session or a journaled worktree, whether a
@@ -880,9 +1000,10 @@ impl Core {
     /// Opens an agent PTY for `preset` in `worktree`: `args` (the preset's
     /// launch flags, see `agents::launch_flags` and `agents::lead_flags`), Pi's
     /// activity extension, then `prompt` as the last positional argument. `control` gives a Lead or a Lead-started worker its
-    /// `SHIKA_SOCKET`, `SHIKA_TOKEN`, and the `shika` command on `PATH`. On
-    /// failure the bridge is removed and nothing runs. Blocking: spawns a
-    /// process.
+    /// `SHIKA_SOCKET`, `SHIKA_TOKEN`, and the `shika` command on `PATH`.
+    /// `track_usage` registers `worktree` as a token usage source; it is
+    /// false only for a checkout session. On failure the bridge is removed
+    /// and nothing runs. Blocking: spawns a process.
     #[allow(clippy::too_many_arguments)]
     fn open_agent(
         &self,
@@ -891,6 +1012,7 @@ impl Core {
         worktree: &Path,
         size: PtySize,
         control: Option<&WorkerEnv>,
+        track_usage: bool,
         args: Vec<String>,
         prompt: Option<&str>,
         sink: impl PtySink,
@@ -899,6 +1021,7 @@ impl Core {
         let usage = self
             .cli_home
             .as_ref()
+            .filter(|_| track_usage)
             .and_then(|home| self.usage.get()?.register(home, &preset.id, worktree));
         let mut sink = sink;
         let sink = move |pty, event| {
@@ -989,19 +1112,21 @@ impl Core {
             .path
             .clone()
             .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+        let started = SystemTime::now();
         let (pty, activity) = self.open_agent(
             &preset,
             program,
             &session.worktree,
             size,
             control.as_ref(),
+            !session.is_checkout(),
             agents::launch_flags(&preset, &session.worktree),
             prompt,
             sink,
         )?;
         let switched =
             self.sessions
-                .retarget_agent(id, preset.id.clone(), preset.name.clone(), pty);
+                .retarget_agent(id, preset.id.clone(), preset.name.clone(), pty, started);
         let (session, old_pty) = match switched {
             Ok(pair) => pair,
             Err(err) => {
@@ -1034,7 +1159,8 @@ impl Core {
     /// First submitted prompt names the task and branch, until the CLI's own
     /// title replaces both through [`Core::session_apply_cli_title`]. Its
     /// worktree folder stays put, because the CLI is already running inside
-    /// it. Blocking.
+    /// it. A checkout session takes only the name: the branch is the
+    /// author's, and no git runs. Blocking.
     pub fn session_rename_from_prompt(&self, id: &str, prompt: &str) -> Result<Session> {
         let _guard = self
             .operations
@@ -1042,8 +1168,22 @@ impl Core {
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
         refuse_lead(&session)?;
-        if session.branch != format!("shika-draft-{}", session.id) || session.cli_titled {
+        if session.named() || session.cli_titled {
             return Ok(session);
+        }
+        if session.is_checkout() {
+            let title: String = prompt
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(80)
+                .collect();
+            if title.is_empty() {
+                return Ok(session);
+            }
+            return self.sessions.name_from_prompt(id, title);
         }
         let env = self.path_env();
         let git = self.git()?;
@@ -1060,8 +1200,11 @@ impl Core {
     /// own conversation, read from the CLI's files. Applies once. Ok(None)
     /// until the CLI has written a title, and after one was applied. The
     /// branch keeps its name when it is already on a remote or the worktree
-    /// is on another branch; the card still takes the title. Blocking: reads
-    /// the CLI's files and runs git.
+    /// is on another branch; the card still takes the title. A checkout
+    /// session takes only the title, and only from a conversation begun
+    /// since its agent started, because the author's own conversations share
+    /// its folder; no git runs for it. Blocking: reads the CLI's files and
+    /// runs git.
     pub fn session_apply_cli_title(&self, id: &str) -> Result<Option<Session>> {
         let _guard = self
             .operations
@@ -1072,13 +1215,20 @@ impl Core {
         if session.cli_titled {
             return Ok(None);
         }
+        let since = session.is_checkout().then_some(session.agent_started);
         let Some(title) = self
             .cli_home
             .as_ref()
-            .and_then(|home| home.read(&session.preset_id, &session.worktree))
+            .and_then(|home| home.read(&session.preset_id, &session.worktree, since))
         else {
             return Ok(None);
         };
+        if session.is_checkout() {
+            return self
+                .sessions
+                .apply_cli_title(id, session.branch.clone(), title)
+                .map(Some);
+        }
         let env = self.path_env();
         let git = self.git()?;
         let mut branch = session.branch.clone();
@@ -1146,7 +1296,11 @@ impl Core {
 
     fn session_git_state_locked(&self, id: &str, agent_working: bool) -> Result<SessionGitState> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        if session.lead {
+        if session.is_checkout() {
+            // Close does not consult git for the checkout; nothing reads this.
+            return Err(Error::CheckoutUnsupported);
+        }
+        if session.is_lead() {
             // A detached Lead has no branch to compare: only its edits count.
             return Ok(SessionGitState {
                 dirty: worktree::is_dirty(&self.git()?, self.path_env().path(), &session.worktree)?,
@@ -1179,7 +1333,7 @@ impl Core {
 
     fn switched_close_check_locked(&self, id: &str) -> Result<SwitchedBranchClose> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        refuse_lead(&session)?;
+        require_task(&session)?;
         let git = self.git()?;
         let path = self.path_env().path();
         let current = worktree::head_branch(&git, path, &session.worktree)?
@@ -1231,20 +1385,21 @@ impl Core {
     }
 
     /// Blocking. What the task changed: committed and uncommitted work
-    /// against where the branch left the base it started from. Takes no lock,
-    /// so a background refresh never holds up close or discard.
+    /// against where the branch left the base it started from. A checkout
+    /// session counts uncommitted work only, against `HEAD`, read within the
+    /// repository root. Takes no lock, so a background refresh never holds
+    /// up close or discard.
     pub fn session_diff_stat(&self, id: &str) -> Result<DiffStat> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        if session.lead {
+        if session.is_lead() {
             // A Lead is not measured against a base; it shows no stat.
             return Ok(DiffStat::default());
         }
         worktree::diff_stat(
             &self.git()?,
             self.path_env().path(),
-            &session.repo,
             &session.worktree,
-            session.base_ref.as_deref(),
+            baseline(&session),
         )
     }
 
@@ -1255,8 +1410,17 @@ impl Core {
             .get_or_init(|| usage::Collector::start(self.data_dir.clone()));
     }
 
-    /// Coalesces a recovery request. No provider I/O or operations lock.
+    /// Coalesces a recovery request. No provider I/O or operations lock. A
+    /// project's own folder (a checkout session's) is never a usage source:
+    /// the author's conversations outside Shika live there too.
     pub fn record_token_usage(&self, preset_id: &str, worktree: &Path) {
+        if self
+            .projects
+            .list()
+            .is_ok_and(|projects| projects.iter().any(|project| project.path == worktree))
+        {
+            return;
+        }
         if let (Some(collector), Some(home)) = (self.usage.get(), &self.cli_home) {
             collector.request(home, preset_id, worktree);
         }
@@ -1286,7 +1450,7 @@ impl Core {
         report
     }
 
-    /// Blocking. The task's whole change for the Changes panel: every file's
+    /// Blocking. The session's whole change for the Changes panel: every file's
     /// hunks, measured exactly as [`Core::session_diff_stat`] measures it, so
     /// `stat` matches the card. Reads only (`GIT_OPTIONAL_LOCKS=0`) and takes
     /// no lock. Caps keep a huge change cheap: a file with more than 2,000
@@ -1302,9 +1466,8 @@ impl Core {
         worktree::session_diff(
             &self.git()?,
             self.path_env().path(),
-            &session.repo,
             &session.worktree,
-            session.base_ref.as_deref(),
+            baseline(&session),
         )
     }
 
@@ -1326,7 +1489,7 @@ impl Core {
     pub fn session_publish_preview(&self, id: &str) -> Result<PublishPreview> {
         let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        refuse_lead(&session)?;
+        require_task(&session)?;
         let session = self.ensure_session_branch(&session)?;
         let gh = self.path_env().resolve("gh").ok_or_else(|| {
             Error::Publish(
@@ -1349,7 +1512,7 @@ impl Core {
             .sessions
             .get(&preview.session_id)
             .ok_or(Error::UnknownSession)?;
-        refuse_lead(&session)?;
+        require_task(&session)?;
         let session = self.ensure_session_branch(&session)?;
         let gh = self.path_env().resolve("gh").ok_or_else(|| {
             Error::Publish(
@@ -1381,7 +1544,7 @@ impl Core {
     ) -> Result<PublishedPr> {
         let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        refuse_lead(&session)?;
+        require_task(&session)?;
         let session = self.ensure_session_branch(&session)?;
         let gh = self.path_env().resolve("gh").ok_or_else(|| {
             Error::Publish(
@@ -1402,7 +1565,7 @@ impl Core {
     /// the diff stat, so a slow network never holds up close or publishing.
     pub fn session_pr_checks(&self, id: &str, repository: &str, number: u64) -> Result<PrChecks> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        refuse_lead(&session)?;
+        require_task(&session)?;
         let gh = self
             .path_env()
             .resolve("gh")
@@ -1420,7 +1583,7 @@ impl Core {
     /// push from the task's shell or agent moves. None when there is none.
     pub fn session_pushed_head(&self, id: &str) -> Result<Option<String>> {
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        if session.lead {
+        if session.kind != SessionKind::Task {
             return Ok(None);
         }
         worktree::pushed_head(
@@ -1444,14 +1607,15 @@ impl Core {
 
     /// Explicitly confirmed task discard. Stops all task PTYs, then deletes
     /// the tree and local branch. Leads are refused: use [`Core::stop_lead`]
-    /// and [`Core::forget_lead`]. No commit is created. Blocking.
+    /// and [`Core::forget_lead`]. A checkout session is refused: its tree is
+    /// the author's own work. No commit is created. Blocking.
     pub fn session_discard(&self, id: &str) -> Result<()> {
         let _guard = self
             .operations
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        refuse_lead(&session)?;
+        require_task(&session)?;
         let session = self.ensure_session_branch(&session)?;
         self.hang_up(&session);
         let session = self.ensure_session_branch(&session)?;
@@ -1473,7 +1637,7 @@ impl Core {
             .operations
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        refuse_lead(&self.sessions.get(id).ok_or(Error::UnknownSession)?)?;
+        require_task(&self.sessions.get(id).ok_or(Error::UnknownSession)?)?;
         let state = self.session_git_state_locked(id, false)?;
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
         if state.dirty {
@@ -1511,7 +1675,11 @@ impl Core {
 
     /// Close only when nothing can be lost. A pushed branch stays; an empty
     /// task branch is deleted. Leads are refused: use [`Core::stop_lead`] and
-    /// [`Core::forget_lead`]. The app asks on CloseNeedsConfirmation. Blocking.
+    /// [`Core::forget_lead`]. A checkout session runs no git at all: idle, it
+    /// stops its PTYs and goes; with `agent_working` it is
+    /// CloseNeedsConfirmation, and the confirmed close is
+    /// [`Core::session_stop_checkout`]. The app asks on
+    /// CloseNeedsConfirmation. Blocking.
     pub fn session_close(&self, id: &str, agent_working: bool) -> Result<()> {
         let _guard = self
             .operations
@@ -1519,6 +1687,13 @@ impl Core {
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
         refuse_lead(&session)?;
+        if session.is_checkout() {
+            if agent_working {
+                return Err(Error::CloseNeedsConfirmation);
+            }
+            self.stop_checkout(&session);
+            return Ok(());
+        }
         let state = self.session_git_state_locked(id, agent_working)?;
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
         if state.dirty {
@@ -1554,6 +1729,32 @@ impl Core {
         self.forget_session(&session)
     }
 
+    /// The confirmed close of a checkout session, the author's answer to
+    /// "Stop the agent?": stops every PTY of the session and drops it.
+    /// Nothing in git is read or written, and there is no journal entry or
+    /// worktree to remove. Anything but a checkout session is refused with
+    /// [`Error::NotCheckout`]; tasks close through [`Core::session_close`].
+    /// Blocking only on the operations lock.
+    pub fn session_stop_checkout(&self, id: &str) -> Result<()> {
+        let _guard = self
+            .operations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
+        if !session.is_checkout() {
+            return Err(Error::NotCheckout);
+        }
+        self.stop_checkout(&session);
+        Ok(())
+    }
+
+    /// Under the operations lock. No `forget_session`: nothing is journaled,
+    /// and the journal must never be asked about the repository root.
+    fn stop_checkout(&self, session: &Session) {
+        self.hang_up(session);
+        self.sessions.remove(&session.id);
+    }
+
     /// Compatibility helper: confirmation is explicitly a discard choice.
     pub fn close_session(&self, id: &str, confirmed: bool) -> Result<()> {
         if confirmed {
@@ -1571,7 +1772,7 @@ impl Core {
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let session = self.sessions.get(id).ok_or(Error::UnknownSession)?;
-        if session.lead {
+        if session.kind != SessionKind::Task {
             return Ok(session);
         }
         self.ensure_session_branch(&session)
@@ -4078,7 +4279,7 @@ done
 
         let (start, report) = start_lead_with(&core, &scratch, &project.id, "claude");
         let lead = start.session.clone();
-        assert!(lead.lead && lead.started_by.is_none());
+        assert!(lead.is_lead() && lead.started_by.is_none());
         assert_eq!(lead.title, "Lead");
         assert_eq!(lead.branch, "");
         assert_eq!(lead.worktree, repo.join(".worktrees").join("shika-lead"));
@@ -4309,7 +4510,7 @@ done
             )
             .unwrap();
         let report = collect_until(&rx, "end-report", Duration::from_secs(5));
-        assert!(!worker.lead);
+        assert!(!worker.is_lead());
         assert_eq!(worker.started_by.as_deref(), Some(lead.id.as_str()));
         assert_eq!(worker.title, "New Claude Code");
         assert_eq!(worker.branch, format!("shika-draft-{}", worker.id));
@@ -5423,7 +5624,7 @@ done
         assert_eq!(switched.preset_name, "Cursor CLI");
         assert_ne!(switched.pty, old_pty);
         assert_eq!(switched.shell_ptys, vec![shell]);
-        assert!(!switched.lead);
+        assert!(!switched.is_lead());
         assert_eq!(
             core.write(old_pty.unwrap(), b"still there\n"),
             Err(Error::UnknownPty)
@@ -5836,5 +6037,479 @@ done
             .unwrap();
         core.leftover_remove(&lead.worktree).unwrap();
         assert!(task.worktree.join("work.txt").exists());
+    }
+
+    /// The switch CLIs, plus a git that logs every call to the returned file
+    /// before running the real one, so a test can prove no git ran.
+    fn core_with_logged_git(scratch: &Scratch) -> (Core, PathBuf) {
+        let log = scratch.path.join("git.log");
+        let wrapper = write_exec(
+            &scratch.path,
+            "git",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec /usr/bin/git \"$@\"\n",
+                log.display()
+            ),
+        );
+        let lookup = |name: &str| Some(scratch.path.join("bin").join(name));
+        let env = PathEnv::from_lookup(
+            "/usr/bin:/bin".into(),
+            None,
+            &[
+                ("claude", lookup("claude")),
+                ("agent", None),
+                ("pi", None),
+                ("codex", None),
+                ("git", Some(wrapper)),
+            ],
+        );
+        write_exec(&scratch.path, "claude", SWITCH_CLI);
+        let core = Core::open_with(scratch.path.join("data"), env).unwrap();
+        (core, log)
+    }
+
+    fn git_log(log: &Path) -> String {
+        fs::read_to_string(log).unwrap_or_default()
+    }
+
+    fn start_checkout(core: &Core, project_id: &str, preset: &str) -> (Session, String) {
+        let (sink, rx) = channel_sink();
+        let session = core
+            .create_checkout_session(project_id, preset, PtySize::new(30, 90), sink)
+            .unwrap();
+        let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+        (session, report)
+    }
+
+    /// Every file of the repository's git state that a write would change.
+    /// Read without optional locks, so taking it never refreshes the index.
+    fn git_snapshot(repo: &Path) -> String {
+        let read = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(args)
+                .env("GIT_OPTIONAL_LOCKS", "0")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        [
+            format!(
+                "{:?}",
+                fs::metadata(repo.join(".git/index"))
+                    .and_then(|m| m.modified())
+                    .ok()
+            ),
+            read(&[
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--untracked-files=all",
+            ]),
+            read(&["for-each-ref"]),
+            read(&["worktree", "list", "--porcelain"]),
+            read(&["stash", "list"]),
+            fs::read_to_string(repo.join(".git/info/exclude")).unwrap_or_default(),
+        ]
+        .join("\n---\n")
+    }
+
+    #[test]
+    fn a_checkout_session_runs_in_the_repository_root_with_no_worktree_branch_or_journal() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        git(&repo, &["checkout", "-b", "dev"]);
+        fs::write(repo.join("wip.txt"), "the author's edit\n").unwrap();
+        let core = core_with_switch_clis(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let before = git_snapshot(&repo);
+
+        let (session, report) = start_checkout(&core, &project.id, "codex");
+        assert_eq!(session.kind, SessionKind::Checkout);
+        assert!(session.is_checkout() && !session.is_lead());
+        assert_eq!(session.worktree, repo);
+        assert_eq!(session.repo, repo);
+        assert_eq!(session.branch, "");
+        assert_eq!(session.base_ref, None);
+        assert_eq!(session.started_by, None);
+        assert_eq!(session.title, "New Codex");
+        assert!(!session.named());
+        let args = report_args(&report);
+        let trust = format!(
+            r#"projects={{"{}"={{trust_level="trusted"}}}}"#,
+            repo.display()
+        );
+        assert_eq!(
+            args,
+            [
+                "--dangerously-bypass-approvals-and-sandbox",
+                "-c",
+                trust.as_str()
+            ],
+            "the preset's flags, the trust override on the root, and no prompt"
+        );
+        assert!(
+            report.contains(&format!("cwd:{}", repo.display())),
+            "{report}"
+        );
+        assert!(
+            report.lines().any(|line| line.trim() == "sock:")
+                && report.lines().any(|line| line.trim() == "token:"),
+            "{report}"
+        );
+
+        assert!(core.worktree_journal().unwrap().is_empty());
+        assert!(core.leftovers_list().unwrap().is_empty());
+        assert!(!repo.join(".worktrees").exists());
+        assert_eq!(git_snapshot(&repo), before, "starting wrote nothing to git");
+        assert_eq!(core.checkout_session(&project.id), Some(session.clone()));
+        assert_eq!(
+            core.checkout_head(&project.id).unwrap(),
+            CheckoutHead::Branch("dev".into())
+        );
+
+        let (shell_sink, shell_rx) = channel_sink();
+        let shell = core
+            .open_shell(&session.id, PtySize::default(), shell_sink)
+            .unwrap();
+        core.write(shell, b"pwd -P\r").unwrap();
+        let printed = collect_until(
+            &shell_rx,
+            &repo.display().to_string(),
+            Duration::from_secs(5),
+        );
+        assert!(printed.contains(&repo.display().to_string()), "{printed}");
+        core.session_close(&session.id, false).unwrap();
+        assert_eq!(core.write(shell, b"x"), Err(Error::UnknownPty));
+        assert!(repo.join("wip.txt").exists());
+    }
+
+    #[test]
+    fn a_project_has_at_most_one_checkout_session() {
+        let scratch = Scratch::new();
+        let core = core_with_switch_clis(&scratch);
+        let project = core.add_project(&scratch.repo("demo")).unwrap().project;
+        let other = core.add_project(&scratch.repo("other")).unwrap().project;
+        let (first, _) = start_checkout(&core, &project.id, "claude");
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.create_checkout_session(&project.id, "codex", PtySize::default(), sink),
+            Err(Error::CheckoutExists)
+        );
+        assert_eq!(core.sessions(), std::slice::from_ref(&first));
+        // Another project, and worktree tasks in this one, are unaffected.
+        let (elsewhere, _) = start_checkout(&core, &other.id, "claude");
+        let task = create_fake_session(&core, &project.id);
+        assert_eq!(task.kind, SessionKind::Task);
+        assert_eq!(core.checkout_session(&project.id).unwrap().id, first.id);
+        assert_eq!(core.checkout_session(&other.id).unwrap().id, elsewhere.id);
+        // Once it has stopped, the project can start one again.
+        core.session_stop_checkout(&first.id).unwrap();
+        assert_eq!(core.checkout_session(&project.id), None);
+        let (again, _) = start_checkout(&core, &project.id, "pi");
+        assert_ne!(again.id, first.id);
+
+        // A refused start creates nothing.
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.create_checkout_session(&project.id, "kiro", PtySize::default(), sink),
+            Err(Error::UnknownCli)
+        );
+        let (sink, _rx) = channel_sink();
+        assert_eq!(
+            core.create_checkout_session("missing", "claude", PtySize::default(), sink),
+            Err(Error::UnknownProject)
+        );
+        // `elsewhere`, `task`, and `again`.
+        assert_eq!(core.sessions().len(), 3);
+    }
+
+    #[test]
+    fn a_folder_that_is_not_its_own_checkout_starts_nothing() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_switch_clis(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        fs::rename(repo.join(".git"), repo.join("moved.git")).unwrap();
+        let (sink, _rx) = channel_sink();
+        assert!(matches!(
+            core.create_checkout_session(&project.id, "claude", PtySize::default(), sink),
+            Err(Error::GitStatus(_))
+        ));
+        assert!(core.sessions().is_empty());
+    }
+
+    #[test]
+    fn closing_a_dirty_checkout_runs_no_git_and_never_discards() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        fs::write(repo.join("tracked.txt"), "one\n").unwrap();
+        git(&repo, &["add", "tracked.txt"]);
+        git(&repo, &["commit", "-m", "tracked"]);
+        git(&repo, &["checkout", "-b", "dev"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "unpushed"]);
+        fs::write(repo.join("tracked.txt"), "one\nedited\n").unwrap();
+        fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        git(&repo, &["add", "staged.txt"]);
+        fs::write(repo.join("untracked.txt"), "new\n").unwrap();
+        let (core, log) = core_with_logged_git(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let before = git_snapshot(&repo);
+
+        let (session, _) = start_checkout(&core, &project.id, "claude");
+        let pty = session.pty.unwrap();
+        for refused in [
+            core.session_discard(&session.id),
+            core.session_push_and_close(&session.id),
+            core.close_session(&session.id, true),
+            core.session_switched_close_check(&session.id).map(|_| ()),
+            core.session_git_state(&session.id, false).map(|_| ()),
+            core.session_publish_preview(&session.id).map(|_| ()),
+            core.session_publish_now(&session.id, None, None)
+                .map(|_| ()),
+            core.session_pr_checks(&session.id, "o/r", 1).map(|_| ()),
+        ] {
+            assert_eq!(refused, Err(Error::CheckoutUnsupported));
+        }
+        fs::remove_file(&log).ok();
+
+        // Working: the app must ask first, and the agent keeps running.
+        assert_eq!(
+            core.session_close(&session.id, true),
+            Err(Error::CloseNeedsConfirmation)
+        );
+        assert!(core.write(pty, b"").is_ok());
+        // Idle: it stops and goes, with no git at all.
+        core.session_close(&session.id, false).unwrap();
+        assert_eq!(git_log(&log), "", "close ran git");
+        assert!(core.sessions().is_empty());
+        assert_eq!(core.write(pty, b"x"), Err(Error::UnknownPty));
+        assert_eq!(
+            git_snapshot(&repo),
+            before,
+            "the author's work is as it was"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.join("tracked.txt")).unwrap(),
+            "one\nedited\n"
+        );
+        assert!(repo.join("untracked.txt").exists());
+
+        // The confirmed close after "Stop the agent?" is the same: no git.
+        let (session, _) = start_checkout(&core, &project.id, "claude");
+        fs::remove_file(&log).ok();
+        assert_eq!(
+            core.session_close(&session.id, true),
+            Err(Error::CloseNeedsConfirmation)
+        );
+        core.session_stop_checkout(&session.id).unwrap();
+        assert_eq!(git_log(&log), "");
+        assert!(core.sessions().is_empty());
+        assert_eq!(git_snapshot(&repo), before);
+        assert_eq!(
+            core.session_stop_checkout(&session.id),
+            Err(Error::UnknownSession)
+        );
+
+        // Stopping is never a way around a task's close checks.
+        let task = create_fake_session(&core, &project.id);
+        assert_eq!(
+            core.session_stop_checkout(&task.id),
+            Err(Error::NotCheckout)
+        );
+        assert!(core.session(&task.id).is_some());
+        assert!(task.worktree.exists());
+    }
+
+    #[test]
+    fn a_checkout_session_is_named_without_renaming_the_checked_out_branch() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("shika");
+        git(&repo, &["checkout", "-b", "dev"]);
+        let mut core = core_with_switch_clis(&scratch);
+        let home = scratch.path.join("home");
+        core.cli_home = Some(CliHome::at(home.clone()));
+        let project = core.add_project(&repo).unwrap().project;
+        let conversations = CliHome::at(home.clone()).claude_project_dir(&repo);
+        fs::create_dir_all(&conversations).unwrap();
+        let title =
+            |name: &str| serde_json::json!({ "type": "ai-title", "aiTitle": name }).to_string();
+        // The author's own conversation in this folder, from before.
+        fs::write(
+            conversations.join("authors-own.jsonl"),
+            title("The author's own chat"),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let branches = git(&repo, &["for-each-ref", "refs/heads"]);
+
+        let (session, _) = start_checkout(&core, &project.id, "claude");
+        assert_eq!(
+            core.session_apply_cli_title(&session.id).unwrap(),
+            None,
+            "a conversation from before the session never names it"
+        );
+        let named = core
+            .session_rename_from_prompt(&session.id, "Where is the notification code?\nand more")
+            .unwrap();
+        assert_eq!(named.title, "Where is the notification code?");
+        assert_eq!(named.branch, "");
+        assert!(named.prompt_named && named.named());
+        assert_eq!(
+            core.session_rename_from_prompt(&session.id, "a second prompt")
+                .unwrap(),
+            named
+        );
+
+        fs::write(
+            conversations.join("ours.jsonl"),
+            title("Notification code location"),
+        )
+        .unwrap();
+        let titled = core.session_apply_cli_title(&session.id).unwrap().unwrap();
+        assert_eq!(titled.title, "Notification code location");
+        assert_eq!(titled.branch, "");
+        assert!(titled.cli_titled);
+        assert_eq!(core.session_apply_cli_title(&session.id).unwrap(), None);
+        let renamed = core.session_set_title(&session.id, "Mine").unwrap();
+        assert_eq!(renamed.title, "Mine");
+        assert_eq!(core.session_refresh_branch(&session.id).unwrap(), renamed);
+        assert_eq!(core.session_pushed_head(&session.id).unwrap(), None);
+
+        assert_eq!(git(&repo, &["for-each-ref", "refs/heads"]), branches);
+        assert_eq!(git(&repo, &["branch", "--show-current"]).trim(), "dev");
+        assert!(core.worktree_journal().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_checkout_diff_counts_only_uncommitted_work_against_head() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        git(&repo, &["add", "a.txt"]);
+        git(&repo, &["commit", "-m", "base"]);
+        git(&repo, &["checkout", "-b", "dev"]);
+        fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        git(&repo, &["commit", "-am", "the author's unpushed commit"]);
+        let core = core_with_switch_clis(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (session, _) = start_checkout(&core, &project.id, "claude");
+        assert_eq!(
+            core.session_diff_stat(&session.id).unwrap(),
+            DiffStat::default()
+        );
+        assert!(core.session_diff(&session.id).unwrap().files.is_empty());
+
+        // A task's files are not the checkout's.
+        let task = create_fake_session(&core, &project.id);
+        fs::write(task.worktree.join("task.txt"), "task\n").unwrap();
+        assert_eq!(
+            core.session_diff_stat(&session.id).unwrap(),
+            DiffStat::default()
+        );
+
+        fs::write(repo.join("a.txt"), "one\n").unwrap();
+        fs::write(repo.join("new.txt"), "x\n").unwrap();
+        let stat = core.session_diff_stat(&session.id).unwrap();
+        assert_eq!(
+            stat,
+            DiffStat {
+                files: 2,
+                insertions: 1,
+                deletions: 2
+            }
+        );
+        let diff = core.session_diff(&session.id).unwrap();
+        assert_eq!(diff.files.len(), 2);
+        let tracked = diff
+            .files
+            .iter()
+            .find(|file| file.status != FileStatus::Untracked)
+            .unwrap();
+        let again = core
+            .session_file_diff(&session.id, &tracked.key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.key, tracked.key);
+        assert_eq!(
+            git(&repo, &["status", "--porcelain"]),
+            " M a.txt\n?? new.txt\n",
+            "reading staged nothing"
+        );
+
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-m", "the author commits"]);
+        assert_eq!(
+            core.session_diff_stat(&session.id).unwrap(),
+            DiffStat::default()
+        );
+    }
+
+    #[test]
+    fn a_checkout_session_switches_agent_in_place_and_stays_a_checkout() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let core = core_with_switch_clis(&scratch);
+        let project = core.add_project(&repo).unwrap().project;
+        let (session, _) = start_checkout(&core, &project.id, "claude");
+        let (switched, report) = switch_agent(&core, &session.id, "pi", None, None);
+        assert_eq!(switched.kind, SessionKind::Checkout);
+        assert_eq!(switched.worktree, repo);
+        assert_eq!(switched.branch, "");
+        assert_eq!(switched.title, "New Pi");
+        assert!(
+            !switched.cli_titled,
+            "an unnamed checkout keeps naming open"
+        );
+        assert!(switched.agent_started >= session.agent_started);
+        assert!(
+            report.contains(&format!("cwd:{}", repo.display())),
+            "{report}"
+        );
+        assert_eq!(
+            core.write(session.pty.unwrap(), b"x"),
+            Err(Error::UnknownPty)
+        );
+        core.session_rename_from_prompt(&session.id, "Find the release docs")
+            .unwrap();
+        let (named, _) = switch_agent(&core, &session.id, "claude", Some("Continue"), None);
+        assert!(named.cli_titled, "a named checkout keeps its name");
+        assert_eq!(named.title, "Find the release docs");
+        assert_eq!(core.checkout_session(&project.id).unwrap().id, session.id);
+    }
+
+    #[test]
+    fn a_checkout_folder_is_never_a_usage_source() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("demo");
+        let mut core = core_with_switch_clis(&scratch);
+        let home = CliHome::at(scratch.path.join("usage-home"));
+        core.cli_home = Some(home.clone());
+        core.start_usage_collection();
+        let project = core.add_project(&repo).unwrap().project;
+        // The author's own Claude Code usage in this folder, outside Shika.
+        let conversations = home.claude_project_dir(&repo);
+        fs::create_dir_all(&conversations).unwrap();
+        fs::write(
+            conversations.join("authors-own.jsonl"),
+            "{\"type\":\"assistant\",\"message\":{\"id\":\"m\",\"usage\":{\"input_tokens\":50,\"output_tokens\":50}}}\n",
+        )
+        .unwrap();
+        let (session, _) = start_checkout(&core, &project.id, "claude");
+        core.record_token_usage("claude", &session.worktree);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !core.usage_collection_idle() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(core.usage_collection_idle());
+        assert_eq!(
+            fs::read_dir(core.data_dir().join("usage-sources"))
+                .map(|dir| dir.count())
+                .unwrap_or(0),
+            0
+        );
+        assert_eq!(core.token_usage().claude, 0);
     }
 }

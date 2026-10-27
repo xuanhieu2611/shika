@@ -821,7 +821,9 @@ mod tests {
                 pty: Some(crate::PtyId(1)),
                 shell_ptys: vec![],
                 cli_titled: true,
-                lead: false,
+                prompt_named: false,
+                agent_started: std::time::UNIX_EPOCH,
+                kind: crate::SessionKind::Task,
                 started_by: None,
             };
             Self {

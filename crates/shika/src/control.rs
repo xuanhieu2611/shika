@@ -21,7 +21,7 @@ use shika_core::control::{
     Command, ControlDir, ControlError, MAX_READ_LINES, Reply, TaskDiffStat, TaskInfo, TaskStatus,
     WORKER_HELP, WaitEvent, clean_report, read_request, write_reply,
 };
-use shika_core::{LaunchOptions, WorkerEnv};
+use shika_core::{LaunchOptions, Session, WorkerEnv};
 use shika_terminal::Modes;
 use shika_terminal::input::{Key, KeyMods, encode_key, encode_paste};
 use std::collections::HashMap;
@@ -2117,11 +2117,14 @@ impl Shika {
         }
     }
 
-    /// The project's task cards: everything but its Lead.
+    /// The project's task cards: everything but its Lead and its checkout
+    /// session. Every command that names or lists tasks goes through here,
+    /// so a Lead can never see, read, send to, or close the agent in the
+    /// author's checkout.
     fn project_tasks<'a>(&'a self, project: &'a str) -> impl Iterator<Item = &'a Card> {
-        self.cards
-            .iter()
-            .filter(move |card| card.lead.is_none() && card.project == project)
+        self.cards.iter().filter(move |card| {
+            card.project == project && is_lead_visible(card.lead.is_some(), card.session.as_ref())
+        })
     }
 
     fn wait_refusal(&self, project: &str, lead_id: &str, named: &[String]) -> Option<Reply> {
@@ -2402,10 +2405,55 @@ impl HostState {
     }
 }
 
+/// Whether a Lead may see a card of its own project as a task at all: never
+/// a Lead card, and never the agent in the author's checkout. A card still
+/// starting, with no session yet, is a worktree task.
+fn is_lead_visible(lead_card: bool, session: Option<&Session>) -> bool {
+    !lead_card && !session.is_some_and(Session::is_checkout)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shika_core::SessionKind;
     use shika_core::control::{PROTOCOL_VERSION, Request, render_text, send};
+
+    fn session(kind: SessionKind) -> Session {
+        Session {
+            id: "1".into(),
+            project_id: "p".into(),
+            preset_id: "claude".into(),
+            preset_name: "Claude Code".into(),
+            title: "New Claude Code".into(),
+            manual_title: false,
+            branch: String::new(),
+            repo: "/repo".into(),
+            worktree: "/repo".into(),
+            base_ref: None,
+            pty: None,
+            shell_ptys: Vec::new(),
+            cli_titled: false,
+            prompt_named: false,
+            agent_started: std::time::UNIX_EPOCH,
+            kind,
+            started_by: None,
+        }
+    }
+
+    #[test]
+    fn a_lead_never_sees_the_checkout_session_or_another_lead() {
+        // Every task command (tasks, wait, read, diff, send, key, pr, close)
+        // finds its card through `project_tasks`, which applies this rule, so
+        // a checkout session is "No task <id> in this project." to a Lead.
+        assert!(is_lead_visible(false, Some(&session(SessionKind::Task))));
+        assert!(is_lead_visible(false, None));
+        assert!(!is_lead_visible(
+            false,
+            Some(&session(SessionKind::Checkout))
+        ));
+        assert!(!is_lead_visible(true, Some(&session(SessionKind::Lead))));
+        assert!(!is_lead_visible(true, None));
+    }
     use std::sync::Mutex;
 
     /// A server whose `shika` command lives in a per-process scratch data

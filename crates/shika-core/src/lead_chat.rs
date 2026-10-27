@@ -84,7 +84,7 @@ impl Core {
         let lead = self
             .sessions
             .get(id)
-            .filter(|s| s.lead && s.preset_id == "claude")
+            .filter(|s| s.is_lead() && s.preset_id == "claude")
             .ok_or(Error::UnknownSession)?;
         if !self
             .chats

@@ -133,7 +133,7 @@ Agreed with the author on 2026-10-26:
 
 Three items, one coding session each. Check an item off only when everything under "Done when" holds.
 
-- [ ] **1. Core: checkout sessions in `shika-core`**
+- [x] **1. Core: checkout sessions in `shika-core`**
 
   A session kind for the checkout instead of a fake worktree, and every core path that assumes one task means one worktree taught about it.
 
