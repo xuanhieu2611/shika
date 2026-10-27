@@ -2,6 +2,13 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## 0.11.2 release validation, 2026-10-27
+
+- PASS: formatting, strict workspace/all-targets Clippy, bundled dependency notices, and parallel workspace tests: 756 passed, one existing ignored, and the documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` excluded.
+- PASS: `scripts/release-app.sh` built 0.11.2 (build 13) with `com.hieule.shika` and Sparkle, signed, notarized, and stapled the DMG. Gatekeeper accepted it as Notarized Developer ID; strict nested signature verification passed. No bundled file contains the release Mac's home or checkout path.
+- PASS: `scripts/appcast.sh` signed and verified the feed above published build 12. Feed version, enclosure URL, EdDSA signature presence, and final DMG length match the release.
+- Packaging validation does not establish installed-app update/relaunch or the remaining native acceptance checks below. No normal app data or authenticated agent session was used.
+
 ## Quit guard and explicit recovery, 2026-10-26
 
 Automated disposable-Git/fake-PTY regressions cover dirty/staged files, commits, base and manual-title preservation, setup bypass even with invalid current config, exact saved-id resume across repeated reopen/quit, missing-history and legacy fresh fallback, failed-spawn rollback, unsafe/missing/redirected/symlink Git roots, verified external renames versus real branch switches, concurrent single ownership, and failed-Switch recovery-hint rollback. Provider fixtures exercise cwd/epoch matching, no transcript parsing, Codex subagent/archive exclusion, and exact resume arguments for all four CLIs. CLI flags were rechecked against installed `--help`. The unfiltered workspace run hit the existing machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` assertion (Claude now resolves to `/opt/homebrew/bin/claude`); the remaining workspace tests pass when that single test is skipped. Formatting, strict Clippy, a debug bundle and strict signature verification pass.
