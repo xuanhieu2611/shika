@@ -6,8 +6,8 @@ use crate::text_edit::{self, Edit, Lines, Paragraphs, Text, utf8_offset};
 use gpui::WrappedLineLayout;
 use gpui::{
     App, AppContext, Bounds, ClipboardItem, Context, EntityInputHandler, FocusHandle, Focusable,
-    IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Point, Render, Styled,
-    TextLayout, UTF16Selection, Window, fill, point, px, size,
+    IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Point, Render, SharedString,
+    Styled, TextLayout, UTF16Selection, Window, fill, point, px, size,
 };
 use std::ops::Range;
 use std::sync::Arc;
@@ -89,6 +89,13 @@ pub struct ChatInput {
     active_link: Option<usize>,
     shared_selection: bool,
     label: String,
+    placeholder: String,
+    field_id: SharedString,
+    /// Enter inserts a newline. The Lead composer leaves this off and submits.
+    newline_on_enter: bool,
+    /// Character cap for an insertion. None keeps the whole replacement.
+    max_chars: Option<usize>,
+    max_h: Pixels,
     history: Vec<(String, usize, usize)>,
     redo: Vec<(String, usize, usize)>,
     selecting: bool,
@@ -112,6 +119,11 @@ impl ChatInput {
             active_link: None,
             shared_selection: false,
             label: "Message Lead".into(),
+            placeholder: "Message Lead".into(),
+            field_id: "native-chat-text".into(),
+            newline_on_enter: false,
+            max_chars: None,
+            max_h: px(120.),
             history: Vec::new(),
             redo: Vec::new(),
             selecting: false,
@@ -154,6 +166,36 @@ impl ChatInput {
     }
     pub fn label(&mut self, label: String) {
         self.label = label;
+    }
+    pub fn placeholder(&mut self, placeholder: impl Into<String>) {
+        self.placeholder = placeholder.into();
+    }
+    pub fn field_id(&mut self, id: impl Into<SharedString>) {
+        self.field_id = id.into();
+    }
+    /// Enter inserts a line. Confirm stays with the caller.
+    pub fn newline_on_enter(&mut self) {
+        self.newline_on_enter = true;
+    }
+    pub fn max_chars(&mut self, max: usize) {
+        self.max_chars = Some(max);
+    }
+    pub fn max_height(&mut self, height: Pixels) {
+        self.max_h = height;
+    }
+    /// `None` when a capped field has no room left for `text`.
+    fn accept(&self, range: Range<usize>, text: &str) -> Option<String> {
+        let text = clean_text(text);
+        let Some(max) = self.max_chars else {
+            return Some(text);
+        };
+        let kept = self.text.value[..range.start].chars().count()
+            + self.text.value[range.end..].chars().count();
+        let room = max.saturating_sub(kept);
+        if room == 0 && !text.is_empty() {
+            return None;
+        }
+        Some(text.chars().take(room).collect())
     }
     pub fn select_range(&mut self, range: Option<Range<usize>>) -> bool {
         let before = (self.text.selection(), self.shared_selection);
@@ -327,14 +369,19 @@ impl ChatInput {
             return;
         }
         if stroke.key == "enter" && !self.readonly {
-            if !m.shift {
+            let chord = m.platform || m.control || m.alt;
+            let newline = (m.shift && !chord) || (self.newline_on_enter && !chord);
+            if newline {
+                let range = self.text.selection();
+                if let Some(inserted) = self.accept(range.clone(), "\n") {
+                    self.checkpoint();
+                    self.ensure_cursor = true;
+                    self.text.replace(range, &inserted);
+                    cx.emit(InputEvent::Changed);
+                    cx.notify();
+                }
+            } else if !self.newline_on_enter {
                 cx.emit(InputEvent::Submit);
-            } else {
-                self.checkpoint();
-                self.ensure_cursor = true;
-                self.text.replace(self.text.selection(), "\n");
-                cx.emit(InputEvent::Changed);
-                cx.notify();
             }
             cx.stop_propagation();
             return;
@@ -405,9 +452,11 @@ impl ChatInput {
                 }
             }
             "v" if m.platform && !self.readonly => {
-                self.checkpoint();
-                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    self.text.replace(selected, &clean_text(&text));
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+                    && let Some(inserted) = self.accept(selected.clone(), &text)
+                {
+                    self.checkpoint();
+                    self.text.replace(selected, &inserted);
                 }
             }
             _ => {
@@ -505,9 +554,12 @@ impl EntityInputHandler for ChatInput {
         if self.readonly {
             return;
         }
+        let Some(inserted) = self.accept(range.clone(), text) else {
+            return;
+        };
         self.checkpoint();
         self.ensure_cursor = true;
-        self.text.replace(range, &clean_text(text));
+        self.text.replace(range, &inserted);
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
@@ -527,7 +579,9 @@ impl EntityInputHandler for ChatInput {
         if self.readonly {
             return;
         }
-        let text = clean_text(text);
+        let Some(text) = self.accept(range.clone(), text) else {
+            return;
+        };
         self.ensure_cursor = true;
         self.text.replace(range, &text);
         cx.emit(InputEvent::Changed);
@@ -592,7 +646,7 @@ impl Render for ChatInput {
         let paint = cx.entity();
         let placeholder = self.text.value.is_empty() && !self.readonly;
         let value = if placeholder {
-            "Message Lead".to_string()
+            self.placeholder.clone()
         } else {
             self.text.value.clone()
         };
@@ -654,7 +708,7 @@ impl Render for ChatInput {
         let code_paint = paint.clone();
         let code_layout = layout.clone();
         gpui::div()
-            .id("native-chat-text")
+            .id(self.field_id.clone())
             .relative()
             .min_w_0()
             .min_h(px(20.))
@@ -667,7 +721,7 @@ impl Render for ChatInput {
             })
             .aria_label(self.label.clone())
             .aria_value(self.text.value.clone())
-            .aria_placeholder("Message Lead")
+            .aria_placeholder(self.placeholder.clone())
             .text_size(px(if self.code { 12.5 } else { 14. }))
             .line_height(px(20.))
             .text_color(if placeholder {
@@ -678,7 +732,7 @@ impl Render for ChatInput {
             .when(self.code, |d| d.font_family(super::MONO))
             .when(!readonly, |d| {
                 d.min_h(px(20.))
-                    .max_h(px(120.))
+                    .max_h(self.max_h)
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
             })

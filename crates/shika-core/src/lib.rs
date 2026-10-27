@@ -1603,11 +1603,14 @@ impl Core {
 
     /// Confirmed publish. Never merges, force-pushes, or closes the task.
     /// Partial success is retained for retry; a stale preview is refused.
+    /// `body` is the PR description. None or only whitespace leaves it to
+    /// `gh --fill`.
     pub fn session_publish(
         &self,
         preview: &PublishPreview,
         target: &str,
         title: &str,
+        body: Option<&str>,
     ) -> Result<PublishedPr> {
         let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
         let session = self
@@ -1629,7 +1632,7 @@ impl Core {
             preview,
             target,
             title,
-            None,
+            body,
         )
     }
 

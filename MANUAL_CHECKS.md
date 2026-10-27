@@ -247,9 +247,9 @@ Remaining integrated checks (not established by unit/fixture tests):
 
 - [ ] Built .app opened via `open -n ... --args --data-dir /disposable/data` discovers gh outside system PATH; missing gh/auth failures state the cause without staging work.
 - [ ] Metadata Create PR, Agent menu, and Cmd+Shift+P work from cards and terminals; active/blocked agents, busy work, and overlays prevent conflicting entry. Cancel restores focus and unsent terminal drafts.
-- [ ] Light/dark, opaque/glass, hidden column, and minimum-size window: fields, file-list scrolling, branch-list selection, busy copy, and inline errors render legibly.
+- [ ] Light/dark, opaque/glass, hidden column, and minimum-size window: title, description, and target fields, file-list scrolling, the empty "Nothing new to commit" line, branch-list selection, busy copy, and inline errors render legibly.
 - [ ] Disposable GitHub repository: start from main and dev, change project base afterward, confirm PR still targets each task's original base; delete its base and verify explicit selection with no fallback.
-- [ ] Review the diff and test manually, then publish edited/new/deleted files: normal hooks/identity/signing apply, title can be edited, description uses commits, GitHub URL opens, and task/PTYS remain alive. No merge happens.
+- [ ] Review the diff and test manually, then publish edited/new/deleted files: normal hooks/identity/signing apply, title can be edited, a written description becomes the PR body, an empty description still uses the commit messages, GitHub URL opens, and task/PTYS remain alive. No merge happens.
 - [ ] Network/auth/protected-branch rejection and PR failure retain work. Reopen and retry; no empty/duplicate commit or duplicate PR. Existing PR receives subsequent approved commits.
 - [ ] Shell edits/commits/branch switches after preview refuse stale confirmation. Rebase/merge/conflicts refuse publishing. Close remains the existing non-committing safe-close flow.
 

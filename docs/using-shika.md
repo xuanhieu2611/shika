@@ -111,7 +111,7 @@ Right-click a card and choose Rename task, or press Cmd+Shift+R. Your name takes
 
 ## Creating a PR
 
-Create PR (Cmd+Shift+P) previews every non-ignored change and an editable title. Confirm it, and Shika stages, commits if needed, pushes, and creates a GitHub PR targeting the task's original base. It requires `gh auth login` and never merges. Afterwards the card shows the PR's checks. See [confirmed PR publishing](publishing.md) for behavior, rationale, and troubleshooting, and [PR checks on the card](pr-checks.md) for the checks mark.
+Create PR (Cmd+Shift+P) previews every non-ignored change, an editable title, and an optional description. Confirm it, and Shika stages, commits if needed, pushes, and creates a GitHub PR targeting the task's original base. Leave the description empty and the PR body comes from the commit messages. It requires `gh auth login` and never merges. Afterwards the card shows the PR's checks. See [confirmed PR publishing](publishing.md) for behavior, rationale, and troubleshooting, and [PR checks on the card](pr-checks.md) for the checks mark.
 
 ## Closing a task
 

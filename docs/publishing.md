@@ -22,7 +22,7 @@ Review and test in the task shell
 Added:
 
 - A metadata-row control, Agent-menu action, and Cmd+Shift+P binding.
-- A confirmation dialog with an editable commit/PR title and target branch.
+- A confirmation dialog with an editable commit/PR title, an optional description, and a target branch.
 - A core preview API and publishing API backed by Git and GitHub CLI subprocesses.
 - Recorded-base targeting, approved-tree checks, bounded commands, and partial-success recovery.
 - Disposable-repository tests with fake GitHub CLI responses and local bare transport.
@@ -43,7 +43,7 @@ Unchanged:
 | Target the task's original base | A feature started from `dev` normally belongs in `dev`; GitHub's default branch or a later project-setting change must not redirect it to `main`. |
 | Require confirmation before staging/committing | Publishing changes local Git state and makes work remote. The developer must see the files and destination before those effects. |
 | Stage the entire task worktree | The action completes the common stage/commit/push/PR loop. It does not attempt to infer which files were AI-authored or belong to a feature. |
-| Use an editable task-derived title and commit-derived description | Avoid extra model calls, dependencies, and generated claims about testing. Keep text predictable and under developer control. |
+| Use an editable task-derived title and an optional description; empty keeps the commit-derived body | Avoid extra model calls, dependencies, and generated claims about testing. Keep text predictable and under developer control. |
 | Keep merge separate | PR review, branch protections, CI, and release policy belong to the repository's workflow. Creating a PR is not approval to merge. |
 | Preserve completed steps on failure | Git and GitHub are not one transaction. Automatic reset or deletion could destroy valid work or undo a successful remote operation. |
 | Use subprocesses, not shell input injection | A user's terminal might be running an editor, server, or agent. Publishing must not depend on its foreground program or input state. |
@@ -58,16 +58,17 @@ Create PR is available in the terminal metadata row, the Agent menu, and Cmd+Shi
 
 The dialog displays:
 
-- Explicit GitHub repository, source branch, and target.
-- Changed file names relative to the task's current HEAD.
+- The GitHub repository and the source branch. The target is the field below, not repeated on this line.
+- Changed file names relative to the task's current HEAD. None reads "Nothing new to commit".
 - A title initially copied from the task title, including a manual [Rename task](task-names.md) name, used for both a new commit and a new PR. Renaming alone creates no commit and rewrites no existing commit or PR; the editable title here still requires confirmation.
+- An optional description. Empty leaves the PR body to `gh --fill` (the commit messages). Text written here is the body. Enter inserts a line; Cmd+Enter confirms.
 - An editable target field with matching existing GitHub branches.
 
 A Lead publishes a worker it started with `shika pr <task>` without this dialog (see [Publishing from a Lead](#publishing-from-a-lead)). While it runs, Create PR on that card is refused with "The Lead is publishing this task. Try again when it finishes."
 
-Tab switches fields; clicking selects a field or branch. Enter or **Commit, push, create PR** confirms. Escape or Cancel restores the previous focus before publishing begins. While publishing, the action reads **Publishing...** and dismissal is blocked.
+Tab switches the title, description, and target; clicking selects a field or branch. Enter confirms from the title or target, and inserts a line in the description. Cmd+Enter confirms from the description. The **Commit, push, create PR** button confirms from any field. Escape or Cancel restores the previous focus before publishing begins. While publishing, the action reads **Publishing...** and dismissal is blocked.
 
-**The file list is the proposed new commit, not the entire PR diff.** Already-committed changes are not listed there. A clean worktree can still publish existing commits without creating another commit. Selective staging is not preserved as a publishing boundary: confirmation approves `git add -A` for the task root. Use the shell for partial commits.
+**The file list is the proposed new commit, not the entire PR diff.** Already-committed changes are not listed there. A clean worktree reads "Nothing new to commit" and can still publish existing commits without creating another commit. Selective staging is not preserved as a publishing boundary: confirmation approves `git add -A` for the task root. Use the shell for partial commits.
 
 On success, Shika opens the returned PR URL, restores focus, and keeps the card, branch, worktree, agent, and shell PTYs intact. Reusing an existing PR pushes approved work and opens that PR; it does not rewrite the existing PR title or body.
 
@@ -81,7 +82,7 @@ On success, Shika opens the returned PR URL, restores focus, and keeps the card,
 | --- | --- |
 | Target prefilled from the recorded base; the author may choose another | The recorded base only. No target is `Error::PublishNoTarget`, a refusal that tells the author to use Create PR. Never a fallback branch. |
 | Title prefilled from the task title, editable | The task title, or `--title` (one line). |
-| Description from `gh --fill` | `gh --fill`, or `--body` (up to `MAX_PR_BODY_CHARS`, 65,536), passed as `gh pr create --body` instead of `--fill`. |
+| Description empty uses `gh --fill`; text written in the dialog is `--body` | `gh --fill`, or `--body` (up to `MAX_PR_BODY_CHARS`, 65,536), passed as `gh pr create --body` instead of `--fill`. |
 | Opens the PR URL in the browser, restores focus | Prints the URL for the Lead. No browser, selection, focus, or toast change. |
 | Global `busy` while running | `Card::lead_publishing` for that card only; the author keeps working. Create PR, Close, and Switch agent on that card wait for it. |
 
@@ -160,7 +161,7 @@ The real staging area is untouched by preview, but preview is **not completely s
 `publish::publish`:
 
 1. Refuses conflicts, unfinished merge/rebase/cherry-pick/revert state, and dirty content inside submodules. A committed submodule pointer change can be staged; Shika does not commit files inside submodules.
-2. Validates a nonempty, single-line title and an explicit target from the preview's branch list.
+2. Validates a nonempty, single-line title, an explicit target from the preview's branch list, and a description of at most `MAX_PR_BODY_CHARS` characters. Empty or whitespace-only description keeps `gh --fill`.
 3. Rechecks source branch, origin identity, HEAD, and candidate tree against the preview. A mismatch requires cancellation and a fresh preview.
 4. Rechecks the target on GitHub, then fetches only that target into `refs/remotes/origin/TARGET`. This supplies the local base ref used by `gh --fill`; it never switches a checkout. The `+` in the fetch refspec updates a local remote-tracking ref, **not** a force-push.
 5. Looks up matching open PRs before creating local commits.
@@ -173,7 +174,7 @@ The real staging area is untouched by preview, but preview is **not completely s
    gh pr create --repo HOST/OWNER/REPO --head TASK --base TARGET --title TITLE --fill
    ```
 
-   The explicit title overrides `--fill`'s generated title. The description comes from commits. Explicit `--head` avoids gh choosing a push/fork destination. When a Lead passes `--body`, `--body BODY` replaces `--fill` rather than joining it, so gh never has to reconcile the two.
+   The explicit title overrides `--fill`'s generated title. An empty description comes from the commits via `--fill`. A description written in the dialog, or a Lead's `--body`, replaces `--fill` rather than joining it, so gh never has to reconcile the two. Explicit `--head` avoids gh choosing a push/fork destination.
 10. Returns the existing/new PR URL. A new URL must be a single-line HTTPS value.
 
 Pushing a **pinned SHA**, not a moving `HEAD`, prevents a concurrent later commit from hitching a ride after approval. This is not an atomic lock on the worktree or Git configuration. External shells, hooks, and other processes still require defensive rechecks and can create races.
@@ -310,4 +311,4 @@ Verify that the isolated process's window is frontmost before synthetic input. A
 - Add regression tests for the behavior you change; record GUI evidence separately.
 - Update this guide, the short `AGENTS.md` handoff, and affected design/keyboard/acceptance docs with behavioral changes.
 
-Potential improvements include richer PR-body preview/editing, clearer completed-step progress, more complete URL/SSH configuration support, and cancellation or concurrent publishing. Each must preserve the safety contract. Fork/upstream selection needs distinct source/target repository identities; persistent jobs need reconciliation with uncertain remote results; merging or CI/review management needs a separate product decision. None is implemented by this feature. The checks mark is read-only; keep it that way, and keep its GitHub reads bounded to running or failed checks on PRs Shika published.
+Potential improvements include a preview of the generated commit-message body, clearer completed-step progress, more complete URL/SSH configuration support, and cancellation or concurrent publishing. Each must preserve the safety contract. Fork/upstream selection needs distinct source/target repository identities; persistent jobs need reconciliation with uncertain remote results; merging or CI/review management needs a separate product decision. None is implemented by this feature. The checks mark is read-only; keep it that way, and keep its GitHub reads bounded to running or failed checks on PRs Shika published.
