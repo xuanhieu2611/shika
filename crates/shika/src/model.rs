@@ -94,6 +94,8 @@ pub struct Placement<'a> {
     pub rank: u8,
     /// A Lead card.
     pub lead: bool,
+    /// The one checkout card stays first in its project, ahead of attention.
+    pub checkout: bool,
     /// The card's own session id, once it has one.
     pub session: Option<&'a str>,
     /// The Lead session that started this card.
@@ -142,7 +144,7 @@ impl LeadEntry {
     }
 }
 
-/// A project's own cards, sorted by attention.
+/// A project's own cards: checkout first, then tasks sorted by attention.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectEntry {
     pub project: String,
@@ -218,7 +220,7 @@ impl ColumnLayout {
                 let mut owned = (0..cards.len())
                     .filter(|&i| !led[i] && cards[i].project == *project)
                     .collect::<Vec<_>>();
-                by_attention(&mut owned);
+                owned.sort_by_key(|&i| (!cards[i].checkout, cards[i].rank));
                 ProjectEntry {
                     project: (*project).to_string(),
                     cards: owned,
@@ -533,6 +535,7 @@ mod layout_tests {
             project,
             rank,
             lead: false,
+            checkout: false,
             session: None,
             started_by: None,
         }
@@ -542,6 +545,7 @@ mod layout_tests {
             project,
             rank,
             lead: true,
+            checkout: false,
             session,
             started_by: None,
         }
@@ -551,9 +555,21 @@ mod layout_tests {
             project,
             rank,
             lead: false,
+            checkout: false,
             session: None,
             started_by: Some(by),
         }
+    }
+
+    #[test]
+    fn checkout_precedes_every_attention_state_in_its_project() {
+        let mut checkout = task("a", 3);
+        checkout.checkout = true;
+        let cards = [task("a", 0), task("a", 1), checkout, task("b", 0)];
+        let layout = ColumnLayout::new(&["a", "b"], &cards, &[]);
+        assert_eq!(layout.projects[0].cards, vec![2, 0, 1]);
+        assert_eq!(layout.projects[1].cards, vec![3]);
+        assert!(layout.leads.is_empty());
     }
 
     #[test]
@@ -1194,7 +1210,7 @@ pub fn diff_stat_parts(
 /// The branch a card shows on line two: none while the task is still on its
 /// `shika-draft-<id>` branch, which nobody has named yet.
 pub fn card_branch(session: &shika_core::Session) -> Option<&str> {
-    (!session.on_draft_branch()).then_some(session.branch.as_str())
+    (!session.on_draft_branch() && !session.branch.is_empty()).then_some(session.branch.as_str())
 }
 /// A path with the home directory written as `~`.
 pub fn tilde(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
@@ -1294,6 +1310,9 @@ mod tests {
     #[test]
     fn a_draft_card_shows_no_branch_until_it_is_named() {
         assert_eq!(card_branch(&session_on("shika-draft-18db")), None);
+        let mut checkout = session_on("");
+        checkout.kind = shika_core::SessionKind::Checkout;
+        assert_eq!(card_branch(&checkout), None);
         assert_eq!(
             card_branch(&session_on("fix-flaky-test")),
             Some("fix-flaky-test")

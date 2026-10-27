@@ -656,3 +656,27 @@ Implemented; `cargo test -p shika` and clippy pass. The GUI checks below are not
 - [ ] The footer has the gear (tooltip "Settings ⌘,") on the left and no Add project button. With leftovers, a column below 420px drops the key hints and nothing clips.
 - [ ] `j`/`k` never stops on a section header; light, dark, glass, and a derived theme render the headers with existing tokens.
 - [ ] The column opens at 30% of the window (420px at 1400px), keeps that share while the window resizes (never under 320 or over 800, terminal keeps 420), a drag sets a new share that survives a relaunch, and a double-click on the edge restores 30%.
+
+## Checkout sessions (2026-10-26)
+
+Item 2 in `docs/specs/main-checkout.md` is complete. After the automated and injected checks below, the author confirmed the pending native keyboard flow and real Ready notification checks on 2026-10-26. This confirmation is author-reported, not agent-observed. Automated validation: 747 workspace tests passed with the existing environment-sensitive `path_env::tests::finder_launch_path_resolves_installed_clis` explicitly skipped (plus one existing ignored test). The unfiltered run fails that test because Claude resolves to `/opt/homebrew/bin/claude`, not the test's expected `.local/bin/claude`. Formatting, strict workspace/all-targets Clippy, debug bundle build, and strict signature verification passed. New app tests cover checkout-first ordering, shortcut default/rebind/clear/conflict, picker titles, and coalesced branch reads/retry; core's item-1 tests cover git safety.
+
+Limited native-window smoke evidence: a scratch-only source copy and uniquely signed bundle (`com.hieule.shika.checkout-smoke.eLZoVU`) were opened with `open -n`, a hard-coded disposable Core data directory, disposable HOME/login shell, two disposable repositories, and a fake Claude CLI that makes no provider requests. The isolated PID/window was checked before each injected event. A scratch-only file driver dispatched GPUI keystrokes through the actual window, not handler calls. It was never added to production sources. Observed in Shika Dark, Shika Light, and Catppuccin Frappe:
+
+- Checkout picker title/footer, Tab between projects, Escape, Waiting startup in the repository root, first-prompt display naming and Ready.
+- A second start focuses the existing terminal; Tab to a project with an existing checkout also focuses it without another card. Ordinary Cmd+N still creates a worktree; checkout cards coexist and sort first.
+- Settings > Keyboard rebinding to Cmd+R removes Cmd+Shift+N; the replacement opens the checkout picker. The action is inert under the Stop dialog.
+- No Create PR button or publishing overlay on Cmd+Shift+P. Independent shell creation, a shell-created untracked file, Ready diff stat, and Changes contents against HEAD.
+- External branch and detached-HEAD labels refresh; the long checkout path yields to the short branch beside an open Changes panel.
+- Rename (with explicit Cmd+A in the synthetic text driver) and Switch agent keep the checkout identity and existing shell tab.
+- Active Close shows only Stop/Cancel. Bare Enter, plain letters, Cmd+D, and modified Cmd+Enter do nothing; an immediate Cmd+Enter inside the 300ms grace is ignored; a later exact Cmd+Enter stops it. Escape restores terminal focus. Dirty idle Close has no dialog and preserves the file. Checkout-only starts/closes create no worktree folder or journal entry.
+
+Evidence lives under `/private/tmp/shika-checkout-ui.eLZoVU/` (machine-local screenshots, state snapshots and flow log; not committed and may disappear). The scratch app was stopped. No normal app data, authenticated CLI configuration, or paid model request was used.
+
+Native acceptance, not established by in-process GPUI injection:
+
+- [x] Full item-2 keyboard flow in an uninstrumented built `.app`, including start, question, Ready, shell tab, file change/diff stat, and Working/idle Close: subsequently confirmed by the author. The agent's earlier session lacked Accessibility/event-posting permission.
+- [x] Real-agent Ready notification flow: subsequently confirmed by the author. The earlier isolated bundle's notification permission was denied, so that earlier run established permission-denial handling only.
+
+Additional native polish checks remain open:
+- [ ] Confirm native picker cancellation restores the opening focus, initial Rename selection, the checkout tooltip, Asking Close, and long-branch/narrow-window/glass layouts.

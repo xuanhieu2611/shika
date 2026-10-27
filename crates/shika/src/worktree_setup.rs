@@ -383,7 +383,7 @@ impl Shika {
                 self.overlay = Some(Overlay::Picker {
                     project: editor.project.clone(),
                     index: *picker_index,
-                    lead: false,
+                    mode: crate::PickerMode::Task,
                 });
             }
             EntryPoint::Settings(settings_row) => {

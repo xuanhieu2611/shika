@@ -147,7 +147,7 @@ Three items, one coding session each. Check an item off only when everything und
 
   Done when: `cargo test --workspace` passes with new tests for each point above, including a dirty checkout that closes with no git write, a checked-out branch that is never renamed, a second start that is refused, and a Lead command that is refused.
 
-- [ ] **2. App: starting, showing, and closing it in `shika`**
+- [x] **2. App: starting, showing, and closing it in `shika`**
 
   The author-facing feature, keyboard first, following `design/DESIGN.md`.
 
@@ -159,6 +159,8 @@ Three items, one coding session each. Check an item off only when everything und
   - Shell tabs, Switch agent, rename, notifications, diff stat, and Changes work as on any card.
 
   Done when: a built `.app` opened with `open` against a disposable repo and `--data-dir` passes the flow by keyboard alone: start, ask a question, see Ready and the notification, open a shell tab, change a file and see the diff stat, close while Working and while idle. Results recorded in `MANUAL_CHECKS.md`.
+
+  Complete (2026-10-26). Automated and isolated GPUI-injected smoke results are recorded under Checkout sessions in `MANUAL_CHECKS.md`. The author subsequently confirmed the pending native keyboard flow and real Ready notification checks.
 
 - [ ] **3. Docs, public copy, and cleanup**
 
