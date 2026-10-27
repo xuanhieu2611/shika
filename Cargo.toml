@@ -9,32 +9,25 @@ opt-level = 3
 strip = true
 
 # GPUI comes from Zed's git tree, not crates.io (0.2.2 there is stale).
-# Pinned to the v1.22.0 stable tag (2026-09-30): a stable release has been
+# Pinned to the v1.25.3 stable tag (2026-10-23): a stable release has been
 # shipped to Zed users, so the gpui and gpui_platform at that commit are known
 # to build and run on macOS together.
 # None of Zed's own [patch.crates-io] entries are needed to build gpui and
 # gpui_platform on macOS from this commit: they cover tree-sitter, livekit,
 # Windows capture, and Linux calloop, which these two crates do not pull in
 # here. async-task resolves from crates.io and builds as is.
-# The git source is Shika's fork: one commit (branch shika-glass-blend) on top
-# of that tag, so translucent fills composite with source-over alpha instead
-# of adding alpha, and washes in glass let the desktop show through. The same
-# fix is proposed upstream in https://github.com/zed-industries/zed/pull/65571.
-# To move to a newer Zed stable tag:
-#   1. If that tag already contains the upstream fix, point both entries back
-#      at https://github.com/zed-industries/zed at the tag's commit and stop
-#      here. Keep the fork anyway: past Shika commits still build from it.
-#   2. Otherwise, in the fork, cherry-pick the shika-glass-blend commit onto
-#      the new tag, push it as a new branch shika-glass-blend-<tag>, and set
-#      both revs below to the new commit. Never move or delete an older fork
-#      branch: past Shika commits pin its rev and would stop building.
-#   3. Run cargo update -w, the workspace tests, and check glass washes (the
-#      selected card over a bright wallpaper) in a built app.
-# Do not add other changes to the fork.
+# Upstream includes https://github.com/zed-industries/zed/pull/65571, so
+# translucent fills composite with source-over alpha and washes in glass
+# let the desktop show through. Shika no longer needs its glass-blend fork.
+# Keep the old fork branches: past Shika commits still pin their revisions.
+# To move to a newer Zed stable tag, pin both entries to that tag's commit,
+# run cargo update -w and the workspace tests, regenerate dependency notices,
+# and check glass washes (the selected card over a bright wallpaper) in a
+# built app. Keep both GPUI dependencies on the same revision.
 [workspace.dependencies]
-gpui = { git = "https://github.com/xuanhieu2611/zed", rev = "b215cb4bc081b4a35c62aedda6b1c4b5c4ab5381" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "8dd255c3eafb5231056fe4e6f601cedd011f1c93" }
 # Compile Metal shaders when the app starts, so builds need full Xcode but
 # do not also require the separate Metal Toolchain component. Keep this
 # feature for local and release builds unless the toolchain is changed
 # deliberately and both build and startup are verified.
-gpui_platform = { git = "https://github.com/xuanhieu2611/zed", rev = "b215cb4bc081b4a35c62aedda6b1c4b5c4ab5381", features = ["font-kit", "runtime_shaders"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "8dd255c3eafb5231056fe4e6f601cedd011f1c93", features = ["font-kit", "runtime_shaders"] }

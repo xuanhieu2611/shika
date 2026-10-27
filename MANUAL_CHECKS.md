@@ -2,6 +2,14 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Upstream GPUI v1.25.3 and modal dimming
+
+- PASS: both GPUI dependencies now pin upstream stable `v1.25.3` (`8dd255c3eafb5231056fe4e6f601cedd011f1c93`), which contains the merged source-over alpha fix #65571. Dependency notices regenerated.
+- PASS: formatting, strict workspace/all-targets Clippy, debug bundle build, and parallel workspace tests: 757 passed, one existing ignored, with the documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` excluded. An unfiltered run failed only that test because Claude resolves to `/opt/homebrew/bin/claude`, not its expected `.local/bin/claude`.
+- PASS (unit): modal scrim policy covers Settings sections remaining undimmed, a pointer menu remaining undimmed, and picker/checkout Close/Quit dimming. Existing catalog theme tests pass. These are not native visual acceptance.
+- [ ] In a built app with disposable data, verify selected-card glass washes over bright wallpaper after the upstream switch, including Reduce transparency.
+- [ ] Verify the single full-window scrim behind dialogs and the picker in Shika Light, Shika Dark, a derived theme, and glass. Confirm Settings and Adjust background remain undimmed, pointer menus/toasts/update notices add no scrim, and Quit over another dialog does not stack scrims. Check unchanged focus, outside-click behavior, and confirmation key guards.
+
 ## 0.11.2 release validation, 2026-10-27
 
 - PASS: formatting, strict workspace/all-targets Clippy, bundled dependency notices, and parallel workspace tests: 756 passed, one existing ignored, and the documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` excluded.
