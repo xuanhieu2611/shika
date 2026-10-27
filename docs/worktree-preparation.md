@@ -14,6 +14,8 @@ Start here when contributing to this feature. This document records the product 
 
 ## Two-minute overview
 
+New > [Terminal](terminal-tasks.md) uses this same onboarding, consent, preparation, cancellation and guarded-cleanup path before opening its login shell. It does not require an installed agent. `Core::create_terminal_with_preparation` shares `create_task` with ordinary agent creation; do not add a separate setup runner or bypass consent for shells.
+
 - **Before:** New created a draft branch/worktree and started the CLI. Ignored local files and dependency installation were left to the user or agent.
 - **Now:** An optional, approved project configuration inserts copying and setup between worktree creation and CLI startup. Nothing runs when a project is added.
 - **Ownership:** Shika still owns worktrees and branches. Setup uses ordinary child processes, not an agent PTY. There is no new model API, session history, or second visible terminal.

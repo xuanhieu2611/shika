@@ -69,6 +69,12 @@ Settings > Appearance > Background image puts a picture of your own behind the g
 
 Settings > Agents turns each CLI on or off for New. [Switch agent](agent-switch.md) (Cmd+Shift+A) starts a different CLI in an idle task's worktree, to continue the work or review it.
 
+## Start with a terminal
+
+Choose **Terminal** at the bottom of Cmd+N's picker to open your login shell in a fresh worktree without starting an agent. It is available even without agents installed and uses the same optional setup and safe Close. The task gets a generated name; Cmd+Shift+R renames its display name, not its branch. Shell commands never trigger agent status, naming, or completion notifications.
+
+Changes and Create PR still work. Cmd+Shift+A starts an agent later in the same task, keeping your original terminal as a Shell tab. After quitting, Leftover worktrees > Reopen > Terminal opens a fresh shell without rerunning setup or restoring old programs. See [Terminal tasks](terminal-tasks.md).
+
 ## An agent in your checkout
 
 For a quick question about the repository folder you added, press **Cmd+Shift+N** or choose **Agent > New Agent in Checkout**. Pick a CLI in **In checkout**; Tab changes projects. There is one checkout session per project, so invoking it again focuses the existing card. Cmd+N still always creates a fresh worktree.

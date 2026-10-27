@@ -98,7 +98,7 @@
             <span class="step-mark"><kbd>⌘N</kbd></span>
             <div>
               <h3>Start an agent</h3>
-              <p>Pick Claude Code, Codex, Cursor CLI, or Pi. The list is the CLIs on your login-shell PATH that are turned on in Settings. When none are, Enter opens Settings on Agents. Shika creates a branch and a worktree, then starts that CLI inside it. The picker footer names the base branch this task will start from.</p>
+              <p>Pick Claude Code, Codex, Cursor CLI, Pi, or Terminal. Agents are the CLIs on your login-shell PATH that are turned on in Settings. Terminal is always available and opens your login shell without an agent. Shika creates a branch and a worktree, runs approved setup, then opens your choice inside it. The picker footer names the base branch this task will start from.</p>
             </div>
           </li>
           <li>
@@ -148,6 +148,7 @@
         <p>The folder keeps the draft name it was created with. The branch starts as that name too. The first prompt renames the branch, and the CLI's session title can rename it once more. A prefix from Settings, if you set one, is added to those generated names.</p>
         <p>New starts from the project's base branch. Shika uses <code>origin/&lt;base&gt;</code> when that ref exists, otherwise the local branch. With no base set, it uses <code>origin/HEAD</code>, then <code>main</code>, then <code>master</code>, then whatever the main checkout has checked out. Press <kbd>b</kbd>, or click the branch after the project path, to change it for the next task. A card keeps the base it started from. If that branch cannot be found, New stops and names it.</p>
         <p>A new worktree has no upstream. Nothing is on the remote until you push.</p>
+        <p>Choose Terminal in New to work without an agent. It starts with a generated task and branch name; Rename task changes only its display name. Shell commands do not trigger agent status or automatic naming. Changes, Create PR, and safe Close still work. Switch agent (<kbd>⌘⇧A</kbd>) starts an agent later and keeps the original terminal as a Shell tab. After quitting, Reopen can start a fresh Terminal in that worktree without rerunning setup or restoring old programs.</p>
         <p>For a quick question in the repository folder you added, use <kbd>⌘⇧N</kbd> or Agent > New Agent in Checkout. The In checkout picker starts one session per project; invoking it again focuses that card. It shows the current branch and runs without a new branch or setup. It is not read-only: the agent can edit your files. Shika never renames your branch or offers Create PR here; Changes compares uncommitted work against <code>HEAD</code>. Close stops the agent and shells without discarding files, asking Stop the agent? with <kbd>⌘↵</kbd> if a turn is active or blocked. New still always creates a worktree. Settings > Keyboard can rebind the checkout shortcut.</p>
       </section>
 
@@ -273,7 +274,7 @@
         <p>You can change Hide or show changes, Go to agent 1 through 9, and Go to tab 1 through 9. Hide or show changes starts as <kbd>⌘⌥B</kbd>. Go to tab starts as <kbd>⌘1</kbd> through <kbd>⌘9</kbd>, and <kbd>⌘1</kbd> is the agent tab. Go to agent starts with no shortcut. Agent N is the Nth card in the column, skipping project headers, and a missing card does nothing.</p>
         <p>Press Enter, or click the chord, then press the new shortcut. It includes the Command key. Delete clears that row. Escape cancels the recording. A chord already used by another row here moves to the row you are setting. A chord that belongs to a fixed shortcut, such as New agent, is refused.</p>
         <h3>Agents</h3>
-        <p>Each CLI shows its name, the binary path or "not found on PATH", and Off or On. <kbd>h</kbd> turns the selected one off and <kbd>l</kbd> turns it on. Off stays off after the binary appears. A CLI you have never set is on, so a later install shows up in New until you turn it off. New lists only CLIs that are on your login-shell PATH and turned on. When that list is empty, Enter in the picker opens this section.</p>
+        <p>Each CLI shows its name, the binary path or "not found on PATH", and Off or On. <kbd>h</kbd> turns the selected one off and <kbd>l</kbd> turns it on. Off stays off after the binary appears. A CLI you have never set is on, so a later install shows up in New until you turn it off. New lists CLIs that are on your login-shell PATH and turned on, followed by Terminal. Terminal needs no agent installation and is not an Agents setting.</p>
         <p>The signed app checks for updates and shows a small notice in the corner: download it, or ignore it until the next check. When the download is ready, a card in the center asks you to restart now, or the next time Shika quits. Check for updates in the Shika menu brings that notice back. A copy you build yourself has no updater.</p>
         <p>If a step you needed is missing from this guide, <a href="https://github.com/xuanhieu2611/shika/issues">open an issue</a>. That is how a new section starts.</p>
       </section>

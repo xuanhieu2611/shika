@@ -696,6 +696,13 @@ enum PickerMode {
 }
 
 impl PickerMode {
+    fn choices(self, mut agents: Vec<CliPreset>) -> Vec<CliPreset> {
+        if self == Self::Task {
+            agents.push(shika_core::terminal_choice());
+        }
+        agents
+    }
+
     fn title(self) -> &'static str {
         match self {
             Self::Task => "New agent",
@@ -1544,7 +1551,7 @@ impl Shika {
         .detach();
     }
     fn launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy || self.catalog.is_none() {
             return;
         }
         let (project, index, mode) = match &self.overlay {
@@ -1555,7 +1562,7 @@ impl Shika {
             }) => (project.clone(), *index, *mode),
             _ => return,
         };
-        let Some(preset) = self.offered_presets().into_iter().nth(index) else {
+        let Some(preset) = self.new_choices(mode).into_iter().nth(index) else {
             return;
         };
         match mode {
@@ -1573,6 +1580,15 @@ impl Shika {
             .into_iter()
             .cloned()
             .collect()
+    }
+
+    /// Terminal is a task launch choice, never an installed agent or a Lead.
+    fn new_choices(&self, mode: PickerMode) -> Vec<CliPreset> {
+        mode.choices(self.offered_presets())
+    }
+
+    fn recovery_choices(&self) -> Vec<CliPreset> {
+        self.new_choices(PickerMode::Task)
     }
 
     /// What a Lead is started with, or None (and a toast) without the control
@@ -1757,7 +1773,7 @@ impl Shika {
         if self.busy {
             return;
         }
-        if !preset.found() {
+        if preset.id != "terminal" && !preset.found() {
             self.message(format!("{} not found on PATH", preset.binary));
             cx.notify();
             return;
@@ -1895,6 +1911,7 @@ impl Shika {
             .as_ref()
             .and_then(|c| c.presets.iter().find(|p| p.id == card.launch_preset))
             .cloned()
+            .or_else(|| (card.launch_preset == "terminal").then(shika_core::terminal_choice))
         else {
             return;
         };
@@ -2046,6 +2063,7 @@ impl Shika {
         if author {
             self.busy = holds_busy;
         }
+        let shell_only = preset.id == "terminal";
         let chat = lead.is_some() && preset.id == "claude";
         if chat {
             self.ensure_lead_chat(&project, window, cx)
@@ -2058,7 +2076,7 @@ impl Shika {
         let opacity = self.terminal_opacity();
         let pane = Pane::new(
             self.core.clone(),
-            true,
+            !shell_only,
             opacity,
             self.font_size.points(),
             self.terminal_palette(window),
@@ -2070,7 +2088,7 @@ impl Shika {
         {
             let mut host = lock(&state);
             host.preparing = configured;
-            if lead.is_some() || matches!(launch, Launch::Recover { .. }) {
+            if shell_only || lead.is_some() || matches!(launch, Launch::Recover { .. }) {
                 host.keep_title();
             }
         }
@@ -2180,7 +2198,12 @@ impl Shika {
                         PreparationEvent::StartingAgent => {
                             let mut host = lock(&progress_state);
                             host.agent_starting = true;
-                            host.preparation_stage = "Starting agent...".into();
+                            host.preparation_stage = if shell_only {
+                                "Starting terminal..."
+                            } else {
+                                "Starting agent..."
+                            }
+                            .into();
                         }
                         PreparationEvent::Output(bytes) => {
                             // Pipes emit LF; the terminal needs CRLF. Preserve
@@ -2214,6 +2237,9 @@ impl Shika {
                         }
                         Launch::Worker(options) => core.create_session_with_preparation(
                             &project, &preset.id, size, sink, options, control, report,
+                        ),
+                        Launch::Task if shell_only => core.create_terminal_with_preparation(
+                            &project, size, sink, control, report,
                         ),
                         Launch::Task => core.create_session_with_preparation(
                             &project,
@@ -2327,7 +2353,7 @@ impl Shika {
                         }
                         let recovered = matches!(finished, Launch::Recover { .. });
                         let recovered_id = session.id.clone();
-                        if recovered {
+                        if recovered || session.is_terminal() {
                             this.cards[index].title = model::card_title(&session.title);
                             this.cards[index].named = true;
                             this.cards[index].title_watch.finish();
@@ -2927,7 +2953,7 @@ impl Shika {
             }
         }
         for card in &mut self.cards {
-            if card.chat {
+            if card.chat || (!card.creating && card.launch_preset == "terminal") {
                 continue;
             }
             // Sample live terminal chrome, never the user's scrollback. Read
@@ -3950,7 +3976,13 @@ impl Shika {
         };
         let submitted = lock(&pane.state).submission;
         let card = &mut self.cards[index];
-        card.agent = pane;
+        let previous = std::mem::replace(&mut card.agent, pane);
+        if card.launch_preset == "terminal" {
+            card.shell_serial += 1;
+            let mut shell = previous;
+            shell.shell_number = card.shell_serial;
+            card.shells.push(shell);
+        }
         card.preset = session.preset_name.clone();
         card.launch_preset = session.preset_id.clone();
         if matches!(card.launch, Launch::Recover { .. }) {
@@ -5509,7 +5541,10 @@ impl Shika {
             if self.busy {
                 return;
             }
-            let offered_len = self.offered_presets().len();
+            let offered_len = match &self.overlay {
+                Some(Overlay::Picker { mode, .. }) => self.new_choices(*mode).len(),
+                _ => self.offered_presets().len(),
+            };
             let catalog_ready = self.catalog.is_some();
             let settings_nav = match &self.overlay {
                 Some(Overlay::Settings {
@@ -5630,7 +5665,7 @@ impl Shika {
                     }
                 }
                 Some(Overlay::Recover { .. }) => {
-                    let len = self.offered_presets().len();
+                    let len = self.recovery_choices().len();
                     if let Some(Overlay::Recover { index, .. }) = &mut self.overlay {
                         match key {
                             "j" | "down" if len > 0 => *index = (*index + 1) % len,
@@ -6946,6 +6981,8 @@ impl Shika {
             &[("↵", "view setup"), ("\u{2318}\u{21e7}W", "cancel")]
         } else if card.launch_error.is_some() {
             &[("↵", "retry"), ("\u{2318}\u{21e7}W", "close")]
+        } else if card.launch_preset == "terminal" {
+            &[("↵", "terminal")]
         } else {
             match card.status {
                 Status::Ready => &[("↵", "read")],
@@ -7034,8 +7071,8 @@ impl Shika {
                         )),
                 )
             })
-            .child(if card.closing {
-                // A card on its way out has no status to signal.
+            .child(if card.closing || card.launch_preset == "terminal" {
+                // Shell-only tasks have no inferred agent activity.
                 div().flex_none().w(px(SIGNAL_SLOT)).into_any_element()
             } else {
                 card_signal(&key, card.status, card.unseen(), chrome)
@@ -8737,7 +8774,7 @@ impl Shika {
         max_h: Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let (prompt, index, error, checkout) = {
+        let (prompt, index, error, checkout, terminal) = {
             let Some(Overlay::SwitchAgent {
                 session_id,
                 prompt,
@@ -8750,16 +8787,25 @@ impl Shika {
             let checkout = self.cards.iter().any(|card| {
                 card.is_checkout() && card.session.as_ref().is_some_and(|s| s.id == *session_id)
             });
-            (prompt.clone(), *index, error.clone(), checkout)
+            let terminal = self.cards.iter().any(|card| {
+                card.launch_preset == "terminal"
+                    && card.session.as_ref().is_some_and(|s| s.id == *session_id)
+            });
+            (prompt.clone(), *index, error.clone(), checkout, terminal)
         };
         prompt.update(cx, |input, _| input.set_chrome(*chrome));
         let presets = self.offered_presets();
         let mut panel = dialog(chrome, max_h)
-            .child(dialog_title(div()).child("Switch agent?"))
-            .child(
-                dialog_text(chrome)
-                    .child("This stops the current agent only after the new one starts."),
-            )
+            .child(dialog_title(div()).child(if terminal {
+                "Start agent?"
+            } else {
+                "Switch agent?"
+            }))
+            .child(dialog_text(chrome).child(if terminal {
+                "The current terminal keeps running as a Shell tab."
+            } else {
+                "This stops the current agent only after the new one starts."
+            }))
             .child(dialog_text(chrome).child(if checkout {
                 "Your checkout, branch, commits, and uncommitted files stay. Shell tabs stay."
             } else {
@@ -8838,7 +8884,13 @@ impl Shika {
         if let Some(error) = error {
             panel = panel.child(dialog_text(chrome).child(error.to_string()));
         }
-        let label = if self.busy { "Starting..." } else { "Switch" };
+        let label = if self.busy {
+            "Starting..."
+        } else if terminal {
+            "Start"
+        } else {
+            "Switch"
+        };
         panel
             .child(
                 div()
@@ -8848,7 +8900,11 @@ impl Shika {
                     .gap_y(px(6.))
                     .child(hint("j k", "choose", chrome))
                     .child(hint("tab", "edit prompt", chrome))
-                    .child(hint("enter", "switch", chrome))
+                    .child(hint(
+                        "enter",
+                        if terminal { "start" } else { "switch" },
+                        chrome,
+                    ))
                     .child(hint("esc", "cancel", chrome)),
             )
             .child(
@@ -9172,7 +9228,7 @@ impl Shika {
                                     .child("tab to change project"),
                             ),
                     );
-                let offered = self.offered_presets();
+                let offered = self.new_choices(*mode);
                 let offer_settings = self.catalog.is_some() && offered.is_empty();
                 if self.catalog.is_none() {
                     panel = panel.child(
@@ -9212,7 +9268,22 @@ impl Shika {
                             .path
                             .as_deref()
                             .map(|path| model::tilde(path, home))
-                            .unwrap_or_default();
+                            .unwrap_or_else(|| {
+                                if preset.id == "terminal" {
+                                    "Login shell".into()
+                                } else {
+                                    String::new()
+                                }
+                            });
+                        if preset.id == "terminal" && i > 0 {
+                            panel = panel.child(
+                                div()
+                                    .mt(px(6.))
+                                    .mb(px(6.))
+                                    .border_t_1()
+                                    .border_color(chrome.line_2),
+                            );
+                        }
                         panel = panel.child(
                             list_row(i == *index, chrome)
                                 .id(SharedString::from(format!("preset-{i}")))
@@ -11007,6 +11078,33 @@ mod host_tests {
     use super::*;
 
     #[test]
+    fn terminal_is_a_task_choice_even_without_agents_but_never_a_lead_or_checkout() {
+        let terminal = shika_core::terminal_choice();
+        assert_eq!(PickerMode::Task.choices(vec![]), vec![terminal.clone()]);
+        assert!(PickerMode::Lead.choices(vec![]).is_empty());
+        assert!(PickerMode::Checkout.choices(vec![]).is_empty());
+        let agent = CliPreset {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            binary: "claude".into(),
+            path: Some("/test/claude".into()),
+            args: vec![],
+        };
+        assert_eq!(
+            PickerMode::Task.choices(vec![agent.clone()]),
+            vec![agent.clone(), terminal]
+        );
+        assert_eq!(
+            PickerMode::Lead.choices(vec![agent.clone()]),
+            vec![agent.clone()]
+        );
+        assert_eq!(
+            PickerMode::Checkout.choices(vec![agent.clone()]),
+            vec![agent]
+        );
+    }
+
+    #[test]
     fn modal_scrim_preserves_appearance_previews_and_pointer_menus() {
         for section in SettingsSection::ALL {
             assert!(
@@ -11278,6 +11376,20 @@ mod host_tests {
         host.write(b"\r", InputSource::Typed);
         assert_eq!(lock(&state).submission, 3);
         assert_eq!(lock(&state).title.as_deref(), Some("fix it"));
+        // Both a pinned Terminal task and additional shells use capture=false.
+        let shell_state = Arc::new(Mutex::new(HostState::default()));
+        let shell = Host {
+            core: core.clone(),
+            state: shell_state.clone(),
+            capture: false,
+        };
+        shell.write(b"echo Working...\r", InputSource::Typed);
+        shell.write(b"\x1b[A\r", InputSource::Typed);
+        shell.write(b"\x1b[200~claude\n\x1b[201~\r", InputSource::Typed);
+        assert_eq!(lock(&shell_state).submission, 0);
+        assert!(lock(&shell_state).title.is_none());
+        assert!(lock(&shell_state).last_typed.is_some());
+        drop(shell);
         drop(host);
         drop(core);
         std::fs::remove_dir_all(path).unwrap();

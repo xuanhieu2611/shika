@@ -129,6 +129,65 @@ impl Fixture {
     }
 }
 
+#[test]
+fn terminal_preparation_requires_consent_and_finishes_before_the_shell() {
+    let f = Fixture::new();
+    fs::write(f.repo.join(".env.local"), "local-only\n").unwrap();
+    let config = f.config(
+        &["test -f .env.local && printf prepared > ready.generated"],
+        &[".env.local"],
+        10,
+    );
+    let launch = || {
+        f.core.create_terminal_with_preparation(
+            &f.project.id,
+            PtySize::default(),
+            |_, _| {},
+            PreparationControl::default(),
+            |_| {},
+        )
+    };
+    assert_eq!(launch(), Err(Error::PreparationNeedsApproval));
+    assert!(f.core.worktree_journal().unwrap().is_empty());
+    f.approve(&config);
+    let session = launch().unwrap();
+    assert!(session.is_terminal());
+    assert_eq!(
+        fs::read_to_string(session.worktree.join("ready.generated")).unwrap(),
+        "prepared"
+    );
+    assert_eq!(
+        fs::read_to_string(session.worktree.join(".env.local")).unwrap(),
+        "local-only\n"
+    );
+    f.core.session_discard(&session.id).unwrap();
+}
+
+#[test]
+fn failed_terminal_preparation_never_starts_a_shell_and_preserves_edits() {
+    let f = Fixture::new();
+    let config = f.config(&["printf changed > tracked.txt; exit 7"], &[], 10);
+    f.approve(&config);
+    assert!(
+        f.core
+            .create_terminal_with_preparation(
+                &f.project.id,
+                PtySize::default(),
+                |_, _| {},
+                PreparationControl::default(),
+                |_| {},
+            )
+            .is_err()
+    );
+    assert!(f.core.sessions().is_empty());
+    let leftovers = f.core.leftovers_list().unwrap();
+    assert_eq!(leftovers.len(), 1);
+    assert_eq!(
+        fs::read_to_string(leftovers[0].path.join("tracked.txt")).unwrap(),
+        "changed"
+    );
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.core.cancel_preparations();

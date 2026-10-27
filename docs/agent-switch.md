@@ -8,6 +8,8 @@ Read [AGENTS.md](../AGENTS.md), [design/DESIGN.md](../design/DESIGN.md), [keyboa
 
 ## What it does
 
+On a [Terminal task](terminal-tasks.md), this starts its first agent. The original pinned shell moves to an additional numbered Shell tab without stopping or recreating it; its programs, output and draft stay. Existing shells stay too. Terminal itself is not a choice in Switch agent. A still-generated branch can then be named by the agent as an ordinary draft would be.
+
 Agent > Switch agent…, or Cmd+Shift+A, opens a 400px dialog for the selected ordinary task. Both do nothing while the app is busy or any overlay is open. There is no header button and no card context-menu item.
 
 The dialog is available when the agent is Ready, Waiting, or its CLI has exited. It is refused, with a toast, while the agent is Working or Asking, while setup is running, while the task is closing, and while the author has unsent typed text in that agent terminal. Shell-tab drafts do not count. The Lead is refused the same way Create PR is: "The Lead cannot switch agent." A worker the Lead started may switch. It keeps `started_by`, and the new agent PTY still receives that worker's control env so `shika report` works. The new-task report footer is not added to this prompt.

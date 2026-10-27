@@ -12,6 +12,7 @@ These guides explain why features exist, how they are implemented, and where to 
 | [Tasks and worktrees](tasks-and-worktrees.md) | Projects, worktree creation, checkout sessions, base branch, dirty and unpushed checks, Close, and leftovers |
 | [Agent activity and elapsed turns](agent-activity.md) | Timer-reset root cause, hybrid state detection, lifecycle reports, notifications, safe Close, and debugging |
 | [Token usage](token-usage.md) | Local Claude Code and Codex token totals, the daily file, and Settings > Usage |
+| [Terminal tasks](terminal-tasks.md) | Starting without an agent, generated names, attaching an agent without stopping the shell, and explicit recovery |
 | [Terminal tabs](terminal-tabs.md) | Task-local agent/shell tabs, PTY ownership, startup, selection, close, and hidden terminals |
 | [Changes panel](changes-panel.md) | The read-only diff beside the terminal: decision, refresh without watching, caps and performance, width beside the column, debugging, and guardrails |
 | [Background image](background-image.md) | The optional picture behind the glass: decisions, Shika's managed copy, effects ported from Zeron, framing and the Adjust dialog, debugging, and extending |

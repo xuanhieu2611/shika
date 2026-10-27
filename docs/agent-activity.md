@@ -56,6 +56,8 @@ The screen rules are original code. Herdr's Apache-2.0 implementation informed t
 
 ## States and evidence
 
+[Terminal tasks](terminal-tasks.md) do not enter this detector or capture submissions. Their internal idle state is Waiting, but they paint no signal/timer and never notify for shell output or exit. Manually starting a CLI in that shell does not enable detection; explicitly using Switch agent does.
+
 | Visible state | Meaning |
 | --- | --- |
 | Waiting | Initial idle, before a turn starts. |
