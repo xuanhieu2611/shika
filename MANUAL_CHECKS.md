@@ -2,6 +2,13 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## 0.11.3 release validation, 2026-10-29
+
+- PASS: formatting, strict workspace/all-targets Clippy, bundled dependency notices, and parallel workspace tests: 765 passed, one existing ignored, and the documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` excluded.
+- PASS: `scripts/release-app.sh` built 0.11.3 (build 14) with `com.hieule.shika` and Sparkle, signed, notarized, and stapled the DMG. Gatekeeper accepted it as Notarized Developer ID; strict nested signature verification passed. No bundled file contains the release Mac's home or checkout path.
+- PASS: `scripts/appcast.sh` signed and verified the feed above published build 13. Feed version, enclosure URL, EdDSA signature presence, and final DMG length match the release.
+- Packaging validation does not establish installed-app update/relaunch or the remaining native acceptance checks below. No normal app data or authenticated agent session was used.
+
 ## Upstream GPUI v1.25.3 and modal dimming
 
 - PASS: both GPUI dependencies now pin upstream stable `v1.25.3` (`8dd255c3eafb5231056fe4e6f601cedd011f1c93`), which contains the merged source-over alpha fix #65571. Dependency notices regenerated.
