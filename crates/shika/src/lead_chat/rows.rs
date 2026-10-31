@@ -1,12 +1,15 @@
 //! One list row: a time separator, an event line, or one markdown block
 //! of a bubble, with its cached read-only text.
 use super::{LeadChat, Message, Row, history::local_time, markdown};
-use crate::{appearance, chat_input::ChatInput};
+use crate::{Chrome, appearance, chat_input::ChatInput};
 use gpui::{
-    AppContext, Context, Focusable, IntoElement, ParentElement, Styled, Window, div,
-    prelude::FluentBuilder, px,
+    AppContext, Context, Entity, Focusable, HighlightStyle, IntoElement, ParentElement, Styled,
+    Window, div, prelude::FluentBuilder, px,
 };
+use markdown::Block;
 use shika_core::ChatContent;
+use std::collections::HashMap;
+use std::ops::Range;
 
 impl LeadChat {
     pub(super) fn row(
@@ -26,22 +29,8 @@ impl LeadChat {
             return div().into_any_element();
         };
         match row {
-            Row::Time { text, .. } => div()
-                .w_full()
-                .py(px(12.))
-                .text_center()
-                .text_size(px(11.5))
-                .text_color(chrome.ink_3)
-                .child(text)
-                .into_any_element(),
-            Row::Event { text, .. } => div()
-                .w_full()
-                .py(px(12.))
-                .text_center()
-                .text_size(px(11.5))
-                .text_color(chrome.ink_3)
-                .child(text)
-                .into_any_element(),
+            Row::Time { text, .. } => separator_row(&chrome, text),
+            Row::Event { text, .. } => separator_row(&chrome, text),
             Row::Block {
                 message,
                 block,
@@ -57,66 +46,12 @@ impl LeadChat {
                     .or_insert_with(|| message_width(message, window));
                 let author = matches!(message.record.content, ChatContent::Author { .. });
                 let key = (message.record.id, block);
-                let mut ink = chrome;
-                ink.ink_1 = if author {
-                    appearance::legible(
-                        chrome.primary_fg,
-                        chrome.primary_bg,
-                        chrome.primary_fg,
-                        4.5,
-                    )
-                } else {
-                    appearance::legible(
-                        chrome.ink_1,
-                        if item.code {
-                            chrome.sunken
-                        } else {
-                            chrome.raised
-                        },
-                        chrome.ink_1,
-                        4.5,
-                    )
-                };
+                let ink = block_ink(chrome, author, item.code);
                 let spans = markdown::highlights(item, ink);
-                let input = if let Some(input) = self.text_cache.get(&key) {
-                    input.clone()
-                } else {
-                    let input = cx.new(|cx| ChatInput::new(item.text.clone(), ink, cx));
-                    cx.subscribe(&input, move |this, _, event, cx| {
-                        this.text_selection(key, event, cx)
-                    })
-                    .detach();
-                    self.text_cache.insert(key, input.clone());
-                    input
-                };
+                let input = cached_text_input(&mut self.text_cache, key, item, ink, cx);
                 let selection = self.selection_range(key, item.text.len());
                 input.update(cx, |input, cx| {
-                    let changed = input.style(ink, true, item.code, spans);
-                    input.label(format!(
-                        "{}, {}. {}",
-                        if author { "You" } else { "Lead" },
-                        local_time(message.record.timestamp),
-                        if author {
-                            "Submitted message"
-                        } else {
-                            "Completed reply"
-                        }
-                    ));
-                    input.inline_style(
-                        item.spans
-                            .iter()
-                            .filter(|s| s.code)
-                            .map(|s| s.range.clone())
-                            .collect(),
-                        item.spans
-                            .iter()
-                            .filter_map(|s| {
-                                s.link.as_ref().map(|link| (s.range.clone(), link.clone()))
-                            })
-                            .collect(),
-                    );
-                    let selected = input.select_range(selection);
-                    if changed || selected {
+                    if style_block_input(input, message, block, ink, spans, selection) {
                         cx.notify();
                     }
                 });
@@ -127,6 +62,7 @@ impl LeadChat {
                         v.entity_id() == active || v.focus_handle(cx).is_focused(window)
                     });
                 }
+                let (top, bottom) = bubble_padding(message, block, first, last, author);
                 div()
                     .w_full()
                     .flex()
@@ -143,35 +79,8 @@ impl LeadChat {
                                     .w_full()
                                     .max_w(px(480.))
                                     .px(px(20.))
-                                    .pt(px(if first {
-                                        12.
-                                    } else if author
-                                        || item.continuation
-                                        || (item.code
-                                            && block > 0
-                                            && message.blocks[block - 1].code)
-                                    {
-                                        0.
-                                    } else {
-                                        3.
-                                    }))
-                                    .pb(px(if last {
-                                        12.
-                                    } else if author
-                                        || message
-                                            .blocks
-                                            .get(block + 1)
-                                            .is_some_and(|b| b.continuation)
-                                        || (item.code
-                                            && message
-                                                .blocks
-                                                .get(block + 1)
-                                                .is_some_and(|b| b.code))
-                                    {
-                                        0.
-                                    } else {
-                                        3.
-                                    }))
+                                    .pt(px(top))
+                                    .pb(px(bottom))
                                     .when(first, |d| d.rounded_t(px(22.)))
                                     .when(last, |d| d.rounded_b(px(22.)))
                                     .bg(if author {
@@ -180,45 +89,13 @@ impl LeadChat {
                                         chrome.raised
                                     })
                                     .child(
-                                        div()
-                                            .pl(px(item.indent as f32 * 20.))
-                                            .when(item.code, |d| {
-                                                d.bg(chrome.sunken)
-                                                    .px(px(12.))
-                                                    .pt(px(
-                                                        if block == 0
-                                                            || !message.blocks[block - 1].code
-                                                        {
-                                                            12.
-                                                        } else {
-                                                            0.
-                                                        },
-                                                    ))
-                                                    .pb(px(
-                                                        if !message
-                                                            .blocks
-                                                            .get(block + 1)
-                                                            .is_some_and(|b| b.code)
-                                                        {
-                                                            12.
-                                                        } else {
-                                                            0.
-                                                        },
-                                                    ))
-                                                    .when(
-                                                        block == 0
-                                                            || !message.blocks[block - 1].code,
-                                                        |d| d.rounded_t(px(6.)),
-                                                    )
-                                                    .when(
-                                                        !message
-                                                            .blocks
-                                                            .get(block + 1)
-                                                            .is_some_and(|b| b.code),
-                                                        |d| d.rounded_b(px(6.)),
-                                                    )
-                                            })
-                                            .child(input),
+                                        code_frame(
+                                            div().pl(px(item.indent as f32 * 20.)),
+                                            &chrome,
+                                            message,
+                                            block,
+                                        )
+                                        .child(input),
                                     ),
                             ),
                     )
@@ -226,6 +103,161 @@ impl LeadChat {
             }
         }
     }
+}
+
+/// A centered tertiary line: a time separator or an event row.
+fn separator_row(chrome: &Chrome, text: String) -> gpui::AnyElement {
+    div()
+        .w_full()
+        .py(px(12.))
+        .text_center()
+        .text_size(px(11.5))
+        .text_color(chrome.ink_3)
+        .child(text)
+        .into_any_element()
+}
+
+/// The block's chrome with primary ink made legible on its bubble: the
+/// primary fill for the author, the raised fill or sunken code for the Lead.
+fn block_ink(chrome: Chrome, author: bool, code: bool) -> Chrome {
+    let mut ink = chrome;
+    ink.ink_1 = if author {
+        appearance::legible(chrome.primary_fg, chrome.primary_bg, chrome.primary_fg, 4.5)
+    } else {
+        appearance::legible(
+            chrome.ink_1,
+            if code { chrome.sunken } else { chrome.raised },
+            chrome.ink_1,
+            4.5,
+        )
+    };
+    ink
+}
+
+/// The block's read-only text, reused from the cache by `(record id, block)`
+/// or created with its selection events wired to the chat.
+fn cached_text_input(
+    cache: &mut HashMap<(i64, usize), Entity<ChatInput>>,
+    key: (i64, usize),
+    item: &Block,
+    ink: Chrome,
+    cx: &mut Context<LeadChat>,
+) -> Entity<ChatInput> {
+    if let Some(input) = cache.get(&key) {
+        input.clone()
+    } else {
+        let input = cx.new(|cx| ChatInput::new(item.text.clone(), ink, cx));
+        cx.subscribe(&input, move |this, _, event, cx| {
+            this.text_selection(key, event, cx)
+        })
+        .detach();
+        cache.insert(key, input.clone());
+        input
+    }
+}
+
+/// Styles, labels, and selects the block's text. True when anything
+/// changed and the input needs a redraw.
+fn style_block_input(
+    input: &mut ChatInput,
+    message: &Message,
+    block: usize,
+    ink: Chrome,
+    spans: Vec<(Range<usize>, HighlightStyle)>,
+    selection: Option<Range<usize>>,
+) -> bool {
+    let item = &message.blocks[block];
+    let author = matches!(message.record.content, ChatContent::Author { .. });
+    let changed = input.style(ink, true, item.code, spans);
+    input.label(format!(
+        "{}, {}. {}",
+        if author { "You" } else { "Lead" },
+        local_time(message.record.timestamp),
+        if author {
+            "Submitted message"
+        } else {
+            "Completed reply"
+        }
+    ));
+    input.inline_style(
+        item.spans
+            .iter()
+            .filter(|s| s.code)
+            .map(|s| s.range.clone())
+            .collect(),
+        item.spans
+            .iter()
+            .filter_map(|s| s.link.as_ref().map(|link| (s.range.clone(), link.clone())))
+            .collect(),
+    );
+    let selected = input.select_range(selection);
+    changed || selected
+}
+
+/// The bubble's top and bottom padding for one block: 12 at the bubble's
+/// ends, none between author lines, continuations, and adjacent code
+/// blocks, and 3 between other blocks.
+fn bubble_padding(
+    message: &Message,
+    block: usize,
+    first: bool,
+    last: bool,
+    author: bool,
+) -> (f32, f32) {
+    let item = &message.blocks[block];
+    let top = if first {
+        12.
+    } else if author
+        || item.continuation
+        || (item.code && block > 0 && message.blocks[block - 1].code)
+    {
+        0.
+    } else {
+        3.
+    };
+    let bottom = if last {
+        12.
+    } else if author
+        || message
+            .blocks
+            .get(block + 1)
+            .is_some_and(|b| b.continuation)
+        || (item.code && message.blocks.get(block + 1).is_some_and(|b| b.code))
+    {
+        0.
+    } else {
+        3.
+    };
+    (top, bottom)
+}
+
+/// A code block's sunken frame: padded and rounded at the ends of a run of
+/// adjacent code blocks. Other blocks pass through unchanged.
+fn code_frame(d: gpui::Div, chrome: &Chrome, message: &Message, block: usize) -> gpui::Div {
+    let item = &message.blocks[block];
+    d.when(item.code, |d| {
+        d.bg(chrome.sunken)
+            .px(px(12.))
+            .pt(px(if block == 0 || !message.blocks[block - 1].code {
+                12.
+            } else {
+                0.
+            }))
+            .pb(px(
+                if !message.blocks.get(block + 1).is_some_and(|b| b.code) {
+                    12.
+                } else {
+                    0.
+                },
+            ))
+            .when(block == 0 || !message.blocks[block - 1].code, |d| {
+                d.rounded_t(px(6.))
+            })
+            .when(
+                !message.blocks.get(block + 1).is_some_and(|b| b.code),
+                |d| d.rounded_b(px(6.)),
+            )
+    })
 }
 
 fn message_width(message: &Message, window: &mut Window) -> f32 {

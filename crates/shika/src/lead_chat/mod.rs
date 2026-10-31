@@ -1,6 +1,7 @@
 //! Lead conversation and composer, independent of the worker terminals.
 //! This file holds the `LeadChat` state, its events in from Core and actions
 //! out to `Shika`; the children hold the history, rows, view, and glue.
+mod composer;
 mod glue;
 mod history;
 pub(crate) mod markdown;
