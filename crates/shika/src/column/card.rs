@@ -42,74 +42,51 @@ impl Shika {
     ) -> gpui::Stateful<gpui::Div> {
         let selected = at.is_some() && self.selected_card() == at;
         let key = card_key(card.agent.view.entity_id());
-        let colors = chrome.status(card.status);
-        // The quiet meta steps one ink brighter on the selected card, as the
-        // title does, so it stays readable on the lighter wash.
-        let (quiet, quiet_separator) = if selected {
-            (chrome.ink_3, chrome.ink_4)
+        let task = self.card_task_line(card, &key, selected, chrome);
+        let meta = self.card_meta_line(card, &key, selected, cards_focused, chrome, cx);
+        let base = card_frame(&key, at, cx);
+        // The selected card is a soft wash over the column, like a hover,
+        // so glass shows through it. The key hints show when the cards have
+        // focus. Every other card is bare text.
+        let base = if selected {
+            base.bg(chrome.card_selected)
         } else {
-            (chrome.ink_4, chrome.ink_5)
+            base.overflow_hidden()
         };
-        let separator = || div().flex_none().text_color(quiet_separator).child("·");
-        let hints: &[(&str, &str)] = if card.closing {
-            &[]
-        } else if card.creating && card.is_checkout() {
-            &[("\u{2318}\u{21e7}W", "cancel")]
-        } else if card.creating {
-            &[("↵", "view setup"), ("\u{2318}\u{21e7}W", "cancel")]
-        } else if card.launch_error.is_some() {
-            &[("↵", "retry"), ("\u{2318}\u{21e7}W", "close")]
-        } else if card.launch_preset == "terminal" {
-            &[("↵", "terminal")]
-        } else {
-            match card.status {
-                Status::Ready => &[("↵", "read")],
-                Status::Working => &[("↵", "watch")],
-                Status::Asking => &[("↵", "answer")],
-                Status::Waiting => &[("↵", "write prompt")],
-            }
-        };
-        let stat = card
-            .diff
-            .filter(|d| card.status == Status::Ready && d.files > 0)
-            .map(|d| model::diff_stat_parts(d.files, d.insertions, d.deletions));
-        // Setup progress and failure are facts the signal cannot say. Waiting,
-        // Working, and Ready stay on the signal, the tint, the timer, and the
-        // diff stat.
-        let notice = if card.closing {
-            Some("Closing...".to_string())
-        } else if card.creating {
-            Some(card.stage.clone())
-        } else if card.launch_error.is_some() {
-            Some("Setup failed".to_string())
-        } else {
-            None
-        };
-        // A live Lead's line two: its current step while Working, else its
-        // latest reply. None keeps the CLI and "Lead".
-        let lead_line = card
-            .lead
-            .as_ref()
-            .filter(|_| notice.is_none())
-            .and_then(|state| {
-                let (_, current, _) = lead_steps::snapshot(&state.steps);
-                let chat = self
-                    .leads
-                    .chats
-                    .get(&card.project)
-                    .filter(|_| card.chat)
-                    .map(|chat| chat.read(cx));
-                lead_steps::card_line(
-                    card.status == Status::Working,
-                    current.as_deref(),
-                    chat.and_then(|chat| chat.replaced_line()),
-                    card.chat
-                        .then(|| self.leads.snippets.get(&card.project))
-                        .flatten()
-                        .map(String::as_str),
+        // A Lead's antler tile spans both lines on the left.
+        let base = if card.lead.is_some() {
+            base.flex_row()
+                .gap(px(10.))
+                .child(antler_tile(selected, chrome))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(task)
+                        .child(meta),
                 )
-            });
-        let task = div()
+        } else {
+            base.child(task).child(meta)
+        };
+        base.when(selected && reveal_selection, |d| {
+            d.child(self.selection_reveal(cx))
+        })
+    }
+
+    /// A card's first line: the task (a Lead names its project), the timer
+    /// while working, and the status signal.
+    fn card_task_line(
+        &self,
+        card: &Card,
+        key: &SharedString,
+        selected: bool,
+        chrome: &Chrome,
+    ) -> gpui::Div {
+        let colors = chrome.status(card.status);
+        div()
             .flex()
             .items_center()
             .gap(px(10.))
@@ -154,9 +131,43 @@ impl Shika {
                 // Shell-only tasks have no inferred agent activity.
                 div().flex_none().w(px(SIGNAL_SLOT)).into_any_element()
             } else {
-                card_signal(&key, card.status, card.unseen(), chrome)
-            });
-        let meta = div()
+                card_signal(key, card.status, card.unseen(), chrome)
+            })
+    }
+
+    /// A card's second line: the CLI mark (or a live Lead's line), "Lead",
+    /// a setup or closing notice, the checkout mark, the branch, the diff
+    /// stat, the PR mark, and the key hints on the selected card while the
+    /// cards have focus.
+    fn card_meta_line(
+        &self,
+        card: &Card,
+        key: &SharedString,
+        selected: bool,
+        cards_focused: bool,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        // The quiet meta steps one ink brighter on the selected card, as the
+        // title does, so it stays readable on the lighter wash.
+        let (quiet, quiet_separator) = if selected {
+            (chrome.ink_3, chrome.ink_4)
+        } else {
+            (chrome.ink_4, chrome.ink_5)
+        };
+        let separator = || div().flex_none().text_color(quiet_separator).child("·");
+        let hints = card_hints(card);
+        let stat = card
+            .diff
+            .filter(|d| card.status == Status::Ready && d.files > 0)
+            .map(|d| model::diff_stat_parts(d.files, d.insertions, d.deletions));
+        let notice = card_notice(card);
+        let lead_line = if notice.is_none() {
+            self.lead_card_line(card, cx)
+        } else {
+            None
+        };
+        div()
             .flex()
             .items_center()
             .gap(px(6.))
@@ -190,92 +201,30 @@ impl Shika {
                 )
             })
             .when_some(notice, |d, notice| {
-                d.child(separator()).child(
+                d.child(separator())
+                    .child(card_notice_label(card, notice, chrome))
+            })
+            .when(card.is_checkout(), |d| {
+                d.child(separator())
+                    .child(checkout_mark(key, quiet, chrome))
+            })
+            .when_some(self.card_branch_name(card), |d, branch| {
+                // The branch truncates before the diff stat. A draft
+                // has no name yet, so line two shows only the CLI.
+                d.when(!card.is_checkout(), |d| d.child(separator())).child(
                     div()
                         .min_w_0()
                         .truncate()
-                        // A long setup stage gives way. "Setup failed" stays whole.
-                        .when(!card.creating, |stage| stage.flex_none())
-                        .text_color(if card.closing {
-                            chrome.ink_2
-                        } else {
-                            colors.text
-                        })
-                        .font_weight(match card.status {
-                            _ if card.closing => FontWeight::MEDIUM,
-                            Status::Ready | Status::Asking => FontWeight::SEMIBOLD,
-                            Status::Working => FontWeight::MEDIUM,
-                            Status::Waiting => FontWeight::NORMAL,
-                        })
-                        .child(notice),
+                        .font_family(MONO)
+                        .text_size(px(11.5))
+                        .child(branch.to_string()),
                 )
             })
-            .when(card.is_checkout(), |d| {
-                let (bg, fg) = (chrome.toast_bg, chrome.toast_fg);
-                d.child(separator()).child(
-                    div()
-                        .id(SharedString::from(format!("checkout-{key}")))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .child(
-                            gpui::svg()
-                                .data(CHECKOUT_ICON)
-                                .size(px(12.))
-                                .text_color(quiet),
-                        )
-                        .tooltip(move |_, cx| {
-                            cx.new(|_| KeyTip {
-                                bg,
-                                fg,
-                                text: "Runs in your checkout, no worktree".into(),
-                            })
-                            .into()
-                        }),
-                )
-            })
-            .when_some(
-                if card.is_checkout() {
-                    self.checkout_branch(&card.project)
-                } else {
-                    card.session
-                        .as_ref()
-                        .filter(|_| card.lead.is_none())
-                        .and_then(model::card_branch)
-                },
-                |d, branch| {
-                    // The branch truncates before the diff stat. A draft
-                    // has no name yet, so line two shows only the CLI.
-                    d.when(!card.is_checkout(), |d| d.child(separator())).child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_family(MONO)
-                            .text_size(px(11.5))
-                            .child(branch.to_string()),
-                    )
-                },
-            )
             .when_some(stat, |d, stat| {
-                // Text on the card, not a control. A click here is the
-                // card's click: select it and focus its terminal. The
-                // panel opens from the shortcut, the toggle, or the menu.
-                // The counts take the Changes panel's diff colors; the file
-                // count stays ink.
-                let (files, added, removed) = stat;
-                d.child(separator()).child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .gap(px(4.))
-                        .text_color(chrome.ink_3)
-                        .child(files)
-                        .child(div().text_color(chrome.diff_added.text).child(added))
-                        .child(div().text_color(chrome.diff_removed.text).child(removed)),
-                )
+                d.child(separator()).child(diff_stat_label(stat, chrome))
             })
             .when_some(card.pr.as_ref(), |d, pr| {
-                d.child(separator()).child(pr_mark(&key, pr, chrome, cx))
+                d.child(separator()).child(pr_mark(key, pr, chrome, cx))
             })
             .when(lead_line.is_none(), |d| d.child(div().flex_1()))
             .when(selected && cards_focused, |d| {
@@ -284,72 +233,189 @@ impl Shika {
                         .iter()
                         .map(|(key, label)| row_hint(key, label, chrome)),
                 )
-            });
-        let base = div()
-            .id(SharedString::from(format!("card-{key}")))
-            .relative()
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .rounded(px(10.))
-            .pt(px(12.))
-            .px(px(14.))
-            .pb(px(11.))
-            .when_some(at, |d, i| {
-                d.capture_any_mouse_down(cx.listener(
-                    move |this, event: &gpui::MouseDownEvent, window, cx| {
-                        if event.button == MouseButton::Right
-                            || (event.button == MouseButton::Left && event.modifiers.control)
-                        {
-                            cx.stop_propagation();
-                            this.open_card_menu(i, event.position, window, cx);
-                        }
-                    },
-                ))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if this.busy || this.overlay.is_some() {
-                        return;
-                    }
-                    this.selection.set(Some(Selection::Card(i)));
-                    if this.busy {
-                        // The old terminal is hidden now; the cards hold the keys.
-                        window.focus(&this.focus, cx);
-                    } else {
-                        this.focus_shown(window, cx);
-                    }
-                }))
-            });
-        // The selected card is a soft wash over the column, like a hover,
-        // so glass shows through it. The key hints show when the cards have
-        // focus. Every other card is bare text.
-        let base = if selected {
-            base.bg(chrome.card_selected)
-        } else {
-            base.overflow_hidden()
-        };
-        // A Lead's antler tile spans both lines on the left.
-        let base = if card.lead.is_some() {
-            base.flex_row()
-                .gap(px(10.))
-                .child(antler_tile(selected, chrome))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .child(task)
-                        .child(meta),
-                )
-        } else {
-            base.child(task).child(meta)
-        };
-        base.when(selected && reveal_selection, |d| {
-            d.child(self.selection_reveal(cx))
+            })
+    }
+
+    /// A live Lead's line two: its current step while Working, else its
+    /// latest reply. None keeps the CLI and "Lead".
+    fn lead_card_line(&self, card: &Card, cx: &gpui::App) -> Option<String> {
+        card.lead.as_ref().and_then(|state| {
+            let (_, current, _) = lead_steps::snapshot(&state.steps);
+            let chat = self
+                .leads
+                .chats
+                .get(&card.project)
+                .filter(|_| card.chat)
+                .map(|chat| chat.read(cx));
+            lead_steps::card_line(
+                card.status == Status::Working,
+                current.as_deref(),
+                chat.and_then(|chat| chat.replaced_line()),
+                card.chat
+                    .then(|| self.leads.snippets.get(&card.project))
+                    .flatten()
+                    .map(String::as_str),
+            )
         })
     }
+
+    /// The branch on a card's second line: the checkout's current branch, or
+    /// a named task branch. A Lead and a draft show none.
+    fn card_branch_name<'a>(&'a self, card: &'a Card) -> Option<&'a str> {
+        if card.is_checkout() {
+            self.checkout_branch(&card.project)
+        } else {
+            card.session
+                .as_ref()
+                .filter(|_| card.lead.is_none())
+                .and_then(model::card_branch)
+        }
+    }
+}
+
+/// The card's clickable frame. A right-click or Control-click opens its menu;
+/// a click selects it and focuses what it shows. A departing card (`at` is
+/// None) takes no clicks.
+fn card_frame(
+    key: &SharedString,
+    at: Option<usize>,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from(format!("card-{key}")))
+        .relative()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .rounded(px(10.))
+        .pt(px(12.))
+        .px(px(14.))
+        .pb(px(11.))
+        .when_some(at, |d, i| {
+            d.capture_any_mouse_down(cx.listener(
+                move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    if event.button == MouseButton::Right
+                        || (event.button == MouseButton::Left && event.modifiers.control)
+                    {
+                        cx.stop_propagation();
+                        this.open_card_menu(i, event.position, window, cx);
+                    }
+                },
+            ))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if this.busy || this.overlay.is_some() {
+                    return;
+                }
+                this.selection.set(Some(Selection::Card(i)));
+                if this.busy {
+                    // The old terminal is hidden now; the cards hold the keys.
+                    window.focus(&this.focus, cx);
+                } else {
+                    this.focus_shown(window, cx);
+                }
+            }))
+        })
+}
+
+/// The key hints on the selected card, by what Enter does there.
+fn card_hints(card: &Card) -> &'static [(&'static str, &'static str)] {
+    if card.closing {
+        &[]
+    } else if card.creating && card.is_checkout() {
+        &[("\u{2318}\u{21e7}W", "cancel")]
+    } else if card.creating {
+        &[("↵", "view setup"), ("\u{2318}\u{21e7}W", "cancel")]
+    } else if card.launch_error.is_some() {
+        &[("↵", "retry"), ("\u{2318}\u{21e7}W", "close")]
+    } else if card.launch_preset == "terminal" {
+        &[("↵", "terminal")]
+    } else {
+        match card.status {
+            Status::Ready => &[("↵", "read")],
+            Status::Working => &[("↵", "watch")],
+            Status::Asking => &[("↵", "answer")],
+            Status::Waiting => &[("↵", "write prompt")],
+        }
+    }
+}
+
+/// Setup progress and failure are facts the signal cannot say. Waiting,
+/// Working, and Ready stay on the signal, the tint, the timer, and the
+/// diff stat.
+fn card_notice(card: &Card) -> Option<String> {
+    if card.closing {
+        Some("Closing...".to_string())
+    } else if card.creating {
+        Some(card.stage.clone())
+    } else if card.launch_error.is_some() {
+        Some("Setup failed".to_string())
+    } else {
+        None
+    }
+}
+
+/// The notice on line two, in the status color: "Closing...", the setup
+/// stage, or "Setup failed".
+fn card_notice_label(card: &Card, notice: String, chrome: &Chrome) -> gpui::Div {
+    let colors = chrome.status(card.status);
+    div()
+        .min_w_0()
+        .truncate()
+        // A long setup stage gives way. "Setup failed" stays whole.
+        .when(!card.creating, |stage| stage.flex_none())
+        .text_color(if card.closing {
+            chrome.ink_2
+        } else {
+            colors.text
+        })
+        .font_weight(match card.status {
+            _ if card.closing => FontWeight::MEDIUM,
+            Status::Ready | Status::Asking => FontWeight::SEMIBOLD,
+            Status::Working => FontWeight::MEDIUM,
+            Status::Waiting => FontWeight::NORMAL,
+        })
+        .child(notice)
+}
+
+/// A checkout session's mark on line two, with its tooltip.
+fn checkout_mark(key: &SharedString, quiet: Rgba, chrome: &Chrome) -> gpui::Stateful<gpui::Div> {
+    let (bg, fg) = (chrome.toast_bg, chrome.toast_fg);
+    div()
+        .id(SharedString::from(format!("checkout-{key}")))
+        .flex_none()
+        .flex()
+        .items_center()
+        .child(
+            gpui::svg()
+                .data(CHECKOUT_ICON)
+                .size(px(12.))
+                .text_color(quiet),
+        )
+        .tooltip(move |_, cx| {
+            cx.new(|_| KeyTip {
+                bg,
+                fg,
+                text: "Runs in your checkout, no worktree".into(),
+            })
+            .into()
+        })
+}
+
+/// A Ready card's diff stat. Text on the card, not a control. A click here
+/// is the card's click: select it and focus its terminal. The panel opens
+/// from the shortcut, the toggle, or the menu. The counts take the Changes
+/// panel's diff colors; the file count stays ink.
+fn diff_stat_label(stat: (String, String, String), chrome: &Chrome) -> gpui::Div {
+    let (files, added, removed) = stat;
+    div()
+        .flex_none()
+        .flex()
+        .gap(px(4.))
+        .text_color(chrome.ink_3)
+        .child(files)
+        .child(div().text_color(chrome.diff_added.text).child(added))
+        .child(div().text_color(chrome.diff_removed.text).child(removed))
 }
 
 /// The card and its leading gap occupy one nonnegative layout slot. At the
