@@ -15,7 +15,7 @@ impl Shika {
             Overlay::Close { index, .. } => ("close", *index as u64),
             Overlay::CheckoutClose { index } => ("checkout-close", *index as u64),
             Overlay::SwitchedClose { index, .. } => ("switched-close", *index as u64),
-            Overlay::LeadClose { project, step, .. } => (
+            Overlay::LeadClose(lead::LeadCloseDialog { project, step, .. }) => (
                 "lead-close",
                 hash(project) ^ matches!(step, model::LeadClose::Forget { .. }) as u64,
             ),
@@ -62,7 +62,7 @@ impl Shika {
                 Overlay::Close { .. }
                     | Overlay::CheckoutClose { .. }
                     | Overlay::SwitchedClose { .. }
-                    | Overlay::LeadClose { .. }
+                    | Overlay::LeadClose(_)
                     | Overlay::RestingMenu { .. }
                     | Overlay::RemoveProject(_)
                     | Overlay::RemoveLeftover(_)
@@ -94,7 +94,7 @@ impl Shika {
                 let i = *index;
                 self.finish_close(i, 3, window, cx);
             }
-            (Some(Overlay::LeadClose { .. }), Delete) => self.forget_lead_from_dialog(window, cx),
+            (Some(Overlay::LeadClose(_)), Delete) => self.forget_lead_from_dialog(window, cx),
             (Some(Overlay::RestingMenu { .. }), Delete) => self.forget_from_menu(window, cx),
             (Some(Overlay::RemoveProject(id)), Delete) => {
                 let id = id.clone();
@@ -119,7 +119,8 @@ impl Shika {
                 .map(|pane| lock(&pane.state).last_typed)
         });
         let chats = self
-            .lead_chats
+            .leads
+            .chats
             .values()
             .map(|chat| chat.read(cx).last_typed);
         model::typing_quiet(terminals.chain(chats), now, control::BELL_TYPING_QUIET)
@@ -598,14 +599,7 @@ impl Shika {
                         self.cancel_overlay(window, cx);
                     }
                 }
-                Some(Overlay::LeadClose { step, .. }) => {
-                    let stopping = matches!(step, model::LeadClose::Stop { .. });
-                    match key {
-                        "enter" if stopping => self.finish_lead_close(false, window, cx),
-                        "escape" => self.cancel_overlay(window, cx),
-                        _ => {}
-                    }
-                }
+                Some(Overlay::LeadClose(_)) => self.lead_close_key(key, window, cx),
                 Some(Overlay::SwitchedClose { .. }) => {
                     if key == "escape" {
                         self.cancel_overlay(window, cx);

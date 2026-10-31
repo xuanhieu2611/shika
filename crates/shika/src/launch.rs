@@ -539,7 +539,8 @@ impl Shika {
                 };
                 this.cards[index].creating = false;
                 if let Some(chat) = this
-                    .lead_chats
+                    .leads
+                    .chats
                     .get(&this.cards[index].project)
                     .filter(|_| this.cards[index].chat)
                 {
@@ -596,7 +597,7 @@ impl Shika {
                         }
                         if this.cards[index].chat {
                             let project = this.cards[index].project.clone();
-                            if let Some(chat) = this.lead_chats.get(&project) {
+                            if let Some(chat) = this.leads.chats.get(&project) {
                                 chat.update(cx, |chat, cx| {
                                     chat.live = true;
                                     chat.busy = false;

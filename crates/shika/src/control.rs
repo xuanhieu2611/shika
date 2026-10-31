@@ -1801,7 +1801,7 @@ impl Shika {
                     state.steps_seen = version;
                 }
             }
-            if chat && let Some(view) = self.lead_chats.get(&project) {
+            if chat && let Some(view) = self.leads.chats.get(&project) {
                 view.update(cx, |view, cx| {
                     view.set_steps(finished, current, cx);
                     view.set_worker_summary(workers, cx);
@@ -1829,10 +1829,12 @@ impl Shika {
             })
             .map(|project| project.id.clone())
             .collect();
-        self.lead_snippets.retain(|id, _| saved.contains(id));
-        self.snippets_requested.retain(|id| saved.contains(id));
+        self.leads.snippets.retain(|id, _| saved.contains(id));
+        self.leads
+            .snippets_requested
+            .retain(|id| saved.contains(id));
         for id in saved {
-            if !self.snippets_requested.insert(id.clone()) {
+            if !self.leads.snippets_requested.insert(id.clone()) {
                 continue;
             }
             let core = self.core.clone();
@@ -1855,9 +1857,9 @@ impl Shika {
                 let _ = this.update(cx, |this, cx| {
                     // A reply that arrived meanwhile is newer.
                     if let Some(line) = line
-                        && this.snippets_requested.contains(&id)
+                        && this.leads.snippets_requested.contains(&id)
                     {
-                        this.lead_snippets.entry(id).or_insert(line);
+                        this.leads.snippets.entry(id).or_insert(line);
                         cx.notify();
                     }
                 });
@@ -1907,7 +1909,8 @@ impl Shika {
             let gate = lead_gate(
                 card,
                 state,
-                self.lead_chats
+                self.leads
+                    .chats
                     .get(&card.project)
                     .filter(|_| card.chat)
                     .map(|chat| chat.read(cx)),
@@ -2028,7 +2031,8 @@ impl Shika {
                 || !lead_gate(
                     card,
                     state,
-                    self.lead_chats
+                    self.leads
+                        .chats
                         .get(&card.project)
                         .filter(|_| card.chat)
                         .map(|chat| chat.read(cx)),

@@ -86,7 +86,7 @@ impl Shika {
             .and_then(|p| p.lead.as_ref())
             .map_or("", |lead| lead.cli.as_str());
         // The latest reply's first line; only a Lead with a chat has one.
-        let snippet = self.lead_snippets.get(project).cloned();
+        let snippet = self.leads.snippets.get(project).cloned();
         let (quiet, quiet_separator) = if selected {
             (chrome.ink_3, chrome.ink_4)
         } else {

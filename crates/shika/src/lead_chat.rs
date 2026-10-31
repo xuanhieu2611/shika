@@ -1472,7 +1472,7 @@ impl Shika {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<LeadChat> {
-        if let Some(chat) = self.lead_chats.get(project) {
+        if let Some(chat) = self.leads.chats.get(project) {
             return chat.clone();
         }
         let chrome = self.chrome(window);
@@ -1514,7 +1514,7 @@ impl Shika {
             },
         )
         .detach();
-        self.lead_chats.insert(project.into(), chat.clone());
+        self.leads.chats.insert(project.into(), chat.clone());
         chat
     }
     pub(crate) fn submit_lead_chat(
@@ -1541,7 +1541,7 @@ impl Shika {
         let _ = transition;
         card.status = card.activity.status;
         card.since = card.activity.since;
-        if let Some(chat) = self.lead_chats.get(&card.project) {
+        if let Some(chat) = self.leads.chats.get(&card.project) {
             chat.update(cx, |chat, cx| {
                 chat.busy = true;
                 chat.activity = "Working...";
@@ -1553,8 +1553,9 @@ impl Shika {
     }
     pub(crate) fn drain_lead_chats(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
-        if self.overlay.is_none() && !self.chat_questions.is_empty() && self.author_quiet(now, cx) {
-            let (id, _, question) = self.chat_questions.remove(0);
+        if self.overlay.is_none() && !self.leads.questions.is_empty() && self.author_quiet(now, cx)
+        {
+            let (id, _, question) = self.leads.questions.remove(0);
             if self
                 .cards
                 .iter()
@@ -1590,7 +1591,8 @@ impl Shika {
                         self.overlay = None;
                         self.restore_overlay_focus(window, cx);
                     }
-                    self.chat_questions
+                    self.leads
+                        .questions
                         .retain(|(session, _, q)| session != &id || &q.request_id != request);
                 }
                 if matches!(
@@ -1602,7 +1604,9 @@ impl Shika {
                         self.overlay = None;
                         self.restore_overlay_focus(window, cx);
                     }
-                    self.chat_questions.retain(|(session, _, _)| session != &id);
+                    self.leads
+                        .questions
+                        .retain(|(session, _, _)| session != &id);
                 }
                 if let ChatEvent::Confirmed(conversation) = &event {
                     let core = self.core.clone();
@@ -1666,7 +1670,7 @@ impl Shika {
                     && let ChatContent::Lead { text } = &record.content
                     && let Some(line) = crate::lead_chat_markdown::reply_first_line(text)
                 {
-                    self.lead_snippets.insert(project.clone(), line);
+                    self.leads.snippets.insert(project.clone(), line);
                 }
                 if matches!(event, ChatEvent::Resuming)
                     && let Some(run) = &mut self.cards[index].lead_run
@@ -1685,11 +1689,11 @@ impl Shika {
                         run.resume_exit = Some(crate::model::ResumeExit::Kept);
                     }
                 }
-                if let Some(chat) = self.lead_chats.get(&project) {
+                if let Some(chat) = self.leads.chats.get(&project) {
                     chat.update(cx, |chat, cx| chat.receive(event, cx));
                 }
             }
-            if let Some(chat) = self.lead_chats.get(&project) {
+            if let Some(chat) = self.leads.chats.get(&project) {
                 let dialog = self.lead_dialog.as_ref().is_some_and(|d| d.lead_id == id);
                 if chat.read(cx).busy {
                     let status = if dialog || chat.read(cx).blocked {
@@ -1751,7 +1755,7 @@ impl Shika {
             }
             _ => return None,
         };
-        self.lead_chats.get(project)
+        self.leads.chats.get(project)
     }
     pub(crate) fn chat_side(
         &self,

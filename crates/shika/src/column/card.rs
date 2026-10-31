@@ -94,7 +94,8 @@ impl Shika {
             .and_then(|state| {
                 let (_, current, _) = lead_steps::snapshot(&state.steps);
                 let chat = self
-                    .lead_chats
+                    .leads
+                    .chats
                     .get(&card.project)
                     .filter(|_| card.chat)
                     .map(|chat| chat.read(cx));
@@ -103,7 +104,7 @@ impl Shika {
                     current.as_deref(),
                     chat.and_then(|chat| chat.replaced_line()),
                     card.chat
-                        .then(|| self.lead_snippets.get(&card.project))
+                        .then(|| self.leads.snippets.get(&card.project))
                         .flatten()
                         .map(String::as_str),
                 )

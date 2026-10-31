@@ -71,38 +71,7 @@ impl Shika {
                 unreachable!("card menus render at the pointer")
             }
             Overlay::LeadQuestion(question) => self.chat_question_view(question, chrome, max_h, cx),
-            Overlay::LeadClose { step, .. } => {
-                let stopping = matches!(step, model::LeadClose::Stop { .. });
-                let mut panel =
-                    dialog(chrome, max_h).child(dialog_title(div()).child(step.title()));
-                for fact in step.facts() {
-                    panel = panel.child(dialog_text(chrome).child(fact));
-                }
-                let buttons = dialog_buttons().child(self.cancel_button("Cancel", chrome, cx));
-                panel.child(if stopping {
-                    buttons
-                        .child(
-                            dialog_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if !this.busy {
-                                        this.forget_lead_from_dialog(window, cx);
-                                    }
-                                })),
-                        )
-                        .child(primary_button("stop-lead", "Stop", "↵", chrome).on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.finish_lead_close(false, window, cx)
-                            }),
-                        ))
-                } else {
-                    buttons.child(
-                        primary_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.finish_lead_close(true, window, cx)
-                            })),
-                    )
-                })
-            }
+            Overlay::LeadClose(dialog) => self.lead_close_view(dialog, chrome, max_h, cx),
             Overlay::WorktreeSetup(editor) => {
                 self.worktree_setup_view(editor, chrome, max_h, window, cx)
             }

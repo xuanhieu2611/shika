@@ -70,8 +70,9 @@ impl Shika {
                     Ok(_) => {
                         this.cards.retain(|c| c.project != removed_id);
                         this.projects.retain(|p| p.id != removed_id);
-                        this.lead_chats.remove(&removed_id);
-                        this.chat_questions
+                        this.leads.chats.remove(&removed_id);
+                        this.leads
+                            .questions
                             .retain(|(_, project, _)| project != &removed_id);
                         this.bases.remove(&removed_id);
                         this.checkout_heads.remove(&removed_id);

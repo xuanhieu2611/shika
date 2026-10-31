@@ -544,13 +544,8 @@ enum Overlay {
         project: String,
         position: gpui::Point<Pixels>,
     },
-    /// Stop a live Lead, or forget one. `session` is the live Lead's id,
-    /// None for a resting one.
-    LeadClose {
-        project: String,
-        session: Option<String>,
-        step: model::LeadClose,
-    },
+    /// Stop a live Lead, or forget one.
+    LeadClose(lead::LeadCloseDialog),
     SwitchedClose {
         index: usize,
         preview: shika_core::SwitchedBranchClose,
@@ -621,7 +616,7 @@ impl Overlay {
                 "the Close task dialog"
             }
             Self::RestingMenu { .. } => "a card menu",
-            Self::LeadClose { .. } => "the Lead's Stop dialog",
+            Self::LeadClose(_) => "the Lead's Stop dialog",
             Self::Preparation { .. } => "the setup approval dialog",
             Self::Leftovers | Self::RemoveLeftover(_) | Self::Recover { .. } => {
                 "the leftovers list"
@@ -637,14 +632,9 @@ struct Shika {
     core: Arc<Core>,
     projects: Vec<Project>,
     cards: Vec<Card>,
-    lead_chats: HashMap<String, Entity<lead_chat::LeadChat>>,
-    /// First line of each project's latest Lead reply, for its card. Filled
-    /// from live replies and one off-thread read of the saved history.
-    lead_snippets: HashMap<String, String>,
+    leads: lead::Leads,
     checkout_heads: HashMap<String, checkout::Head>,
     checkout_selection_epoch: u64,
-    snippets_requested: std::collections::HashSet<String>,
-    chat_questions: Vec<(String, String, shika_core::ChatQuestion)>,
     /// When the confirmation dialog on screen appeared, to ignore keys that
     /// were already in flight.
     dialog_grace: model::DialogGrace,
@@ -793,12 +783,9 @@ impl Shika {
             core: core.clone(),
             projects,
             cards: vec![],
-            lead_chats: HashMap::new(),
-            lead_snippets: HashMap::new(),
+            leads: lead::Leads::default(),
             checkout_heads: HashMap::new(),
             checkout_selection_epoch: u64::MAX,
-            snippets_requested: Default::default(),
-            chat_questions: Vec::new(),
             dialog_grace: model::DialogGrace::default(),
             selection: model::Tracked::new(selection),
             focus: cx.focus_handle(),

@@ -43,10 +43,10 @@ impl Shika {
         // Questions stay first come, first served: a new one never passes
         // one already waiting.
         if self.overlay.is_some()
-            || !self.chat_questions.is_empty()
+            || !self.leads.questions.is_empty()
             || !self.author_quiet(std::time::Instant::now(), cx)
         {
-            self.chat_questions.push((session, project, question));
+            self.leads.questions.push((session, project, question));
             return;
         }
         self.show_chat_question(session, question, window, cx);

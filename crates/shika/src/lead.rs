@@ -14,6 +14,25 @@ enum LeadCloseOutcome {
     ForgetFailed(shika_core::Error),
 }
 
+/// Lead-only state on the root view. Memory only.
+#[derive(Default)]
+pub(super) struct Leads {
+    pub(super) chats: HashMap<String, Entity<lead_chat::LeadChat>>,
+    /// First line of each project's latest Lead reply, for its card. Filled
+    /// from live replies and one off-thread read of the saved history.
+    pub(super) snippets: HashMap<String, String>,
+    pub(super) snippets_requested: std::collections::HashSet<String>,
+    pub(super) questions: Vec<(String, String, shika_core::ChatQuestion)>,
+}
+
+/// Stop a live Lead, or forget one. `session` is the live Lead's id,
+/// None for a resting one.
+pub(super) struct LeadCloseDialog {
+    pub(super) project: String,
+    session: Option<String>,
+    pub(super) step: model::LeadClose,
+}
+
 /// What the app tracks for a started Lead: what core said about the start
 /// and what is still to be done about it. Memory only.
 pub(super) struct LeadRun {
@@ -376,7 +395,8 @@ impl Shika {
             run.resume_exit = None;
         }
         let focused = self
-            .lead_chats
+            .leads
+            .chats
             .get(&self.cards[index].project)
             .is_some_and(|chat| self.cards[index].chat && chat.read(cx).focused(window, cx))
             || self.cards[index]
@@ -549,11 +569,11 @@ impl Shika {
                 } else {
                     model::LeadClose::Forget { working, loss }
                 };
-                this.overlay = Some(Overlay::LeadClose {
+                this.overlay = Some(Overlay::LeadClose(LeadCloseDialog {
                     project,
                     session,
                     step,
-                });
+                }));
                 window.focus(&this.focus, cx);
                 cx.notify();
             });
@@ -578,11 +598,11 @@ impl Shika {
         if self.busy {
             return;
         }
-        let Some(Overlay::LeadClose {
+        let Some(Overlay::LeadClose(LeadCloseDialog {
             project,
             session,
             step,
-        }) = &self.overlay
+        })) = &self.overlay
         else {
             return;
         };
@@ -651,11 +671,11 @@ impl Shika {
                         this.overlay = None;
                         match outcome {
                             LeadCloseOutcome::Changed(loss) => {
-                                this.overlay = Some(Overlay::LeadClose {
+                                this.overlay = Some(Overlay::LeadClose(LeadCloseDialog {
                                     project,
                                     session: None,
                                     step: model::LeadClose::Forget { working, loss },
-                                });
+                                }));
                             }
                             LeadCloseOutcome::ForgetFailed(e) => {
                                 this.overlay_return_focus = None;
@@ -696,8 +716,8 @@ impl Shika {
         });
         self.reload_projects();
         if forgotten {
-            self.lead_chats.remove(project);
-        } else if let Some(chat) = self.lead_chats.get(project) {
+            self.leads.chats.remove(project);
+        } else if let Some(chat) = self.leads.chats.get(project) {
             chat.update(cx, |chat, cx| {
                 chat.live = false;
                 chat.busy = false;
@@ -737,7 +757,7 @@ impl Shika {
     /// with something to lose first shows the Forget step with those facts;
     /// otherwise, and from the Forget step, the Lead is forgotten.
     pub(super) fn forget_lead_from_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Overlay::LeadClose { step, .. }) = &mut self.overlay else {
+        let Some(Overlay::LeadClose(LeadCloseDialog { step, .. })) = &mut self.overlay else {
             return;
         };
         if matches!(step, model::LeadClose::Stop { .. }) && step.discards() {
@@ -746,5 +766,61 @@ impl Shika {
         } else {
             self.finish_lead_close(true, window, cx);
         }
+    }
+
+    /// Escape, and Enter to Stop the Lead, are the only plain keys in the
+    /// Lead's close dialog.
+    pub(super) fn lead_close_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Overlay::LeadClose(LeadCloseDialog { step, .. })) = &self.overlay else {
+            return;
+        };
+        let stopping = matches!(step, model::LeadClose::Stop { .. });
+        match key {
+            "enter" if stopping => self.finish_lead_close(false, window, cx),
+            "escape" => self.cancel_overlay(window, cx),
+            _ => {}
+        }
+    }
+
+    pub(super) fn lead_close_view(
+        &self,
+        dialog: &LeadCloseDialog,
+        chrome: &Chrome,
+        max_h: Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let step = &dialog.step;
+        let stopping = matches!(step, model::LeadClose::Stop { .. });
+        let mut panel = crate::dialog(chrome, max_h).child(dialog_title(div()).child(step.title()));
+        for fact in step.facts() {
+            panel = panel.child(dialog_text(chrome).child(fact));
+        }
+        let buttons = dialog_buttons().child(self.cancel_button("Cancel", chrome, cx));
+        panel.child(if stopping {
+            buttons
+                .child(
+                    dialog_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome).on_click(
+                        cx.listener(|this, _, window, cx| {
+                            if !this.busy {
+                                this.forget_lead_from_dialog(window, cx);
+                            }
+                        }),
+                    ),
+                )
+                .child(primary_button("stop-lead", "Stop", "↵", chrome).on_click(
+                    cx.listener(|this, _, window, cx| this.finish_lead_close(false, window, cx)),
+                ))
+        } else {
+            buttons.child(
+                primary_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome).on_click(
+                    cx.listener(|this, _, window, cx| this.finish_lead_close(true, window, cx)),
+                ),
+            )
+        })
     }
 }

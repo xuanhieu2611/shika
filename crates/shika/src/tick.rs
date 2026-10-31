@@ -415,7 +415,8 @@ impl Shika {
                     || card.active_pane().view.focus_handle(cx).is_focused(window)
                     || (card.chat
                         && self
-                            .lead_chats
+                            .leads
+                            .chats
                             .get(&card.project)
                             .is_some_and(|chat| chat.read(cx).focused(window, cx))))
             {
