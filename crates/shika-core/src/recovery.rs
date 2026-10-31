@@ -102,37 +102,10 @@ impl Core {
         sink: impl PtySink,
     ) -> Result<Session> {
         let (preview, _) = self.recovery_entry(path)?;
-        let conversation = if resume {
-            Some(
-                preview
-                    .recovery
-                    .as_ref()
-                    .filter(|r| r.cli == preset_id)
-                    .and_then(|_| self.recovery_conversation(&preview))
-                    .ok_or_else(|| {
-                        Error::RecoverWorktree(
-                            "The conversation is unavailable. Start a fresh agent instead.".into(),
-                        )
-                    })?,
-            )
-        } else {
-            None
-        };
+        let conversation = self.resume_conversation(&preview, preset_id, resume)?;
         let env = self.path_env();
         let terminal = preset_id == "terminal";
-        let (preset, program) = if terminal {
-            (agents::terminal_choice(), crate::path_env::user_shell())
-        } else {
-            let preset = agents::presets_from(env)
-                .into_iter()
-                .find(|p| p.id == preset_id)
-                .ok_or(Error::UnknownCli)?;
-            let program = preset
-                .path
-                .clone()
-                .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
-            (preset, program)
-        };
+        let (preset, program) = recovery_program(env, preset_id, terminal)?;
         let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
         let (entry, project) = self.recovery_entry(path)?;
         if entry != preview {
@@ -142,15 +115,7 @@ impl Core {
         }
         let id = session::new_id(&self.taken_ids()?);
         let started = SystemTime::now();
-        let title = entry
-            .recovery
-            .as_ref()
-            .and_then(|r| {
-                r.title
-                    .as_deref()
-                    .and_then(|title| session::task_title(title).ok())
-            })
-            .unwrap_or_else(|| entry.branch.clone());
+        let title = recovery_title(&entry);
         let mut hint = RecoveryMetadata::new(preset_id, started);
         hint.conversation = conversation.clone();
         hint.title = Some(title.clone());
@@ -208,6 +173,33 @@ impl Core {
         Ok(session)
     }
 
+    /// The exact conversation `reopen_leftover` resumes: None for a fresh
+    /// start, an error when `resume` asks for one that is unavailable for
+    /// this CLI.
+    fn resume_conversation(
+        &self,
+        preview: &JournalEntry,
+        preset_id: &str,
+        resume: bool,
+    ) -> Result<Option<String>> {
+        Ok(if resume {
+            Some(
+                preview
+                    .recovery
+                    .as_ref()
+                    .filter(|r| r.cli == preset_id)
+                    .and_then(|_| self.recovery_conversation(preview))
+                    .ok_or_else(|| {
+                        Error::RecoverWorktree(
+                            "The conversation is unavailable. Start a fresh agent instead.".into(),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        })
+    }
+
     /// Best-effort checkpoint before an explicit quit. No transcript reads or
     /// terminal buffers, and no ongoing worker/poller. Blocking, off the UI.
     pub fn checkpoint_sessions(&self) -> Result<()> {
@@ -241,4 +233,40 @@ impl Core {
         }
         Ok(())
     }
+}
+
+/// The preset and program a reopened task runs: the login shell for a
+/// Terminal task, else the chosen CLI found on the login-shell `PATH`.
+fn recovery_program(
+    env: &PathEnv,
+    preset_id: &str,
+    terminal: bool,
+) -> Result<(CliPreset, PathBuf)> {
+    Ok(if terminal {
+        (agents::terminal_choice(), crate::path_env::user_shell())
+    } else {
+        let preset = agents::presets_from(env)
+            .into_iter()
+            .find(|p| p.id == preset_id)
+            .ok_or(Error::UnknownCli)?;
+        let program = preset
+            .path
+            .clone()
+            .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+        (preset, program)
+    })
+}
+
+/// The card title of a reopened task: its saved name when it is still a
+/// valid task name, else its branch.
+fn recovery_title(entry: &JournalEntry) -> String {
+    entry
+        .recovery
+        .as_ref()
+        .and_then(|r| {
+            r.title
+                .as_deref()
+                .and_then(|title| session::task_title(title).ok())
+        })
+        .unwrap_or_else(|| entry.branch.clone())
 }
