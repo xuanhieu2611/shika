@@ -199,3 +199,26 @@ pub(super) fn nth_agent(rows: &[Selection], n: usize) -> Option<Selection> {
         .nth(n)
         .cloned()
 }
+
+/// Agent traversal follows row order and skips project headers. A resting
+/// Lead is an agent row. `j` / `k` and Cmd+] / Cmd+[ both use it.
+pub(super) fn adjacent_agent(
+    rows: &[Selection],
+    selection: Option<&Selection>,
+    delta: isize,
+) -> Option<Selection> {
+    let at = selection.and_then(|selected| rows.iter().position(|row| row == selected));
+    for step in 1..=rows.len() {
+        let index = match at {
+            Some(at) => {
+                (at as isize + delta * step as isize).rem_euclid(rows.len() as isize) as usize
+            }
+            None if delta > 0 => step - 1,
+            None => rows.len() - step,
+        };
+        if !matches!(rows[index], Selection::Project(_)) {
+            return Some(rows[index].clone());
+        }
+    }
+    None
+}

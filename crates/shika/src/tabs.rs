@@ -235,3 +235,53 @@ pub(super) fn tab_canvas(
     .bottom_0()
     .h(px(TAB_HEIGHT + 1.))
 }
+
+/// The filled shape of a terminal tab across `bounds`, which extend
+/// `TAB_FLARE` past both sides of the tab. The top corners are rounded. A
+/// side with a flare curves outward into the bottom line; a side without one
+/// rounds its bottom corner inward, exactly filling the inside of an active
+/// neighbor's flare. The shape reaches the outer edge of the active tab's
+/// 1px outline, and with `line_row` it also covers the line row under the
+/// tab, so the active tab opens into the terminal.
+pub(super) fn tab_shape(
+    bounds: Bounds<Pixels>,
+    flare_left: bool,
+    flare_right: bool,
+    line_row: bool,
+) -> Option<gpui::Path<Pixels>> {
+    let (f, h) = (TAB_FLARE, TAB_HEIGHT);
+    let w = f32::from(bounds.size.width);
+    let (x0, y0) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+    let at = |x: f32, y: f32| gpui::point(px(x0 + x), px(y0 + y));
+    let radius = gpui::point(px(f - 0.5), px(f - 0.5));
+    let corner = gpui::point(px(f), px(f));
+    let bottom = if line_row { h + 1. } else { h };
+    // The tab's sides: x = f on the left and w - f on the right. A bottom
+    // corner's arc meets the side at h - f + 0.5 and the line at f - 0.5
+    // from the side.
+    let (left, right) = (f, w - f);
+    let (side_end, reach) = (h - f + 0.5, f - 0.5);
+    let mut shape = gpui::PathBuilder::fill();
+    let foot = if flare_left {
+        left - reach
+    } else {
+        left + reach
+    };
+    shape.move_to(at(foot, bottom));
+    shape.line_to(at(foot, h));
+    shape.arc_to(radius, px(0.), false, !flare_left, at(left, side_end));
+    shape.line_to(at(left, f));
+    shape.arc_to(corner, px(0.), false, true, at(left + f, 0.));
+    shape.line_to(at(right - f, 0.));
+    shape.arc_to(corner, px(0.), false, true, at(right, f));
+    shape.line_to(at(right, side_end));
+    let foot = if flare_right {
+        right + reach
+    } else {
+        right - reach
+    };
+    shape.arc_to(radius, px(0.), false, !flare_right, at(foot, h));
+    shape.line_to(at(foot, bottom));
+    shape.close();
+    shape.build().ok()
+}

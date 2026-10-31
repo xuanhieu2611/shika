@@ -492,3 +492,93 @@ pub(crate) fn pixel_sparkle(
         )
         .into_any_element()
 }
+
+/// The PR number and its checks: a ring while they run, a check when they
+/// pass, a cross in the failed color when one fails, and the number alone
+/// when the repository reports none. A click opens the PR.
+fn pr_mark(
+    card: &str,
+    pr: &checks::PrWatch,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> impl IntoElement {
+    let mark = pr.mark();
+    let color = if mark == checks::Mark::Failed {
+        chrome.failed.text
+    } else {
+        chrome.ink_3
+    };
+    let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+    let tip = model::checks_tip(mark);
+    let url = pr.url.clone();
+    div()
+        .id(SharedString::from(format!("pr-{card}")))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .text_color(color)
+        .when(mark == checks::Mark::Failed, |d| {
+            d.font_weight(FontWeight::MEDIUM)
+        })
+        .child(
+            div()
+                .font_family(MONO)
+                .text_size(px(11.5))
+                .child(format!("#{}", pr.number)),
+        )
+        .map(|d| match mark {
+            checks::Mark::Pending => d.child(
+                div()
+                    .flex_none()
+                    .size(px(7.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(chrome.ink_4),
+            ),
+            checks::Mark::Passed => d.child("\u{2713}"),
+            checks::Mark::Failed => d.child("\u{2717}"),
+            checks::Mark::None => d,
+        })
+        .tooltip(move |_, cx| {
+            cx.new(|_| KeyTip {
+                bg: tip_bg,
+                fg: tip_fg,
+                text: tip.into(),
+            })
+            .into()
+        })
+        .on_click(cx.listener(move |_, _, _, cx| {
+            cx.stop_propagation();
+            cx.open_url(&url);
+        }))
+}
+
+/// The CLI on a card's second line: its mark at 14px in the line's ink, with
+/// the name as its tooltip. A CLI without a mark keeps its name.
+pub(crate) fn cli_mark(
+    id: SharedString,
+    preset: &str,
+    name: &str,
+    color: Rgba,
+    chrome: &Chrome,
+) -> gpui::AnyElement {
+    let Some(mark) = agent_marks::for_preset(preset) else {
+        return div().flex_none().child(name.to_string()).into_any_element();
+    };
+    let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+    let name = SharedString::from(name.to_string());
+    div()
+        .id(id)
+        .flex_none()
+        .child(gpui::svg().data(mark).size(px(14.)).text_color(color))
+        .tooltip(move |_, cx| {
+            cx.new(|_| KeyTip {
+                bg: tip_bg,
+                fg: tip_fg,
+                text: name.clone(),
+            })
+            .into()
+        })
+        .into_any_element()
+}

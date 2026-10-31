@@ -222,3 +222,227 @@ pub(super) fn home_dir() -> Option<PathBuf> {
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
 }
+
+/// A 24px column button: ink-3, ink-1 on the hover wash, with its name and
+/// key in a tooltip. `icon` is an alpha-mask glyph at 15px; without one it
+/// is the 16px `+` the project headers use.
+pub(super) fn icon_button(
+    id: &'static str,
+    icon: Option<&'static [u8]>,
+    tip: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    let (hover, ink_1, ink_3) = (chrome.hover, chrome.ink_1, chrome.ink_3);
+    let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+    let button = div()
+        .id(id)
+        .group(id)
+        .occlude()
+        .flex_none()
+        .size(px(24.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .cursor_pointer()
+        .text_color(ink_3)
+        .hover(move |style| style.bg(hover).text_color(ink_1))
+        .tooltip(move |_, cx| {
+            cx.new(|_| KeyTip {
+                bg: tip_bg,
+                fg: tip_fg,
+                text: tip.into(),
+            })
+            .into()
+        });
+    match icon {
+        Some(data) => button.child(
+            gpui::svg()
+                .data(data)
+                .size(px(15.))
+                .text_color(ink_3)
+                .group_hover(id, move |style| style.text_color(ink_1)),
+        ),
+        None => button.text_size(px(16.)).child("+"),
+    }
+}
+
+/// A dialog's secondary action with its key after the label.
+pub(super) fn dialog_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    key: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    secondary_button(id, chrome)
+        .gap(px(8.))
+        .pl(px(12.))
+        .pr(px(10.))
+        .py(px(6.))
+        .child(label.into())
+        .child(
+            div()
+                .font_family(MONO)
+                .text_size(px(10.5))
+                .text_color(chrome.ink_3)
+                .child(key),
+        )
+}
+
+/// A notice button with no key. The update card does not take focus.
+pub(super) fn notice_secondary(
+    id: &'static str,
+    label: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    secondary_button(id, chrome)
+        .px(px(12.))
+        .py(px(6.))
+        .child(label)
+}
+
+/// The ink-filled notice button, with the primary button's padding and no key.
+pub(super) fn notice_primary(
+    id: &'static str,
+    label: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    let hover = chrome.primary_hover;
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .rounded(px(7.))
+        .px(px(12.))
+        .py(px(7.))
+        .bg(chrome.primary_bg)
+        .text_color(chrome.primary_fg)
+        .text_size(px(12.5))
+        .line_height(px(16.))
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .child(label)
+}
+
+/// The ink-filled primary action of a dialog.
+pub(super) fn primary_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    key: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    let hover = chrome.primary_hover;
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .rounded(px(7.))
+        .pl(px(12.))
+        .pr(px(10.))
+        .py(px(7.))
+        .bg(chrome.primary_bg)
+        .text_color(chrome.primary_fg)
+        .text_size(px(12.5))
+        .line_height(px(16.))
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .child(label.into())
+        .child(
+            div()
+                .font_family(MONO)
+                .text_size(px(10.5))
+                .text_color(chrome.kbd_inverse)
+                .child(key),
+        )
+}
+
+/// A settings `-` or `+`: a small secondary button.
+pub(super) fn step_button(
+    id: impl Into<gpui::ElementId>,
+    label: &'static str,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    secondary_button(id, chrome)
+        .size(px(26.))
+        .justify_center()
+        .rounded(px(6.))
+        .text_size(px(13.))
+        .text_color(chrome.ink_2)
+        .child(label)
+}
+
+/// A settings number or text field.
+pub(super) fn text_field(
+    id: impl Into<gpui::ElementId>,
+    width: f32,
+    editing: bool,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .w(px(width))
+        .h(px(26.))
+        .px(px(8.))
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .rounded(px(6.))
+        .bg(chrome.raised)
+        .border_1()
+        .border_color(if editing {
+            chrome.focus
+        } else {
+            chrome.line_control
+        })
+        .font_family(MONO)
+        .text_size(px(12.))
+        .cursor_text()
+}
+
+/// One segment of a segmented control.
+pub(super) fn segment(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+    active_bg: Rgba,
+    active_fg: Rgba,
+    idle_fg: Rgba,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .px(px(10.))
+        .py(px(4.))
+        .rounded(px(5.))
+        .text_size(px(12.))
+        .line_height(px(16.))
+        .cursor_pointer()
+        .when(active, |d| d.bg(active_bg).text_color(active_fg))
+        .when(!active, |d| d.text_color(idle_fg))
+        .child(label.into())
+}
+
+pub(super) fn panel_shell(
+    id: &'static str,
+    width: f32,
+    max_h: Pixels,
+    chrome: &Chrome,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .w(px(width))
+        .max_h(max_h)
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .rounded(px(12.))
+        .bg(chrome.overlay)
+        .text_color(chrome.ink_1)
+        .shadow(vec![
+            BoxShadow::new(px(0.), px(24.), chrome.dialog_shadow.into()).blur_radius(px(60.)),
+            BoxShadow::new(px(0.), px(0.), chrome.dialog_ring.into()).spread_radius(px(0.5)),
+        ])
+}
