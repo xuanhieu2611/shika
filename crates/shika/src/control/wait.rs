@@ -5,7 +5,7 @@ use crate::Shika;
 use shika_core::control::{Reply, TaskInfo, TaskStatus, WaitEvent};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The longest a single `wait` blocks, whatever the client asked for.
 pub const MAX_WAIT_SECS: u64 = 600;
@@ -160,12 +160,35 @@ impl Waiter {
 }
 
 impl Shika {
-    pub(super) fn wait_refusal(
-        &self,
-        project: &str,
+    /// `shika wait`: queue a [`Waiter`] on the Lead's card, or refuse it.
+    pub(super) fn control_wait(
+        &mut self,
+        lead: usize,
         lead_id: &str,
-        named: &[String],
-    ) -> Option<Reply> {
+        tasks: Vec<String>,
+        timeout_secs: u64,
+        reply: Responder,
+        delivered: Receiver<bool>,
+    ) {
+        if let Some(refusal) = self.wait_refusal(&self.cards[lead].project, lead_id, &tasks) {
+            let _ = reply.send(refusal);
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.min(MAX_WAIT_SECS));
+        if let Some(state) = self.cards[lead].lead.as_mut() {
+            state.waiters.push(Waiter {
+                named: tasks,
+                deadline,
+                reply,
+                delivered,
+            });
+        }
+        // Answer a wait that is already decided without waiting
+        // for the next tick.
+        self.resolve_waiters(Instant::now());
+    }
+
+    fn wait_refusal(&self, project: &str, lead_id: &str, named: &[String]) -> Option<Reply> {
         for id in named {
             let card = self
                 .project_tasks(project)

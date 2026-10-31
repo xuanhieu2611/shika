@@ -49,6 +49,21 @@ pub fn input_refusal(task: &str, state: &InputState, escape_only: bool) -> Optio
     })
 }
 
+/// What a successful `shika send` of `text` to `task` answers.
+pub(super) fn send_message(task: &str, text: &str, enter: bool) -> String {
+    if enter {
+        format!(
+            "sent {} characters and Enter to {task}.",
+            text.chars().count()
+        )
+    } else {
+        format!(
+            "typed {} characters into {task}, no Enter.",
+            text.chars().count()
+        )
+    }
+}
+
 /// One write to a terminal. `count` sends it through the typed-input capture,
 /// so a pasted line and its Enter are a submission like a typed one.
 pub struct Step {

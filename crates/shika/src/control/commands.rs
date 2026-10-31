@@ -1,13 +1,12 @@
 //! Routing a Lead's command to its handler, the replies shared by every
 //! command, and the simple commands (`help`, `memory`, `tasks`, `status`,
 //! `read`, `diff`).
-use super::{Incoming, Input, LEAD_GUIDE, LEAD_PUBLISHING, MAX_WAIT_SECS, Waiter, lead_guide};
+use super::{Incoming, Input, LEAD_GUIDE, LEAD_PUBLISHING, lead_guide, send_message};
 use crate::Shika;
 use crate::lead_steps::{self, StepKind, StepToken};
 use gpui::{Context, Window};
 use shika_core::control::{Command, MAX_READ_LINES, Reply};
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
 
 /// Screen rows as the text `read` prints: no trailing blank lines.
 pub fn screen_text(mut lines: Vec<String>) -> String {
@@ -97,104 +96,37 @@ impl Shika {
             let _ = reply.send(self.handle_worker(&token, command));
             return;
         }
-        let Some(lead) = self
-            .cards
-            .iter()
-            .position(|card| card.lead.as_ref().is_some_and(|lead| lead.token == token))
-        else {
-            let _ = reply.send(refused(
-                "This Lead is not running in Shika (unknown or expired token). Start a Lead from Shika.",
-            ));
-            return;
-        };
-        let Some(lead_id) = self.cards[lead].session.as_ref().map(|s| s.id.clone()) else {
-            let _ = reply.send(refused("The Lead is still starting."));
-            return;
+        let (lead, lead_id) = match self.lead_for_token(&token) {
+            Ok(found) => found,
+            Err(refusal) => {
+                let _ = reply.send(refusal);
+                return;
+            }
         };
         let project = self.cards[lead].project.clone();
-        // Each command but help and report runs as an activity step, settled
-        // by the reply wherever it is sent.
-        let task = lead_steps::command_task(&command).map(|task| match &command {
-            Command::New { prompt, .. } => lead_steps::prompt_name(prompt),
-            _ => self
-                .project_card(&project, task)
-                .map_or_else(|| task.to_string(), |card| card.title.clone()),
-        });
-        let step = StepKind::of(&command)
-            .zip(self.cards[lead].lead.as_ref())
-            .map(|(kind, state)| {
-                StepToken::start(&state.steps, kind, task.as_deref().unwrap_or(""))
-            });
+        let step = self.command_step(lead, &project, &command);
         let reply = Responder::new(reply, step);
         let answer = match command {
             Command::Help => Reply::Help {
-                text: self
-                    .control
-                    .as_ref()
-                    .map(|server| lead_guide(&server.bin_dir()))
-                    .unwrap_or_else(|| LEAD_GUIDE.to_string()),
+                text: self.lead_help(),
             },
             Command::Report { .. } => refused("Only workers can run shika report."),
-            Command::Memory => match self.core.lead_memory(&project) {
-                Ok(notes) => Reply::Memory { notes },
-                Err(err) => failure_reply(&err),
-            },
-            Command::Remember { text } => match self.core.remember(&project, &text) {
-                Ok(number) => Reply::Done {
-                    message: format!("remembered {number}"),
-                },
-                Err(err) => failure_reply(&err),
-            },
-            Command::Forget { note } => match self.core.forget_note(&project, note) {
-                Ok(()) => Reply::Done {
-                    message: format!("forgot {note}"),
-                },
-                Err(err) => failure_reply(&err),
-            },
-            Command::Tasks => Reply::Tasks {
-                tasks: self
-                    .project_tasks(&project)
-                    .filter_map(|card| card.task_info(&lead_id))
-                    .collect(),
-            },
-            Command::Status { task } => match self
-                .project_tasks(&project)
-                .find(|card| card.session.as_ref().is_some_and(|s| s.id == task))
-                .and_then(|card| card.task_info(&lead_id))
-            {
-                Some(task) => Reply::Status { task },
-                None => refused(format!("No task {task} in this project.")),
-            },
+            Command::Memory => self.memory_reply(&project),
+            Command::Remember { text } => self.remember_reply(&project, &text),
+            Command::Forget { note } => self.forget_reply(&project, note),
+            Command::Tasks => self.tasks_reply(&project, &lead_id),
+            Command::Status { task } => self.status_reply(&project, &lead_id, task),
             Command::New { cli, base, prompt } => {
                 self.control_new(lead, cli, base, prompt, reply, window, cx);
                 return;
             }
-            Command::Read { task, lines } => match self.project_card(&project, &task) {
-                Some(card) => Reply::Text {
-                    text: screen_text(
-                        card.agent
-                            .terminal
-                            .text_with_history(lines.min(MAX_READ_LINES)),
-                    ),
-                },
-                None => refused(format!("No task {task} in this project.")),
-            },
+            Command::Read { task, lines } => self.read_reply(&project, &task, lines),
             Command::Diff { task, stat } => {
                 self.control_diff(&project, task, stat, reply, cx);
                 return;
             }
             Command::Send { task, text, enter } => {
-                let message = if enter {
-                    format!(
-                        "sent {} characters and Enter to {task}.",
-                        text.chars().count()
-                    )
-                } else {
-                    format!(
-                        "typed {} characters into {task}, no Enter.",
-                        text.chars().count()
-                    )
-                };
+                let message = send_message(&task, &text, enter);
                 self.control_input(
                     &project,
                     &lead_id,
@@ -233,27 +165,118 @@ impl Shika {
                 tasks,
                 timeout_secs,
             } => {
-                if let Some(refusal) = self.wait_refusal(&project, &lead_id, &tasks) {
-                    refusal
-                } else {
-                    let deadline =
-                        Instant::now() + Duration::from_secs(timeout_secs.min(MAX_WAIT_SECS));
-                    if let Some(state) = self.cards[lead].lead.as_mut() {
-                        state.waiters.push(Waiter {
-                            named: tasks,
-                            deadline,
-                            reply,
-                            delivered,
-                        });
-                    }
-                    // Answer a wait that is already decided without waiting
-                    // for the next tick.
-                    self.resolve_waiters(Instant::now());
-                    return;
-                }
+                self.control_wait(lead, &lead_id, tasks, timeout_secs, reply, delivered);
+                return;
             }
         };
         let _ = reply.send(answer);
+    }
+
+    /// The Lead card holding `token` and its session id, or the refusal when
+    /// there is none or it has no session yet.
+    fn lead_for_token(&self, token: &str) -> Result<(usize, String), Reply> {
+        let Some(lead) = self
+            .cards
+            .iter()
+            .position(|card| card.lead.as_ref().is_some_and(|lead| lead.token == token))
+        else {
+            return Err(refused(
+                "This Lead is not running in Shika (unknown or expired token). Start a Lead from Shika.",
+            ));
+        };
+        let Some(lead_id) = self.cards[lead].session.as_ref().map(|s| s.id.clone()) else {
+            return Err(refused("The Lead is still starting."));
+        };
+        Ok((lead, lead_id))
+    }
+
+    /// Starts the activity step `command` runs as on the Lead's card.
+    /// Each command but help and report runs as an activity step, settled
+    /// by the reply wherever it is sent.
+    fn command_step(&self, lead: usize, project: &str, command: &Command) -> Option<StepToken> {
+        let task = lead_steps::command_task(command).map(|task| match command {
+            Command::New { prompt, .. } => lead_steps::prompt_name(prompt),
+            _ => self
+                .project_card(project, task)
+                .map_or_else(|| task.to_string(), |card| card.title.clone()),
+        });
+        StepKind::of(command)
+            .zip(self.cards[lead].lead.as_ref())
+            .map(|(kind, state)| {
+                StepToken::start(&state.steps, kind, task.as_deref().unwrap_or(""))
+            })
+    }
+
+    /// What `shika help` prints: the guide with this session's command path.
+    fn lead_help(&self) -> String {
+        self.control
+            .as_ref()
+            .map(|server| lead_guide(&server.bin_dir()))
+            .unwrap_or_else(|| LEAD_GUIDE.to_string())
+    }
+
+    /// `shika memory`: the project's Lead memory notes.
+    fn memory_reply(&self, project: &str) -> Reply {
+        match self.core.lead_memory(project) {
+            Ok(notes) => Reply::Memory { notes },
+            Err(err) => failure_reply(&err),
+        }
+    }
+
+    /// `shika remember`: adds a memory note.
+    fn remember_reply(&self, project: &str, text: &str) -> Reply {
+        match self.core.remember(project, text) {
+            Ok(number) => Reply::Done {
+                message: format!("remembered {number}"),
+            },
+            Err(err) => failure_reply(&err),
+        }
+    }
+
+    /// `shika forget`: removes memory note `note`.
+    fn forget_reply(&self, project: &str, note: usize) -> Reply {
+        match self.core.forget_note(project, note) {
+            Ok(()) => Reply::Done {
+                message: format!("forgot {note}"),
+            },
+            Err(err) => failure_reply(&err),
+        }
+    }
+
+    /// `shika tasks`: every task of this project.
+    fn tasks_reply(&self, project: &str, lead_id: &str) -> Reply {
+        Reply::Tasks {
+            tasks: self
+                .project_tasks(project)
+                .filter_map(|card| card.task_info(lead_id))
+                .collect(),
+        }
+    }
+
+    /// `shika status`: one task of this project.
+    fn status_reply(&self, project: &str, lead_id: &str, task: String) -> Reply {
+        match self
+            .project_tasks(project)
+            .find(|card| card.session.as_ref().is_some_and(|s| s.id == task))
+            .and_then(|card| card.task_info(lead_id))
+        {
+            Some(task) => Reply::Status { task },
+            None => refused(format!("No task {task} in this project.")),
+        }
+    }
+
+    /// `shika read`: the last `lines` rows of a task's agent terminal.
+    fn read_reply(&self, project: &str, task: &str, lines: usize) -> Reply {
+        match self.project_card(project, task) {
+            Some(card) => Reply::Text {
+                text: screen_text(
+                    card.agent
+                        .terminal
+                        .text_with_history(lines.min(MAX_READ_LINES)),
+                ),
+            },
+            None => refused(format!("No task {task} in this project.")),
+        }
     }
 
     /// What `pr` and `close` both require of `task`: a worker this Lead
