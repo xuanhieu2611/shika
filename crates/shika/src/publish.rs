@@ -490,3 +490,7 @@ pub(super) fn publish_change_label(count: usize) -> String {
         n => format!("{n} changed files"),
     }
 }
+
+#[cfg(test)]
+#[path = "publish_tests.rs"]
+mod tests;

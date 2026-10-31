@@ -568,3 +568,7 @@ pub(super) fn apply_switch_turn(
     }
     activity
 }
+
+#[cfg(test)]
+#[path = "switch_agent_tests.rs"]
+mod tests;

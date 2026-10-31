@@ -236,3 +236,7 @@ pub(crate) fn open_terminal_link(uri: &str) -> Result<(), String> {
     });
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "host_tests.rs"]
+mod tests;

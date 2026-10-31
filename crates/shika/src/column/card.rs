@@ -583,3 +583,7 @@ pub(crate) fn cli_mark(
         })
         .into_any_element()
 }
+
+#[cfg(test)]
+#[path = "card_tests.rs"]
+mod tests;

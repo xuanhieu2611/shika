@@ -709,3 +709,6 @@ impl Shika {
         cx.notify();
     }
 }
+
+#[cfg(test)]
+mod tests;

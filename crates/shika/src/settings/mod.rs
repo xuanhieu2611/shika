@@ -720,3 +720,6 @@ impl Shika {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -286,3 +286,7 @@ impl Shika {
             ))
     }
 }
+
+#[cfg(test)]
+#[path = "card_menu_tests.rs"]
+mod tests;
