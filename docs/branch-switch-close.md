@@ -50,7 +50,7 @@ The core operations lock serializes Shika's lifecycle actions, not external Git 
 | Cleanup | `Core::session_close_switched`, `hang_up`, `forget_session` | Recheck preview, stop all owned PTYs, recheck, remove only worktree, forget session |
 | Refusal copy | `crates/shika-core/src/error.rs`: `SwitchedCloseUnsafe` | Explain why safe recovery is unavailable |
 | UI dispatch | `crates/shika/src/close.rs`: `Shika::close`, `finish_close` | On `TaskBranchChanged`, verify off-thread; action 3 confirms recovery |
-| Dialog and keys | `Overlay::SwitchedClose`, `Shika::key`, overlay rendering, `cancel_overlay` | Branch facts in mono, existing themed dialog/buttons, Enter confirms, Escape restores focus |
+| Dialog and keys | `Overlay::SwitchedClose(SwitchedCloseDialog)`, `close_key`, `close_chord_key`, `switched_close_view` in `close.rs`; routed from `Shika::key`, `overlay_view`, `cancel_overlay` | Branch facts in mono, existing themed dialog/buttons, Enter confirms, Escape restores focus |
 
 No persistence schema, dependency, CLI launch argument, branch-refresh policy, or terminal ownership format changes.
 

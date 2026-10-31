@@ -608,7 +608,7 @@ Follow this order. The compiler enforces some of it (the `match` on `Command` in
 3. **`crates/shika/src/control.rs`**, on the app thread in `Shika::handle_control`:
    - Add the match arm. Scope by project (`project_tasks`) and check ownership (`started_by`) the way `wait_refusal` does. Answer expected declines with `refused(..)` and real failures with `Reply::Error`.
    - Anything that blocks (git, files, approval) runs in `cx.spawn_in` on the background executor and answers when done, as `control_new` does. Never block the tick.
-   - Only append cards from this path. Removal goes through the tick (`Card::discard`), because open dialogs hold card positions (`Overlay::Close { index }`).
+   - Only append cards from this path. Removal goes through the tick (`Card::discard`), because open dialogs hold card positions (`CloseDialog`'s `index`).
    - If the command takes selection, focus, or opens a dialog, follow the author-only rules in `begin_launch`: a worker launch deliberately touches none of them.
    - Per-session core methods refuse a Lead; the command operates on workers, so check that the core method you call accepts them.
 4. **`crates/shika/src/lead_guide.md`**: add the command to the list the Lead reads, with the refusal cases that matter. This is what the model sees via `shika help`; keep it short and keep it true.

@@ -139,7 +139,7 @@ Recovery is explicit, not automatic session restoration. Lead recovery and check
 | `shika-core/src/worktree.rs`, `diff.rs` | `checkout_head`, bounded repository-root reads, and `HEAD` diff comparison |
 | `shika-core/src/control.rs` | Lead visibility and targeting exclude checkout sessions |
 | `shika/src/checkout.rs` | `new_in_checkout`, `start_checkout`, existing-card focus, selection/Ready branch-read coalescing |
-| `shika/src/main.rs`, `launch.rs`, `model.rs`, `shortcuts.rs` | `NewInCheckout`, `PickerMode::Checkout`, `Launch::Checkout`, `Overlay::CheckoutClose`, checkout-first ordering, and rebindable `newInCheckout` chord |
+| `shika/src/main.rs`, `launch/mod.rs`, `close.rs`, `model.rs`, `shortcuts.rs` | `NewInCheckout`, `PickerMode::Checkout`, `Launch::Checkout`, `Overlay::CheckoutClose(CheckoutCloseDialog)`, checkout-first ordering, and rebindable `newInCheckout` chord |
 | `shika-core/src/projects.rs` | `projects.json` |
 | `shika-core/src/pty.rs`, `path_env.rs` | Child environment and the login-shell `PATH` |
 

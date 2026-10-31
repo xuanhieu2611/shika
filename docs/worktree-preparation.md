@@ -249,10 +249,10 @@ Use symbols rather than line numbers, which drift. The core stays UI-free; the e
 | Same file | `create_session`, `create_session_with_preparation` | Existing entry point delegates to the preparation-aware lifecycle; core enforces consent even without the UI |
 | Same file | `Core::preparing`, `cancel_preparations`, `remove_project`, `leftovers_list`, `leftover_remove`, `cancel_session_start` | Pending ownership, quit/removal cancellation, protected leftovers, and abandoned-launch preservation |
 | `crates/shika-core/src/error.rs` | `Preparation`, `PreparationNeedsApproval`, `PreparationCancelled` | Failure detail, approval fence, and explicit cancellation outcomes |
-| `crates/shika/src/launch.rs` | `request_launch`, `approve_preparation`; `main.rs`: `Overlay::Preparation` | Async preflight, approval UI, and local consent save |
+| `crates/shika/src/launch/mod.rs` | `request_launch`, `approve_preparation`; `launch/picker.rs`: `PreparationDialog`, `preparation_key`, `preparation_view`; `main.rs`: `Overlay::Preparation` | Async preflight, approval UI, and local consent save |
 | Same file | `begin_launch`, `retry_preparation`; `main.rs`: `Card::launch_control`, `launch_error`, `stage` | Pane/card creation, background launch, fresh retry, progress and failure UI |
 | `crates/shika/src/main.rs` | `HostState::preparing`, `agent_starting`, `Host::write`, `bind_host` | Setup input gating, early CLI query replies, PTY binding/resizing |
-| `crates/shika/src/tick.rs`, `close.rs`, `main.rs`, `launch.rs` | `tick`, `close`, `Card::drop`, `stop_cancelled_launch`, `main`'s `on_app_quit` hook | Cancel requests, deferred card removal, dropped UI, and synchronous quit cancellation |
+| `crates/shika/src/tick.rs`, `close.rs`, `main.rs`, `launch/mod.rs` | `tick`, `close`, `Card::drop`, `stop_cancelled_launch`, `main`'s `on_app_quit` hook | Cancel requests, deferred card removal, dropped UI, and synchronous quit cancellation |
 
 Execution consent is `Project::approved_preparation`, serialized as `approvedPreparation` in `projects.json`. Its value is the parsed config with the same `setup-worktree`, `copy-files`, and `timeout-seconds` keys, not a boolean, hash, script snapshot, or copied-file contents. A missing field means no consent. Separately, `Project::worktree_setup_reviewed` (`worktreeSetupReviewed`, missing/omitted false) remembers the local onboarding choice; it never authorizes commands. Progress, controls, process-group IDs, and failure-card state are memory-only; `settings.json` is unchanged.
 
