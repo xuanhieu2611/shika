@@ -12,7 +12,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::{
     BAD_STREAM, ChatEvent, ChatLaunch, ChatStatus, ClaudeStream, CommandIn, INCOMPLETE, MAX_FRAME,
@@ -158,6 +158,15 @@ fn write_frame(
     }
     stdin.flush()
 }
+/// What the actor loop does after handling one input.
+enum Flow {
+    /// Go on with this round.
+    Continue,
+    /// Start the next round at once, skipping this round's exit check.
+    NextRound,
+    /// Leave the loop: the actor is done.
+    Exit,
+}
 pub(super) struct Actor {
     pub(super) stop: Arc<AtomicBool>,
     pub(super) cancel_seen: u64,
@@ -272,267 +281,326 @@ impl Actor {
     }
     pub(super) fn run(mut self, rx: mpsc::Receiver<CommandIn>, frames: mpsc::Receiver<CommandIn>) {
         loop {
-            let cancel = self.cancel.load(Ordering::Acquire);
-            if cancel != self.cancel_seen {
-                self.cancel_seen = cancel;
-                if self.turn.is_some() {
-                    self.interrupt();
-                }
+            self.observe_cancel();
+            if self.stop.load(Ordering::Acquire) && self.begin_exit() {
+                break;
             }
-            if self.stop.load(Ordering::Acquire) {
-                self.exiting = true;
-                self.interrupt();
-                if self.child.is_none() {
-                    break;
-                }
-            }
-            if self.stopping.is_none()
-                && self.child.as_ref().is_some_and(|child| {
-                    !child.decoder.initialized && child.started.elapsed() >= Duration::from_secs(10)
-                })
-            {
-                self.failed = true;
-                self.settle(Some(BAD_STREAM));
-                self.emit(ChatEvent::Error(BAD_STREAM.into()));
-                self.interrupt();
-            }
+            self.fail_slow_initialize();
             let input = match rx.try_recv() {
                 Ok(command) => Ok(command),
                 Err(mpsc::TryRecvError::Empty) => frames.recv_timeout(Duration::from_millis(25)),
                 Err(mpsc::TryRecvError::Disconnected) => break,
             };
-            match input {
-                Ok(CommandIn::Answer { request_id, answer }) if self.stopping.is_none() => {
-                    if let Some(child) = &mut self.child
-                        && child.question.as_ref() == Some(&request_id)
-                    {
-                        let response = if let Some(input) = answer {
-                            json!({"behavior":"allow","updatedInput":input})
-                        } else {
-                            json!({"behavior":"deny","message":"The author cancelled this question."})
-                        };
-                        let mut bytes=serde_json::to_vec(&json!({"type":"control_response","response":{"subtype":"success","request_id":request_id,"response":response}})).expect("JSON value");
-                        bytes.push(b'\n');
-                        if write_frame(&mut child.stdin, &bytes, &self.cancel, child.input_epoch)
-                            .is_err()
-                        {
-                            self.settle(Some(
-                                "The answer could not be delivered. Work may already have started.",
-                            ));
-                            self.interrupt();
-                        } else {
-                            child.question = None;
-                            self.emit(ChatEvent::Status(ChatStatus::Working));
-                        }
-                    }
-                }
-                Ok(CommandIn::Stop) => {
-                    self.exiting = true;
-                    self.interrupt();
-                    if self.child.is_none() {
-                        break;
-                    }
-                }
-                Ok(CommandIn::Interrupt) if self.turn.is_some() => self.interrupt(),
-                Ok(CommandIn::RetrySave) => {
-                    self.save_failed = false;
-                    let pending = std::mem::take(&mut self.pending);
-                    self.persist_batch(pending);
-                    if !self.save_failed {
-                        self.emit(ChatEvent::Saved);
-                    }
-                }
-                Ok(CommandIn::Send {
-                    text,
-                    origin,
-                    events,
-                    epoch,
-                }) if self.turn.is_none()
-                    && self.stopping.is_none()
-                    && !self.save_failed
-                    && epoch == self.cancel.load(Ordering::Acquire) =>
-                {
-                    let turn = self.allocate_turn();
-                    self.turn = Some(turn);
-                    self.active_input = Some((origin.clone(), text.clone()));
-                    let mut outgoing = Vec::new();
-                    if origin == ChatOrigin::Author {
-                        outgoing.push((turn, ChatContent::Author { text: text.clone() }));
-                    }
-                    for (text, key) in events {
-                        outgoing.push((turn, ChatContent::Event { text, key }));
-                    }
-                    outgoing.push((turn, ChatContent::Outgoing { origin }));
-                    if !self.persist_batch(outgoing) {
-                        self.settle(Some("Message not sent"));
-                        continue;
-                    }
-                    if self.child.is_none() {
-                        self.generation += 1;
-                        if self.launch.resumed {
-                            self.emit(ChatEvent::Resuming);
-                        }
-                        match Process::spawn(
-                            &self.launch,
-                            self.launch.resumed,
-                            self.generation,
-                            self.frames.clone(),
-                        ) {
-                            Ok(child) => self.child = Some(child),
-                            Err(_) => {
-                                self.settle(Some(
-                                    "Could not start Claude Code. Try sending again.",
-                                ));
-                                continue;
-                            }
-                        }
-                    }
-                    let child = self.child.as_mut().expect("started child");
-                    child.decoder.begin();
-                    child.input_epoch = epoch;
-                    let mut bytes = serde_json::to_vec(
-                        &json!({"type":"user", "message":{"role":"user", "content":text}}),
-                    )
-                    .expect("JSON value");
-                    bytes.push(b'\n');
-                    if write_frame(&mut child.stdin, &bytes, &self.cancel, epoch).is_err() {
-                        if self.cancel.load(Ordering::Acquire) != epoch {
-                            self.interrupt();
-                            continue;
-                        }
-                        self.settle(Some("Delivery unknown. Work may already have started. Send again only when you are ready to retry."));
-                        self.interrupt();
-                    } else {
-                        self.persist(turn, ChatContent::Accepted);
-                        self.emit(ChatEvent::Accepted);
-                        self.emit(ChatEvent::Status(ChatStatus::Working));
-                    }
-                }
-                Ok(CommandIn::Send { .. }) => {
-                    self.emit(ChatEvent::Error(
-                        "The Lead is still replying or the conversation needs to be saved.".into(),
-                    ));
-                    self.emit(ChatEvent::DeliveryFailed);
-                }
-                Ok(CommandIn::Line(generation, line))
-                    if generation == self.generation && self.stopping.is_none() =>
-                {
-                    let parsed = self
-                        .child
-                        .as_mut()
-                        .map(|c| c.decoder.parse(&line))
-                        .unwrap_or(Parsed::Ignore);
-                    match parsed {
-                        Parsed::Started if self.turn.is_none() => {
-                            self.launch.resumed = true;
-                            self.emit(ChatEvent::Confirmed(self.launch.conversation.clone()));
-                            // No Outgoing row: Accepted alone marks a turn the
-                            // CLI took without Shika input, so recovery and
-                            // numbering treat it like any other accepted turn.
-                            let turn = self.allocate_turn();
-                            self.turn = Some(turn);
-                            if let Some(child) = &mut self.child {
-                                child.input_epoch = self.cancel.load(Ordering::Acquire);
-                            }
-                            self.persist(turn, ChatContent::Accepted);
-                            self.emit(ChatEvent::Started);
-                            self.emit(ChatEvent::Status(ChatStatus::Working));
-                        }
-                        Parsed::Confirmed | Parsed::Started => {
-                            self.launch.resumed = true;
-                            self.emit(ChatEvent::Confirmed(self.launch.conversation.clone()))
-                        }
-                        Parsed::Final(text) => self.complete(text, None),
-                        Parsed::Blocked => {
-                            self.emit(ChatEvent::Status(ChatStatus::Asking));
-                            self.emit(ChatEvent::Error(UNSUPPORTED.into()));
-                        }
-                        Parsed::Question(question) => {
-                            if let Some(child) = &mut self.child {
-                                child.question = Some(question.request_id.clone());
-                            }
-                            self.emit(ChatEvent::Status(ChatStatus::Asking));
-                            self.emit(ChatEvent::Question(question));
-                        }
-                        Parsed::Cancelled(id) => {
-                            self.emit(ChatEvent::QuestionCancelled(id));
-                        }
-                        Parsed::Failed(error) => {
-                            self.failed = error == BAD_STREAM
-                                || error == "Claude Code returned a different conversation";
-                            let display = if error == BAD_STREAM {
-                                self.child
-                                    .as_ref()
-                                    .and_then(|c| c.decoder.version.as_ref())
-                                    .map(|version| format!("{error} ({version})"))
-                                    .unwrap_or_else(|| error.into())
-                            } else {
-                                error.into()
-                            };
-                            self.settle(Some(&display));
-                            self.emit(ChatEvent::Error(display));
-                            self.interrupt();
-                        }
-                        Parsed::Ignore => {}
-                    }
-                }
-                Ok(CommandIn::BadFrame(generation)) if generation == self.generation => {
-                    self.failed = true;
-                    self.settle(Some(BAD_STREAM));
-                    self.emit(ChatEvent::Error(BAD_STREAM.into()));
-                    self.interrupt();
-                }
-                Ok(CommandIn::Eof(generation)) if generation == self.generation => {
-                    if let Some(child) = &mut self.child {
-                        child.reader_done = true;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                _ => {}
+            match self.handle(input) {
+                Flow::Continue => {}
+                Flow::NextRound => continue,
+                Flow::Exit => break,
             }
-            if self
-                .stopping
-                .is_some_and(|at| at.elapsed() >= Duration::from_secs(2))
-                && let Some(child) = &mut self.child
-            {
-                child.signal(libc::SIGKILL);
-            }
-            // Drain all queued output before observing exit, including the final result.
-            let exited = self.child.as_mut().is_some_and(|c| {
-                (c.reader_done
-                    || self
-                        .stopping
-                        .is_some_and(|at| at.elapsed() >= Duration::from_secs(3)))
-                    && c.child.try_wait().ok().flatten().is_some()
-            });
-            if exited {
-                // EOF is ordered after every frame by the pipe reader. Interrupted
-                // children have a bounded fallback when descendants hold a pipe.
-                let stopped = self.stopping.take().is_some();
-                self.child = None;
-                if !stopped && self.turn.is_none() {
-                    self.persist(
-                        0,
-                        ChatContent::Event {
-                            text: "The Lead stopped unexpectedly".into(),
-                            key: None,
-                        },
-                    );
-                }
-                if self.turn.is_some() {
-                    self.settle(Some(if stopped { "Reply stopped" } else { INCOMPLETE }));
-                }
-                if self.exiting {
-                    break;
-                }
-                if stopped {
-                    self.emit(ChatEvent::Status(ChatStatus::Ready));
-                }
-                if !stopped || self.failed {
-                    self.emit(ChatEvent::Exit);
-                    break;
-                }
+            self.kill_slow_stop();
+            if self.reap_exited_child() {
+                break;
             }
         }
+    }
+    /// A cancel bump (Interrupt or Stop from the handle) interrupts the turn.
+    fn observe_cancel(&mut self) {
+        let cancel = self.cancel.load(Ordering::Acquire);
+        if cancel != self.cancel_seen {
+            self.cancel_seen = cancel;
+            if self.turn.is_some() {
+                self.interrupt();
+            }
+        }
+    }
+    /// Stop: interrupt and exit once the child is gone. True when there is no
+    /// child left to wait for.
+    fn begin_exit(&mut self) -> bool {
+        self.exiting = true;
+        self.interrupt();
+        self.child.is_none()
+    }
+    /// A CLI that has not answered initialize within 10 seconds is unreadable.
+    fn fail_slow_initialize(&mut self) {
+        if self.stopping.is_none()
+            && self.child.as_ref().is_some_and(|child| {
+                !child.decoder.initialized && child.started.elapsed() >= Duration::from_secs(10)
+            })
+        {
+            self.failed = true;
+            self.settle(Some(BAD_STREAM));
+            self.emit(ChatEvent::Error(BAD_STREAM.into()));
+            self.interrupt();
+        }
+    }
+    /// One command from the handle or one frame from the CLI's reader.
+    fn handle(&mut self, input: Result<CommandIn, mpsc::RecvTimeoutError>) -> Flow {
+        match input {
+            Ok(CommandIn::Answer { request_id, answer }) if self.stopping.is_none() => {
+                self.answer_question(request_id, answer);
+            }
+            Ok(CommandIn::Stop) => {
+                if self.begin_exit() {
+                    return Flow::Exit;
+                }
+            }
+            Ok(CommandIn::Interrupt) if self.turn.is_some() => self.interrupt(),
+            Ok(CommandIn::RetrySave) => self.retry_save(),
+            Ok(CommandIn::Send {
+                text,
+                origin,
+                events,
+                epoch,
+            }) if self.turn.is_none()
+                && self.stopping.is_none()
+                && !self.save_failed
+                && epoch == self.cancel.load(Ordering::Acquire) =>
+            {
+                return self.send(text, origin, events, epoch);
+            }
+            Ok(CommandIn::Send { .. }) => {
+                self.emit(ChatEvent::Error(
+                    "The Lead is still replying or the conversation needs to be saved.".into(),
+                ));
+                self.emit(ChatEvent::DeliveryFailed);
+            }
+            Ok(CommandIn::Line(generation, line))
+                if generation == self.generation && self.stopping.is_none() =>
+            {
+                self.read_line(&line);
+            }
+            Ok(CommandIn::BadFrame(generation)) if generation == self.generation => {
+                self.failed = true;
+                self.settle(Some(BAD_STREAM));
+                self.emit(ChatEvent::Error(BAD_STREAM.into()));
+                self.interrupt();
+            }
+            Ok(CommandIn::Eof(generation)) if generation == self.generation => {
+                if let Some(child) = &mut self.child {
+                    child.reader_done = true;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Flow::Exit,
+            _ => {}
+        }
+        Flow::Continue
+    }
+    /// Answers the CLI's pending question, or denies it when `answer` is None.
+    fn answer_question(&mut self, request_id: String, answer: Option<Value>) {
+        if let Some(child) = &mut self.child
+            && child.question.as_ref() == Some(&request_id)
+        {
+            let response = if let Some(input) = answer {
+                json!({"behavior":"allow","updatedInput":input})
+            } else {
+                json!({"behavior":"deny","message":"The author cancelled this question."})
+            };
+            let mut bytes=serde_json::to_vec(&json!({"type":"control_response","response":{"subtype":"success","request_id":request_id,"response":response}})).expect("JSON value");
+            bytes.push(b'\n');
+            if write_frame(&mut child.stdin, &bytes, &self.cancel, child.input_epoch).is_err() {
+                self.settle(Some(
+                    "The answer could not be delivered. Work may already have started.",
+                ));
+                self.interrupt();
+            } else {
+                child.question = None;
+                self.emit(ChatEvent::Status(ChatStatus::Working));
+            }
+        }
+    }
+    /// Writes the rows a save failure buffered, then reports the save.
+    fn retry_save(&mut self) {
+        self.save_failed = false;
+        let pending = std::mem::take(&mut self.pending);
+        self.persist_batch(pending);
+        if !self.save_failed {
+            self.emit(ChatEvent::Saved);
+        }
+    }
+    /// Starts a turn: persists the outgoing rows, starts the CLI again if it
+    /// exited, and writes the message to its stdin. A turn that ends before
+    /// delivery skips this round's exit check.
+    fn send(
+        &mut self,
+        text: String,
+        origin: ChatOrigin,
+        events: Vec<(String, Option<String>)>,
+        epoch: u64,
+    ) -> Flow {
+        let turn = self.allocate_turn();
+        self.turn = Some(turn);
+        self.active_input = Some((origin.clone(), text.clone()));
+        let mut outgoing = Vec::new();
+        if origin == ChatOrigin::Author {
+            outgoing.push((turn, ChatContent::Author { text: text.clone() }));
+        }
+        for (text, key) in events {
+            outgoing.push((turn, ChatContent::Event { text, key }));
+        }
+        outgoing.push((turn, ChatContent::Outgoing { origin }));
+        if !self.persist_batch(outgoing) {
+            self.settle(Some("Message not sent"));
+            return Flow::NextRound;
+        }
+        if self.child.is_none() && !self.respawn_child() {
+            return Flow::NextRound;
+        }
+        let child = self.child.as_mut().expect("started child");
+        child.decoder.begin();
+        child.input_epoch = epoch;
+        let mut bytes =
+            serde_json::to_vec(&json!({"type":"user", "message":{"role":"user", "content":text}}))
+                .expect("JSON value");
+        bytes.push(b'\n');
+        if write_frame(&mut child.stdin, &bytes, &self.cancel, epoch).is_err() {
+            if self.cancel.load(Ordering::Acquire) != epoch {
+                self.interrupt();
+                return Flow::NextRound;
+            }
+            self.settle(Some("Delivery unknown. Work may already have started. Send again only when you are ready to retry."));
+            self.interrupt();
+        } else {
+            self.persist(turn, ChatContent::Accepted);
+            self.emit(ChatEvent::Accepted);
+            self.emit(ChatEvent::Status(ChatStatus::Working));
+        }
+        Flow::Continue
+    }
+    /// Starts a new CLI process for a send after the last one exited. False,
+    /// with the turn settled, when it could not start.
+    fn respawn_child(&mut self) -> bool {
+        self.generation += 1;
+        if self.launch.resumed {
+            self.emit(ChatEvent::Resuming);
+        }
+        match Process::spawn(
+            &self.launch,
+            self.launch.resumed,
+            self.generation,
+            self.frames.clone(),
+        ) {
+            Ok(child) => self.child = Some(child),
+            Err(_) => {
+                self.settle(Some("Could not start Claude Code. Try sending again."));
+                return false;
+            }
+        }
+        true
+    }
+    /// Decodes one line of the current process's output and acts on it.
+    fn read_line(&mut self, line: &[u8]) {
+        let parsed = self
+            .child
+            .as_mut()
+            .map(|c| c.decoder.parse(line))
+            .unwrap_or(Parsed::Ignore);
+        match parsed {
+            Parsed::Started if self.turn.is_none() => self.start_cli_turn(),
+            Parsed::Confirmed | Parsed::Started => {
+                self.launch.resumed = true;
+                self.emit(ChatEvent::Confirmed(self.launch.conversation.clone()))
+            }
+            Parsed::Final(text) => self.complete(text, None),
+            Parsed::Blocked => {
+                self.emit(ChatEvent::Status(ChatStatus::Asking));
+                self.emit(ChatEvent::Error(UNSUPPORTED.into()));
+            }
+            Parsed::Question(question) => {
+                if let Some(child) = &mut self.child {
+                    child.question = Some(question.request_id.clone());
+                }
+                self.emit(ChatEvent::Status(ChatStatus::Asking));
+                self.emit(ChatEvent::Question(question));
+            }
+            Parsed::Cancelled(id) => {
+                self.emit(ChatEvent::QuestionCancelled(id));
+            }
+            Parsed::Failed(error) => self.fail_turn(error),
+            Parsed::Ignore => {}
+        }
+    }
+    /// A turn the CLI started itself while idle, such as after one of the
+    /// Lead's background commands finished.
+    fn start_cli_turn(&mut self) {
+        self.launch.resumed = true;
+        self.emit(ChatEvent::Confirmed(self.launch.conversation.clone()));
+        // No Outgoing row: Accepted alone marks a turn the
+        // CLI took without Shika input, so recovery and
+        // numbering treat it like any other accepted turn.
+        let turn = self.allocate_turn();
+        self.turn = Some(turn);
+        if let Some(child) = &mut self.child {
+            child.input_epoch = self.cancel.load(Ordering::Acquire);
+        }
+        self.persist(turn, ChatContent::Accepted);
+        self.emit(ChatEvent::Started);
+        self.emit(ChatEvent::Status(ChatStatus::Working));
+    }
+    /// A decoding or reply failure settles the turn and interrupts the CLI.
+    fn fail_turn(&mut self, error: &'static str) {
+        self.failed =
+            error == BAD_STREAM || error == "Claude Code returned a different conversation";
+        let display = if error == BAD_STREAM {
+            self.child
+                .as_ref()
+                .and_then(|c| c.decoder.version.as_ref())
+                .map(|version| format!("{error} ({version})"))
+                .unwrap_or_else(|| error.into())
+        } else {
+            error.into()
+        };
+        self.settle(Some(&display));
+        self.emit(ChatEvent::Error(display));
+        self.interrupt();
+    }
+    /// An interrupted CLI that has not exited after 2 seconds is killed.
+    fn kill_slow_stop(&mut self) {
+        if self
+            .stopping
+            .is_some_and(|at| at.elapsed() >= Duration::from_secs(2))
+            && let Some(child) = &mut self.child
+        {
+            child.signal(libc::SIGKILL);
+        }
+    }
+    /// Notices the CLI's exit after all its output was read, settles the turn,
+    /// and reports it. True when the actor is done.
+    fn reap_exited_child(&mut self) -> bool {
+        // Drain all queued output before observing exit, including the final result.
+        let exited = self.child.as_mut().is_some_and(|c| {
+            (c.reader_done
+                || self
+                    .stopping
+                    .is_some_and(|at| at.elapsed() >= Duration::from_secs(3)))
+                && c.child.try_wait().ok().flatten().is_some()
+        });
+        if exited {
+            // EOF is ordered after every frame by the pipe reader. Interrupted
+            // children have a bounded fallback when descendants hold a pipe.
+            let stopped = self.stopping.take().is_some();
+            self.child = None;
+            if !stopped && self.turn.is_none() {
+                self.persist(
+                    0,
+                    ChatContent::Event {
+                        text: "The Lead stopped unexpectedly".into(),
+                        key: None,
+                    },
+                );
+            }
+            if self.turn.is_some() {
+                self.settle(Some(if stopped { "Reply stopped" } else { INCOMPLETE }));
+            }
+            if self.exiting {
+                return true;
+            }
+            if stopped {
+                self.emit(ChatEvent::Status(ChatStatus::Ready));
+            }
+            if !stopped || self.failed {
+                self.emit(ChatEvent::Exit);
+                return true;
+            }
+        }
+        false
     }
 }
