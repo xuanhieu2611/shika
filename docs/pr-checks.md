@@ -182,9 +182,9 @@ Use symbols rather than line numbers, which change frequently.
 | `crates/shika-core/src/worktree.rs`: `pushed_head` | Local `origin/<branch>` commit. |
 | `crates/shika-core/src/lib.rs`: `session_publish`, `session_pr_checks`, `session_pushed_head` | Public, blocking API. The last two are lock-free reads. |
 | `crates/shika/src/checks.rs`: `PrWatch`, `Due`, `Read`, `Polled`, `Mark`, `interval` | Schedule and state machine. Pure logic, no GPUI, no processes. |
-| `crates/shika/src/main.rs`: `Card::pr`, `publish_pr` | Starting a watch when publishing succeeds. |
-| Same file: `tick`, `watch_checks`, `checks_read` | Running due reads in the background, applying results, notifying. |
-| Same file: `pr_mark` | The mark on the card's second line, tooltip, and click. |
+| `crates/shika/src/main.rs`: `Card::pr`; `publish.rs`: `publish_pr` | Starting a watch when publishing succeeds. |
+| `crates/shika/src/tick.rs`: `tick`; `checks.rs`: `watch_checks`, `checks_read` | Running due reads in the background, applying results, notifying. |
+| `crates/shika/src/column/card.rs`: `pr_mark` | The mark on the card's second line, tooltip, and click. |
 | `crates/shika/src/model.rs`: `CHECKS_FAILED`, `checks_tip` | Notification body and tooltip copy. |
 | `crates/shika/src/notifications.rs`: `Notifications::post` | Native notification with a caller-supplied body. |
 | `crates/shika/src/appearance.rs`: `Chrome::failed` | Hand-tuned Shika values; ANSI red for derived themes, with the 4.5:1 text rule. |
@@ -252,7 +252,7 @@ Never test against an existing personal or production project, or against normal
 - Keep failures silent and the last mark visible. Do not add toasts for background reads.
 - Keep the mark separate from agent status: no reorder, no change to Close or the status signal, unless the author decides otherwise in DESIGN.md.
 - Keep head matching. Never show a result for a commit other than the one the user last pushed, inside the grace window.
-- Put timing and state changes in `checks.rs` with tests that inject time. Keep `main.rs` to scheduling and painting.
+- Put timing and state changes in `checks.rs` with tests that inject time. Keep the `Shika` glue (`tick`, `watch_checks`, `pr_mark`) to scheduling and painting.
 - Update this guide, the short AGENTS.md handoff, DESIGN.md for visible changes, and MANUAL_CHECKS.md with behavioral changes.
 
 Possible improvements, each needing a product decision: counting only required checks, watching PRs created outside Create PR for a card's branch, a slow read after a pass to catch re-runs, or ordering failed cards higher. Each must keep the cost model above: nothing for cards without a PR, and nothing for finished, passing PRs.

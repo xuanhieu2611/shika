@@ -81,9 +81,9 @@ Both renames go through `rename_task_branch`, which adds the prefix, picks a fre
 | "Already applied" flag | `Session::cli_titled` in `crates/shika-core/src/session.rs` |
 | Prefix setting | `Settings::branch_prefix` in `crates/shika-core/src/settings.rs`, stored as `branchPrefix` in `settings.json` |
 | Polling schedule | `TitleWatch` in `crates/shika/src/model.rs` (checks every `EVERY` = 2 s for `FOR` = 120 s, or `PI_FOR` = 600 s for Pi) |
-| Polling and UI updates | `Shika::tick` in `crates/shika/src/main.rs` (look for `title_checks`) |
+| Polling and UI updates | `Shika::tick` in `crates/shika/src/tick.rs` (look for `title_checks`) |
 | First-line capture | `PromptCapture` in `crates/shika/src/model.rs` |
-| Settings row | `Shika::prefix_row` and `PREFIX_ROW` in `crates/shika/src/main.rs` |
+| Settings row | `Shika::prefix_row` in `crates/shika/src/settings/view.rs` and `PREFIX_ROW` in `settings/mod.rs` |
 
 ### Threads
 
@@ -187,8 +187,8 @@ If these find nothing, check whether the CLI moved its files, then update `cli_t
 ## Tests
 
 - `cli_title.rs`: sample files for each CLI, no title yet, broken JSON or a broken database, wrong `cwd`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, Pi's session and agent directories, a symlinked worktree path, an unknown CLI.
-- `worktree.rs`: slugs and word-boundary cuts, project-name removal, prefix cleanup checked against `git check-ref-format`, renames that skip local and remote names, `is_published`.
-- `lib.rs`: the full flow on real git repositories: prompt rename, then CLI title rename, once; journal kept in step; the prefix; a branch pushed without `-u` keeps its name; a switched worktree keeps its branch.
+- `worktree_tests.rs`: slugs and word-boundary cuts, project-name removal, prefix cleanup checked against `git check-ref-format`, renames that skip local and remote names, `is_published`.
+- `tests/naming.rs`: the full flow on real git repositories: prompt rename, then CLI title rename, once; journal kept in step; the prefix; a branch pushed without `-u` keeps its name; a switched worktree keeps its branch.
 - `model.rs`: `TitleWatch` timing (one check at a time, gives up), and Option+Backspace in `PromptCapture`, using the real typing that produced a doubled branch name.
 
 Tests use a scratch `CliHome::at(...)` and never read the real `~/.claude`, `~/.cursor`, `~/.codex`, or `~/.pi`.

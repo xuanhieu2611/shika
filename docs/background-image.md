@@ -41,7 +41,7 @@ Settings name a copy by its file name only. `shika_core::background::path` resol
 | `crates/shika/src/background.rs` | Decoding, effects (ported from Zeron), framing math, `Backdrop` builds and crossfade, `layer` painting |
 | `crates/shika/src/background_view.rs` | Settings rows, choose/remove, window opacity sync, the Adjust dialog |
 | `crates/shika/src/appearance.rs` | `apply` / `background_for` take `image`: opaque window, no window-server blur |
-| `crates/shika/src/main.rs` | Fields, row constants (`IMAGE_ROW`, `EFFECT_ROW`), key routing, the root's backdrop child and drag listeners |
+| `crates/shika/src/main.rs`, `settings/mod.rs`, `keys.rs` | Fields, row constants (`IMAGE_ROW`, `EFFECT_ROW` in `settings/mod.rs`), key routing (`keys.rs`), the root's backdrop child and drag listeners |
 
 The effects keep Zeron's values and structure; the notice is `assets/licenses/Zeron-MIT.txt`, listed in `THIRD_PARTY_NOTICES.md` and the bundle's notices.
 

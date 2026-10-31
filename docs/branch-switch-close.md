@@ -49,7 +49,7 @@ The core operations lock serializes Shika's lifecycle actions, not external Git 
 | Preview | `crates/shika-core/src/lib.rs`: `SwitchedBranchClose`, `session_switched_close_check`, `switched_close_check_locked` | Return an opaque confirmation snapshot without changing ownership |
 | Cleanup | `Core::session_close_switched`, `hang_up`, `forget_session` | Recheck preview, stop all owned PTYs, recheck, remove only worktree, forget session |
 | Refusal copy | `crates/shika-core/src/error.rs`: `SwitchedCloseUnsafe` | Explain why safe recovery is unavailable |
-| UI dispatch | `crates/shika/src/main.rs`: `Shika::close`, `finish_close` | On `TaskBranchChanged`, verify off-thread; action 3 confirms recovery |
+| UI dispatch | `crates/shika/src/close.rs`: `Shika::close`, `finish_close` | On `TaskBranchChanged`, verify off-thread; action 3 confirms recovery |
 | Dialog and keys | `Overlay::SwitchedClose`, `Shika::key`, overlay rendering, `cancel_overlay` | Branch facts in mono, existing themed dialog/buttons, Enter confirms, Escape restores focus |
 
 No persistence schema, dependency, CLI launch argument, branch-refresh policy, or terminal ownership format changes.
@@ -80,7 +80,7 @@ Use disposable repositories, local bare remotes, and an isolated `--data-dir` fo
 
 ## Tests and extension guardrails
 
-`crates/shika-core/src/lib.rs` tests beginning `switched_close_` cover pushed branches with and without upstreams, merged work, independently published branches, integrated original work, empty local tasks, hidden unpublished commits on either branch, dirty files, missing refs, detached HEAD, changed tips/HEAD after preview, local-main false publication, branch/journal preservation, and shell teardown.
+The tests in `crates/shika-core/src/tests/branch_switch_close.rs` beginning `switched_close_` cover pushed branches with and without upstreams, merged work, independently published branches, integrated original work, empty local tasks, hidden unpublished commits on either branch, dirty files, missing refs, detached HEAD, changed tips/HEAD after preview, local-main false publication, branch/journal preservation, and shell teardown.
 
 Run `cargo fmt --all --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`. Native dialog rendering, focus, keys, and light/dark acceptance remain separate in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#branch-switch-close).
 
