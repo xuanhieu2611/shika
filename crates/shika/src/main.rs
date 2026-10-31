@@ -531,14 +531,8 @@ enum Overlay {
         index: usize,
         mode: PickerMode,
     },
-    /// Stops PTYs only. Never offers Discard or reads the checkout's git.
-    CheckoutClose {
-        index: usize,
-    },
-    Close {
-        index: usize,
-        state: SessionGitState,
-    },
+    CheckoutClose(close::CheckoutCloseDialog),
+    Close(close::CloseDialog),
     /// The pointer menu of a resting Lead: Forget Lead.
     RestingMenu {
         project: String,
@@ -546,11 +540,7 @@ enum Overlay {
     },
     /// Stop a live Lead, or forget one.
     LeadClose(lead::LeadCloseDialog),
-    SwitchedClose {
-        index: usize,
-        preview: shika_core::SwitchedBranchClose,
-        working: bool,
-    },
+    SwitchedClose(close::SwitchedCloseDialog),
     Preparation {
         project: String,
         preset: CliPreset,
@@ -612,7 +602,7 @@ impl Overlay {
             Self::Publish { .. } => "the Create PR dialog",
             Self::SwitchAgent { .. } => "the Switch agent dialog",
             Self::Picker { .. } => "the New picker",
-            Self::Close { .. } | Self::SwitchedClose { .. } | Self::CheckoutClose { .. } => {
+            Self::Close(_) | Self::SwitchedClose(_) | Self::CheckoutClose(_) => {
                 "the Close task dialog"
             }
             Self::RestingMenu { .. } => "a card menu",
@@ -1447,7 +1437,7 @@ mod host_tests {
             }
             .dims_background()
         );
-        assert!(Overlay::CheckoutClose { index: 0 }.dims_background());
+        assert!(Overlay::CheckoutClose(close::CheckoutCloseDialog { index: 0 }).dims_background());
         assert!(
             Overlay::Quit {
                 previous: None,

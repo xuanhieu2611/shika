@@ -1346,7 +1346,8 @@ impl Shika {
             match overlay {
                 Overlay::Publish { preview, .. } => preview.session_id == task,
                 Overlay::SwitchAgent { session_id, .. } => session_id == task,
-                Overlay::Close { index, .. } | Overlay::SwitchedClose { index, .. } => {
+                Overlay::Close(crate::close::CloseDialog { index, .. })
+                | Overlay::SwitchedClose(crate::close::SwitchedCloseDialog { index, .. }) => {
                     card_is(index)
                 }
                 _ => false,
@@ -1519,7 +1520,10 @@ impl Shika {
     /// Whether the close dialog for `task` is on screen.
     fn lead_dialog_open(&self, task: &str) -> bool {
         match &self.overlay {
-            Some(Overlay::Close { index, .. } | Overlay::SwitchedClose { index, .. }) => self
+            Some(
+                Overlay::Close(crate::close::CloseDialog { index, .. })
+                | Overlay::SwitchedClose(crate::close::SwitchedCloseDialog { index, .. }),
+            ) => self
                 .cards
                 .get(*index)
                 .and_then(|card| card.session.as_ref())

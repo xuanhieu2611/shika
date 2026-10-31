@@ -12,9 +12,9 @@ impl Shika {
             hasher.finish()
         }
         Some(match self.overlay.as_ref()? {
-            Overlay::Close { index, .. } => ("close", *index as u64),
-            Overlay::CheckoutClose { index } => ("checkout-close", *index as u64),
-            Overlay::SwitchedClose { index, .. } => ("switched-close", *index as u64),
+            Overlay::Close(dialog) => ("close", dialog.index as u64),
+            Overlay::CheckoutClose(dialog) => ("checkout-close", dialog.index as u64),
+            Overlay::SwitchedClose(dialog) => ("switched-close", dialog.index as u64),
             Overlay::LeadClose(lead::LeadCloseDialog { project, step, .. }) => (
                 "lead-close",
                 hash(project) ^ matches!(step, model::LeadClose::Forget { .. }) as u64,
@@ -55,13 +55,13 @@ impl Shika {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        use model::DialogChord::{Delete, Discard, Primary};
+        use model::DialogChord::{Delete, Primary};
         if !matches!(
             self.overlay,
             Some(
-                Overlay::Close { .. }
-                    | Overlay::CheckoutClose { .. }
-                    | Overlay::SwitchedClose { .. }
+                Overlay::Close(_)
+                    | Overlay::CheckoutClose(_)
+                    | Overlay::SwitchedClose(_)
                     | Overlay::LeadClose(_)
                     | Overlay::RestingMenu { .. }
                     | Overlay::RemoveProject(_)
@@ -78,22 +78,10 @@ impl Shika {
         match (&self.overlay, chord) {
             (Some(Overlay::Quit { .. }), Primary) => self.confirm_quit(window, cx),
             (Some(Overlay::Recover { .. }), Primary) => self.start_recovery(false, window, cx),
-            (Some(Overlay::CheckoutClose { index }), Primary) => {
-                let i = *index;
-                self.finish_close(i, 4, window, cx);
-            }
-            (Some(Overlay::Close { index, .. }), Discard) => {
-                let i = *index;
-                self.finish_close(i, 1, window, cx);
-            }
-            (Some(Overlay::Close { index, state }), Primary) if state.can_push() => {
-                let i = *index;
-                self.finish_close(i, 2, window, cx);
-            }
-            (Some(Overlay::SwitchedClose { index, .. }), Primary) => {
-                let i = *index;
-                self.finish_close(i, 3, window, cx);
-            }
+            (
+                Some(Overlay::CheckoutClose(_) | Overlay::Close(_) | Overlay::SwitchedClose(_)),
+                _,
+            ) => self.close_chord_key(chord, window, cx),
             (Some(Overlay::LeadClose(_)), Delete) => self.forget_lead_from_dialog(window, cx),
             (Some(Overlay::RestingMenu { .. }), Delete) => self.forget_from_menu(window, cx),
             (Some(Overlay::RemoveProject(id)), Delete) => {
@@ -590,21 +578,15 @@ impl Shika {
                 // Escape, and Enter to Stop the Lead, are the only plain keys
                 // here. The destructive and publishing choices are Command
                 // chords, handled by `dialog_chord_key`.
-                Some(
-                    Overlay::Close { .. }
-                    | Overlay::CheckoutClose { .. }
-                    | Overlay::RestingMenu { .. },
-                ) => {
+                Some(Overlay::Close(_) | Overlay::CheckoutClose(_) | Overlay::SwitchedClose(_)) => {
+                    self.close_key(key, window, cx)
+                }
+                Some(Overlay::RestingMenu { .. }) => {
                     if key == "escape" {
                         self.cancel_overlay(window, cx);
                     }
                 }
                 Some(Overlay::LeadClose(_)) => self.lead_close_key(key, window, cx),
-                Some(Overlay::SwitchedClose { .. }) => {
-                    if key == "escape" {
-                        self.cancel_overlay(window, cx);
-                    }
-                }
                 Some(Overlay::Quit { .. }) => {
                     if key == "escape" {
                         self.cancel_quit(window, cx);
