@@ -35,23 +35,42 @@ impl Shika {
         reveal_selection: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let header = self.project_header(project, home, chrome, reveal_selection, cx);
+        // Each card owns its leading gap. Collapsing a negative margin in a
+        // gapped flex column corrupts GPUI's intrinsic group height, squeezing
+        // surviving cards and moving other project headers out of place.
+        let column = div().flex_none().flex().flex_col().child(header);
+        self.card_rows(
+            column,
+            indices,
+            &Home::Project(project.id.clone()),
+            chrome,
+            cards_focused,
+            reveal_selection,
+            cx,
+        )
+    }
+
+    /// A project header: the name with its path as the tooltip, the base
+    /// branch, then Remove on hover and the `+` for New in this project.
+    fn project_header(
+        &self,
+        project: &Project,
+        home: Option<&std::path::Path>,
+        chrome: &Chrome,
+        reveal_selection: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let id = project.id.clone();
         let selected = *self.selection == Some(Selection::Project(id.clone()))
             || self.target_project() == Some(id.as_str());
         let plus_kept = self.selected_project() == Some(id.as_str());
         let group = SharedString::from(format!("project-group-{id}"));
-        let hover = chrome.hover;
-        let ink_1 = chrome.ink_1;
         let select_id = id.clone();
-        let remove_id = id.clone();
-        let new_id = id.clone();
-        let base_id = id.clone();
         let base_name = self.bases.get(&id).and_then(|b| b.name.clone());
-        let base_group = SharedString::from(format!("base-group-{id}"));
-        let base_chord = shortcuts::display("cmd-shift-b");
         let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
         let path = SharedString::from(model::tilde(&project.path, home));
-        let header = div()
+        div()
             .id(SharedString::from(format!("project-{id}")))
             .relative()
             .when(selected && reveal_selection, |d| {
@@ -94,101 +113,11 @@ impl Shika {
             )
             // The branch New starts from. A click or `b` changes it.
             .when_some(base_name, |d, name| {
-                d.child(
-                    div()
-                        .id(SharedString::from(format!("base-{id}")))
-                        .group(base_group.clone())
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.))
-                        .font_family(MONO)
-                        .text_size(px(12.))
-                        .text_color(chrome.ink_3)
-                        .hover(move |style| style.text_color(ink_1))
-                        .tooltip(move |_, cx| {
-                            cx.new(|_| KeyTip {
-                                bg: tip_bg,
-                                fg: tip_fg,
-                                text: format!("Base branch  {base_chord}").into(),
-                            })
-                            .into()
-                        })
-                        // The glyph tells the branch apart from the path before it.
-                        .child(
-                            gpui::svg()
-                                .data(BRANCH_ICON)
-                                .flex_none()
-                                .size(px(12.))
-                                .text_color(chrome.ink_3)
-                                .group_hover(base_group, move |style| style.text_color(ink_1)),
-                        )
-                        .child(name)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.open_base(base_id.clone(), window, cx);
-                        })),
-                )
+                d.child(base_branch_label(&id, name, chrome, cx))
             })
             .child(div().flex_1())
-            .child(
-                div()
-                    .id(SharedString::from(format!("forget-{id}")))
-                    .flex_none()
-                    .px(px(4.))
-                    .rounded(px(4.))
-                    .text_size(px(11.5))
-                    .text_color(chrome.ink_3)
-                    .opacity(0.)
-                    .group_hover(group.clone(), |style| style.opacity(1.))
-                    .hover(move |style| style.text_color(ink_1))
-                    .child("Remove")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        if !this.busy && this.overlay.is_none() {
-                            this.overlay = Some(Overlay::RemoveProject(remove_id.clone()));
-                            window.focus(&this.focus, cx);
-                            cx.notify();
-                        }
-                    })),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(format!("new-in-{id}")))
-                    .flex_none()
-                    .size(px(24.))
-                    // Hidden, the slot keeps its width so nothing moves.
-                    .when(!plus_kept, |d| {
-                        d.opacity(0.)
-                            .group_hover(group.clone(), |style| style.opacity(1.))
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(6.))
-                    .text_size(px(16.))
-                    .text_color(chrome.ink_3)
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(hover).text_color(ink_1))
-                    .child("+")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.picker_for(new_id.clone(), window, cx);
-                    })),
-            );
-        // Each card owns its leading gap. Collapsing a negative margin in a
-        // gapped flex column corrupts GPUI's intrinsic group height, squeezing
-        // surviving cards and moving other project headers out of place.
-        let column = div().flex_none().flex().flex_col().child(header);
-        self.card_rows(
-            column,
-            indices,
-            &Home::Project(id),
-            chrome,
-            cards_focused,
-            reveal_selection,
-            cx,
-        )
+            .child(remove_project_button(&id, &group, chrome, cx))
+            .child(new_in_project_button(&id, &group, plus_kept, chrome, cx))
     }
 
     /// The rows of one group: each card, with the exits of cards that left
@@ -339,4 +268,117 @@ impl Shika {
             .size_full(),
         )
     }
+}
+
+/// The project's base branch after its name, with the branch glyph. A click
+/// opens the Base branch dialog for this project.
+fn base_branch_label(
+    id: &str,
+    name: String,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    let ink_1 = chrome.ink_1;
+    let base_id = id.to_string();
+    let base_group = SharedString::from(format!("base-group-{id}"));
+    let base_chord = shortcuts::display("cmd-shift-b");
+    let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+    div()
+        .id(SharedString::from(format!("base-{id}")))
+        .group(base_group.clone())
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .font_family(MONO)
+        .text_size(px(12.))
+        .text_color(chrome.ink_3)
+        .hover(move |style| style.text_color(ink_1))
+        .tooltip(move |_, cx| {
+            cx.new(|_| KeyTip {
+                bg: tip_bg,
+                fg: tip_fg,
+                text: format!("Base branch  {base_chord}").into(),
+            })
+            .into()
+        })
+        // The glyph tells the branch apart from the path before it.
+        .child(
+            gpui::svg()
+                .data(BRANCH_ICON)
+                .flex_none()
+                .size(px(12.))
+                .text_color(chrome.ink_3)
+                .group_hover(base_group, move |style| style.text_color(ink_1)),
+        )
+        .child(name)
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            this.open_base(base_id.clone(), window, cx);
+        }))
+}
+
+/// Remove, shown while the header is hovered. It asks before removing.
+fn remove_project_button(
+    id: &str,
+    group: &SharedString,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    let ink_1 = chrome.ink_1;
+    let remove_id = id.to_string();
+    div()
+        .id(SharedString::from(format!("forget-{id}")))
+        .flex_none()
+        .px(px(4.))
+        .rounded(px(4.))
+        .text_size(px(11.5))
+        .text_color(chrome.ink_3)
+        .opacity(0.)
+        .group_hover(group.clone(), |style| style.opacity(1.))
+        .hover(move |style| style.text_color(ink_1))
+        .child("Remove")
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            if !this.busy && this.overlay.is_none() {
+                this.overlay = Some(Overlay::RemoveProject(remove_id.clone()));
+                window.focus(&this.focus, cx);
+                cx.notify();
+            }
+        }))
+}
+
+/// The header's `+`: New in this project. It shows on hover, and stays on
+/// the selected card's project.
+fn new_in_project_button(
+    id: &str,
+    group: &SharedString,
+    plus_kept: bool,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    let (hover, ink_1) = (chrome.hover, chrome.ink_1);
+    let new_id = id.to_string();
+    div()
+        .id(SharedString::from(format!("new-in-{id}")))
+        .flex_none()
+        .size(px(24.))
+        // Hidden, the slot keeps its width so nothing moves.
+        .when(!plus_kept, |d| {
+            d.opacity(0.)
+                .group_hover(group.clone(), |style| style.opacity(1.))
+        })
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .text_size(px(16.))
+        .text_color(chrome.ink_3)
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover).text_color(ink_1))
+        .child("+")
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            this.picker_for(new_id.clone(), window, cx);
+        }))
 }

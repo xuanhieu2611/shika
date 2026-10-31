@@ -79,6 +79,43 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let selected = self.selected_resting() == Some(project);
+        let task = resting_task_line(name, selected, chrome);
+        let meta = self.resting_meta_line(project, cli, selected, cards_focused, chrome);
+        let base = Self::resting_frame(project, cx);
+        let base = if selected {
+            base.bg(chrome.card_selected)
+        } else {
+            base.overflow_hidden()
+        };
+        base.flex_row()
+            .gap(px(10.))
+            .child(antler_tile(selected, chrome))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(task)
+                    .child(meta),
+            )
+            .when(selected && reveal_selection, |d| {
+                d.child(self.selection_reveal(cx))
+            })
+    }
+
+    /// A resting Lead's second line: the latest reply's first line, or the
+    /// CLI and "Lead"; then the resume hint on the selected row when the
+    /// cards have focus.
+    fn resting_meta_line(
+        &self,
+        project: &str,
+        cli: &str,
+        selected: bool,
+        cards_focused: bool,
+        chrome: &Chrome,
+    ) -> gpui::Div {
         let cli_id = self
             .projects
             .iter()
@@ -92,26 +129,7 @@ impl Shika {
         } else {
             (chrome.ink_4, chrome.ink_5)
         };
-        let task = div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .min_w_0()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(14.))
-                    .line_height(px(20.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(if selected { chrome.ink_1 } else { chrome.ink_2 })
-                    .child(name.to_string()),
-            )
-            // The signal's place stays empty, so the name truncates where a
-            // live Lead's does.
-            .child(div().flex_none().w(px(SIGNAL_SLOT)));
-        let meta = div()
+        div()
             .flex()
             .items_center()
             .gap(px(6.))
@@ -143,9 +161,14 @@ impl Shika {
             })
             .when(selected && cards_focused, |d| {
                 d.child(row_hint("↵", "resume", chrome))
-            });
+            })
+    }
+
+    /// The resting row's frame: a right-click or Control-click opens its
+    /// menu, and a click selects and resumes it.
+    fn resting_frame(project: &str, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let (click, menu) = (project.to_string(), project.to_string());
-        let base = div()
+        div()
             .id(SharedString::from(format!("resting-lead-{project}")))
             .relative()
             .flex()
@@ -172,27 +195,29 @@ impl Shika {
                 }
                 this.selection.set(Some(Selection::Resting(click.clone())));
                 this.resume_lead(click.clone(), window, cx);
-            }));
-        let base = if selected {
-            base.bg(chrome.card_selected)
-        } else {
-            base.overflow_hidden()
-        };
-        base.flex_row()
-            .gap(px(10.))
-            .child(antler_tile(selected, chrome))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(task)
-                    .child(meta),
-            )
-            .when(selected && reveal_selection, |d| {
-                d.child(self.selection_reveal(cx))
-            })
+            }))
     }
+}
+
+/// A resting Lead's first line: the project name.
+fn resting_task_line(name: &str, selected: bool, chrome: &Chrome) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .min_w_0()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(px(14.))
+                .line_height(px(20.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(if selected { chrome.ink_1 } else { chrome.ink_2 })
+                .child(name.to_string()),
+        )
+        // The signal's place stays empty, so the name truncates where a
+        // live Lead's does.
+        .child(div().flex_none().w(px(SIGNAL_SLOT)))
 }

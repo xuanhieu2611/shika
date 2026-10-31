@@ -114,6 +114,11 @@ impl Shika {
         model::typing_quiet(terminals.chain(chats), now, control::BELL_TYPING_QUIET)
     }
 
+    /// The root key router. Each phase takes the keystroke or passes it on,
+    /// in this fixed order: Cmd+Q, the dialogs that take every keystroke,
+    /// Ctrl+Q out of a terminal, Settings prefix typing, Publish and Base
+    /// branch, shortcut recording, dialog chords, then a plain key for the
+    /// open overlay or the cards.
     pub(super) fn key(
         &mut self,
         event: &KeyDownEvent,
@@ -121,60 +126,19 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         let stroke = &event.keystroke;
-        if stroke.modifiers.platform
-            && !stroke.modifiers.control
-            && !stroke.modifiers.alt
-            && !stroke.modifiers.shift
-            && stroke.key == "q"
-        {
-            self.request_quit(window, cx);
-            cx.stop_propagation();
+        if self.quit_chord_key(stroke, window, cx) {
             return;
         }
-        if matches!(self.overlay, Some(Overlay::LeadQuestion(_))) {
-            self.chat_question_key(event, window, cx);
+        if self.typing_dialog_key(event, window, cx) {
             return;
         }
-        if matches!(self.overlay, Some(Overlay::WorktreeSetup(_))) {
-            self.worktree_setup_key(event, window, cx);
-            return;
-        }
-        if matches!(self.overlay, Some(Overlay::Rename(_))) {
-            self.rename_key(event, window, cx);
-            return;
-        }
-        // Menu typing belongs to the app, never to the previously focused PTY.
-        if matches!(self.overlay, Some(Overlay::CardMenu(_))) {
-            self.card_menu_key(event, window, cx);
-            return;
-        }
-        if matches!(self.overlay, Some(Overlay::SwitchAgent(_))) {
-            self.switch_key(event, window, cx);
-            return;
-        }
-        // Ctrl+Q leaves a focused terminal. Escape is typed into the program.
-        if self.overlay.is_none()
-            && !self.focus.is_focused(window)
-            && stroke.key == "q"
-            && stroke.modifiers.control
-            && !stroke.modifiers.platform
-            && !stroke.modifiers.alt
-            && !stroke.modifiers.shift
-        {
-            window.focus(&self.focus, cx);
-            cx.stop_propagation();
-            cx.notify();
+        if self.leave_terminal_key(stroke, window, cx) {
             return;
         }
         if self.settings_prefix_key(stroke, window, cx) {
             return;
         }
-        if matches!(&self.overlay, Some(Overlay::Publish(_))) {
-            self.publish_key(event, window, cx);
-            return;
-        }
-        if matches!(&self.overlay, Some(Overlay::Base(_))) {
-            self.base_key(event, window, cx);
+        if self.text_field_dialog_key(event, window, cx) {
             return;
         }
         if self.recording_shortcut() {
@@ -204,52 +168,159 @@ impl Shika {
         }
         let key = stroke.key.as_str();
         if self.overlay.is_some() {
-            if self.dialog_ignores_key(key) {
-                cx.stop_propagation();
-                return;
-            }
-            if self.busy {
-                return;
-            }
-            if self.settings_nav_key(key, window, cx) {
-                return;
-            }
-            match &mut self.overlay {
-                Some(Overlay::Picker(_)) => self.picker_key(key, window, cx),
-                Some(Overlay::Adjust(_)) => self.adjust_key(key, window, cx),
-                Some(Overlay::Preparation(_)) => self.preparation_key(key, window, cx),
-                // Escape, and Enter to Stop the Lead, are the only plain keys
-                // here. The destructive and publishing choices are Command
-                // chords, handled by `dialog_chord_key`.
-                Some(Overlay::Close(_) | Overlay::CheckoutClose(_) | Overlay::SwitchedClose(_)) => {
-                    self.close_key(key, window, cx)
-                }
-                Some(Overlay::RestingMenu(_)) => {
-                    if key == "escape" {
-                        self.cancel_overlay(window, cx);
-                    }
-                }
-                Some(Overlay::LeadClose(_)) => self.lead_close_key(key, window, cx),
-                Some(Overlay::Quit(_)) => self.quit_key(key, window, cx),
-                Some(Overlay::Recover(_)) => self.recover_key(key),
-                Some(Overlay::RemoveLeftover(_)) => self.remove_leftover_key(key),
-                Some(Overlay::Leftovers) => self.leftovers_key(key, window, cx),
-                Some(Overlay::RemoveProject(_)) => self.remove_project_key(key, window, cx),
-                Some(Overlay::Settings(_)) => self.settings_row_key(key, window, cx),
-                // Typed into above, before the modifier check.
-                Some(Overlay::LeadQuestion(_))
-                | Some(Overlay::WorktreeSetup(_))
-                | Some(Overlay::Base(_))
-                | Some(Overlay::Publish(_))
-                | Some(Overlay::CardMenu(_))
-                | Some(Overlay::Rename(_))
-                | Some(Overlay::SwitchAgent(_))
-                | None => {}
-            }
-            cx.stop_propagation();
-            cx.notify();
+            self.overlay_plain_key(key, window, cx);
             return;
         }
+        self.cards_key(key, window, cx);
+    }
+
+    /// Exact Cmd+Q asks to quit, whatever is open or focused.
+    fn quit_chord_key(
+        &mut self,
+        stroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if stroke.modifiers.platform
+            && !stroke.modifiers.control
+            && !stroke.modifiers.alt
+            && !stroke.modifiers.shift
+            && stroke.key == "q"
+        {
+            self.request_quit(window, cx);
+            cx.stop_propagation();
+            return true;
+        }
+        false
+    }
+
+    /// The overlays that take every keystroke, modifiers included, before
+    /// any other handling: a Lead question, worktree setup, Rename, the card
+    /// menu, and Switch agent.
+    fn typing_dialog_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if matches!(self.overlay, Some(Overlay::LeadQuestion(_))) {
+            self.chat_question_key(event, window, cx);
+            return true;
+        }
+        if matches!(self.overlay, Some(Overlay::WorktreeSetup(_))) {
+            self.worktree_setup_key(event, window, cx);
+            return true;
+        }
+        if matches!(self.overlay, Some(Overlay::Rename(_))) {
+            self.rename_key(event, window, cx);
+            return true;
+        }
+        // Menu typing belongs to the app, never to the previously focused PTY.
+        if matches!(self.overlay, Some(Overlay::CardMenu(_))) {
+            self.card_menu_key(event, window, cx);
+            return true;
+        }
+        if matches!(self.overlay, Some(Overlay::SwitchAgent(_))) {
+            self.switch_key(event, window, cx);
+            return true;
+        }
+        false
+    }
+
+    /// Ctrl+Q leaves a focused terminal. Escape is typed into the program.
+    fn leave_terminal_key(
+        &mut self,
+        stroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.overlay.is_none()
+            && !self.focus.is_focused(window)
+            && stroke.key == "q"
+            && stroke.modifiers.control
+            && !stroke.modifiers.platform
+            && !stroke.modifiers.alt
+            && !stroke.modifiers.shift
+        {
+            window.focus(&self.focus, cx);
+            cx.stop_propagation();
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
+    /// Publish and Base branch take every keystroke after Settings prefix
+    /// typing has had its turn.
+    fn text_field_dialog_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if matches!(&self.overlay, Some(Overlay::Publish(_))) {
+            self.publish_key(event, window, cx);
+            return true;
+        }
+        if matches!(&self.overlay, Some(Overlay::Base(_))) {
+            self.base_key(event, window, cx);
+            return true;
+        }
+        false
+    }
+
+    /// A plain key while an overlay is open: dropped in the input grace
+    /// window or while busy, then Settings navigation, then the open
+    /// dialog's handler. The cards and terminals never see it.
+    fn overlay_plain_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dialog_ignores_key(key) {
+            cx.stop_propagation();
+            return;
+        }
+        if self.busy {
+            return;
+        }
+        if self.settings_nav_key(key, window, cx) {
+            return;
+        }
+        match &mut self.overlay {
+            Some(Overlay::Picker(_)) => self.picker_key(key, window, cx),
+            Some(Overlay::Adjust(_)) => self.adjust_key(key, window, cx),
+            Some(Overlay::Preparation(_)) => self.preparation_key(key, window, cx),
+            // Escape, and Enter to Stop the Lead, are the only plain keys
+            // here. The destructive and publishing choices are Command
+            // chords, handled by `dialog_chord_key`.
+            Some(Overlay::Close(_) | Overlay::CheckoutClose(_) | Overlay::SwitchedClose(_)) => {
+                self.close_key(key, window, cx)
+            }
+            Some(Overlay::RestingMenu(_)) => {
+                if key == "escape" {
+                    self.cancel_overlay(window, cx);
+                }
+            }
+            Some(Overlay::LeadClose(_)) => self.lead_close_key(key, window, cx),
+            Some(Overlay::Quit(_)) => self.quit_key(key, window, cx),
+            Some(Overlay::Recover(_)) => self.recover_key(key),
+            Some(Overlay::RemoveLeftover(_)) => self.remove_leftover_key(key),
+            Some(Overlay::Leftovers) => self.leftovers_key(key, window, cx),
+            Some(Overlay::RemoveProject(_)) => self.remove_project_key(key, window, cx),
+            Some(Overlay::Settings(_)) => self.settings_row_key(key, window, cx),
+            // Typed into above, before the modifier check.
+            Some(Overlay::LeadQuestion(_))
+            | Some(Overlay::WorktreeSetup(_))
+            | Some(Overlay::Base(_))
+            | Some(Overlay::Publish(_))
+            | Some(Overlay::CardMenu(_))
+            | Some(Overlay::Rename(_))
+            | Some(Overlay::SwitchAgent(_))
+            | None => {}
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// The few keys the focused cards take: `j`, `k`, the arrows, and Enter.
+    fn cards_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         if !self.focus.is_focused(window) {
             return;
         }
