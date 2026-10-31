@@ -107,37 +107,84 @@ pub(super) fn receipt(
     day: Date,
 ) -> rusqlite::Result<()> {
     if file.cli == "codex" && record.kind == "event_msg" {
-        if let Some(payload) = record.payload
-            && payload.kind == "token_count"
-            && payload
-                .info
-                .is_some_and(|info| info.total_token_usage.total_tokens > 0)
-        {
-            // Older rollouts expose context counters, not deduplicable API
-            // receipts. Report that gap instead of quietly displaying zero or
-            // counting inherited/compaction context as fresh consumption.
-            let seen: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM receipts WHERE cli='codex' AND session=?1)",
-                [&file.session],
-                |r| r.get(0),
-            )?;
-            if !seen {
-                tx.execute(
-                    "INSERT OR IGNORE INTO issues VALUES (?1)",
-                    [format!("legacy:{}", file.session)],
-                )?;
-            }
-        }
-        return Ok(());
+        return note_legacy_context(tx, file, record.payload);
     }
-    let (id, session, counts) = match (file.cli, record.kind.as_str()) {
+    let Some((id, session, counts)) =
+        receipt_counts(file, &record.kind, record.message, record.payload)?
+    else {
+        return Ok(());
+    };
+    if file.cli == "codex" {
+        tx.execute(
+            "DELETE FROM issues WHERE source=?1",
+            [format!("legacy:{session}")],
+        )?;
+    }
+    if id.is_empty() || id.len() > 256 || counts.iter().any(|n| *n < 0) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let Some((owner, increase)) = store_receipt(tx, file, &id, session, counts)? else {
+        return Ok(());
+    };
+    let delta = add_session_increase(tx, file, &owner, increase)?;
+    if delta > 0 {
+        let day = record
+            .timestamp
+            .as_deref()
+            .and_then(recorded_date)
+            .unwrap_or(day);
+        add_day_tokens(tx, file, day, delta)?;
+    }
+    Ok(())
+}
+
+/// A Codex `token_count` event from an older rollout: context counters, not a
+/// receipt. Records the gap for a session that has no receipts yet.
+fn note_legacy_context(
+    tx: &Transaction<'_>,
+    file: &InputFile,
+    payload: Option<Payload>,
+) -> rusqlite::Result<()> {
+    if let Some(payload) = payload
+        && payload.kind == "token_count"
+        && payload
+            .info
+            .is_some_and(|info| info.total_token_usage.total_tokens > 0)
+    {
+        // Older rollouts expose context counters, not deduplicable API
+        // receipts. Report that gap instead of quietly displaying zero or
+        // counting inherited/compaction context as fresh consumption.
+        let seen: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM receipts WHERE cli='codex' AND session=?1)",
+            [&file.session],
+            |r| r.get(0),
+        )?;
+        if !seen {
+            tx.execute(
+                "INSERT OR IGNORE INTO issues VALUES (?1)",
+                [format!("legacy:{}", file.session)],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The receipt id, owning session, and four counters a record carries, or
+/// None for a record that is not a receipt of this file's CLI.
+fn receipt_counts(
+    file: &InputFile,
+    kind: &str,
+    message: Option<Message>,
+    payload: Option<Payload>,
+) -> rusqlite::Result<Option<(String, String, [i64; 4])>> {
+    Ok(Some(match (file.cli, kind) {
         ("claude", "assistant") => {
             let Some(Message {
                 id,
                 usage: Some(usage),
-            }) = record.message
+            }) = message
             else {
-                return Ok(());
+                return Ok(None);
             };
             let Some(id) = id else {
                 return Err(rusqlite::Error::InvalidQuery);
@@ -159,27 +206,30 @@ pub(super) fn receipt(
                 thread_id: Some(session),
                 usage: Some(usage),
                 ..
-            }) = record.payload
+            }) = payload
             else {
                 return Err(rusqlite::Error::InvalidQuery);
             };
             // Forked rollouts can contain their parent's old receipts.
             if session != file.session {
-                return Ok(());
+                return Ok(None);
             }
             (id, session, [usage.total_tokens, 0, 0, 0])
         }
-        _ => return Ok(()),
-    };
-    if file.cli == "codex" {
-        tx.execute(
-            "DELETE FROM issues WHERE source=?1",
-            [format!("legacy:{session}")],
-        )?;
-    }
-    if id.is_empty() || id.len() > 256 || counts.iter().any(|n| *n < 0) {
-        return Err(rusqlite::Error::InvalidQuery);
-    }
+        _ => return Ok(None),
+    }))
+}
+
+/// Keep the larger of the saved and new counters for a receipt id. Returns
+/// the session that owns the receipt and how much it grew, or None when it
+/// did not grow.
+fn store_receipt(
+    tx: &Transaction<'_>,
+    file: &InputFile,
+    id: &str,
+    session: String,
+    counts: [i64; 4],
+) -> rusqlite::Result<Option<(String, i64)>> {
     let previous = tx
         .query_row(
             "SELECT session,a,b,c,d FROM receipts WHERE cli=?1 AND id=?2",
@@ -203,13 +253,24 @@ pub(super) fn receipt(
         .try_fold(0i64, |sum, (new, old)| sum.checked_add(new - old))
         .ok_or(rusqlite::Error::InvalidQuery)?;
     if increase == 0 {
-        return Ok(());
+        return Ok(None);
     }
     tx.execute("INSERT INTO receipts VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(cli,id) DO UPDATE SET a=excluded.a,b=excluded.b,c=excluded.c,d=excluded.d", params![file.cli,id,owner,next[0],next[1],next[2],next[3]])?;
     tx.execute(
         "INSERT OR IGNORE INTO sessions(cli,id) VALUES (?1,?2)",
         params![file.cli, owner],
     )?;
+    Ok(Some((owner, increase)))
+}
+
+/// Add a receipt's growth to its session's observed total. Returns how much
+/// of it is past the session's legacy baseline: the part that counts.
+fn add_session_increase(
+    tx: &Transaction<'_>,
+    file: &InputFile,
+    owner: &str,
+    increase: i64,
+) -> rusqlite::Result<i64> {
     let (observed, baseline): (i64, i64) = tx.query_row(
         "SELECT observed,baseline FROM sessions WHERE cli=?1 AND id=?2",
         params![file.cli, owner],
@@ -229,28 +290,31 @@ pub(super) fn receipt(
         "UPDATE sessions SET observed=?3 WHERE cli=?1 AND id=?2",
         params![file.cli, owner, next],
     )?;
-    if delta > 0 {
-        let day = record
-            .timestamp
-            .as_deref()
-            .and_then(recorded_date)
-            .unwrap_or(day);
-        let day = day.iso();
-        let old: i64 = tx
-            .query_row(
-                "SELECT tokens FROM days WHERE day=?1 AND cli=?2",
-                params![day, file.cli],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        if old < 0 {
-            return Err(rusqlite::Error::IntegralValueOutOfRange(0, old));
-        }
-        let total = old
-            .checked_add(delta)
-            .ok_or(rusqlite::Error::IntegralValueOutOfRange(0, old))?;
-        tx.execute("INSERT INTO days VALUES (?1,?2,?3) ON CONFLICT(day,cli) DO UPDATE SET tokens=excluded.tokens", params![day,file.cli,total])?;
+    Ok(delta)
+}
+
+/// Add `delta` tokens to this CLI's total for `day`.
+fn add_day_tokens(
+    tx: &Transaction<'_>,
+    file: &InputFile,
+    day: Date,
+    delta: i64,
+) -> rusqlite::Result<()> {
+    let day = day.iso();
+    let old: i64 = tx
+        .query_row(
+            "SELECT tokens FROM days WHERE day=?1 AND cli=?2",
+            params![day, file.cli],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    if old < 0 {
+        return Err(rusqlite::Error::IntegralValueOutOfRange(0, old));
     }
+    let total = old
+        .checked_add(delta)
+        .ok_or(rusqlite::Error::IntegralValueOutOfRange(0, old))?;
+    tx.execute("INSERT INTO days VALUES (?1,?2,?3) ON CONFLICT(day,cli) DO UPDATE SET tokens=excluded.tokens", params![day,file.cli,total])?;
     Ok(())
 }

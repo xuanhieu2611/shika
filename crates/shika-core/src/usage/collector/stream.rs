@@ -1,13 +1,16 @@
 //! Streaming readers for provider logs: paced file reads, JSONL record
 //! framing, and the small cache of live compressed-rollout decoders.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+
+use super::collect::modified;
 
 /// A large single JSON value is streamed without allocating its content.
 /// Yield between 64KB reads so even a giant tool result cannot monopolize CPU
@@ -95,4 +98,106 @@ impl Read for JsonLine<'_> {
         self.bytes += length as u64;
         Ok(length)
     }
+}
+
+/// Open a provider log for reading, refusing a symlink or anything but a
+/// regular file.
+pub(super) fn open_log(path: &Path) -> std::io::Result<(File, fs::Metadata)> {
+    // Nonblocking prevents raced FIFOs from hanging before type checks.
+    let handle = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = handle.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    Ok((handle, metadata))
+}
+
+/// A paced reader at `offset` of a log's records: a seek for a plain log, a
+/// decode from the start that skips `offset` bytes for a compressed rollout.
+pub(super) fn open_reader(
+    handle: &mut File,
+    metadata: &fs::Metadata,
+    offset: u64,
+    compressed: bool,
+    stopped: &Arc<AtomicBool>,
+) -> rusqlite::Result<MetadataReader> {
+    handle
+        .seek(SeekFrom::Start(if compressed { 0 } else { offset }))
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let raw = PacedFile {
+        file: handle
+            .try_clone()
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        bytes: 0,
+        remaining: metadata
+            .len()
+            .saturating_sub(if compressed { 0 } else { offset }),
+        end: metadata.len(),
+        stopped: stopped.clone(),
+    };
+    let input: Box<dyn Read> = if compressed {
+        let mut decoder =
+            zstd::stream::read::Decoder::new(raw).map_err(|_| rusqlite::Error::InvalidQuery)?;
+        // Refuse pathological dictionary windows instead of an
+        // unbounded allocation from untrusted compressed metadata.
+        decoder
+            .window_log_max(23)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        Box::new(PacedFile {
+            file: decoder,
+            bytes: 0,
+            remaining: u64::MAX,
+            end: u64::MAX,
+            stopped: stopped.clone(),
+        })
+    } else {
+        Box::new(raw)
+    };
+    let mut reader = BufReader::new(input);
+    if compressed && offset > 0 {
+        let skipped = std::io::copy(&mut reader.by_ref().take(offset), &mut std::io::sink())
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        if skipped != offset {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+    }
+    Ok(reader)
+}
+
+/// Take the cached decoder for `path` out of the pool. It is returned only
+/// when it stopped exactly at `offset` of this same file; a stale one is
+/// dropped.
+pub(super) fn take_decoder(
+    path: &Path,
+    metadata: &fs::Metadata,
+    offset: u64,
+) -> Option<MetadataReader> {
+    DECODERS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let found = cache.iter().position(|c| c.path == path);
+        found.and_then(|i| {
+            let c = cache.remove(i);
+            (c.device == metadata.dev()
+                && c.inode == metadata.ino()
+                && c.stamp == modified(metadata)
+                && c.offset == offset)
+                .then_some(c.reader)
+        })
+    })
+}
+
+/// Drop cached decoders whose rollout was removed or replaced.
+pub(super) fn evict_stale_decoders() {
+    // Other sources may have lost/replaced a rollout before their next
+    // wakeup. Stale readers must not keep the bounded pool full.
+    DECODERS.with(|cache| {
+        cache.borrow_mut().retain(|c| {
+            fs::symlink_metadata(&c.path).is_ok_and(|m| {
+                m.is_file() && m.dev() == c.device && m.ino() == c.inode && modified(&m) == c.stamp
+            })
+        })
+    });
 }
