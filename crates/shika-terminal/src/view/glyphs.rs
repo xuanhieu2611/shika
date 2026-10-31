@@ -1,13 +1,28 @@
 //! Painting a row's text: shaped glyphs placed one per cell, and
 //! box-drawing characters drawn as shapes so they join across cells.
 
-use gpui::{Bounds, Hsla, PathBuilder, Pixels, TextRun, Window, fill, point, px};
+use gpui::{Bounds, Hsla, LineLayout, PathBuilder, Pixels, TextRun, Window, fill, point, px};
 
 use super::element::Frame;
 use super::metrics::Metrics;
 use super::paint::{hsla, snap};
 use crate::boxdraw::{self, BoxGlyph, Corner};
 use crate::types::CellFlags;
+
+/// Where a cell's characters start in the row's shaped text, and their color.
+struct Placed {
+    byte: usize,
+    col: usize,
+    color: Hsla,
+}
+
+/// One row's text to shape: the characters of every non-blank cell that is
+/// not a box-drawing glyph, where each cell starts, and one run per font.
+struct RowText {
+    text: String,
+    placed: Vec<Placed>,
+    runs: Vec<TextRun>,
+}
 
 /// One glyph run per row. Blank cells are left out of the shaped text, and
 /// every glyph is placed on its own cell, so fallback fonts (CJK, emoji)
@@ -20,18 +35,38 @@ pub(super) fn paint_text(
     scale: f32,
     window: &mut Window,
 ) {
-    struct Placed {
-        byte: usize,
-        col: usize,
-        color: Hsla,
+    let metrics = &frame.metrics;
+    let layout = &frame.layout;
+    let row_top = layout.origin.y + layout.line_height * row as f32;
+
+    let RowText { text, placed, runs } =
+        collect_row_text(row, line, cursor_col, frame, scale, window);
+    if text.is_empty() {
+        return;
     }
 
+    let shaped = window
+        .text_system()
+        .layout_line(&text, metrics.font_size, &runs, None);
+    let baseline_y = row_top + metrics.baseline;
+    place_glyphs(&shaped, &placed, baseline_y, frame, window);
+}
+
+/// Gather the row's text and font runs, painting box-drawing cells as
+/// shapes on the way.
+fn collect_row_text(
+    row: usize,
+    line: &crate::types::Line,
+    cursor_col: Option<usize>,
+    frame: &Frame,
+    scale: f32,
+    window: &mut Window,
+) -> RowText {
     let metrics = &frame.metrics;
     let layout = &frame.layout;
     let mut text = String::new();
     let mut placed: Vec<Placed> = Vec::new();
     let mut runs: Vec<TextRun> = Vec::new();
-    let row_top = layout.origin.y + layout.line_height * row as f32;
 
     for (col, cell) in line.cells.iter().enumerate() {
         if cell.is_blank() {
@@ -81,14 +116,19 @@ pub(super) fn paint_text(
             }),
         }
     }
-    if text.is_empty() {
-        return;
-    }
+    RowText { text, placed, runs }
+}
 
-    let shaped = window
-        .text_system()
-        .layout_line(&text, metrics.font_size, &runs, None);
-    let baseline_y = row_top + metrics.baseline;
+/// Paint each shaped glyph on the cell it came from.
+fn place_glyphs(
+    shaped: &LineLayout,
+    placed: &[Placed],
+    baseline_y: Pixels,
+    frame: &Frame,
+    window: &mut Window,
+) {
+    let metrics = &frame.metrics;
+    let layout = &frame.layout;
     let mut current: Option<(usize, Pixels)> = None;
     for run in &shaped.runs {
         for glyph in &run.glyphs {
