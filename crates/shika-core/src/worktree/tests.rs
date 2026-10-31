@@ -1,7 +1,11 @@
 use super::*;
-use crate::diff::Collapse;
+use crate::diff::{self, Collapse, FileDiff, FileKey, FileStatus, SessionDiff};
+use crate::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 struct Scratch {
     path: PathBuf,
