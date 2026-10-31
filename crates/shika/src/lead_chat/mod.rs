@@ -2,7 +2,6 @@
 use crate::{
     Chrome, Selection, Shika, Status, appearance,
     chat_input::{ChatInput, InputEvent},
-    lead_chat_markdown::{self as markdown, Block},
 };
 use gpui::{
     App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
@@ -14,6 +13,12 @@ use shika_core::{ChatContent, ChatEvent, ChatOrigin, ChatRecord, ChatStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
+pub(crate) mod markdown;
+mod question;
+
+use markdown::Block;
+pub(crate) use question::*;
 
 /// The Lead mark: a pair of antlers over a small head, line art drawn for
 /// Shika from the antlers in `design/assets/shika-logo.png`. A single-color
@@ -1668,7 +1673,7 @@ impl Shika {
                 }
                 if let ChatEvent::Record(record) = &event
                     && let ChatContent::Lead { text } = &record.content
-                    && let Some(line) = crate::lead_chat_markdown::reply_first_line(text)
+                    && let Some(line) = markdown::reply_first_line(text)
                 {
                     self.leads.snippets.insert(project.clone(), line);
                 }

@@ -18,8 +18,6 @@ mod keys;
 mod launch;
 mod lead;
 mod lead_chat;
-mod lead_chat_markdown;
-mod lead_chat_question;
 mod lead_steps;
 mod lifecycle;
 mod model;
@@ -68,6 +66,7 @@ use gpui::{
     PathPromptOptions, Pixels, Render, Rgba, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, WindowBounds, WindowOptions, div, prelude::FluentBuilder, px, size,
 };
+use lead_chat::markdown as lead_chat_markdown;
 use model::{PromptCapture, Status, TitleWatch};
 use notifications::Notifications;
 use shika_core::{
@@ -497,7 +496,7 @@ enum Selection {
     Resting(String),
 }
 enum Overlay {
-    LeadQuestion(lead_chat_question::QuestionDialog),
+    LeadQuestion(lead_chat::QuestionDialog),
     WorktreeSetup(Box<worktree_setup::Editor>),
     /// Frame the background image, opened from Settings, which it returns to.
     Adjust(Box<background_view::Adjust>),

@@ -29,7 +29,7 @@ impl QuestionDialog {
     }
 }
 impl Shika {
-    pub(super) fn open_chat_question(
+    pub(crate) fn open_chat_question(
         &mut self,
         session: String,
         project: String,
@@ -52,7 +52,7 @@ impl Shika {
         self.show_chat_question(session, question, window, cx);
     }
     /// Opens the dialog for a question the queue has already cleared.
-    pub(super) fn show_chat_question(
+    pub(crate) fn show_chat_question(
         &mut self,
         session: String,
         question: ChatQuestion,
@@ -74,7 +74,7 @@ impl Shika {
         window.focus(&self.focus, cx);
         cx.notify();
     }
-    pub(super) fn answer_chat_question(
+    pub(crate) fn answer_chat_question(
         &mut self,
         cancel: bool,
         window: &mut Window,
@@ -140,7 +140,7 @@ impl Shika {
         }
         cx.notify();
     }
-    pub(super) fn chat_question_key(
+    pub(crate) fn chat_question_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
@@ -197,7 +197,7 @@ impl Shika {
         cx.stop_propagation();
         cx.notify();
     }
-    pub(super) fn chat_question_view(
+    pub(crate) fn chat_question_view(
         &self,
         dialog: &QuestionDialog,
         chrome: &Chrome,
