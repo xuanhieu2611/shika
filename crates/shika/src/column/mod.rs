@@ -6,8 +6,6 @@ mod leads;
 mod projects;
 
 pub(crate) use card::*;
-pub(crate) use leads::*;
-pub(crate) use projects::*;
 
 /// The drag on the agent column's edge. It draws nothing: the column itself
 /// follows the pointer.

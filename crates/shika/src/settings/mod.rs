@@ -5,9 +5,6 @@ use super::*;
 mod keyboard;
 mod view;
 
-pub(crate) use keyboard::*;
-pub(crate) use view::*;
-
 /// Settings sections, top to bottom in the list on the left.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsSection {

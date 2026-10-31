@@ -51,21 +51,13 @@ use base_branch::*;
 use card_menu::*;
 use close::*;
 use column::*;
-use focus::*;
-use keys::*;
 use launch::*;
 use lead::*;
-use overlay::*;
-use projects::*;
 use publish::*;
-use rename::*;
 use selection::*;
 use settings::*;
-use switch_agent::*;
 use tabs::*;
 use terminal_side::*;
-use theme::*;
-use tick::*;
 use ui::*;
 use update_notice::*;
 
@@ -920,8 +912,7 @@ impl Shika {
         self.toast = Some((text, Instant::now()));
     }
 }
-impl Shika {
-}
+impl Shika {}
 impl Focusable for Shika {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
@@ -1405,6 +1396,7 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod host_tests {
     use super::*;
+    use crate::switch_agent::{apply_switch_turn, switch_prompt};
 
     #[test]
     fn terminal_is_a_task_choice_even_without_agents_but_never_a_lead_or_checkout() {
