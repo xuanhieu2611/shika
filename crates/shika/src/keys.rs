@@ -19,7 +19,7 @@ impl Shika {
                 "lead-close",
                 hash(project) ^ matches!(step, model::LeadClose::Forget { .. }) as u64,
             ),
-            Overlay::RestingMenu { project, .. } => ("resting-menu", hash(project)),
+            Overlay::RestingMenu(RestingMenu { project, .. }) => ("resting-menu", hash(project)),
             Overlay::RemoveProject(id) => ("remove-project", hash(id)),
             Overlay::RemoveLeftover(i) => ("remove-leftover", *i as u64),
             Overlay::Recover(_) => ("recover", 0),
@@ -63,7 +63,7 @@ impl Shika {
                     | Overlay::CheckoutClose(_)
                     | Overlay::SwitchedClose(_)
                     | Overlay::LeadClose(_)
-                    | Overlay::RestingMenu { .. }
+                    | Overlay::RestingMenu(_)
                     | Overlay::RemoveProject(_)
                     | Overlay::RemoveLeftover(_)
                     | Overlay::Recover(_)
@@ -83,7 +83,7 @@ impl Shika {
                 _,
             ) => self.close_chord_key(chord, window, cx),
             (Some(Overlay::LeadClose(_)), Delete) => self.forget_lead_from_dialog(window, cx),
-            (Some(Overlay::RestingMenu { .. }), Delete) => self.forget_from_menu(window, cx),
+            (Some(Overlay::RestingMenu(_)), Delete) => self.forget_from_menu(window, cx),
             (Some(Overlay::RemoveProject(id)), Delete) => {
                 let id = id.clone();
                 self.remove_project(id, cx);
@@ -139,121 +139,17 @@ impl Shika {
             self.worktree_setup_key(event, window, cx);
             return;
         }
-        if let Some(Overlay::Rename { input, .. }) = &self.overlay {
-            // The native text input owns typing, selection, clipboard, and IME.
-            if !input.read(cx).composing()
-                && !stroke.modifiers.platform
-                && !stroke.modifiers.control
-                && !stroke.modifiers.alt
-            {
-                match stroke.key.as_str() {
-                    "enter" => self.apply_task_name(window, cx),
-                    "escape" => self.cancel_overlay(window, cx),
-                    _ => return,
-                }
-                cx.stop_propagation();
-            }
+        if matches!(self.overlay, Some(Overlay::Rename(_))) {
+            self.rename_key(event, window, cx);
             return;
         }
         // Menu typing belongs to the app, never to the previously focused PTY.
         if matches!(self.overlay, Some(Overlay::CardMenu(_))) {
-            if !stroke.modifiers.platform && !stroke.modifiers.control && !stroke.modifiers.alt {
-                match stroke.key.as_str() {
-                    "enter" => self.activate_card_menu(window, cx),
-                    "j" | "k" | "down" | "up" | "tab" => {
-                        let can_rename = if let Some(Overlay::CardMenu(menu)) = &self.overlay {
-                            menu.target_index(
-                                self.cards.iter().map(|card| card.agent.view.entity_id()),
-                            )
-                            .is_some_and(|index| self.cards[index].renamable())
-                        } else {
-                            false
-                        };
-                        if can_rename && let Some(Overlay::CardMenu(menu)) = &mut self.overlay {
-                            menu.action = if menu.action == CardMenuAction::Rename {
-                                CardMenuAction::Close
-                            } else {
-                                CardMenuAction::Rename
-                            };
-                            cx.notify();
-                        }
-                    }
-                    "escape" => self.cancel_overlay(window, cx),
-                    _ => {}
-                }
-                cx.stop_propagation();
-            }
+            self.card_menu_key(event, window, cx);
             return;
         }
-        if matches!(self.overlay, Some(Overlay::SwitchAgent { .. })) {
-            if self.busy {
-                cx.stop_propagation();
-                return;
-            }
-            let (editing, composing) =
-                if let Some(Overlay::SwitchAgent { prompt, .. }) = &self.overlay {
-                    (
-                        prompt.focus_handle(cx).is_focused(window),
-                        prompt.read(cx).composing(),
-                    )
-                } else {
-                    (false, false)
-                };
-            if composing {
-                return;
-            }
-            let plain = !stroke.modifiers.platform
-                && !stroke.modifiers.control
-                && !stroke.modifiers.alt
-                && !stroke.modifiers.shift;
-            if editing {
-                if plain {
-                    let handled = match stroke.key.as_str() {
-                        "enter" => {
-                            self.confirm_switch(window, cx);
-                            true
-                        }
-                        "escape" => {
-                            self.cancel_overlay(window, cx);
-                            true
-                        }
-                        "tab" => {
-                            window.focus(&self.focus, cx);
-                            true
-                        }
-                        "up" => {
-                            self.move_switch(-1);
-                            true
-                        }
-                        "down" => {
-                            self.move_switch(1);
-                            true
-                        }
-                        _ => false,
-                    };
-                    if handled {
-                        cx.stop_propagation();
-                        cx.notify();
-                    }
-                }
-                return;
-            }
-            if plain {
-                match stroke.key.as_str() {
-                    "j" | "down" => self.move_switch(1),
-                    "k" | "up" => self.move_switch(-1),
-                    "enter" => self.confirm_switch(window, cx),
-                    "escape" => self.cancel_overlay(window, cx),
-                    "tab" => {
-                        if let Some(Overlay::SwitchAgent { prompt, .. }) = &self.overlay {
-                            window.focus(&prompt.focus_handle(cx), cx);
-                        }
-                    }
-                    _ => {}
-                }
-                cx.stop_propagation();
-                cx.notify();
-            }
+        if matches!(self.overlay, Some(Overlay::SwitchAgent(_))) {
+            self.switch_key(event, window, cx);
             return;
         }
         // Ctrl+Q leaves a focused terminal. Escape is typed into the program.
@@ -273,147 +169,12 @@ impl Shika {
         if self.settings_prefix_key(stroke, window, cx) {
             return;
         }
-        if matches!(&self.overlay, Some(Overlay::Publish { .. })) {
-            if self.busy {
-                cx.stop_propagation();
-                cx.notify();
-                return;
-            }
-            let (describing, composing) = match &self.overlay {
-                Some(Overlay::Publish { row, body, .. }) => (*row == 1, body.read(cx).composing()),
-                _ => (false, false),
-            };
-            // Composition belongs to the description field.
-            if describing && composing {
-                return;
-            }
-            let chord =
-                stroke.modifiers.platform || stroke.modifiers.control || stroke.modifiers.alt;
-            match stroke.key.as_str() {
-                "escape" => self.cancel_overlay(window, cx),
-                "tab" if !chord => {
-                    let body = if let Some(Overlay::Publish { row, body, .. }) = &mut self.overlay {
-                        *row = if stroke.modifiers.shift {
-                            (*row + 2) % 3
-                        } else {
-                            (*row + 1) % 3
-                        };
-                        (*row == 1).then(|| body.clone())
-                    } else {
-                        None
-                    };
-                    if let Some(body) = body {
-                        window.focus(&body.focus_handle(cx), cx);
-                    } else {
-                        window.focus(&self.focus, cx);
-                    }
-                }
-                "enter" if describing => {
-                    let confirm = stroke.modifiers.platform
-                        && !stroke.modifiers.control
-                        && !stroke.modifiers.alt
-                        && !stroke.modifiers.shift;
-                    if confirm {
-                        self.publish_pr(window, cx);
-                    } else if chord {
-                        cx.stop_propagation();
-                        cx.notify();
-                        return;
-                    } else {
-                        return;
-                    }
-                }
-                "enter" => self.publish_pr(window, cx),
-                _ if describing => return,
-                _ => {
-                    if let Some(Overlay::Publish {
-                        row,
-                        title,
-                        target,
-                        error,
-                        ..
-                    }) = &mut self.overlay
-                    {
-                        let value = if *row == 0 { title } else { target };
-                        if stroke.key == "backspace" {
-                            value.pop();
-                        } else if !stroke.modifiers.platform
-                            && !stroke.modifiers.control
-                            && !stroke.modifiers.alt
-                            && let Some(typed) = &stroke.key_char
-                        {
-                            for ch in typed.chars().filter(|c| !c.is_control()) {
-                                if value.len() < 256 {
-                                    value.push(ch);
-                                }
-                            }
-                        }
-                        *error = None;
-                    }
-                }
-            }
-            cx.stop_propagation();
-            cx.notify();
+        if matches!(&self.overlay, Some(Overlay::Publish(_))) {
+            self.publish_key(event, window, cx);
             return;
         }
-        if matches!(&self.overlay, Some(Overlay::Base { .. })) {
-            if !self.busy {
-                let plain = !stroke.modifiers.platform
-                    && !stroke.modifiers.control
-                    && !stroke.modifiers.alt
-                    && !stroke.modifiers.shift;
-                match stroke.key.as_str() {
-                    "enter" => {
-                        let branch = self.chosen_base_name();
-                        self.apply_base(branch, window, cx);
-                    }
-                    "escape" => self.cancel_overlay(window, cx),
-                    "up" if plain => self.move_base_highlight(-1),
-                    "down" if plain => self.move_base_highlight(1),
-                    "backspace" => {
-                        let changed =
-                            if let Some(Overlay::Base { text, error, .. }) = &mut self.overlay {
-                                let changed = text.pop().is_some();
-                                if changed {
-                                    *error = None;
-                                }
-                                changed
-                            } else {
-                                false
-                            };
-                        if changed {
-                            self.sync_base_highlight();
-                        }
-                    }
-                    _ => {
-                        let typed = stroke.key_char.as_deref().filter(|_| {
-                            !stroke.modifiers.platform
-                                && !stroke.modifiers.control
-                                && !stroke.modifiers.alt
-                        });
-                        let changed = if let Some(ch) = typed.and_then(|t| t.chars().next())
-                            && model::branch_char(ch)
-                        {
-                            if let Some(Overlay::Base { text, error, .. }) = &mut self.overlay
-                                && text.len() < model::BRANCH_MAX
-                            {
-                                text.push(ch);
-                                *error = None;
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-                        if changed {
-                            self.sync_base_highlight();
-                        }
-                    }
-                }
-            }
-            cx.stop_propagation();
-            cx.notify();
+        if matches!(&self.overlay, Some(Overlay::Base(_))) {
+            self.base_key(event, window, cx);
             return;
         }
         if self.recording_shortcut() {
@@ -463,7 +224,7 @@ impl Shika {
                 Some(Overlay::Close(_) | Overlay::CheckoutClose(_) | Overlay::SwitchedClose(_)) => {
                     self.close_key(key, window, cx)
                 }
-                Some(Overlay::RestingMenu { .. }) => {
+                Some(Overlay::RestingMenu(_)) => {
                     if key == "escape" {
                         self.cancel_overlay(window, cx);
                     }
@@ -478,11 +239,11 @@ impl Shika {
                 // Typed into above, before the modifier check.
                 Some(Overlay::LeadQuestion(_))
                 | Some(Overlay::WorktreeSetup(_))
-                | Some(Overlay::Base { .. })
-                | Some(Overlay::Publish { .. })
+                | Some(Overlay::Base(_))
+                | Some(Overlay::Publish(_))
                 | Some(Overlay::CardMenu(_))
-                | Some(Overlay::Rename { .. })
-                | Some(Overlay::SwitchAgent { .. })
+                | Some(Overlay::Rename(_))
+                | Some(Overlay::SwitchAgent(_))
                 | None => {}
             }
             cx.stop_propagation();

@@ -16,6 +16,12 @@ pub(super) struct CardMenu {
     pub(super) action: CardMenuAction,
 }
 
+/// The pointer menu of a resting Lead: Forget Lead.
+pub(super) struct RestingMenu {
+    pub(super) project: String,
+    pub(super) position: gpui::Point<Pixels>,
+}
+
 impl CardMenu {
     pub(super) fn target_index(
         &self,
@@ -100,7 +106,7 @@ impl Shika {
             return;
         }
         self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::RestingMenu { project, position });
+        self.overlay = Some(Overlay::RestingMenu(RestingMenu { project, position }));
         // Do not select the row just to open a menu.
         window.focus(&self.focus, cx);
         cx.notify();
@@ -108,7 +114,7 @@ impl Shika {
 
     /// The menu's Forget Lead: the same dialog Cmd+Shift+W opens.
     pub(super) fn forget_from_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Overlay::RestingMenu { project, .. }) = &self.overlay else {
+        let Some(Overlay::RestingMenu(RestingMenu { project, .. })) = &self.overlay else {
             return;
         };
         let project = project.clone();
@@ -117,6 +123,40 @@ impl Shika {
         self.open_lead_close(project, None, window, cx);
         if self.busy {
             self.overlay_return_focus = returns_to;
+        }
+    }
+
+    /// The card menu's keys: `j`, `k`, the arrows, and Tab move between its items.
+    pub(super) fn card_menu_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let stroke = &event.keystroke;
+        if !stroke.modifiers.platform && !stroke.modifiers.control && !stroke.modifiers.alt {
+            match stroke.key.as_str() {
+                "enter" => self.activate_card_menu(window, cx),
+                "j" | "k" | "down" | "up" | "tab" => {
+                    let can_rename = if let Some(Overlay::CardMenu(menu)) = &self.overlay {
+                        menu.target_index(self.cards.iter().map(|card| card.agent.view.entity_id()))
+                            .is_some_and(|index| self.cards[index].renamable())
+                    } else {
+                        false
+                    };
+                    if can_rename && let Some(Overlay::CardMenu(menu)) = &mut self.overlay {
+                        menu.action = if menu.action == CardMenuAction::Rename {
+                            CardMenuAction::Close
+                        } else {
+                            CardMenuAction::Rename
+                        };
+                        cx.notify();
+                    }
+                }
+                "escape" => self.cancel_overlay(window, cx),
+                _ => {}
+            }
+            cx.stop_propagation();
         }
     }
 
@@ -205,7 +245,7 @@ impl Shika {
     /// The resting Lead's pointer menu: one item, Forget Lead.
     pub(super) fn resting_menu_view(
         &self,
-        position: gpui::Point<Pixels>,
+        menu: &RestingMenu,
         chrome: &Chrome,
         window: &Window,
         cx: &mut Context<Self>,
@@ -240,7 +280,7 @@ impl Shika {
             }))
             .child(gpui::deferred(
                 gpui::anchored()
-                    .position(position)
+                    .position(menu.position)
                     .snap_to_window_with_margin(px(8.))
                     .child(panel),
             ))

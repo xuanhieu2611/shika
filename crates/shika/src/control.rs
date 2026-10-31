@@ -1344,8 +1344,8 @@ impl Shika {
                     .is_some_and(|s| s.id == task)
             };
             match overlay {
-                Overlay::Publish { preview, .. } => preview.session_id == task,
-                Overlay::SwitchAgent { session_id, .. } => session_id == task,
+                Overlay::Publish(publish) => publish.session_id() == task,
+                Overlay::SwitchAgent(switch) => switch.session_id() == task,
                 Overlay::Close(crate::close::CloseDialog { index, .. })
                 | Overlay::SwitchedClose(crate::close::SwitchedCloseDialog { index, .. }) => {
                     card_is(index)

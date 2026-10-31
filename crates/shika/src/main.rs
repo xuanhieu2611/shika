@@ -502,38 +502,13 @@ enum Overlay {
     /// Frame the background image, opened from Settings, which it returns to.
     Adjust(Box<background_view::Adjust>),
     CardMenu(CardMenu),
-    Rename {
-        target: gpui::EntityId,
-        input: Entity<name_input::NameInput>,
-        error: Option<String>,
-    },
-    Publish {
-        preview: PublishPreview,
-        title: String,
-        /// Empty leaves the PR body to `gh --fill`.
-        body: Entity<chat_input::ChatInput>,
-        target: String,
-        /// 0 is the title, 1 the description, 2 the target.
-        row: usize,
-        error: Option<String>,
-    },
-    /// Switch the selected task's agent CLI in its current worktree. `index`
-    /// is a row in the same list New offers. The prompt starts empty and is
-    /// not a branch name.
-    SwitchAgent {
-        session_id: String,
-        prompt: Entity<name_input::NameInput>,
-        index: usize,
-        error: Option<String>,
-    },
+    Rename(rename::RenameDialog),
+    Publish(PublishDialog),
+    SwitchAgent(switch_agent::SwitchDialog),
     Picker(launch::PickerDialog),
     CheckoutClose(close::CheckoutCloseDialog),
     Close(close::CloseDialog),
-    /// The pointer menu of a resting Lead: Forget Lead.
-    RestingMenu {
-        project: String,
-        position: gpui::Point<Pixels>,
-    },
+    RestingMenu(RestingMenu),
     /// Stop a live Lead, or forget one.
     LeadClose(lead::LeadCloseDialog),
     SwitchedClose(close::SwitchedCloseDialog),
@@ -544,25 +519,14 @@ enum Overlay {
     RemoveLeftover(usize),
     RemoveProject(String),
     Settings(SettingsDialog),
-    /// The branch New starts from in `project`. `text` is the field, always
-    /// being typed into; `error` is why the last Enter was refused.
-    /// `choices` is None until the branches already on disk have been read.
-    /// `highlight` is a row in the filtered list. None with an empty field
-    /// uses the default branch; None with an unknown name fetches it.
-    Base {
-        project: String,
-        text: String,
-        error: Option<String>,
-        choices: Option<KnownBranches>,
-        highlight: Option<usize>,
-    },
+    Base(BaseDialog),
 }
 impl Overlay {
     /// Appearance previews and pointer menus leave the underlying app unaltered.
     fn dims_background(&self) -> bool {
         !matches!(
             self,
-            Self::Settings(_) | Self::Adjust(_) | Self::CardMenu(_) | Self::RestingMenu { .. }
+            Self::Settings(_) | Self::Adjust(_) | Self::CardMenu(_) | Self::RestingMenu(_)
         )
     }
 
@@ -573,21 +537,21 @@ impl Overlay {
             Self::WorktreeSetup(_) => "the Worktree setup dialog",
             Self::Adjust(_) => "the Adjust background dialog",
             Self::CardMenu(_) => "a card menu",
-            Self::Rename { .. } => "the Rename task dialog",
-            Self::Publish { .. } => "the Create PR dialog",
-            Self::SwitchAgent { .. } => "the Switch agent dialog",
+            Self::Rename(_) => "the Rename task dialog",
+            Self::Publish(_) => "the Create PR dialog",
+            Self::SwitchAgent(_) => "the Switch agent dialog",
             Self::Picker(_) => "the New picker",
             Self::Close(_) | Self::SwitchedClose(_) | Self::CheckoutClose(_) => {
                 "the Close task dialog"
             }
-            Self::RestingMenu { .. } => "a card menu",
+            Self::RestingMenu(_) => "a card menu",
             Self::LeadClose(_) => "the Lead's Stop dialog",
             Self::Preparation(_) => "the setup approval dialog",
             Self::Leftovers | Self::RemoveLeftover(_) | Self::Recover(_) => "the leftovers list",
             Self::Quit(_) => "the Quit dialog",
             Self::RemoveProject(_) => "the Remove project dialog",
             Self::Settings(_) => "Settings",
-            Self::Base { .. } => "the Base branch dialog",
+            Self::Base(_) => "the Base branch dialog",
         }
     }
 }
@@ -620,8 +584,6 @@ struct Shika {
     /// (opaque or transparent) changes on the next paint.
     window_backdrop_dirty: bool,
     sidebar_scroll: gpui::ScrollHandle,
-    /// The Base branch list, so Up and Down can bring the highlight into view.
-    base_scroll: gpui::ScrollHandle,
     /// The Settings row list's scroll offset and scrollbar drag.
     settings_ui: SettingsUi,
     last_revealed_selection: Option<Selection>,
@@ -756,7 +718,6 @@ impl Shika {
             backdrop: background::Backdrop::default(),
             window_backdrop_dirty: false,
             sidebar_scroll: gpui::ScrollHandle::new(),
-            base_scroll: gpui::ScrollHandle::new(),
             settings_ui: SettingsUi::default(),
             last_revealed_selection: None,
             busy: false,
@@ -982,7 +943,7 @@ impl Render for Shika {
             .on_action(cx.listener(|this, _: &CloseTask, window, cx| {
                 if matches!(this.overlay, Some(Overlay::CardMenu(_))) {
                     this.close_from_card_menu(window, cx);
-                } else if matches!(this.overlay, Some(Overlay::RestingMenu { .. })) {
+                } else if matches!(this.overlay, Some(Overlay::RestingMenu(_))) {
                     this.forget_from_menu(window, cx);
                 } else if !this.busy && this.overlay.is_none() {
                     this.close(window, cx);
@@ -1376,10 +1337,10 @@ mod host_tests {
             assert!(!Overlay::Settings(SettingsDialog::new(section, 0)).dims_background());
         }
         assert!(
-            !Overlay::RestingMenu {
+            !Overlay::RestingMenu(RestingMenu {
                 project: "demo".into(),
                 position: gpui::point(px(10.), px(10.)),
-            }
+            })
             .dims_background()
         );
         assert!(

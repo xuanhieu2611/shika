@@ -14,11 +14,7 @@ impl Shika {
         if self.busy
             && matches!(
                 self.overlay,
-                Some(
-                    Overlay::Publish { .. }
-                        | Overlay::WorktreeSetup(_)
-                        | Overlay::SwitchAgent { .. }
-                )
+                Some(Overlay::Publish(_) | Overlay::WorktreeSetup(_) | Overlay::SwitchAgent(_))
             )
         {
             return;
@@ -55,9 +51,9 @@ impl Shika {
                 .card_menu_view(menu, chrome, window, cx)
                 .into_any_element();
         }
-        if let Overlay::RestingMenu { position, .. } = overlay {
+        if let Overlay::RestingMenu(menu) = overlay {
             return self
-                .resting_menu_view(*position, chrome, window, cx)
+                .resting_menu_view(menu, chrome, window, cx)
                 .into_any_element();
         }
         let height = window.viewport_size().height;
@@ -65,7 +61,7 @@ impl Shika {
         let top = height * if picker { 0.18 } else { 0.20 };
         let max_h = (height - top - px(24.)).max(px(120.));
         let panel = match overlay {
-            Overlay::CardMenu(_) | Overlay::RestingMenu { .. } => {
+            Overlay::CardMenu(_) | Overlay::RestingMenu(_) => {
                 unreachable!("card menus render at the pointer")
             }
             Overlay::LeadQuestion(question) => self.chat_question_view(question, chrome, max_h, cx),
@@ -74,214 +70,9 @@ impl Shika {
                 self.worktree_setup_view(editor, chrome, max_h, window, cx)
             }
             Overlay::Adjust(adjust) => self.adjust_view(adjust, max_h, chrome, window, cx),
-            Overlay::Rename {
-                target,
-                input,
-                error,
-            } => {
-                let checkout = self
-                    .cards
-                    .iter()
-                    .any(|card| card.agent.view.entity_id() == *target && card.is_checkout());
-                input.update(cx, |input, _| input.set_chrome(*chrome));
-                dialog(chrome, max_h)
-                    .child(dialog_title(div()).child("Rename task"))
-                    .child(dialog_text(chrome).child(if checkout {
-                        "Changes the task name. Your checkout and branch stay unchanged."
-                    } else {
-                        "Changes the task name and future Create PR defaults. The branch and worktree stay unchanged."
-                    }))
-                    .child(input.clone())
-                    .when_some(error.as_ref(), |panel, error| panel.child(dialog_text(chrome).child(error.clone())))
-                    .child(dialog_buttons()
-                        .child(self.cancel_button("Cancel", chrome, cx))
-                        .child(primary_button("rename-task", "Rename task", "↵", chrome)
-                            .on_click(cx.listener(|this, _, window, cx| this.apply_task_name(window, cx)))))
-            }
-            Overlay::SwitchAgent { .. } => self.switch_dialog(chrome, home, max_h, cx),
-            Overlay::Publish {
-                preview,
-                title,
-                body,
-                target,
-                row,
-                error,
-            } => {
-                body.update(cx, |input, _| {
-                    input.style(*chrome, false, true, Vec::new());
-                });
-                let description = body.clone();
-                let mut panel = dialog(chrome, max_h)
-                    .child(dialog_title(div()).child("Create PR?"))
-                    .child(
-                        dialog_text(chrome)
-                            .font_family(MONO)
-                            .child(format!("{}: {}", preview.repository, preview.branch)),
-                    )
-                    .child(dialog_text(chrome).child("Commit and PR title"))
-                    .child(
-                        text_field("pr-title", 360., *row == 0, chrome)
-                            .overflow_hidden()
-                            .child(title.clone())
-                            .when(*row == 0, |d| {
-                                d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if !this.busy {
-                                    if let Some(Overlay::Publish { row, .. }) = &mut this.overlay {
-                                        *row = 0;
-                                    }
-                                    window.focus(&this.focus, cx);
-                                    cx.notify();
-                                }
-                            })),
-                    )
-                    .child(dialog_text(chrome).child("PR description"))
-                    .child(
-                        div()
-                            .id("pr-body-field")
-                            .w(px(360.))
-                            .px(px(8.))
-                            .py(px(4.))
-                            .rounded(px(6.))
-                            .bg(chrome.raised)
-                            .border_1()
-                            .border_color(if *row == 1 {
-                                chrome.focus
-                            } else {
-                                chrome.line_control
-                            })
-                            .cursor_text()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    if this.busy {
-                                        return;
-                                    }
-                                    let body = if let Some(Overlay::Publish { row, body, .. }) =
-                                        &mut this.overlay
-                                    {
-                                        *row = 1;
-                                        Some(body.clone())
-                                    } else {
-                                        None
-                                    };
-                                    if let Some(body) = body {
-                                        window.focus(&body.focus_handle(cx), cx);
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                            .child(description),
-                    )
-                    .child(dialog_text(chrome).child("PR target"))
-                    .child(
-                        text_field("pr-target", 360., *row == 2, chrome)
-                            .overflow_hidden()
-                            .child(target.clone())
-                            .when(*row == 2, |d| {
-                                d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if !this.busy {
-                                    if let Some(Overlay::Publish { row, .. }) = &mut this.overlay {
-                                        *row = 2;
-                                    }
-                                    window.focus(&this.focus, cx);
-                                    cx.notify();
-                                }
-                            })),
-                    );
-                if preview.target.is_none() {
-                    panel = panel.child(dialog_text(chrome).child("The recorded base is not an existing GitHub branch. Choose a target explicitly."));
-                }
-                if *row == 2 {
-                    panel = panel.child(
-                        div()
-                            .id("pr-branches")
-                            .max_h(px(BASE_LIST_MAX))
-                            .overflow_y_scroll()
-                            .children(
-                                preview
-                                    .branches
-                                    .iter()
-                                    .filter(|b| b.starts_with(target) && **b != preview.branch)
-                                    .map(|b| {
-                                        let branch = b.clone();
-                                        list_row(b == target, chrome)
-                                            .id(SharedString::from(format!("pr-branch-{b}")))
-                                            .cursor_pointer()
-                                            .font_family(MONO)
-                                            .child(b.clone())
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if !this.busy {
-                                                    if let Some(Overlay::Publish {
-                                                        target,
-                                                        error,
-                                                        ..
-                                                    }) = &mut this.overlay
-                                                    {
-                                                        *target = branch.clone();
-                                                        *error = None;
-                                                    }
-                                                    cx.notify();
-                                                }
-                                            }))
-                                    }),
-                            ),
-                    );
-                }
-                let file_count = preview.files.len();
-                panel = panel.child(dialog_text(chrome).child(publish_change_label(file_count)));
-                if file_count > 0 {
-                    panel = panel.child(
-                        div()
-                            .id("pr-files")
-                            .max_h(px(BASE_LIST_MAX))
-                            .overflow_y_scroll()
-                            .children(preview.files.iter().map(|file| {
-                                dialog_text(chrome).font_family(MONO).child(file.clone())
-                            })),
-                    );
-                }
-                if let Some(error) = error {
-                    panel = panel.child(dialog_text(chrome).child(error.clone()));
-                }
-                panel
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(12.))
-                            .child(hint("tab", "switch field", chrome))
-                            .when(*row == 1, |hints| {
-                                hints.child(hint("enter", "new line", chrome))
-                            }),
-                    )
-                    .child(
-                        dialog_buttons()
-                            .child(self.cancel_button("Cancel", chrome, cx))
-                            .child(
-                                primary_button(
-                                    "publish-pr",
-                                    if self.busy {
-                                        "Publishing..."
-                                    } else {
-                                        "Commit, push, create PR"
-                                    },
-                                    if *row == 1 {
-                                        "\u{2318}\u{21a9}"
-                                    } else {
-                                        "\u{21a9}"
-                                    },
-                                    chrome,
-                                )
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.publish_pr(window, cx)),
-                                ),
-                            ),
-                    )
-            }
+            Overlay::Rename(rename) => self.rename_view(rename, chrome, max_h, cx),
+            Overlay::SwitchAgent(_) => self.switch_dialog(chrome, home, max_h, cx),
+            Overlay::Publish(publish) => self.publish_view(publish, chrome, max_h, cx),
             Overlay::Picker(dialog) => self.picker_view(dialog, chrome, home, max_h, cx),
             Overlay::Preparation(dialog) => self.preparation_view(dialog, chrome, max_h, cx),
             Overlay::CheckoutClose(dialog) => self.checkout_close_view(dialog, chrome, max_h, cx),
@@ -292,121 +83,7 @@ impl Shika {
             Overlay::Leftovers => self.leftovers_view(chrome, home, max_h, cx),
             Overlay::RemoveProject(id) => self.remove_project_view(id, chrome, max_h, cx),
             Overlay::RemoveLeftover(i) => self.remove_leftover_view(*i, chrome, home, max_h, cx),
-            Overlay::Base {
-                project,
-                text,
-                error,
-                choices,
-                highlight,
-            } => {
-                let name = self
-                    .projects
-                    .iter()
-                    .find(|p| &p.id == project)
-                    .map(|p| p.name.as_str())
-                    .unwrap_or("");
-                let default = self.bases.get(project).and_then(|b| b.default_name.clone());
-                let field = text_field("base-branch-value", 360., true, chrome)
-                    .when(!text.is_empty(), |d| d.child(text.clone()))
-                    .child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
-                    .when_some(default.filter(|_| text.is_empty()), |d, default| {
-                        d.child(div().text_color(chrome.ink_4).child(default))
-                    });
-                let names = choices
-                    .as_ref()
-                    .map(|choices| choices.names.as_slice())
-                    .unwrap_or(&[]);
-                let checked_out = choices
-                    .as_ref()
-                    .and_then(|choices| choices.checked_out.clone());
-                let matched = model::branch_matches(names, text);
-                let highlight = highlight
-                    .as_ref()
-                    .copied()
-                    .filter(|index| *index < matched.len());
-                let action = if self.chosen_base_name().trim().is_empty() {
-                    "Use default branch"
-                } else {
-                    "Set base branch"
-                };
-                let fetch_hint = choices.as_ref().is_some_and(|choices| choices.has_origin)
-                    && !text.is_empty()
-                    && matched.is_empty()
-                    && error.is_none();
-                let mut panel = dialog(chrome, max_h)
-                    .child(dialog_title(div()).child(format!("Base branch for {name}")))
-                    .child(
-                        dialog_text(chrome)
-                            .child("New agents branch from it. Running agents keep their base."),
-                    )
-                    .child(field.mt(px(4.)));
-                if !matched.is_empty() {
-                    let mut rows = div()
-                        .id("base-branch-list")
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .max_h(px(BASE_LIST_MAX))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.base_scroll);
-                    for (row, index) in matched.iter().copied().enumerate() {
-                        let branch = names[index].clone();
-                        let label = branch.clone();
-                        let checked = checked_out.as_deref() == Some(label.as_str());
-                        rows = rows.child(
-                            list_row(highlight == Some(row), chrome)
-                                .id(("base-branch-row", row))
-                                .w_full()
-                                .justify_between()
-                                .gap(px(8.))
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.apply_base(branch.clone(), window, cx);
-                                }))
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .truncate()
-                                        .font_family(MONO)
-                                        .text_size(px(12.))
-                                        .child(label),
-                                )
-                                .when(checked, |row| {
-                                    row.child(
-                                        div()
-                                            .flex_none()
-                                            .text_size(px(12.))
-                                            .text_color(chrome.ink_3)
-                                            .child("checked out"),
-                                    )
-                                }),
-                        );
-                    }
-                    panel = panel.child(rows);
-                }
-                if fetch_hint {
-                    panel = panel.child(
-                        dialog_text(chrome)
-                            .text_color(chrome.ink_3)
-                            .child("Not on this machine. Enter fetches it from origin."),
-                    );
-                }
-                panel
-                    .when_some(error.clone(), |d, error| {
-                        d.child(dialog_text(chrome).text_color(chrome.ink_1).child(error))
-                    })
-                    .child(
-                        dialog_buttons()
-                            .child(self.cancel_button("Cancel", chrome, cx))
-                            .child(primary_button("set-base", action, "↵", chrome).on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    let branch = this.chosen_base_name();
-                                    this.apply_base(branch, window, cx);
-                                }),
-                            )),
-                    )
-            }
+            Overlay::Base(base) => self.base_view(base, chrome, max_h, cx),
             Overlay::Settings(dialog) => self.settings_panel(dialog, max_h, chrome, home, cx),
         };
         div()

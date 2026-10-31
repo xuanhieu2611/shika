@@ -1,6 +1,23 @@
 //! Switch agent: starting another CLI in the selected task's worktree.
 use super::*;
 
+/// Switch the selected task's agent CLI in its current worktree. `index`
+/// is a row in the same list New offers. The prompt starts empty and is
+/// not a branch name.
+pub(super) struct SwitchDialog {
+    session_id: String,
+    prompt: Entity<name_input::NameInput>,
+    index: usize,
+    error: Option<String>,
+}
+
+impl SwitchDialog {
+    /// The task whose agent this dialog switches.
+    pub(super) fn session_id(&self) -> &str {
+        &self.session_id
+    }
+}
+
 impl Shika {
     /// Why Switch agent is unavailable for the card at `index`.
     fn switch_blocker(&self, index: usize) -> Option<&'static str> {
@@ -60,12 +77,12 @@ impl Shika {
         let chrome = self.chrome(window);
         let prompt = cx.new(|cx| name_input::NameInput::new(String::new(), chrome, cx));
         self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::SwitchAgent {
+        self.overlay = Some(Overlay::SwitchAgent(SwitchDialog {
             session_id,
             prompt,
             index: listed,
             error: None,
-        });
+        }));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -75,13 +92,13 @@ impl Shika {
         if len == 0 {
             return;
         }
-        if let Some(Overlay::SwitchAgent { index, .. }) = &mut self.overlay {
+        if let Some(Overlay::SwitchAgent(SwitchDialog { index, .. })) = &mut self.overlay {
             *index = (*index as isize + delta).rem_euclid(len as isize) as usize;
         }
     }
 
     fn switch_error(&mut self, text: String, cx: &mut Context<Self>) {
-        if let Some(Overlay::SwitchAgent { error, .. }) = &mut self.overlay {
+        if let Some(Overlay::SwitchAgent(SwitchDialog { error, .. })) = &mut self.overlay {
             *error = Some(text);
         }
         cx.notify();
@@ -92,12 +109,12 @@ impl Shika {
             return;
         }
         let (session_id, prompt_text, preset_index) = {
-            let Some(Overlay::SwitchAgent {
+            let Some(Overlay::SwitchAgent(SwitchDialog {
                 session_id,
                 prompt,
                 index,
                 ..
-            }) = &self.overlay
+            })) = &self.overlay
             else {
                 return;
             };
@@ -231,7 +248,7 @@ impl Shika {
                 .flatten()
                 .map(|pane| (index, pane))
         }) else {
-            if matches!(self.overlay, Some(Overlay::SwitchAgent { .. })) {
+            if matches!(self.overlay, Some(Overlay::SwitchAgent(_))) {
                 self.overlay = None;
                 self.overlay_return_focus = None;
             }
@@ -284,6 +301,85 @@ impl Shika {
         cx.notify();
     }
 
+    /// Switch agent's keys: the prompt field while it has focus, else the
+    /// agent list.
+    pub(super) fn switch_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let stroke = &event.keystroke;
+        if self.busy {
+            cx.stop_propagation();
+            return;
+        }
+        let (editing, composing) =
+            if let Some(Overlay::SwitchAgent(SwitchDialog { prompt, .. })) = &self.overlay {
+                (
+                    prompt.focus_handle(cx).is_focused(window),
+                    prompt.read(cx).composing(),
+                )
+            } else {
+                (false, false)
+            };
+        if composing {
+            return;
+        }
+        let plain = !stroke.modifiers.platform
+            && !stroke.modifiers.control
+            && !stroke.modifiers.alt
+            && !stroke.modifiers.shift;
+        if editing {
+            if plain {
+                let handled = match stroke.key.as_str() {
+                    "enter" => {
+                        self.confirm_switch(window, cx);
+                        true
+                    }
+                    "escape" => {
+                        self.cancel_overlay(window, cx);
+                        true
+                    }
+                    "tab" => {
+                        window.focus(&self.focus, cx);
+                        true
+                    }
+                    "up" => {
+                        self.move_switch(-1);
+                        true
+                    }
+                    "down" => {
+                        self.move_switch(1);
+                        true
+                    }
+                    _ => false,
+                };
+                if handled {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }
+            return;
+        }
+        if plain {
+            match stroke.key.as_str() {
+                "j" | "down" => self.move_switch(1),
+                "k" | "up" => self.move_switch(-1),
+                "enter" => self.confirm_switch(window, cx),
+                "escape" => self.cancel_overlay(window, cx),
+                "tab" => {
+                    if let Some(Overlay::SwitchAgent(SwitchDialog { prompt, .. })) = &self.overlay {
+                        window.focus(&prompt.focus_handle(cx), cx);
+                    }
+                }
+                _ => {}
+            }
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
     pub(super) fn switch_dialog(
         &self,
         chrome: &Chrome,
@@ -292,12 +388,12 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let (prompt, index, error, checkout, terminal) = {
-            let Some(Overlay::SwitchAgent {
+            let Some(Overlay::SwitchAgent(SwitchDialog {
                 session_id,
                 prompt,
                 index,
                 error,
-            }) = &self.overlay
+            })) = &self.overlay
             else {
                 return dialog(chrome, max_h);
             };
@@ -388,7 +484,9 @@ impl Shika {
                             if this.busy {
                                 return;
                             }
-                            if let Some(Overlay::SwitchAgent { index, .. }) = &mut this.overlay {
+                            if let Some(Overlay::SwitchAgent(SwitchDialog { index, .. })) =
+                                &mut this.overlay
+                            {
                                 *index = i;
                             }
                             window.focus(&this.focus, cx);
