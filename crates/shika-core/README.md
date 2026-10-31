@@ -70,7 +70,7 @@ All modules are private except `control`. The crate root re-exports the public s
 | `publish` | Confirmed commit, push, and `gh pr create` (the Create PR dialog, or a Lead's `shika pr` in one step), plus the PR checks read. | `PublishPreview`, `PublishedPr`, `PrChecks`, `ChecksState`, `MAX_PR_BODY_CHARS` |
 | `error` | The one `Error` enum. `Display` is the sentence the app shows. | `Error`, `Result` |
 
-`preparation_tests.rs` holds the integration tests for preparation.
+`preparation_tests.rs` holds the integration tests for preparation. `src/tests/` holds the `Core` tests, one file per feature (`close.rs`, `lead.rs`, `checkout.rs`, ...) with shared fixtures in `tests/mod.rs`; `worktree_tests.rs` and `control_tests.rs` hold those modules' tests.
 
 ## Concepts and lifecycles
 
@@ -273,9 +273,9 @@ Tests never touch real app data or the user's repositories:
 - A bare remote is `git init --bare` in the scratch directory, added as `origin` and pushed to. The base-branch, fetch, push, publish, and close tests use it, including a remote that rejects pushes to exercise real push errors.
 - The agent CLI is a shell script (`fake_cli`, or `REPORTING_CLI`, which prints the last argument and the `SHIKA_*` and `PATH` it was given). `Core::open_with` takes a `PathEnv` built by the test-only `PathEnv::from_lookup`, so no login shell runs and no real CLI is needed.
 - `pty::tests` provides `channel_sink`, `collect_until`, and `collect_to_exit` for reading what a child printed.
-- The Lead tests in `lib.rs` include `a_lead_`, `restarting_a_lead_`, `codex_`, `cursor_`, `pi_`, `forgetting_a_lead_`, `stopping_`, `workers_get_`, `only_a_lead_started_workers_agent_`, and `leads_can_only_be_`. Review regressions also cover stale Codex discovery and broken or redirected Lead gitfiles (including colon-containing paths). They set `Core::cli_home` to a scratch home, so no test reads the real `~/.claude`, `~/.codex`, or `~/.pi`; the per-CLI flag tests are in `agents.rs`, the fixed-worktree git tests in `worktree.rs`, and the control protocol tests in `control.rs`.
+- The Lead tests in `src/tests/lead.rs`, `lead_lifecycle.rs`, `lead_resume.rs`, and `lead_safety.rs` include `a_lead_`, `restarting_a_lead_`, `codex_`, `cursor_`, `pi_`, `forgetting_a_lead_`, `stopping_`, `workers_get_`, `only_a_lead_started_workers_agent_`, and `leads_can_only_be_`. Review regressions also cover stale Codex discovery and broken or redirected Lead gitfiles (including colon-containing paths). They set `Core::cli_home` to a scratch home, so no test reads the real `~/.claude`, `~/.codex`, or `~/.pi`; the per-CLI flag tests are in `agents.rs`, the fixed-worktree git tests in `worktree_tests.rs`, and the control protocol tests in `control_tests.rs`.
 
-The checkout tests in `lib.rs` (`a_checkout_`, `closing_a_dirty_checkout_`, `a_project_has_at_most_one_checkout_session`, `a_folder_that_is_not_its_own_checkout_`) run git through a logging wrapper (`core_with_logged_git`) to prove close runs no git, and compare a lock-free snapshot of the repository's git state (`git_snapshot`) before and after.
+The checkout tests in `src/tests/checkout.rs` (`a_checkout_`, `closing_a_dirty_checkout_`, `a_project_has_at_most_one_checkout_session`, `a_folder_that_is_not_its_own_checkout_`) run git through a logging wrapper (`core_with_logged_git`) to prove close runs no git, and compare a lock-free snapshot of the repository's git state (`git_snapshot`) before and after.
 
 Preparation integration fixtures (`preparation_tests.rs`) reserve exclusive roots with `create_dir`, PID/timestamp/counter, and collision retries. This replaces timestamp-only `create_dir_all`, which let parallel fixtures share/delete each other's repositories. Do not regress to adopting existing roots, and retain parallel workspace validation. See [worktree-preparation.md](../../docs/worktree-preparation.md).
 

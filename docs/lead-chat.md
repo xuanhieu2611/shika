@@ -259,7 +259,7 @@ The previous version of this file was the approved design. Where the implementat
 | `crates/shika-core/src/lead_chat.rs` (new) | The `Core` boundary: `lead_chat_send`, `lead_chat_events`, `lead_chat_interrupt`, `lead_chat_answer`, `lead_chat_retry_save`, `lead_chat_page`, `confirm_lead_chat` (operations lock, live identity), `stop_lead_chats`. |
 | `crates/shika-core/src/lead_chat_store.rs` (new) | `ChatStore`: open with path and version checks, `bind`, `append_batch`, `page`, `recover`, index rebuild; `delete` for Forget; `ChatContent`, `ChatOrigin`, `ChatRecord`. |
 | `crates/shika-core/src/lead.rs` | `start_claude_lead` and the shared `start_lead_inner` (same worktree, conversation choice, guide plus memory, control env); chat saves no provisional id and carries `chat_history`; Forget deletes chat. |
-| `crates/shika-core/src/lib.rs` | `Core::chats` map; `hang_up` stops the transport; `Session::pty` became optional; re-exports; core integration tests with a fake `claude`. `remove_project` now deletes memory (and chat) after hanging up sessions. |
+| `crates/shika-core/src/lib.rs` | `Core::chats` map; `hang_up` stops the transport; `Session::pty` became optional; re-exports; core integration tests with a fake `claude` (in `src/tests/lead_chat.rs`). `remove_project` now deletes memory (and chat) after hanging up sessions. |
 | `crates/shika-core/src/projects.rs`, `session.rs`, `error.rs` | `SavedLead::chat_history` (`chatHistory`); `Session::pty: Option<PtyId>` (`None` only for a chat Lead; Switch agent refuses it); `Error::LeadChat`. |
 | `crates/shika-core/tests/fixtures/` (new) | Three installed-CLI recordings, one hand-written stream, and their provenance README. |
 | `crates/shika/src/lead_chat.rs` (new) | `LeadChat` view (rows, paging, scroll anchor, selection, composer wiring, banners) and the `Shika` glue: `ensure_lead_chat`, `submit_lead_chat`, `drain_lead_chats` (events to status, notifications, questions, identity confirmation, resume and exit handling), `selected_chat`, `chat_side`. |
@@ -269,7 +269,7 @@ The previous version of this file was the approved design. Where the implementat
 | `crates/shika/src/text_edit.rs` | The editing core shared with `name_input.rs`: text, selection, and AppKit's standard key bindings (word, line, paragraph and document moves, Shift extension, deletes, the kill buffer, emacs keys). The composer keys are in [DESIGN.md](../design/DESIGN.md#lead-chat). |
 | `crates/shika/src/control.rs` | `ChatDelivery`, `chat_delivery_finished`, chat-aware `lead_gate`, chat delivery in `ring_doorbells` and the restart summary, `LeadState::waiting`. |
 | `crates/shika/src/activity.rs` | `Activity::advance_chat` and its test. |
-| `crates/shika/src/main.rs` | `Card::chat`, `Card::chat_delivery`, `LeadRun::unexpected_exit`, `Overlay::LeadQuestion`, `Shika::lead_chats`, `chat_questions`; launch routing to `start_claude_lead`; focus and Seen for chat; skipping chat cards in terminal sampling; tabs disabled; quit hook. |
+| `crates/shika/src/main.rs`, `lead.rs`, `launch.rs`, `focus.rs`, `tick.rs`, `tabs.rs` | `Card::chat`, `Card::chat_delivery`, `Overlay::LeadQuestion`, `Shika::lead_chats`, `chat_questions` (`main.rs`); `LeadRun::unexpected_exit` (`lead.rs`); launch routing to `start_claude_lead` (`launch.rs`); focus (`focus.rs`) and Seen for chat (`tick.rs`); skipping chat cards in terminal sampling (`tick.rs`); tabs disabled (`tabs.rs`); quit hook (`main.rs`). |
 | `crates/shika/src/model.rs`, `appearance.rs`, `Cargo.toml` | Forget dialog fact about chat history; `PartialEq` on `Chrome` for cheap theme change checks; `libc` for local time formatting. |
 | Docs | This guide; pointers in AGENTS.md, CONTRIBUTING.md, lead-agent.md, shika-cli.md, agent-activity.md, `crates/shika-core/README.md`; DESIGN.md Lead chat section and plates; MANUAL_CHECKS.md. The Lead guide is unchanged. |
 
@@ -310,7 +310,7 @@ sqlite3 -readonly "$db" "SELECT * FROM visible_entries ORDER BY id DESC LIMIT 20
 
 Never test against normal app data or a personal repository. Two levels, from cheapest:
 
-**Core with a fake CLI (no GUI, no network).** `claude_chat_has_no_pty_confirms_identity_and_keeps_history_until_forget` and `chat_interrupt_cancels_a_blocked_pipe_write_and_quit_reaps_the_child` in `crates/shika-core/src/lib.rs` put a shell script named `claude` on a scratch PATH and use a scratch CLI home. Copy that script shape to reproduce a stream bug: answer `shika-initialize`, then for each `"type":"user"` line print `system/init`, assistant records and a `result`.
+**Core with a fake CLI (no GUI, no network).** `claude_chat_has_no_pty_confirms_identity_and_keeps_history_until_forget` and `chat_interrupt_cancels_a_blocked_pipe_write_and_quit_reaps_the_child` in `crates/shika-core/src/tests/lead_chat.rs` put a shell script named `claude` on a scratch PATH and use a scratch CLI home. Copy that script shape to reproduce a stream bug: answer `shika-initialize`, then for each `"type":"user"` line print `system/init`, assistant records and a `result`.
 
 ```sh
 source "$HOME/.cargo/env"
@@ -359,9 +359,9 @@ To re-record after a CLI upgrade:
 | --- | --- |
 | `lead_transport::tests::*` | Final-only extraction from both kinds of fixture, the turn the CLI starts itself, split blocks with one message id, multiple final text blocks and uuid dedup, question parsing, identity mismatch, garbage, unknown control requests, failed results. |
 | `lead_chat_store::tests::*` | Atomic completion, keyed event replacement, index rebuild, recovery markers (including a CLI-started turn), 60-entry paging across reopen, corruption preserved, Forget keeping `memory.json`. |
-| `tests::claude_chat_has_no_pty_...` | No PTY, provisional then confirmed id, final-only history, interrupt and continue, Stop keeping history and workers, Forget deleting chat and keeping memory. |
-| `tests::a_turn_the_claude_cli_starts_itself_...` | A fake CLI's own turn after a settled one: `Started` then Working, final-only Lead bubble, rows `Accepted`, `Lead`, `Settled` with no author bubble, and the next send numbered after it. The decoder side is `installed_cli_background_fixture_...`. |
-| `tests::chat_interrupt_cancels_a_blocked_pipe_write_...` | A write blocked on a full pipe is interruptible, and quit reaps within 4 seconds. |
+| `tests::lead_chat::claude_chat_has_no_pty_...` | No PTY, provisional then confirmed id, final-only history, interrupt and continue, Stop keeping history and workers, Forget deleting chat and keeping memory. |
+| `tests::lead_chat::a_turn_the_claude_cli_starts_itself_...` | A fake CLI's own turn after a settled one: `Started` then Working, final-only Lead bubble, rows `Accepted`, `Lead`, `Settled` with no author bubble, and the next send numbered after it. The decoder side is `installed_cli_background_fixture_...`. |
+| `tests::lead_chat::chat_interrupt_cancels_a_blocked_pipe_write_...` | A write blocked on a full pipe is interruptible, and quit reaps within 4 seconds. |
 | `activity::tests::chat_status_uses_explicit_results_and_retains_the_turn_clock` | Turn clock across Asking, one notification per turn. |
 | `activity::tests::a_chat_turn_the_cli_starts_itself_needs_the_submission_mark` | Why `Started` is a submission: without it a new turn keeps the old clock and never notifies. |
 | `lead_chat_markdown` tests | Bash fences as code, HTML as text, unsafe links refused, long prose split without losing style ranges. |
@@ -377,7 +377,7 @@ Adding a CLI is not just a new decoder. These places assume Claude:
 - `lead_transport.rs`: `ClaudeStream`, `ChatLaunch::args`, the initialize write in `Process::spawn`, `store.bind("claude", ...)`, Claude-specific error strings, and the exit rule that treats every unstopped child exit as `Exit` (wrong for one-child-per-turn CLIs).
 - `lead.rs`: `start_claude_lead` passes `"claude"`; `start_lead_inner` requires a preallocated id for chat and returns `Error::UnknownCli` without one.
 - `lead_chat.rs` (core): `confirm_lead_chat` requires `preset_id == "claude"` and `saved.cli == "claude"`.
-- App: launch routing (`chat = lead.is_some() && preset.id == "claude"` in `main.rs`), `ensure_lead_chat` in `Render`, and `selected_chat` (`lead.cli == "claude"`).
+- App: launch routing (`chat = lead.is_some() && preset.id == "claude"` in `launch.rs`), `ensure_lead_chat` in `Render`, and `selected_chat` (`lead.cli == "claude"`).
 - `LeadRun::discovery` (Codex id polling) and the terminal resume grace assume PTY exits.
 
 ### Steps for any adapter

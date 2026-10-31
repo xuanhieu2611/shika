@@ -167,7 +167,7 @@ A Lead can type into terminals (see [lead-agent.md](lead-agent.md)). Those write
 - **Paste, then Enter.** The text is a bracketed paste and the Enter is a separate write 150 ms later, because some TUIs (Codex's paste-burst handling) read an Enter inside a paste burst as a newline and never submit.
 - **A draft is typed text not yet submitted.** `HostState::has_draft` is true while the submission capture holds text on its line, or after a history recall (Up) until Enter or clear. A CLI's grey suggestion is not typed, so it does not count. The doorbell and `send`/`key` refuse while the draft exists.
 
-Tests: `a_pasted_line_and_its_separate_enter_are_one_submission`, `injected_steps_are_refused_after_the_author_types_or_the_cli_exits`, and the doorbell tests in `shika/src/control.rs`.
+Tests: `a_pasted_line_and_its_separate_enter_are_one_submission`, `injected_steps_are_refused_after_the_author_types_or_the_cli_exits`, and the doorbell tests in `shika/src/control_tests.rs`.
 
 ### Turn clock, attention, and Close
 
@@ -228,7 +228,7 @@ Search by symbol rather than historical line numbers:
 | --- | --- |
 | [`shika/src/activity.rs`](../crates/shika/src/activity.rs) | `detect`, `working_row`, `transcript_signature`, `OutputEvidence`, `Activity`, `Transition`: original screen rules, evidence, clock, debounce, notification budget |
 | [`shika/src/lifecycle.rs`](../crates/shika/src/lifecycle.rs) | `Lifecycle::submitted`, `observe`: report fencing, precedence, and recovery |
-| [`shika/src/main.rs`](../crates/shika/src/main.rs) | `Host::write`, `HostState::note_lifecycle`, `Card::running`, `tick`, `card_view`: input, sampling, background polling, attention, rendering, and Close wiring |
+| [`shika/src/main.rs`](../crates/shika/src/main.rs), [`tick.rs`](../crates/shika/src/tick.rs), [`column/card.rs`](../crates/shika/src/column/card.rs) | `Host::write`, `HostState::note_lifecycle`, `Card::running`, `tick`, `card_view`: input, sampling, background polling, attention, rendering, and Close wiring |
 | [`shika/src/control.rs`](../crates/shika/src/control.rs) | `HostState::seed_launch_prompt`, `Card::control_status`: launch prompts as the first submission, and the status the Lead sees; `HostState::inject`, `Doorbell`, `Shika::type_into`: the Lead's typing |
 | [`shika/src/model.rs`](../crates/shika/src/model.rs) | `PromptCapture`, `Status`, `activity_requires_confirmation`, `ECHO`, `QUIET`: input parser, state vocabulary, safe-close predicate |
 | [`shika-core/src/activity.rs`](../crates/shika-core/src/activity.rs) | `ActivityBridge`, `read_report`, `activity_sink`: optional launch wiring, validation, and cleanup |

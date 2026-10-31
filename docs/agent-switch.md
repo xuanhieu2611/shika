@@ -28,7 +28,7 @@ Naming depends on whether the task already has a name. A task whose branch is no
 | --- | --- |
 | Start the new PTY, then stop the old agent | `Core::session_switch_agent`, sharing `Core::open_agent` with New and the Lead, in `crates/shika-core/src/lib.rs` |
 | Keep branch, title, shells, owner; set `cli_titled` | `SessionStore::retarget_agent` in `crates/shika-core/src/session.rs` |
-| Dialog, menu, Cmd+Shift+A | `Overlay::SwitchAgent`, `Shika::switch_agent`, `confirm_switch`, `install_switched_agent` in `crates/shika/src/main.rs` |
+| Dialog, menu, Cmd+Shift+A | `Overlay::SwitchAgent` in `crates/shika/src/main.rs`; `Shika::switch_agent`, `confirm_switch`, `install_switched_agent` in `crates/shika/src/switch_agent.rs` |
 | Replacement terminal while the process starts | `Card::next_agent`; the tick skips the card and `control_status` reports Starting |
 | Empty prompt stays Waiting; a prompt submits; only a draft task is named | `SessionStore::retarget_agent` decides `cli_titled`; `switch_prompt`, `apply_switch_turn` (`HostState::seed_launch_prompt` with `name` true only for a draft), then `TitleWatch::finish` or a fresh `TitleWatch` |
 | Reserved chord | `cmd-shift-a` in `crates/shika/src/shortcuts.rs` |

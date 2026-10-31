@@ -61,23 +61,23 @@ Two rendering traps. The header's bottom line is drawn by each piece of the row 
 
 ## Architecture and code map
 
-All UI symbols below are in `crates/shika/src/main.rs` unless otherwise noted. Search by symbol rather than line number.
+UI symbols below are in `crates/shika/src/main.rs` unless the table names another file there. Search by symbol rather than line number.
 
 | Layer | Symbols | Responsibility |
 | --- | --- | --- |
 | Task UI state | `Card`, `Card::active_pane` | Own agent and shell panes; resolve the selected terminal |
 | Terminal pane | `Pane`, `Pane::new` | Own one GPUI `TerminalView`, terminal engine, and shared `HostState` per PTY |
-| Header rendering | `terminal_side`, `TAB_HEIGHT`, `TAB_FLARE`, `TAB_LEAD`, `paint_active_tab`, `tab_shape`, `tab_canvas`, `Card::reveal_active_tab`, `Card::hovered_tab`, `KeyTip`, `title_drag`; `appearance.rs`: `Chrome::term_tab`, `over_to_match` | Tab strip, shell close/add controls, metadata row, task close, and drag behavior |
-| Tab actions | `new_shell`, `select_tab`, `cycle_tab`, `close_tab`, `SelectTerminal` | Shell startup, selection, numbered jump, removal, and focus |
+| Header rendering | `terminal_side.rs`: `terminal_side`; `tabs.rs`: `TAB_HEIGHT`, `TAB_FLARE`, `TAB_LEAD`, `paint_active_tab`, `tab_shape`, `tab_canvas`; `Card::reveal_active_tab`, `Card::hovered_tab`; `ui.rs`: `KeyTip`; `column/mod.rs`: `title_drag`; `appearance.rs`: `Chrome::term_tab`, `over_to_match` | Tab strip, shell close/add controls, metadata row, task close, and drag behavior |
+| Tab actions | `tabs.rs`: `new_shell`, `select_tab`, `cycle_tab`, `close_tab`; `selection.rs`: `SelectTerminal` | Shell startup, selection, numbered jump, removal, and focus |
 | Native dispatch | `gpui::actions!`, `Shika::render`, `main` | Root action handlers, Shika key context, key bindings, and Agent menu |
-| Focus and scroll | `focus_terminal`, `Card::tab_scroll`, `move_agent` | Focus the selected view and reveal tabs without resetting manual scrolling on every render |
+| Focus and scroll | `focus.rs`: `focus_terminal`; `Card::tab_scroll`; `selection.rs`: `move_agent` | Focus the selected view and reveal tabs without resetting manual scrolling on every render |
 | Selection arithmetic | `crates/shika/src/model.rs`: `adjacent_tab`, `tab_after_close` | GPUI-independent wrap and removal rules |
 | Startup bridge | `Host::write`, `Host::resize`, `bind_host` | Queue pre-bind input/replies, measure terminal size, bind/resize PTY, and flush queued bytes |
 | Task shell ownership | `crates/shika-core/src/session.rs`: `Session`, `SessionStore` | Record shell PTYs and validate ownership on removal |
 | Core lifecycle | `crates/shika-core/src/lib.rs`: `open_shell`, `close_shell`, `hang_up` | Spawn independent shells, close one shell, or stop every task-owned PTY |
 | PTY implementation | `crates/shika-core/src/pty.rs`: `PtyHub` | Process/PTY ownership, reader threads, writes, resize, and teardown |
 | Terminal keyboard | `crates/shika-terminal/src/view.rs`: `key_for` | Keep Command combinations, Ctrl+Tab, and Ctrl+Shift+Tab out of terminal key encoding |
-| Appearance updates | `set_font_size`, `push_terminal_theme` | Update the agent and every shell, including hidden ones |
+| Appearance updates | `settings/mod.rs`: `set_font_size`; `theme.rs`: `push_terminal_theme` | Update the agent and every shell, including hidden ones |
 
 ### State and identity
 
@@ -176,7 +176,7 @@ Relevant automated coverage:
 
 - `model::tab_tests`: wrap navigation, agent-only navigation, selection after active/inactive/last-shell removal.
 - `session::tests::shells_are_independent_and_only_owned_shells_can_be_removed`: multiple shells and agent/cross-task ownership protection.
-- `tests::a_session_runs_in_its_worktree_and_close_removes_it` in core: independent PTY IDs, individual close, surviving shell writes, and full task teardown.
+- `tests::sessions::a_session_runs_in_its_worktree_and_close_removes_it` in core: independent PTY IDs, individual close, surviving shell writes, and full task teardown.
 - `startup_query_replies_and_typeahead_survive_until_pty_binding` in the app: ordered pre-bind replies/input.
 - `view::tests::command_is_left_to_the_app` and `control_tab_is_left_to_the_app` in terminal: tab shortcuts, including Ctrl+Tab, remain excluded from PTY key encoding.
 

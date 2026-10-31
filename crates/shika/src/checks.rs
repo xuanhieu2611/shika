@@ -6,6 +6,10 @@
 //! read every five minutes, so a re-run on GitHub can clear it. Every watch
 //! reads one local ref every few seconds, so a push from the task's shell
 //! or agent starts the next round.
+//!
+//! `Shika::watch_checks` starts each due read off the main thread, and
+//! `checks_read` applies the result to the card.
+use super::*;
 use shika_core::{ChecksState, PrChecks, PublishedPr};
 use std::time::{Duration, Instant};
 
@@ -202,6 +206,88 @@ fn interval(elapsed: Duration) -> Duration {
         Duration::from_secs(60)
     } else {
         MAX_INTERVAL
+    }
+}
+
+impl Shika {
+    /// Starts each card's due checks read off the main thread. Cards with
+    /// no PR cost nothing here.
+    pub(super) fn watch_checks(&mut self, now: Instant, cx: &mut Context<Self>) {
+        for card in &mut self.cards {
+            let (Some(session), Some(watch)) = (&card.session, &mut card.pr) else {
+                continue;
+            };
+            let Some(due) = watch.due(now) else {
+                continue;
+            };
+            let core = self.core.clone();
+            let id = session.id.clone();
+            let (repository, number) = (watch.repository.clone(), watch.number);
+            cx.spawn(async move |this, cx| {
+                let session_id = id.clone();
+                let read = cx
+                    .background_executor()
+                    .spawn(async move {
+                        match due {
+                            checks::Due::Poll => checks::Read::Poll(
+                                core.session_pr_checks(&id, &repository, number).ok(),
+                            ),
+                            checks::Due::Ref => {
+                                checks::Read::Ref(core.session_pushed_head(&id).ok().flatten())
+                            }
+                        }
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.checks_read(&session_id, number, read, cx)
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// A checks read finished. Merged or closed PRs lose their mark; a mark
+    /// that turns red posts one notification.
+    fn checks_read(&mut self, id: &str, number: u64, read: checks::Read, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let Some(card) = self
+            .cards
+            .iter_mut()
+            .find(|c| c.session.as_ref().is_some_and(|s| s.id == id))
+        else {
+            return;
+        };
+        let Some(watch) = card.pr.as_mut().filter(|w| w.number == number) else {
+            return;
+        };
+        let changed = match read {
+            checks::Read::Ref(head) => watch.ref_read(head, now),
+            checks::Read::Poll(result) => {
+                let polled = watch.polled(result, now);
+                if polled.closed {
+                    card.pr = None;
+                }
+                if polled.failed {
+                    let project = self
+                        .projects
+                        .iter()
+                        .find(|p| p.id == card.project)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("Shika");
+                    self.notifications.post(
+                        id,
+                        project,
+                        &card.title,
+                        model::CHECKS_FAILED,
+                        self.notification_sound,
+                    );
+                }
+                polled.changed
+            }
+        };
+        if changed {
+            cx.notify();
+        }
     }
 }
 
