@@ -526,11 +526,7 @@ enum Overlay {
         index: usize,
         error: Option<String>,
     },
-    Picker {
-        project: String,
-        index: usize,
-        mode: PickerMode,
-    },
+    Picker(launch::PickerDialog),
     CheckoutClose(close::CheckoutCloseDialog),
     Close(close::CloseDialog),
     /// The pointer menu of a resting Lead: Forget Lead.
@@ -541,12 +537,7 @@ enum Overlay {
     /// Stop a live Lead, or forget one.
     LeadClose(lead::LeadCloseDialog),
     SwitchedClose(close::SwitchedCloseDialog),
-    Preparation {
-        project: String,
-        preset: CliPreset,
-        config: PreparationConfig,
-        retry: Option<Arc<Mutex<HostState>>>,
-    },
+    Preparation(launch::PreparationDialog),
     Leftovers,
     Recover(recovery::RecoverDialog),
     Quit(recovery::QuitDialog),
@@ -595,13 +586,13 @@ impl Overlay {
             Self::Rename { .. } => "the Rename task dialog",
             Self::Publish { .. } => "the Create PR dialog",
             Self::SwitchAgent { .. } => "the Switch agent dialog",
-            Self::Picker { .. } => "the New picker",
+            Self::Picker(_) => "the New picker",
             Self::Close(_) | Self::SwitchedClose(_) | Self::CheckoutClose(_) => {
                 "the Close task dialog"
             }
             Self::RestingMenu { .. } => "a card menu",
             Self::LeadClose(_) => "the Lead's Stop dialog",
-            Self::Preparation { .. } => "the setup approval dialog",
+            Self::Preparation(_) => "the setup approval dialog",
             Self::Leftovers | Self::RemoveLeftover(_) | Self::Recover(_) => "the leftovers list",
             Self::Quit(_) => "the Quit dialog",
             Self::RemoveProject(_) => "the Remove project dialog",
@@ -1420,11 +1411,11 @@ mod host_tests {
             .dims_background()
         );
         assert!(
-            Overlay::Picker {
+            Overlay::Picker(PickerDialog {
                 project: "demo".into(),
                 index: 0,
                 mode: PickerMode::Task,
-            }
+            })
             .dims_background()
         );
         assert!(Overlay::CheckoutClose(close::CheckoutCloseDialog { index: 0 }).dims_background());

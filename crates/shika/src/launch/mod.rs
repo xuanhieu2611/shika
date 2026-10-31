@@ -2,6 +2,9 @@
 //! which starts every card: tasks, checkouts, Leads, workers, and recoveries.
 use super::*;
 
+mod picker;
+pub(crate) use picker::*;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum PickerMode {
     Task,
@@ -34,11 +37,11 @@ impl Shika {
         if let Some(project) = self.project_id() {
             self.prefetch_base(project.clone(), cx);
             self.overlay_return_focus = window.focused(cx);
-            self.overlay = Some(Overlay::Picker {
+            self.overlay = Some(Overlay::Picker(PickerDialog {
                 project,
                 index: 0,
                 mode: PickerMode::Task,
-            });
+            }));
             window.focus(&self.focus, cx);
             cx.notify();
         } else {
@@ -51,11 +54,11 @@ impl Shika {
             return;
         }
         let (project, index, mode) = match &self.overlay {
-            Some(Overlay::Picker {
+            Some(Overlay::Picker(PickerDialog {
                 project,
                 index,
                 mode,
-            }) => (project.clone(), *index, *mode),
+            })) => (project.clone(), *index, *mode),
             _ => return,
         };
         let Some(preset) = self.new_choices(mode).into_iter().nth(index) else {
@@ -143,12 +146,12 @@ impl Shika {
                         if this.overlay_return_focus.is_none() {
                             this.overlay_return_focus = window.focused(cx);
                         }
-                        this.overlay = Some(Overlay::Preparation {
+                        this.overlay = Some(Overlay::Preparation(PreparationDialog {
                             project,
                             preset,
                             config,
                             retry,
-                        });
+                        }));
                         window.focus(&this.focus, cx);
                     }
                     Ok((config, _, None)) => this.begin_launch(
@@ -173,12 +176,12 @@ impl Shika {
         if self.busy {
             return;
         }
-        let Some(Overlay::Preparation {
+        let Some(Overlay::Preparation(PreparationDialog {
             project,
             preset,
             config,
             retry,
-        }) = &self.overlay
+        })) = &self.overlay
         else {
             return;
         };
@@ -697,11 +700,11 @@ impl Shika {
         }
         self.prefetch_base(project.clone(), cx);
         self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Picker {
+        self.overlay = Some(Overlay::Picker(PickerDialog {
             project,
             index: 0,
             mode: PickerMode::Task,
-        });
+        }));
         window.focus(&self.focus, cx);
         cx.notify();
     }

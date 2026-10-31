@@ -196,11 +196,11 @@ impl Shika {
         }
         self.prefetch_base(project.clone(), cx);
         self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Picker {
+        self.overlay = Some(Overlay::Picker(PickerDialog {
             project,
             index: 0,
             mode: PickerMode::Lead,
-        });
+        }));
         window.focus(&self.focus, cx);
         cx.notify();
     }

@@ -24,7 +24,7 @@ impl Shika {
             Overlay::RemoveLeftover(i) => ("remove-leftover", *i as u64),
             Overlay::Recover(_) => ("recover", 0),
             Overlay::Quit(_) => ("quit", 0),
-            Overlay::Preparation { project, .. } => ("preparation", hash(project)),
+            Overlay::Preparation(dialog) => ("preparation", hash(&dialog.project)),
             Overlay::LeadQuestion(dialog) => ("lead-question", dialog.identity()),
             _ => return None,
         })
@@ -482,11 +482,6 @@ impl Shika {
             if self.busy {
                 return;
             }
-            let offered_len = match &self.overlay {
-                Some(Overlay::Picker { mode, .. }) => self.new_choices(*mode).len(),
-                _ => self.offered_presets().len(),
-            };
-            let catalog_ready = self.catalog.is_some();
             let settings_nav = match &self.overlay {
                 Some(Overlay::Settings {
                     section, row, edit, ..
@@ -534,47 +529,10 @@ impl Shika {
                     return;
                 }
             }
-            // A project the picker moved to: fetch the base, or read checkout HEAD.
-            let mut moved_to = None;
             match &mut self.overlay {
-                Some(Overlay::Picker {
-                    index,
-                    project,
-                    mode,
-                }) => {
-                    let len = offered_len;
-                    let chosen = key.parse::<usize>().ok().filter(|n| (1..=len).contains(n));
-                    match key {
-                        "j" | "down" if len > 0 => *index = (*index + 1) % len,
-                        "k" | "up" if len > 0 => *index = (*index + len - 1) % len,
-                        "enter" => {
-                            if catalog_ready && len == 0 {
-                                self.show_settings(SettingsSection::Agents, window, cx);
-                            } else {
-                                self.launch(window, cx);
-                            }
-                        }
-                        "escape" => self.cancel_overlay(window, cx),
-                        "tab" => {
-                            if let Some(at) = self.projects.iter().position(|p| &p.id == project) {
-                                *project = self.projects[(at + 1) % self.projects.len()].id.clone();
-                                moved_to = Some((project.clone(), *mode));
-                            }
-                        }
-                        _ => {
-                            if let Some(n) = chosen {
-                                *index = n - 1;
-                                self.launch(window, cx);
-                            }
-                        }
-                    }
-                }
+                Some(Overlay::Picker(_)) => self.picker_key(key, window, cx),
                 Some(Overlay::Adjust(_)) => self.adjust_key(key, window, cx),
-                Some(Overlay::Preparation { .. }) => match key {
-                    "enter" => self.approve_preparation(window, cx),
-                    "escape" => self.cancel_overlay(window, cx),
-                    _ => {}
-                },
+                Some(Overlay::Preparation(_)) => self.preparation_key(key, window, cx),
                 // Escape, and Enter to Stop the Lead, are the only plain keys
                 // here. The destructive and publishing choices are Command
                 // chords, handled by `dialog_chord_key`.
@@ -643,13 +601,6 @@ impl Shika {
                 | Some(Overlay::Rename { .. })
                 | Some(Overlay::SwitchAgent { .. })
                 | None => {}
-            }
-            if let Some((project, mode)) = moved_to {
-                if mode == PickerMode::Checkout {
-                    self.refresh_checkout_head(project, cx);
-                } else {
-                    self.prefetch_base(project, cx);
-                }
             }
             cx.stop_propagation();
             cx.notify();

@@ -302,7 +302,7 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         let picker_index = match &self.overlay {
-            Some(Overlay::Picker { index, .. }) => *index,
+            Some(Overlay::Picker(picker)) => picker.index,
             _ => 0,
         };
         let editor = Editor::new(
@@ -380,11 +380,11 @@ impl Shika {
         };
         match &editor.entry_point {
             EntryPoint::New { picker_index, .. } => {
-                self.overlay = Some(Overlay::Picker {
+                self.overlay = Some(Overlay::Picker(crate::PickerDialog {
                     project: editor.project.clone(),
                     index: *picker_index,
                     mode: crate::PickerMode::Task,
-                });
+                }));
             }
             EntryPoint::Settings(settings_row) => {
                 let row = self
