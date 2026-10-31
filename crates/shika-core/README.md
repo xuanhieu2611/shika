@@ -70,7 +70,7 @@ All modules are private except `control`. The crate root re-exports the public s
 | `publish` | Confirmed commit, push, and `gh pr create` (the Create PR dialog, or a Lead's `shika pr` in one step), plus the PR checks read. | `PublishPreview`, `PublishedPr`, `PrChecks`, `ChecksState`, `MAX_PR_BODY_CHARS` |
 | `error` | The one `Error` enum. `Display` is the sentence the app shows. | `Error`, `Result` |
 
-`preparation_tests.rs` holds the integration tests for preparation.
+`preparation_tests.rs` holds the integration tests for preparation. `src/tests/` holds the `Core` tests, one file per feature (`close.rs`, `lead.rs`, `checkout.rs`, ...) with shared fixtures in `tests/mod.rs`; `worktree_tests.rs` and `control_tests.rs` hold those modules' tests.
 
 ## Concepts and lifecycles
 
