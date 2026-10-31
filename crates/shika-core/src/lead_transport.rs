@@ -133,127 +133,23 @@ impl ClaudeStream {
         }
         match kind {
             "control_response" if v["response"]["request_id"] == "shika-initialize" => {
-                if v["response"]["subtype"] != "success" {
-                    return Parsed::Failed(BAD_STREAM);
-                }
-                self.version = v["response"]["response"]["claude_code_version"]
-                    .as_str()
-                    .filter(|s| {
-                        s.len() <= 64
-                            && s.chars()
-                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-                    })
-                    .map(str::to_string);
-                self.initialized = true;
-                Parsed::Ignore
+                self.initialize_response(&v)
             }
 
-            "system" if v["subtype"] == "init" => {
-                if v["session_id"].as_str() != Some(&self.expected) {
-                    return Parsed::Failed(BAD_STREAM);
-                }
-                self.confirmed = true;
-                // Every turn opens with init. One while idle is a turn the CLI
-                // started itself; its final response is filtered the same way.
-                if self.active {
-                    Parsed::Confirmed
-                } else {
-                    self.begin();
-                    Parsed::Started
-                }
-            }
+            "system" if v["subtype"] == "init" => self.turn_init(&v),
             "control_request"
                 if self.active
                     && v["request"]["subtype"] == "can_use_tool"
                     && v["request"]["tool_name"] == "AskUserQuestion" =>
             {
-                let Some(id) = v["request_id"].as_str() else {
-                    return Parsed::Failed(BAD_STREAM);
-                };
-                let Ok(questions) = serde_json::from_value::<Vec<ChatQuestionItem>>(
-                    v["request"]["input"]["questions"].clone(),
-                ) else {
-                    return Parsed::Blocked;
-                };
-                if questions.is_empty()
-                    || questions.len() > 4
-                    || questions
-                        .iter()
-                        .any(|q| q.question.is_empty() || q.options.len() > 4)
-                {
-                    return Parsed::Blocked;
-                }
-                Parsed::Question(ChatQuestion {
-                    request_id: id.into(),
-                    questions,
-                    input: v["request"]["input"].clone(),
-                })
+                ask_user_question(&v)
             }
             "control_request" => Parsed::Blocked,
             "control_cancel_request" => v["request_id"]
                 .as_str()
                 .map(|id| Parsed::Cancelled(id.into()))
                 .unwrap_or(Parsed::Ignore),
-            "assistant" if self.active => {
-                if v.get("error").is_some_and(|e| !e.is_null()) {
-                    return Parsed::Failed(
-                        "Claude Code could not complete the reply. Check its sign-in and connection, then retry.",
-                    );
-                }
-                let Some(id) = v["message"]["id"].as_str() else {
-                    return Parsed::Failed(BAD_STREAM);
-                };
-                let identity = if let Some(uuid) = v["uuid"].as_str() {
-                    uuid.to_string()
-                } else {
-                    let mut hash = std::collections::hash_map::DefaultHasher::new();
-                    hash.write(v["message"]["content"].to_string().as_bytes());
-                    format!("{id}:{:x}", hash.finish())
-                };
-                if !self.messages.insert(identity) {
-                    return Parsed::Ignore;
-                }
-                let Some(blocks) = v["message"]["content"].as_array() else {
-                    return Parsed::Failed(BAD_STREAM);
-                };
-                if self
-                    .candidate
-                    .as_ref()
-                    .is_some_and(|(candidate, _)| candidate != id)
-                {
-                    self.candidate = None;
-                }
-                let mut texts = Vec::new();
-                for block in blocks {
-                    match block["type"].as_str() {
-                        Some("tool_use" | "server_tool_use") => {
-                            self.candidate = None;
-                            return Parsed::Ignore;
-                        }
-                        Some("text") => {
-                            let Some(text) = block["text"].as_str() else {
-                                return Parsed::Failed(BAD_STREAM);
-                            };
-                            texts.push(text);
-                        }
-                        Some("thinking" | "redacted_thinking") => {}
-                        _ => {
-                            self.candidate = None;
-                            return Parsed::Failed(BAD_STREAM);
-                        }
-                    }
-                }
-                let text = texts.join("\n\n");
-                if !text.trim().is_empty() {
-                    if let Some((_, candidate)) = &mut self.candidate {
-                        candidate.push_str("\n\n");
-                        candidate.push_str(&text);
-                    } else {
-                        self.candidate = Some((id.into(), text));
-                    }
-                }
-                Parsed::Ignore
-            }
+            "assistant" if self.active => self.assistant_message(&v),
             "user" if self.active => {
                 // Tool replies invalidate text emitted before the call.
                 if v["message"]["content"]
@@ -264,27 +160,146 @@ impl ClaudeStream {
                 }
                 Parsed::Ignore
             }
-            "result" if self.active => {
-                self.active = false;
-                if !self.initialized
-                    || !self.confirmed
-                    || v["session_id"].as_str() != Some(&self.expected)
-                {
-                    self.candidate = None;
-                    return Parsed::Failed(BAD_STREAM);
-                }
-                if v["is_error"] != false || v["subtype"] != "success" {
-                    self.candidate = None;
-                    return Parsed::Failed(
-                        "Claude Code could not complete the reply. Check its sign-in and connection, then retry.",
-                    );
-                }
-                // Never use result.result: some releases aggregate commentary.
-                Parsed::Final(self.candidate.take().map(|(_, text)| text))
-            }
+            "result" if self.active => self.turn_result(&v),
             _ => Parsed::Ignore,
         }
     }
+    /// The reply to Shika's initialize request, with the CLI version.
+    fn initialize_response(&mut self, v: &Value) -> Parsed {
+        if v["response"]["subtype"] != "success" {
+            return Parsed::Failed(BAD_STREAM);
+        }
+        self.version = v["response"]["response"]["claude_code_version"]
+            .as_str()
+            .filter(|s| {
+                s.len() <= 64
+                    && s.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+            })
+            .map(str::to_string);
+        self.initialized = true;
+        Parsed::Ignore
+    }
+    /// `system/init` confirms the conversation and opens every turn.
+    fn turn_init(&mut self, v: &Value) -> Parsed {
+        if v["session_id"].as_str() != Some(&self.expected) {
+            return Parsed::Failed(BAD_STREAM);
+        }
+        self.confirmed = true;
+        // Every turn opens with init. One while idle is a turn the CLI
+        // started itself; its final response is filtered the same way.
+        if self.active {
+            Parsed::Confirmed
+        } else {
+            self.begin();
+            Parsed::Started
+        }
+    }
+    /// The final-response filter: text becomes the candidate only from the
+    /// latest assistant message with no tool call after it.
+    fn assistant_message(&mut self, v: &Value) -> Parsed {
+        if v.get("error").is_some_and(|e| !e.is_null()) {
+            return Parsed::Failed(
+                "Claude Code could not complete the reply. Check its sign-in and connection, then retry.",
+            );
+        }
+        let Some(id) = v["message"]["id"].as_str() else {
+            return Parsed::Failed(BAD_STREAM);
+        };
+        let identity = if let Some(uuid) = v["uuid"].as_str() {
+            uuid.to_string()
+        } else {
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            hash.write(v["message"]["content"].to_string().as_bytes());
+            format!("{id}:{:x}", hash.finish())
+        };
+        if !self.messages.insert(identity) {
+            return Parsed::Ignore;
+        }
+        let Some(blocks) = v["message"]["content"].as_array() else {
+            return Parsed::Failed(BAD_STREAM);
+        };
+        if self
+            .candidate
+            .as_ref()
+            .is_some_and(|(candidate, _)| candidate != id)
+        {
+            self.candidate = None;
+        }
+        let mut texts = Vec::new();
+        for block in blocks {
+            match block["type"].as_str() {
+                Some("tool_use" | "server_tool_use") => {
+                    self.candidate = None;
+                    return Parsed::Ignore;
+                }
+                Some("text") => {
+                    let Some(text) = block["text"].as_str() else {
+                        return Parsed::Failed(BAD_STREAM);
+                    };
+                    texts.push(text);
+                }
+                Some("thinking" | "redacted_thinking") => {}
+                _ => {
+                    self.candidate = None;
+                    return Parsed::Failed(BAD_STREAM);
+                }
+            }
+        }
+        let text = texts.join("\n\n");
+        if !text.trim().is_empty() {
+            if let Some((_, candidate)) = &mut self.candidate {
+                candidate.push_str("\n\n");
+                candidate.push_str(&text);
+            } else {
+                self.candidate = Some((id.into(), text));
+            }
+        }
+        Parsed::Ignore
+    }
+    /// A successful result publishes the candidate; anything else drops it.
+    fn turn_result(&mut self, v: &Value) -> Parsed {
+        self.active = false;
+        if !self.initialized || !self.confirmed || v["session_id"].as_str() != Some(&self.expected)
+        {
+            self.candidate = None;
+            return Parsed::Failed(BAD_STREAM);
+        }
+        if v["is_error"] != false || v["subtype"] != "success" {
+            self.candidate = None;
+            return Parsed::Failed(
+                "Claude Code could not complete the reply. Check its sign-in and connection, then retry.",
+            );
+        }
+        // Never use result.result: some releases aggregate commentary.
+        Parsed::Final(self.candidate.take().map(|(_, text)| text))
+    }
+}
+
+/// An `AskUserQuestion` permission request Shika can show as a question;
+/// anything it cannot show blocks.
+fn ask_user_question(v: &Value) -> Parsed {
+    let Some(id) = v["request_id"].as_str() else {
+        return Parsed::Failed(BAD_STREAM);
+    };
+    let Ok(questions) =
+        serde_json::from_value::<Vec<ChatQuestionItem>>(v["request"]["input"]["questions"].clone())
+    else {
+        return Parsed::Blocked;
+    };
+    if questions.is_empty()
+        || questions.len() > 4
+        || questions
+            .iter()
+            .any(|q| q.question.is_empty() || q.options.len() > 4)
+    {
+        return Parsed::Blocked;
+    }
+    Parsed::Question(ChatQuestion {
+        request_id: id.into(),
+        questions,
+        input: v["request"]["input"].clone(),
+    })
 }
 
 pub(crate) struct ChatLaunch {
