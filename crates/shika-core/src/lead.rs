@@ -205,14 +205,7 @@ impl Core {
         let notes = self.memory.list(project_id).unwrap_or_default();
         let instructions = memory::instructions_with_notes(&launch.instructions, &notes);
         let env = self.path_env();
-        let preset = agents::presets_from(env)
-            .into_iter()
-            .find(|preset| preset.id == preset_id)
-            .ok_or(Error::UnknownCli)?;
-        let program = preset
-            .path
-            .clone()
-            .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+        let (preset, program) = lead_cli(env, preset_id)?;
         if self.lead_for_project(project_id).is_some() {
             return Err(Error::LeadExists);
         }
@@ -857,6 +850,19 @@ fn create_chat_within(
     std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
     let id = out.trim().to_string();
     agents::valid_conversation_id(&id).then_some(id)
+}
+
+/// The chosen CLI preset and its binary on the login-shell PATH.
+fn lead_cli(env: &PathEnv, preset_id: &str) -> Result<(CliPreset, PathBuf)> {
+    let preset = agents::presets_from(env)
+        .into_iter()
+        .find(|preset| preset.id == preset_id)
+        .ok_or(Error::UnknownCli)?;
+    let program = preset
+        .path
+        .clone()
+        .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+    Ok((preset, program))
 }
 
 /// The record `projects.json` keeps for a Lead just started: its CLI, the
