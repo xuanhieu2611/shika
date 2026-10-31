@@ -789,14 +789,14 @@ impl Shika {
 
     pub(super) fn lead_close_view(
         &self,
-        dialog: &LeadCloseDialog,
+        close: &LeadCloseDialog,
         chrome: &Chrome,
         max_h: Pixels,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let step = &dialog.step;
+        let step = &close.step;
         let stopping = matches!(step, model::LeadClose::Stop { .. });
-        let mut panel = crate::dialog(chrome, max_h).child(dialog_title(div()).child(step.title()));
+        let mut panel = dialog(chrome, max_h).child(dialog_title(div()).child(step.title()));
         for fact in step.facts() {
             panel = panel.child(dialog_text(chrome).child(fact));
         }

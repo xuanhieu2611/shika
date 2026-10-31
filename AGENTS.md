@@ -115,7 +115,7 @@ crates/shika/           the GPUI app: window, cards, picker, close dialog, setti
                         keys, terminal tabs, translucency, .app bundle
 ```
 
-`crates/shika` is organized by feature. `main.rs` holds the root types (`Shika`, `Card`, `Pane`, `Host`, `Overlay`) and startup; each feature's state changes, dialogs, and views live in its own file or folder that extends `impl Shika`, such as `close.rs`, `lead.rs`, `publish.rs`, `settings/`, and `column/`. Keep a file under about 1,000 lines of non-test code and a function under about 100, and move large test blocks into a sibling `*_tests.rs` or a `tests/` folder.
+`crates/shika` is organized by feature. `main.rs` holds the root types (`Shika`, `Card`, `Pane`, `Host`, `Overlay`) and startup; each feature's state changes, dialogs, and views live in its own file or folder that extends `impl Shika`, such as `close.rs`, `lead.rs`, `publish.rs`, `settings/`, and `column/`. A dialog is an `Overlay` variant holding a struct its feature file defines (`Overlay::Close(close::CloseDialog)`), with its key handling and view in that file (`close_key`, `close_view`); `keys.rs` and `overlay.rs` only route to them, and a new dialog follows the same shape. State only one feature uses sits in one struct that feature owns (`Shika::leads`, `Shika::leftovers`), or in its dialog struct when it should not outlive the dialog. Keep a file under about 1,000 lines of non-test code and a function under about 100, and move large test blocks into a sibling `*_tests.rs` or a `tests/` folder.
 
 `crates/shika-core/README.md` maps that crate (modules, lifecycles, invariants, tests). `docs/shika-cli.md` documents the Lead's `shika` command.
 
