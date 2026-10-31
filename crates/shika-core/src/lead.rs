@@ -393,7 +393,7 @@ impl Core {
     fn start_lead_chat(
         &self,
         plan: &LeadPlan,
-        program: &PathBuf,
+        program: &Path,
         control: &WorkerEnv,
     ) -> Result<crate::lead_transport::ChatTransport> {
         let conversation_id = match plan.conversation {
@@ -405,7 +405,7 @@ impl Core {
                 .cli_home
                 .as_ref()
                 .and_then(|home| self.usage.get()?.register(home, "claude", plan.path)),
-            program: program.clone(),
+            program: program.to_path_buf(),
             cwd: plan.path.to_path_buf(),
             path: session::control_path(&control.bin_dir, plan.env.path()),
             env: session::control_env(&control.socket, &control.token),
