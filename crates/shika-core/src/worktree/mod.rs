@@ -1608,5 +1608,4 @@ fn save(path: &Path, entries: &[JournalEntry]) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "worktree_tests.rs"]
 mod tests;
