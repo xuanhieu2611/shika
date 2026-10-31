@@ -91,7 +91,7 @@ pub fn worker_prompt(prompt: &str, bin_dir: &Path) -> String {
 }
 
 /// What `shika help` prints.
-const LEAD_GUIDE: &str = include_str!("lead_guide.md");
+const LEAD_GUIDE: &str = include_str!("../lead_guide.md");
 
 /// Live workers one Lead may have at a time.
 pub const MAX_WORKERS: usize = 4;
@@ -2408,5 +2408,4 @@ fn is_lead_visible(lead_card: bool, session: Option<&Session>) -> bool {
 }
 
 #[cfg(test)]
-#[path = "control_tests.rs"]
 mod tests;
