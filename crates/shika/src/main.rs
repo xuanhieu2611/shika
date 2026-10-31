@@ -378,7 +378,6 @@ impl Shika {
         self.toast = Some((text, Instant::now()));
     }
 }
-impl Shika {}
 impl Focusable for Shika {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
