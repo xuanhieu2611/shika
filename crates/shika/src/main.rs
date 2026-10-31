@@ -87,7 +87,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use usage_dashboard::{UsageFilter, UsageRange, UsageView};
+use usage_dashboard::{UsageFilter, UsageRange};
 
 gpui::actions!(
     shika,
@@ -543,17 +543,7 @@ enum Overlay {
     Quit(recovery::QuitDialog),
     RemoveLeftover(usize),
     RemoveProject(String),
-    /// `section` is Appearance, Keyboard, Agents, Projects, or Usage. `row` is the selected row
-    /// in that section: an appearance `*_ROW`, a keyboard command, or a preset
-    /// index. `edit` holds digits typed into the selected number, or the
-    /// prefix being typed, not yet applied. `usage` is the saved snapshot,
-    /// read the first time Usage shows and kept until Settings closes.
-    Settings {
-        section: SettingsSection,
-        row: usize,
-        edit: Option<String>,
-        usage: Option<Box<UsageView>>,
-    },
+    Settings(SettingsDialog),
     /// The branch New starts from in `project`. `text` is the field, always
     /// being typed into; `error` is why the last Enter was refused.
     /// `choices` is None until the branches already on disk have been read.
@@ -572,7 +562,7 @@ impl Overlay {
     fn dims_background(&self) -> bool {
         !matches!(
             self,
-            Self::Settings { .. } | Self::Adjust(_) | Self::CardMenu(_) | Self::RestingMenu { .. }
+            Self::Settings(_) | Self::Adjust(_) | Self::CardMenu(_) | Self::RestingMenu { .. }
         )
     }
 
@@ -596,7 +586,7 @@ impl Overlay {
             Self::Leftovers | Self::RemoveLeftover(_) | Self::Recover(_) => "the leftovers list",
             Self::Quit(_) => "the Quit dialog",
             Self::RemoveProject(_) => "the Remove project dialog",
-            Self::Settings { .. } => "Settings",
+            Self::Settings(_) => "Settings",
             Self::Base { .. } => "the Base branch dialog",
         }
     }
@@ -632,11 +622,8 @@ struct Shika {
     sidebar_scroll: gpui::ScrollHandle,
     /// The Base branch list, so Up and Down can bring the highlight into view.
     base_scroll: gpui::ScrollHandle,
-    /// The Settings row list, so `j` / `k` keep the selected row on screen
-    /// when a short window makes that list scroll.
-    settings_scroll: gpui::ScrollHandle,
-    /// Its scrollbar's thumb while the pointer drags it.
-    settings_grab: scrollbar::Grab,
+    /// The Settings row list's scroll offset and scrollbar drag.
+    settings_ui: SettingsUi,
     last_revealed_selection: Option<Selection>,
     busy: bool,
     toast: Option<(String, Instant)>,
@@ -675,10 +662,6 @@ struct Shika {
     agents: AgentSettings,
     /// Shortcut overrides. Missing entries keep the built-in chords.
     keys: KeyOverrides,
-    /// Settings, Keyboard, is waiting for the next Command shortcut.
-    key_recording: bool,
-    /// Why the last recorded shortcut was refused. Shown in the Keyboard footer.
-    key_note: Option<String>,
     /// The agent column's stored width and whether it is hidden.
     column: Column,
     /// The column as it was when the current drag on its edge began. The
@@ -774,8 +757,7 @@ impl Shika {
             window_backdrop_dirty: false,
             sidebar_scroll: gpui::ScrollHandle::new(),
             base_scroll: gpui::ScrollHandle::new(),
-            settings_scroll: gpui::ScrollHandle::new(),
-            settings_grab: scrollbar::Grab::default(),
+            settings_ui: SettingsUi::default(),
             last_revealed_selection: None,
             busy: false,
             toast: if load_errors.is_empty() {
@@ -802,8 +784,6 @@ impl Shika {
             notification_sound,
             agents,
             keys,
-            key_recording: false,
-            key_note: None,
             column,
             column_drag_from: None,
             bases: HashMap::new(),
@@ -1393,15 +1373,7 @@ mod host_tests {
     #[test]
     fn modal_scrim_preserves_appearance_previews_and_pointer_menus() {
         for section in SettingsSection::ALL {
-            assert!(
-                !Overlay::Settings {
-                    section,
-                    row: 0,
-                    edit: None,
-                    usage: None,
-                }
-                .dims_background()
-            );
+            assert!(!Overlay::Settings(SettingsDialog::new(section, 0)).dims_background());
         }
         assert!(
             !Overlay::RestingMenu {

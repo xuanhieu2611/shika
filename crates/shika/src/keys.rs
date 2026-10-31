@@ -270,39 +270,7 @@ impl Shika {
             cx.notify();
             return;
         }
-        if let Some(Overlay::Settings {
-            section: SettingsSection::Appearance,
-            row: PREFIX_ROW,
-            edit: Some(text),
-            ..
-        }) = &mut self.overlay
-        {
-            match stroke.key.as_str() {
-                "enter" => self.commit_setting_edit(window, cx),
-                "escape" => {
-                    if let Some(Overlay::Settings { edit, .. }) = &mut self.overlay {
-                        *edit = None;
-                    }
-                }
-                "backspace" => {
-                    text.pop();
-                }
-                _ => {
-                    let typed = stroke.key_char.as_deref().filter(|_| {
-                        !stroke.modifiers.platform
-                            && !stroke.modifiers.control
-                            && !stroke.modifiers.alt
-                    });
-                    if let Some(ch) = typed.and_then(|t| t.chars().next())
-                        && (ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.'))
-                        && text.len() < 40
-                    {
-                        text.push(ch);
-                    }
-                }
-            }
-            cx.stop_propagation();
-            cx.notify();
+        if self.settings_prefix_key(stroke, window, cx) {
             return;
         }
         if matches!(&self.overlay, Some(Overlay::Publish { .. })) {
@@ -482,52 +450,8 @@ impl Shika {
             if self.busy {
                 return;
             }
-            let settings_nav = match &self.overlay {
-                Some(Overlay::Settings {
-                    section, row, edit, ..
-                }) => Some((*section, *row, edit.is_some())),
-                _ => None,
-            };
-            if let Some((section, at, editing)) = settings_nav {
-                if !editing && matches!(key, "[" | "]") {
-                    let delta = if key == "]" { 1 } else { -1 };
-                    self.select_section(section.step(delta), window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
-                if !editing && section == SettingsSection::Agents {
-                    self.on_agents_key(at, key, window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
-                if !editing && section == SettingsSection::Projects {
-                    self.on_projects_key(at, key, window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
-                if !editing && section == SettingsSection::Keyboard {
-                    self.on_keyboard_key(at, key, window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
-                if section == SettingsSection::Usage {
-                    self.on_usage_key(key, window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
-                if !editing
-                    && section == SettingsSection::Appearance
-                    && self.on_background_key(at, key, window, cx)
-                {
-                    cx.stop_propagation();
-                    cx.notify();
-                    return;
-                }
+            if self.settings_nav_key(key, window, cx) {
+                return;
             }
             match &mut self.overlay {
                 Some(Overlay::Picker(_)) => self.picker_key(key, window, cx),
@@ -550,48 +474,7 @@ impl Shika {
                 Some(Overlay::RemoveLeftover(_)) => self.remove_leftover_key(key),
                 Some(Overlay::Leftovers) => self.leftovers_key(key, window, cx),
                 Some(Overlay::RemoveProject(_)) => self.remove_project_key(key, window, cx),
-                Some(Overlay::Settings { row, edit, .. }) => {
-                    let at = *row;
-                    let digit = key.len() == 1 && key.as_bytes()[0].is_ascii_digit();
-                    let number_row = matches!(at, OPACITY_ROW | BLUR_ROW | FONT_ROW);
-                    let max_len = if at == FONT_ROW { 4 } else { 3 };
-                    match (edit.as_mut(), key) {
-                        (Some(text), _) if digit || (at == FONT_ROW && key == ".") => {
-                            let accept = if key == "." {
-                                !text.is_empty() && !text.contains('.')
-                            } else {
-                                true
-                            };
-                            if accept && text.len() < max_len {
-                                text.push_str(key);
-                            }
-                        }
-                        (Some(text), "backspace") => {
-                            text.pop();
-                        }
-                        (Some(_), "escape") => *edit = None,
-                        (Some(_), "enter") => self.commit_setting_edit(window, cx),
-                        (Some(_), "h" | "l" | "left" | "right") => {}
-                        (None, _) if digit && number_row => self.edit_setting(at, key, window, cx),
-                        (None, "backspace") if number_row => self.edit_setting(at, "", window, cx),
-                        (None, "enter") if at == PREFIX_ROW => {
-                            let prefix = self.branch_prefix.clone();
-                            self.edit_setting(at, &prefix, window, cx)
-                        }
-                        (None, "h" | "left") => self.step_setting(at, -1, window, cx),
-                        (None, "l" | "right") => self.step_setting(at, 1, window, cx),
-                        (None, "enter" | "escape") => self.cancel_overlay(window, cx),
-                        (_, "j" | "down" | "tab") => {
-                            let next = self.next_appearance_row(at, 1);
-                            self.select_setting(next, window, cx)
-                        }
-                        (_, "k" | "up") => {
-                            let next = self.next_appearance_row(at, -1);
-                            self.select_setting(next, window, cx)
-                        }
-                        _ => {}
-                    }
-                }
+                Some(Overlay::Settings(_)) => self.settings_row_key(key, window, cx),
                 // Typed into above, before the modifier check.
                 Some(Overlay::LeadQuestion(_))
                 | Some(Overlay::WorktreeSetup(_))

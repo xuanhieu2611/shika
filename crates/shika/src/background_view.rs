@@ -309,7 +309,7 @@ impl Shika {
     pub(super) fn image_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row, .. }) if *row == IMAGE_ROW
+            Some(Overlay::Settings(dialog)) if dialog.row() == IMAGE_ROW
         );
         let small = |id: &'static str, label: &'static str| {
             secondary_button(id, chrome)
@@ -409,7 +409,7 @@ impl Shika {
         };
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row, .. }) if *row == EFFECT_ROW
+            Some(Overlay::Settings(dialog)) if dialog.row() == EFFECT_ROW
         );
         let shadow = chrome.control_shadow;
         let mut choices = div()
@@ -499,13 +499,11 @@ impl Shika {
             background.framing = draft;
             self.save_settings();
         }
-        self.overlay = Some(Overlay::Settings {
-            section: SettingsSection::Appearance,
-            row: IMAGE_ROW,
-            edit: None,
-            usage: None,
-        });
-        self.settings_scroll.scroll_to_item(IMAGE_ROW);
+        self.overlay = Some(Overlay::Settings(SettingsDialog::new(
+            SettingsSection::Appearance,
+            IMAGE_ROW,
+        )));
+        self.settings_ui.scroll_to(IMAGE_ROW);
         window.focus(&self.focus, cx);
         cx.notify();
     }

@@ -247,11 +247,8 @@ impl Shika {
     ) {
         if self.busy
             || !matches!(
-                self.overlay,
-                Some(Overlay::Settings {
-                    section: SettingsSection::Projects,
-                    ..
-                })
+                &self.overlay,
+                Some(Overlay::Settings(dialog)) if dialog.section() == SettingsSection::Projects
             )
         {
             return;
@@ -392,13 +389,11 @@ impl Shika {
                     .iter()
                     .position(|p| p.id == editor.project)
                     .unwrap_or((*settings_row).min(self.projects.len().saturating_sub(1)));
-                self.overlay = Some(Overlay::Settings {
-                    section: SettingsSection::Projects,
+                self.overlay = Some(Overlay::Settings(SettingsDialog::new(
+                    SettingsSection::Projects,
                     row,
-                    edit: None,
-                    usage: None,
-                });
-                self.settings_scroll.scroll_to_item(row);
+                )));
+                self.settings_ui.scroll_to(row);
             }
         }
         window.focus(&self.focus, cx);

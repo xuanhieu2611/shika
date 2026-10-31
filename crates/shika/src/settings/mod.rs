@@ -1,6 +1,7 @@
 //! The Settings dialog: sections, row layout, opening it, and applying
 //! changes, including the Agents toggles and the Usage range and filter.
 use super::*;
+use crate::usage_dashboard::UsageView;
 
 mod keyboard;
 mod view;
@@ -89,21 +90,84 @@ const SETTINGS_WIDTH: f32 = usage_dashboard::WIDTH + 20. + SETTINGS_NAV_WIDTH + 
 // It fits the app's 960px minimum window with the dialog's 40px margin.
 const _: () = assert!(SETTINGS_WIDTH <= 960. - 40.);
 
+/// The open Settings dialog.
+pub(crate) struct SettingsDialog {
+    /// Appearance, Keyboard, Agents, Projects, or Usage.
+    section: SettingsSection,
+    /// The selected row in that section: an appearance `*_ROW`, a keyboard
+    /// command, or a preset index.
+    row: usize,
+    /// Digits typed into the selected number, or the prefix being typed, not
+    /// yet applied.
+    edit: Option<String>,
+    /// The saved snapshot, read the first time Usage shows and kept until
+    /// Settings closes.
+    usage: Option<Box<UsageView>>,
+    /// Settings, Keyboard, is waiting for the next Command shortcut.
+    key_recording: bool,
+    /// Why the last recorded shortcut was refused. Shown in the Keyboard footer.
+    key_note: Option<String>,
+}
+
+impl SettingsDialog {
+    /// Settings on `row` of `section`, nothing typed or recording.
+    pub(crate) fn new(section: SettingsSection, row: usize) -> Self {
+        Self {
+            section,
+            row,
+            edit: None,
+            usage: None,
+            key_recording: false,
+            key_note: None,
+        }
+    }
+
+    pub(crate) fn section(&self) -> SettingsSection {
+        self.section
+    }
+
+    pub(crate) fn row(&self) -> usize {
+        self.row
+    }
+
+    pub(crate) fn usage(&self) -> Option<&UsageView> {
+        self.usage.as_deref()
+    }
+}
+
+/// Settings state that outlives the dialog: the row list keeps its scroll
+/// offset across closing and reopening Settings and the dialogs it opens.
+#[derive(Default)]
+pub(crate) struct SettingsUi {
+    /// The Settings row list, so `j` / `k` keep the selected row on screen
+    /// when a short window makes that list scroll.
+    scroll: gpui::ScrollHandle,
+    /// Its scrollbar's thumb while the pointer drags it.
+    grab: scrollbar::Grab,
+}
+
+impl SettingsUi {
+    /// Bring a row of the list on screen at the next layout.
+    pub(crate) fn scroll_to(&self, row: usize) {
+        self.scroll.scroll_to_item(row);
+    }
+}
+
 impl Shika {
     /// View > Usage and its shortcut (Cmd+Shift+U until Settings changes
     /// it) open Settings on Usage, or switch an open Settings to it. Settings
     /// already on Usage closes and restores the focus that opened it; any
     /// other overlay keeps the shortcut inert.
     pub(crate) fn toggle_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.key_recording {
+        if self.busy || self.key_recording() {
             return;
         }
         match &self.overlay {
-            Some(Overlay::Settings {
+            Some(Overlay::Settings(SettingsDialog {
                 section: SettingsSection::Usage,
                 ..
-            }) => self.cancel_overlay(window, cx),
-            Some(Overlay::Settings { edit: None, .. }) => {
+            })) => self.cancel_overlay(window, cx),
+            Some(Overlay::Settings(SettingsDialog { edit: None, .. })) => {
                 self.select_section(SettingsSection::Usage, window, cx)
             }
             Some(_) => {}
@@ -117,11 +181,11 @@ impl Shika {
     /// Reads the saved store once per Settings; CLI files stay on the
     /// collector.
     fn load_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Overlay::Settings {
+        let Some(Overlay::Settings(SettingsDialog {
             section: SettingsSection::Usage,
             usage: usage @ None,
             ..
-        }) = &mut self.overlay
+        })) = &mut self.overlay
         else {
             return;
         };
@@ -152,17 +216,17 @@ impl Shika {
 
     fn usage_view_mut(&mut self) -> Option<&mut UsageView> {
         match &mut self.overlay {
-            Some(Overlay::Settings {
+            Some(Overlay::Settings(SettingsDialog {
                 usage: Some(view), ..
-            }) => Some(view),
+            })) => Some(view),
             _ => None,
         }
     }
 
     fn set_usage_filter(&mut self, filter: UsageFilter, cx: &mut Context<Self>) {
-        if let Some(Overlay::Settings {
+        if let Some(Overlay::Settings(SettingsDialog {
             usage: Some(view), ..
-        }) = &mut self.overlay
+        })) = &mut self.overlay
         {
             view.set_filter(filter, cx);
         }
@@ -170,9 +234,9 @@ impl Shika {
     }
 
     fn set_usage_range(&mut self, range: UsageRange, cx: &mut Context<Self>) {
-        if let Some(Overlay::Settings {
+        if let Some(Overlay::Settings(SettingsDialog {
             usage: Some(view), ..
-        }) = &mut self.overlay
+        })) = &mut self.overlay
         {
             view.set_range(range, cx);
         }
@@ -198,14 +262,7 @@ impl Shika {
         if self.busy {
             return;
         }
-        self.overlay = Some(Overlay::Settings {
-            section,
-            row: 0,
-            edit: None,
-            usage: None,
-        });
-        self.key_recording = false;
-        self.key_note = None;
+        self.overlay = Some(Overlay::Settings(SettingsDialog::new(section, 0)));
         self.load_usage(window, cx);
         window.focus(&self.focus, cx);
         cx.notify();
@@ -265,7 +322,7 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         self.commit_setting_edit(window, cx);
-        if let Some(Overlay::Settings { row: at, edit, .. }) = &mut self.overlay {
+        if let Some(Overlay::Settings(SettingsDialog { row: at, edit, .. })) = &mut self.overlay {
             *at = row;
             *edit = Some(digits.to_string());
         }
@@ -275,9 +332,9 @@ impl Shika {
     /// Apply typed digits, pulled into range, or the typed prefix, made
     /// safe for git. Nothing typed keeps a number.
     pub(crate) fn commit_setting_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Overlay::Settings {
+        let Some(Overlay::Settings(SettingsDialog {
             section, row, edit, ..
-        }) = &mut self.overlay
+        })) = &mut self.overlay
         else {
             return;
         };
@@ -400,11 +457,11 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         self.commit_setting_edit(window, cx);
-        self.key_recording = false;
-        self.key_note = None;
-        if let Some(Overlay::Settings { row, .. }) = &mut self.overlay {
+        self.set_key_recording(false);
+        self.set_key_note(None);
+        if let Some(Overlay::Settings(SettingsDialog { row, .. })) = &mut self.overlay {
             *row = to;
-            self.settings_scroll.scroll_to_item(to);
+            self.settings_ui.scroll.scroll_to_item(to);
         }
         cx.notify();
     }
@@ -421,20 +478,20 @@ impl Shika {
             return;
         }
         self.commit_setting_edit(window, cx);
-        self.key_recording = false;
-        self.key_note = None;
-        if let Some(Overlay::Settings {
+        self.set_key_recording(false);
+        self.set_key_note(None);
+        if let Some(Overlay::Settings(SettingsDialog {
             section: at,
             row,
             edit,
             ..
-        }) = &mut self.overlay
+        })) = &mut self.overlay
             && *at != section
         {
             *at = section;
             *row = 0;
             *edit = None;
-            self.settings_scroll.scroll_to_item(0);
+            self.settings_ui.scroll.scroll_to_item(0);
         }
         self.load_usage(window, cx);
         cx.notify();
@@ -504,6 +561,162 @@ impl Shika {
                     self.set_usage_range(range, cx);
                 }
             }
+        }
+    }
+
+    /// Typing into the branch prefix, before the modifier check: the field
+    /// takes every key. False when the prefix is not being typed.
+    pub(crate) fn settings_prefix_key(
+        &mut self,
+        stroke: &gpui::Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(Overlay::Settings(SettingsDialog {
+            section: SettingsSection::Appearance,
+            row: PREFIX_ROW,
+            edit: Some(text),
+            ..
+        })) = &mut self.overlay
+        else {
+            return false;
+        };
+        match stroke.key.as_str() {
+            "enter" => self.commit_setting_edit(window, cx),
+            "escape" => {
+                if let Some(Overlay::Settings(SettingsDialog { edit, .. })) = &mut self.overlay {
+                    *edit = None;
+                }
+            }
+            "backspace" => {
+                text.pop();
+            }
+            _ => {
+                let typed = stroke.key_char.as_deref().filter(|_| {
+                    !stroke.modifiers.platform && !stroke.modifiers.control && !stroke.modifiers.alt
+                });
+                if let Some(ch) = typed.and_then(|t| t.chars().next())
+                    && (ch.is_ascii_alphanumeric() || matches!(ch, '/' | '-' | '_' | '.'))
+                    && text.len() < 40
+                {
+                    text.push(ch);
+                }
+            }
+        }
+        cx.stop_propagation();
+        cx.notify();
+        true
+    }
+
+    /// A plain key in Settings, past the grace window: `[` `]` switch
+    /// section, and every section but Appearance's ordinary rows takes its
+    /// own keys. True when the key was handled.
+    pub(crate) fn settings_nav_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let settings_nav = match &self.overlay {
+            Some(Overlay::Settings(SettingsDialog {
+                section, row, edit, ..
+            })) => Some((*section, *row, edit.is_some())),
+            _ => None,
+        };
+        if let Some((section, at, editing)) = settings_nav {
+            if !editing && matches!(key, "[" | "]") {
+                let delta = if key == "]" { 1 } else { -1 };
+                self.select_section(section.step(delta), window, cx);
+                cx.stop_propagation();
+                cx.notify();
+                return true;
+            }
+            if !editing && section == SettingsSection::Agents {
+                self.on_agents_key(at, key, window, cx);
+                cx.stop_propagation();
+                cx.notify();
+                return true;
+            }
+            if !editing && section == SettingsSection::Projects {
+                self.on_projects_key(at, key, window, cx);
+                cx.stop_propagation();
+                cx.notify();
+                return true;
+            }
+            if !editing && section == SettingsSection::Keyboard {
+                self.on_keyboard_key(at, key, window, cx);
+                cx.stop_propagation();
+                cx.notify();
+                return true;
+            }
+            if section == SettingsSection::Usage {
+                self.on_usage_key(key, window, cx);
+                cx.stop_propagation();
+                cx.notify();
+                return true;
+            }
+            if !editing
+                && section == SettingsSection::Appearance
+                && self.on_background_key(at, key, window, cx)
+            {
+                cx.stop_propagation();
+                cx.notify();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The Appearance rows: typed numbers, `h` / `l` steps, and moving
+    /// between rows. The caller stops propagation and repaints.
+    pub(crate) fn settings_row_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Overlay::Settings(SettingsDialog { row, edit, .. })) = &mut self.overlay else {
+            return;
+        };
+        let at = *row;
+        let digit = key.len() == 1 && key.as_bytes()[0].is_ascii_digit();
+        let number_row = matches!(at, OPACITY_ROW | BLUR_ROW | FONT_ROW);
+        let max_len = if at == FONT_ROW { 4 } else { 3 };
+        match (edit.as_mut(), key) {
+            (Some(text), _) if digit || (at == FONT_ROW && key == ".") => {
+                let accept = if key == "." {
+                    !text.is_empty() && !text.contains('.')
+                } else {
+                    true
+                };
+                if accept && text.len() < max_len {
+                    text.push_str(key);
+                }
+            }
+            (Some(text), "backspace") => {
+                text.pop();
+            }
+            (Some(_), "escape") => *edit = None,
+            (Some(_), "enter") => self.commit_setting_edit(window, cx),
+            (Some(_), "h" | "l" | "left" | "right") => {}
+            (None, _) if digit && number_row => self.edit_setting(at, key, window, cx),
+            (None, "backspace") if number_row => self.edit_setting(at, "", window, cx),
+            (None, "enter") if at == PREFIX_ROW => {
+                let prefix = self.branch_prefix.clone();
+                self.edit_setting(at, &prefix, window, cx)
+            }
+            (None, "h" | "left") => self.step_setting(at, -1, window, cx),
+            (None, "l" | "right") => self.step_setting(at, 1, window, cx),
+            (None, "enter" | "escape") => self.cancel_overlay(window, cx),
+            (_, "j" | "down" | "tab") => {
+                let next = self.next_appearance_row(at, 1);
+                self.select_setting(next, window, cx)
+            }
+            (_, "k" | "up") => {
+                let next = self.next_appearance_row(at, -1);
+                self.select_setting(next, window, cx)
+            }
+            _ => {}
         }
     }
 }

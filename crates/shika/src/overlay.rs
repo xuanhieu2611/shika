@@ -32,8 +32,6 @@ impl Shika {
             return;
         }
         self.commit_setting_edit(window, cx);
-        self.key_recording = false;
-        self.key_note = None;
         self.overlay = None;
         // The shown tab stays. A Lead that asked for Close still takes
         // selection and focus back in settle_lead_dialog.
@@ -409,9 +407,7 @@ impl Shika {
                             )),
                     )
             }
-            Overlay::Settings { section, row, .. } => {
-                self.settings_panel(*section, *row, max_h, chrome, home, cx)
-            }
+            Overlay::Settings(dialog) => self.settings_panel(dialog, max_h, chrome, home, cx),
         };
         div()
             .absolute()

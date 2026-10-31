@@ -6,7 +6,7 @@ impl Shika {
     fn mode_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row, .. }) if *row == MODE_ROW
+            Some(Overlay::Settings(SettingsDialog { row, .. })) if *row == MODE_ROW
         );
         let shadow = chrome.control_shadow;
         let choice = |id: &'static str, label: &'static str, mode: ThemeMode| {
@@ -49,7 +49,7 @@ impl Shika {
     ) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row: at, .. }) if *at == row
+            Some(Overlay::Settings(SettingsDialog { row: at, .. })) if *at == row
         );
         let name = appearance::resolve_theme(&self.theme, row == DARK_ROW).name;
         let step = |delta: i64| {
@@ -99,7 +99,7 @@ impl Shika {
     /// The branch prefix row: a text field. Enter or a click starts typing.
     fn prefix_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let (selected, edit) = match &self.overlay {
-            Some(Overlay::Settings { row, edit, .. }) => (
+            Some(Overlay::Settings(SettingsDialog { row, edit, .. })) => (
                 *row == PREFIX_ROW,
                 edit.as_deref().filter(|_| *row == PREFIX_ROW),
             ),
@@ -118,11 +118,11 @@ impl Shika {
             .on_click(cx.listener(|this, _, window, cx| {
                 if !matches!(
                     this.overlay,
-                    Some(Overlay::Settings {
+                    Some(Overlay::Settings(SettingsDialog {
                         row: PREFIX_ROW,
                         edit: Some(_),
                         ..
-                    })
+                    }))
                 ) {
                     let prefix = this.branch_prefix.clone();
                     this.edit_setting(PREFIX_ROW, &prefix, window, cx);
@@ -138,7 +138,7 @@ impl Shika {
     fn sound_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row, .. }) if *row == SOUND_ROW
+            Some(Overlay::Settings(SettingsDialog { row, .. })) if *row == SOUND_ROW
         );
         let on = self.notification_sound;
         let shadow = chrome.control_shadow;
@@ -151,7 +151,7 @@ impl Shika {
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.step_setting(SOUND_ROW, delta, window, cx);
-                    if let Some(Overlay::Settings { row, .. }) = &mut this.overlay {
+                    if let Some(Overlay::Settings(SettingsDialog { row, .. })) = &mut this.overlay {
                         *row = SOUND_ROW;
                     }
                     cx.notify();
@@ -183,7 +183,7 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (selected, edit) = match &self.overlay {
-            Some(Overlay::Settings { row: at, edit, .. }) => {
+            Some(Overlay::Settings(SettingsDialog { row: at, edit, .. })) => {
                 (*at == row, edit.as_deref().filter(|_| *at == row))
             }
             _ => (false, None),
@@ -191,7 +191,7 @@ impl Shika {
         let step = |delta: i64| {
             cx.listener(move |this: &mut Self, _: &gpui::ClickEvent, window, cx| {
                 this.step_setting(row, delta, window, cx);
-                if let Some(Overlay::Settings { row: at, .. }) = &mut this.overlay {
+                if let Some(Overlay::Settings(SettingsDialog { row: at, .. })) = &mut this.overlay {
                     *at = row;
                 }
             })
@@ -288,11 +288,11 @@ impl Shika {
     ) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings {
+            Some(Overlay::Settings(SettingsDialog {
                 section: SettingsSection::Agents,
                 row,
                 ..
-            }) if *row == index
+            })) if *row == index
         );
         let on = self.agents.enabled(&preset.id);
         let detail = match &preset.path {
@@ -389,26 +389,26 @@ impl Shika {
 
     pub(crate) fn settings_panel(
         &self,
-        section: SettingsSection,
-        row: usize,
+        dialog: &SettingsDialog,
         max_h: Pixels,
         chrome: &Chrome,
         home: Option<&std::path::Path>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let (section, row) = (dialog.section, dialog.row);
         let panel_h = if max_h < px(SETTINGS_HEIGHT) {
             max_h
         } else {
             px(SETTINGS_HEIGHT)
         };
-        let editing = matches!(self.overlay, Some(Overlay::Settings { edit: Some(_), .. }));
+        let editing = dialog.edit.is_some();
         let keys = self.settings_keys(section, row, editing);
         let mut rows = div()
             .id("settings-rows")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .track_scroll(&self.settings_scroll)
+            .track_scroll(&self.settings_ui.scroll)
             .flex()
             .flex_col()
             .gap(px(4.));
@@ -581,8 +581,8 @@ impl Shika {
                             .flex_col()
                             .child(rows)
                             .child(scrollbar::vertical(
-                                &self.settings_scroll,
-                                &self.settings_grab,
+                                &self.settings_ui.scroll,
+                                &self.settings_ui.grab,
                                 chrome.ink_4,
                                 chrome.ink_3,
                             )),
@@ -598,7 +598,7 @@ impl Shika {
                     .px(px(10.))
                     .when_some(
                         (section == SettingsSection::Keyboard)
-                            .then(|| self.key_note.clone())
+                            .then(|| dialog.key_note.clone())
                             .flatten(),
                         |row, note| {
                             row.child(
@@ -619,9 +619,9 @@ impl Shika {
     /// range, the provider totals that filter the chart, then the chart.
     fn usage_rows(&self, chrome: &Chrome, cx: &mut Context<Self>) -> gpui::Div {
         let mut panel = div().flex().flex_col().gap(px(12.)).px(px(10.)).pt(px(4.));
-        let Some(Overlay::Settings {
+        let Some(Overlay::Settings(SettingsDialog {
             usage: Some(view), ..
-        }) = &self.overlay
+        })) = &self.overlay
         else {
             return panel;
         };
