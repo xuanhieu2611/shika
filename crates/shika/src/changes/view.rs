@@ -152,6 +152,57 @@ impl Shika {
     ) -> impl IntoElement {
         let focused = self.changes.focus.is_focused(window);
         let metrics = self.changes_metrics(window);
+        let title = self.changes_title(width, focused, chrome, cx);
+        let body = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .bg(chrome.term_surface);
+        let content = self.changes_body(width, metrics, chrome, cx);
+        div()
+            .id("changes")
+            .track_focus(&self.changes.focus)
+            .key_context("Changes")
+            .on_key_down(cx.listener(Self::changes_key))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.focus(&this.changes.focus, cx);
+                    cx.notify();
+                }),
+            )
+            .relative()
+            .flex_none()
+            .w(width)
+            .h_full()
+            .flex()
+            .flex_col()
+            .text_color(chrome.term_fg)
+            .child(title)
+            .child(body.child(content))
+            // The left hairline, over the panel's own fills: the window
+            // under it can be transparent.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .w(px(1.))
+                    .bg(chrome.term_line),
+            )
+    }
+
+    /// The title row: "Changes", the diff stat, the hints when focused and
+    /// wide enough, and the toggle at the right end.
+    fn changes_title(
+        &self,
+        width: Pixels,
+        focused: bool,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let stat = self
             .changes
             .view()
@@ -225,14 +276,18 @@ impl Shika {
                     .child(div().flex_1())
                     .child(self.changes_toggle(chrome, cx)),
             );
-        let title = self.title_drag(title, cx);
-        let body = div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .bg(chrome.term_surface);
-        let content = match panel_body(
+        self.title_drag(title, cx)
+    }
+
+    /// The list area's content: the list, or an empty or failed state.
+    fn changes_body(
+        &mut self,
+        width: Pixels,
+        metrics: Metrics,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match panel_body(
             self.changes.target.as_ref(),
             &self.changes.content,
             Instant::now(),
@@ -259,39 +314,7 @@ impl Shika {
                 let view = view.clone();
                 self.changes_list(view, width, metrics, chrome, cx)
             }
-        };
-        div()
-            .id("changes")
-            .track_focus(&self.changes.focus)
-            .key_context("Changes")
-            .on_key_down(cx.listener(Self::changes_key))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    window.focus(&this.changes.focus, cx);
-                    cx.notify();
-                }),
-            )
-            .relative()
-            .flex_none()
-            .w(width)
-            .h_full()
-            .flex()
-            .flex_col()
-            .text_color(chrome.term_fg)
-            .child(title)
-            .child(body.child(content))
-            // The left hairline, over the panel's own fills: the window
-            // under it can be transparent.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left_0()
-                    .w(px(1.))
-                    .bg(chrome.term_line),
-            )
+        }
     }
 
     fn changes_list(
