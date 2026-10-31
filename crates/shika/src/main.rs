@@ -4,6 +4,7 @@ mod appearance;
 mod background;
 mod background_view;
 mod base_branch;
+mod card;
 mod card_menu;
 mod changes;
 mod chat_input;
@@ -14,6 +15,7 @@ mod column;
 mod control;
 mod control_client;
 mod focus;
+mod host;
 mod keys;
 mod launch;
 mod lead;
@@ -46,9 +48,11 @@ mod usage_dashboard;
 mod worktree_setup;
 
 use base_branch::*;
+use card::*;
 use card_menu::*;
 use close::*;
 use column::*;
+use host::*;
 use launch::*;
 use lead::*;
 use publish::*;
@@ -68,6 +72,7 @@ use gpui::{
 };
 use model::{PromptCapture, Status, TitleWatch};
 use notifications::Notifications;
+use overlay::Overlay;
 use shika_core::{
     AgentSettings, Appearance, CliCatalog, CliPreset, Column, Core, DiffStat, FontSize,
     JournalEntry, KeyOverrides, KnownBranches, LaunchOptions, LeadLaunch, PreparationConfig,
@@ -120,438 +125,12 @@ gpui::actions!(
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
-#[derive(Default)]
-struct HostState {
-    pty: Option<PtyId>,
-    measured: Option<TerminalSize>,
-    prompt: PromptCapture,
-    submission_capture: PromptCapture,
-    submission_recalled: bool,
-    title: Option<String>,
-    last_output: Option<Instant>,
-    /// Focus/mouse reports and resize, separate from draft typing so real
-    /// transcript changes are not suppressed while the user edits a prompt.
-    last_interaction: Option<Instant>,
-    /// The user's last key or paste.
-    last_typed: Option<Instant>,
-    exited: bool,
-    submission: u64,
-    last_submission: Option<Instant>,
-    /// The latest submission is the prompt the CLI was launched with. The
-    /// tick hands that to the activity clock once.
-    launch_turn: bool,
-    lifecycle: Option<shika_core::AgentActivity>,
-    lifecycle_checking: bool,
-    pending_input: Vec<Vec<u8>>,
-    preparing: bool,
-    agent_starting: bool,
-    preparation_stage: String,
-}
-struct Host {
-    core: Arc<Core>,
-    state: Arc<Mutex<HostState>>,
-    capture: bool,
-}
-impl PtyHost for Host {
-    fn write(&self, bytes: &[u8], source: InputSource) {
-        let mut s = lock(&self.state);
-        // Setup is non-interactive. Never queue installer input and later send
-        // it as an unintended prompt to the agent.
-        if s.preparing && !(s.agent_starting && source == InputSource::Reply) {
-            return;
-        }
-        let now = Instant::now();
-        if source == InputSource::Typed {
-            s.last_typed = Some(now);
-        }
-        if source == InputSource::Report {
-            s.last_interaction = Some(now);
-        }
-        if self.capture && source == InputSource::Typed {
-            s.capture_typed(bytes, now);
-        }
-        if let Some(pty) = s.pty {
-            let _ = self.core.write(pty, bytes);
-        } else {
-            // Engine replies can arrive before Core has registered its PTY.
-            // Keep their order, along with any input typed during startup.
-            s.pending_input.push(bytes.to_vec());
-        }
-    }
-    fn resize(&self, size: TerminalSize) {
-        let mut s = lock(&self.state);
-        s.measured = Some(size);
-        let now = Instant::now();
-        s.last_interaction = Some(now);
-        if let Some(pty) = s.pty {
-            let _ = self.core.resize(pty, PtySize::new(size.rows, size.cols));
-        }
-    }
-}
-impl HostState {
-    /// Keep the agent's fixed title without seeding a turn. Leads call this
-    /// before any startup typeahead or injected summary can be captured.
-    fn keep_title(&mut self) {
-        self.prompt.finish();
-    }
-
-    /// Feeds typed bytes to the naming and submission capture. A nonempty
-    /// submitted line is a candidate turn; embedded paste newlines, reports,
-    /// and query replies are not.
-    fn capture_typed(&mut self, bytes: &[u8], now: Instant) {
-        if let Some(title) = self.prompt.feed(bytes) {
-            self.title = Some(title);
-        }
-        if matches!(bytes, b"\x1b[A" | b"\x1bOA" | b"\x1b[B" | b"\x1bOB") {
-            // History lives inside the CLI editor, not in captured keys.
-            // Treat a subsequent Enter as a candidate accepted prompt.
-            self.submission_recalled = true;
-        }
-        if matches!(bytes, b"\x15" | b"\x03") {
-            self.submission_recalled = false;
-        }
-        let recalled_enter = self.submission_recalled && matches!(bytes, b"\r" | b"\n" | b"\r\n");
-        if self.submission_capture.feed(bytes).is_some() || recalled_enter {
-            self.submission += 1;
-            self.last_submission = Some(now);
-            self.submission_capture = PromptCapture::default();
-            self.submission_recalled = false;
-        }
-    }
-    /// Typed input that has not been submitted: text on the line, or a
-    /// recalled history entry. A CLI's grey suggestion is not typed, so it
-    /// does not count.
-    fn has_draft(&self) -> bool {
-        self.submission_capture.has_text() || self.submission_recalled
-    }
-    /// Bytes are arrival metadata, not proof of work. The activity sampler
-    /// separately compares live transcript content, excluding the editor.
-    fn note_output(&mut self, now: Instant) {
-        self.last_output = Some(now);
-    }
-    fn note_lifecycle(&mut self, generation: u64, report: Option<shika_core::AgentActivity>) {
-        // A read scheduled for the old turn cannot inject its Idle into a
-        // newly submitted prompt, even if the filesystem read was delayed.
-        if self.submission == generation {
-            self.lifecycle = report;
-        }
-        self.lifecycle_checking = false;
-    }
-}
-/// Feeds an agent PTY into its terminal and records output and exit on its
-/// host, for New and Switch agent alike.
-fn agent_sink(terminal: Terminal, state: Arc<Mutex<HostState>>) -> impl shika_core::PtySink {
-    move |_, event| match event {
-        PtyEvent::Output(bytes) => {
-            terminal.feed(&bytes);
-            lock(&state).note_output(Instant::now());
-        }
-        PtyEvent::Exit(exit) => {
-            terminal.feed(format!("\r\n[process exited with code {}]\r\n", exit.code).as_bytes());
-            let mut state = lock(&state);
-            state.last_output = Some(Instant::now());
-            state.exited = true;
-        }
-    }
-}
-fn bind_host(core: &Core, state: &Mutex<HostState>, pty: PtyId) {
-    let mut host = lock(state);
-    host.pty = Some(pty);
-    if let Some(size) = host.measured {
-        let _ = core.resize(pty, PtySize::new(size.rows, size.cols));
-    }
-    for bytes in host.pending_input.drain(..) {
-        let _ = core.write(pty, &bytes);
-    }
-}
-struct Pane {
-    shell_number: usize,
-    view: Entity<TerminalView>,
-    terminal: Terminal,
-    state: Arc<Mutex<HostState>>,
-}
-impl Pane {
-    fn new(
-        core: Arc<Core>,
-        capture: bool,
-        opacity: f32,
-        font_size: f32,
-        palette: Palette,
-        window: &mut Window,
-        cx: &mut Context<Shika>,
-    ) -> Self {
-        let state = Arc::new(Mutex::new(HostState::default()));
-        let terminal = Terminal::new(
-            TerminalOptions {
-                size: TerminalSize::new(2, 2),
-                ..Default::default()
-            },
-            Host {
-                core,
-                state: state.clone(),
-                capture,
-            },
-        );
-        let view = cx.new(|cx| {
-            let mut view = TerminalView::new(
-                terminal.clone(),
-                TerminalConfig {
-                    font_size: px(font_size),
-                    ..TerminalConfig::default()
-                },
-                palette,
-                window,
-                cx,
-            );
-            view.set_background_opacity(opacity, cx);
-            view
-        });
-        cx.subscribe(&view, |this, _, event, cx| {
-            if let TerminalEvent::OpenLink(uri) = event
-                && let Err(text) = open_terminal_link(uri)
-            {
-                this.message(text);
-                cx.notify();
-            }
-        })
-        .detach();
-        Self {
-            shell_number: 0,
-            view,
-            terminal,
-            state,
-        }
-    }
-}
-fn open_terminal_link(uri: &str) -> Result<(), String> {
-    if !openable_uri(uri) {
-        return Err("Couldn't open link".to_string());
-    }
-    let mut child = std::process::Command::new("/usr/bin/open")
-        .arg(uri)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| "Couldn't open link".to_string())?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
-}
-
-/// What a card's launch starts. A retry repeats it.
-#[derive(Clone)]
-enum Launch {
-    /// New from the picker: nothing typed yet.
-    Task,
-    Recover {
-        path: PathBuf,
-        resume: bool,
-    },
-    /// An agent in the author's repository root, with no owned git state.
-    Checkout,
-    /// `shika new`: the CLI starts with the Lead's prompt and the card is
-    /// not selected, because the author is typing elsewhere.
-    Worker(LaunchOptions),
-    /// The project's Lead, started by the author.
-    Lead(LeadLaunch),
-    /// The project's Lead, started again by the app after its resume was
-    /// refused. Not an author launch: it closes no overlay, takes no busy
-    /// hold, and the selection and focus only follow the old Lead's.
-    /// `focus`: the old Lead's terminal had focus.
-    LeadRestart {
-        launch: LeadLaunch,
-        focus: bool,
-    },
-}
-
-struct Card {
-    session: Option<Session>,
-    project: String,
-    title: String,
-    preset: String,
-    status: Status,
-    since: Instant,
-    activity: activity::Activity,
-    evidence: activity::OutputEvidence,
-    lifecycle: lifecycle::Lifecycle,
-    lifecycle_checked: Option<Instant>,
-    /// Unbound host/identity pane for a chat card; never receives a PTY or CLI bytes.
-    agent: Pane,
-    chat: bool,
-    chat_delivery: Option<control::ChatDelivery>,
-    shells: Vec<Pane>,
-    /// Zero is the pinned agent tab; shells use their index plus one.
-    active_tab: usize,
-    shell_serial: usize,
-    tab_scroll: gpui::ScrollHandle,
-    /// The tab under the pointer, which paints its hover in the tab shape.
-    hovered_tab: Option<usize>,
-    submitted: u64,
-    creating: bool,
-    title_watch: TitleWatch,
-    /// The prompt or the CLI's title has named the card. Until then it reads
-    /// "New <CLI>" in a lighter ink.
-    named: bool,
-    /// What the task changed, fetched each time the card turns Ready.
-    diff: Option<DiffStat>,
-    /// The checks on the PR that Create PR or a Lead's `shika pr` made or
-    /// reused. Memory only.
-    pr: Option<checks::PrWatch>,
-    /// A Lead's `shika pr` is publishing this worker. Create PR, Close,
-    /// Switch agent, and the Lead's own commands on it wait until it ends
-    /// ([`control::LEAD_PUBLISHING`]). Memory only.
-    lead_publishing: bool,
-    /// The `since` of the Ready turn the user has seen. Every turn that ends
-    /// gets a new `since`, so its dot returns until it is seen.
-    seen: Option<Instant>,
-    launch_preset: String,
-    launch: Launch,
-    /// The Lead session that started this worker.
-    started_by: Option<String>,
-    /// The control socket state, on the project's Lead card only.
-    lead: Option<control::LeadState>,
-    /// The `SHIKA_TOKEN` of a Lead-started worker's agent PTY. It may run
-    /// only `shika report`, and dies with the card.
-    worker_token: Option<String>,
-    /// The worker's latest `shika report`. Memory only.
-    report: Option<control::WorkerReport>,
-    /// A failed launch nobody asked for (a worker): removed by the tick once
-    /// no dialog depends on card positions.
-    discard: bool,
-    launch_control: Option<PreparationControl>,
-    launch_error: Option<String>,
-    stage: String,
-    /// Close is stopping its terminals and removing its worktree: the card
-    /// dims and says so, and its terminal fades behind "Closing...".
-    closing: bool,
-    /// Switch agent's replacement terminal while its process starts. The
-    /// tick leaves the card alone meanwhile, so the old agent's exit is not
-    /// read as a finished turn.
-    next_agent: Option<Pane>,
-    /// The CLI exit was already handed to the token read. A later Ready
-    /// still reads on its own.
-    usage_exit_seen: bool,
-    /// What the app tracks for a Lead beyond the card, once it has started.
-    lead_run: Option<LeadRun>,
-}
-/// The column group a card was shown in, by project id: the Leads section
-/// (a Lead and its workers) or the project's own cards.
-#[derive(Clone, PartialEq, Eq)]
-enum Home {
-    Leads(String),
-    Project(String),
-}
-impl Card {
-    fn is_checkout(&self) -> bool {
-        matches!(self.launch, Launch::Checkout)
-    }
-    fn unseen(&self) -> bool {
-        matches!(self.status, Status::Ready | Status::Asking) && self.seen != Some(self.since)
-    }
-    fn running(&self) -> bool {
-        let host = lock(&self.agent.state);
-        model::activity_requires_confirmation(
-            self.status,
-            host.exited,
-            host.submission != self.submitted,
-        )
-    }
-    /// Rename task is offered for a started task, never for a Lead.
-    fn renamable(&self) -> bool {
-        self.session.is_some() && self.lead.is_none()
-    }
-    fn active_pane(&self) -> &Pane {
-        self.active_tab
-            .checked_sub(1)
-            .and_then(|index| self.shells.get(index))
-            .unwrap_or(&self.agent)
-    }
-    /// Scrolls the active tab into view. The strip's children are the lead
-    /// space, the tabs, and the trailing space, so the first and last tabs
-    /// reveal the space that holds their outer flare.
-    fn reveal_active_tab(&self) {
-        let item = match self.active_tab {
-            0 => 0,
-            tab if tab == self.shells.len() => tab + 2,
-            tab => tab + 1,
-        };
-        self.tab_scroll.scroll_to_item(item);
-    }
-}
-impl Drop for Card {
-    fn drop(&mut self) {
-        if let Some(control) = &self.launch_control {
-            control.cancel_preserving_worktree();
-        }
-    }
-}
 #[derive(Clone, Debug, PartialEq)]
 enum Selection {
     Project(String),
     Card(usize),
     /// The saved, stopped Lead of this project. It has no card.
     Resting(String),
-}
-enum Overlay {
-    LeadQuestion(lead_chat::QuestionDialog),
-    WorktreeSetup(Box<worktree_setup::Editor>),
-    /// Frame the background image, opened from Settings, which it returns to.
-    Adjust(Box<background_view::Adjust>),
-    CardMenu(CardMenu),
-    Rename(rename::RenameDialog),
-    Publish(PublishDialog),
-    SwitchAgent(switch_agent::SwitchDialog),
-    Picker(launch::PickerDialog),
-    CheckoutClose(close::CheckoutCloseDialog),
-    Close(close::CloseDialog),
-    RestingMenu(RestingMenu),
-    /// Stop a live Lead, or forget one.
-    LeadClose(lead::LeadCloseDialog),
-    SwitchedClose(close::SwitchedCloseDialog),
-    Preparation(launch::PreparationDialog),
-    Leftovers,
-    Recover(recovery::RecoverDialog),
-    Quit(recovery::QuitDialog),
-    RemoveLeftover(usize),
-    RemoveProject(String),
-    Settings(SettingsDialog),
-    Base(BaseDialog),
-}
-impl Overlay {
-    /// Appearance previews and pointer menus leave the underlying app unaltered.
-    fn dims_background(&self) -> bool {
-        !matches!(
-            self,
-            Self::Settings(_) | Self::Adjust(_) | Self::CardMenu(_) | Self::RestingMenu(_)
-        )
-    }
-
-    /// How a refusal names this overlay to a Lead.
-    fn name(&self) -> &'static str {
-        match self {
-            Self::LeadQuestion(_) => "the Lead question dialog",
-            Self::WorktreeSetup(_) => "the Worktree setup dialog",
-            Self::Adjust(_) => "the Adjust background dialog",
-            Self::CardMenu(_) => "a card menu",
-            Self::Rename(_) => "the Rename task dialog",
-            Self::Publish(_) => "the Create PR dialog",
-            Self::SwitchAgent(_) => "the Switch agent dialog",
-            Self::Picker(_) => "the New picker",
-            Self::Close(_) | Self::SwitchedClose(_) | Self::CheckoutClose(_) => {
-                "the Close task dialog"
-            }
-            Self::RestingMenu(_) => "a card menu",
-            Self::LeadClose(_) => "the Lead's Stop dialog",
-            Self::Preparation(_) => "the setup approval dialog",
-            Self::Leftovers | Self::RemoveLeftover(_) | Self::Recover(_) => "the leftovers list",
-            Self::Quit(_) => "the Quit dialog",
-            Self::RemoveProject(_) => "the Remove project dialog",
-            Self::Settings(_) => "Settings",
-            Self::Base(_) => "the Base branch dialog",
-        }
-    }
 }
 struct Shika {
     core: Arc<Core>,

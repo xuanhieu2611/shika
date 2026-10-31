@@ -99,3 +99,64 @@ impl Shika {
             .into_any_element()
     }
 }
+
+pub(crate) enum Overlay {
+    LeadQuestion(lead_chat::QuestionDialog),
+    WorktreeSetup(Box<worktree_setup::Editor>),
+    /// Frame the background image, opened from Settings, which it returns to.
+    Adjust(Box<background_view::Adjust>),
+    CardMenu(CardMenu),
+    Rename(rename::RenameDialog),
+    Publish(PublishDialog),
+    SwitchAgent(switch_agent::SwitchDialog),
+    Picker(launch::PickerDialog),
+    CheckoutClose(close::CheckoutCloseDialog),
+    Close(close::CloseDialog),
+    RestingMenu(RestingMenu),
+    /// Stop a live Lead, or forget one.
+    LeadClose(lead::LeadCloseDialog),
+    SwitchedClose(close::SwitchedCloseDialog),
+    Preparation(launch::PreparationDialog),
+    Leftovers,
+    Recover(recovery::RecoverDialog),
+    Quit(recovery::QuitDialog),
+    RemoveLeftover(usize),
+    RemoveProject(String),
+    Settings(SettingsDialog),
+    Base(BaseDialog),
+}
+
+impl Overlay {
+    /// Appearance previews and pointer menus leave the underlying app unaltered.
+    pub(crate) fn dims_background(&self) -> bool {
+        !matches!(
+            self,
+            Self::Settings(_) | Self::Adjust(_) | Self::CardMenu(_) | Self::RestingMenu(_)
+        )
+    }
+
+    /// How a refusal names this overlay to a Lead.
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::LeadQuestion(_) => "the Lead question dialog",
+            Self::WorktreeSetup(_) => "the Worktree setup dialog",
+            Self::Adjust(_) => "the Adjust background dialog",
+            Self::CardMenu(_) => "a card menu",
+            Self::Rename(_) => "the Rename task dialog",
+            Self::Publish(_) => "the Create PR dialog",
+            Self::SwitchAgent(_) => "the Switch agent dialog",
+            Self::Picker(_) => "the New picker",
+            Self::Close(_) | Self::SwitchedClose(_) | Self::CheckoutClose(_) => {
+                "the Close task dialog"
+            }
+            Self::RestingMenu(_) => "a card menu",
+            Self::LeadClose(_) => "the Lead's Stop dialog",
+            Self::Preparation(_) => "the setup approval dialog",
+            Self::Leftovers | Self::RemoveLeftover(_) | Self::Recover(_) => "the leftovers list",
+            Self::Quit(_) => "the Quit dialog",
+            Self::RemoveProject(_) => "the Remove project dialog",
+            Self::Settings(_) => "Settings",
+            Self::Base(_) => "the Base branch dialog",
+        }
+    }
+}
