@@ -98,8 +98,8 @@ impl Shika {
         }
         let (lead, lead_id) = match self.lead_for_token(&token) {
             Ok(found) => found,
-            Err(refusal) => {
-                let _ = reply.send(refusal);
+            Err(reason) => {
+                let _ = reply.send(refused(reason));
                 return;
             }
         };
@@ -172,20 +172,20 @@ impl Shika {
         let _ = reply.send(answer);
     }
 
-    /// The Lead card holding `token` and its session id, or the refusal when
+    /// The Lead card holding `token` and its session id, or why not when
     /// there is none or it has no session yet.
-    fn lead_for_token(&self, token: &str) -> Result<(usize, String), Reply> {
+    fn lead_for_token(&self, token: &str) -> Result<(usize, String), &'static str> {
         let Some(lead) = self
             .cards
             .iter()
             .position(|card| card.lead.as_ref().is_some_and(|lead| lead.token == token))
         else {
-            return Err(refused(
+            return Err(
                 "This Lead is not running in Shika (unknown or expired token). Start a Lead from Shika.",
-            ));
+            );
         };
         let Some(lead_id) = self.cards[lead].session.as_ref().map(|s| s.id.clone()) else {
-            return Err(refused("The Lead is still starting."));
+            return Err("The Lead is still starting.");
         };
         Ok((lead, lead_id))
     }
