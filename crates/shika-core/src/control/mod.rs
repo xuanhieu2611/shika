@@ -1084,5 +1084,4 @@ impl Drop for ControlDir {
 }
 
 #[cfg(test)]
-#[path = "control_tests.rs"]
 mod tests;
