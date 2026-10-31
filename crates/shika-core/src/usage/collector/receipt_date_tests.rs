@@ -1,4 +1,11 @@
+use super::super::{Date, recorded_date};
+use super::discovery::*;
+use super::receipt::*;
+use super::registry::*;
 use super::*;
+use std::fs;
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 struct Scratch(PathBuf);
 impl Scratch {
