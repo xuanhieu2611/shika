@@ -258,7 +258,7 @@ impl Shika {
                 .spawn(async move { core.cancel_session_start(&id) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.leftovers = this.core.leftovers_list().unwrap_or_default();
+                this.leftovers.entries = this.core.leftovers_list().unwrap_or_default();
                 cx.notify();
             });
         })
@@ -669,7 +669,7 @@ impl Shika {
                         this.message(error.to_string());
                     }
                 }
-                this.leftovers = this.core.leftovers_list().unwrap_or_default();
+                this.leftovers.entries = this.core.leftovers_list().unwrap_or_default();
                 cx.notify();
             });
             if updated.is_err()

@@ -22,8 +22,8 @@ impl Shika {
             Overlay::RestingMenu { project, .. } => ("resting-menu", hash(project)),
             Overlay::RemoveProject(id) => ("remove-project", hash(id)),
             Overlay::RemoveLeftover(i) => ("remove-leftover", *i as u64),
-            Overlay::Recover { .. } => ("recover", 0),
-            Overlay::Quit { .. } => ("quit", 0),
+            Overlay::Recover(_) => ("recover", 0),
+            Overlay::Quit(_) => ("quit", 0),
             Overlay::Preparation { project, .. } => ("preparation", hash(project)),
             Overlay::LeadQuestion(dialog) => ("lead-question", dialog.identity()),
             _ => return None,
@@ -66,8 +66,8 @@ impl Shika {
                     | Overlay::RestingMenu { .. }
                     | Overlay::RemoveProject(_)
                     | Overlay::RemoveLeftover(_)
-                    | Overlay::Recover { .. }
-                    | Overlay::Quit { .. }
+                    | Overlay::Recover(_)
+                    | Overlay::Quit(_)
             )
         ) {
             return false;
@@ -76,8 +76,8 @@ impl Shika {
             return true;
         }
         match (&self.overlay, chord) {
-            (Some(Overlay::Quit { .. }), Primary) => self.confirm_quit(window, cx),
-            (Some(Overlay::Recover { .. }), Primary) => self.start_recovery(false, window, cx),
+            (Some(Overlay::Quit(_)), Primary) => self.confirm_quit(window, cx),
+            (Some(Overlay::Recover(_)), Primary) => self.start_recovery(false, window, cx),
             (
                 Some(Overlay::CheckoutClose(_) | Overlay::Close(_) | Overlay::SwitchedClose(_)),
                 _,
@@ -587,54 +587,11 @@ impl Shika {
                     }
                 }
                 Some(Overlay::LeadClose(_)) => self.lead_close_key(key, window, cx),
-                Some(Overlay::Quit { .. }) => {
-                    if key == "escape" {
-                        self.cancel_quit(window, cx);
-                    }
-                }
-                Some(Overlay::Recover { .. }) => {
-                    let len = self.recovery_choices().len();
-                    if let Some(Overlay::Recover { index, .. }) = &mut self.overlay {
-                        match key {
-                            "j" | "down" if len > 0 => *index = (*index + 1) % len,
-                            "k" | "up" if len > 0 => *index = (*index + len - 1) % len,
-                            _ => {}
-                        }
-                    }
-                    if key == "escape" {
-                        self.overlay = Some(Overlay::Leftovers);
-                    }
-                }
-                Some(Overlay::RemoveLeftover(_)) => {
-                    if key == "escape" {
-                        self.overlay = Some(Overlay::Leftovers);
-                    }
-                }
-                Some(Overlay::Leftovers) => {
-                    let len = self.leftovers.len();
-                    match key {
-                        "j" | "down" if len > 0 => {
-                            self.leftover_selected = (self.leftover_selected + 1) % len
-                        }
-                        "k" | "up" if len > 0 => {
-                            self.leftover_selected = (self.leftover_selected + len - 1) % len
-                        }
-                        "enter" if len > 0 => {
-                            self.inspect_leftover(self.leftover_selected.min(len - 1), window, cx);
-                        }
-                        "d" if len > 0 => {
-                            self.overlay =
-                                Some(Overlay::RemoveLeftover(self.leftover_selected.min(len - 1)))
-                        }
-                        "escape" => self.cancel_overlay(window, cx),
-                        _ => {}
-                    }
-                }
-                Some(Overlay::RemoveProject(_)) => {
-                    if key == "escape" {
-                        self.cancel_overlay(window, cx);
-                    }
-                }
+                Some(Overlay::Quit(_)) => self.quit_key(key, window, cx),
+                Some(Overlay::Recover(_)) => self.recover_key(key),
+                Some(Overlay::RemoveLeftover(_)) => self.remove_leftover_key(key),
+                Some(Overlay::Leftovers) => self.leftovers_key(key, window, cx),
+                Some(Overlay::RemoveProject(_)) => self.remove_project_key(key, window, cx),
                 Some(Overlay::Settings { row, edit, .. }) => {
                     let at = *row;
                     let digit = key.len() == 1 && key.as_bytes()[0].is_ascii_digit();

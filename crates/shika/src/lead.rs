@@ -724,7 +724,7 @@ impl Shika {
                 cx.notify();
             });
         }
-        self.leftovers = self.core.leftovers_list().unwrap_or_default();
+        self.leftovers.entries = self.core.leftovers_list().unwrap_or_default();
         let before = self.selection.clone();
         let mine = match (&before, index) {
             (Some(Selection::Card(at)), Some(index)) => *at == index,

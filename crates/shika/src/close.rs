@@ -446,7 +446,7 @@ impl Shika {
         if self.busy {
             return;
         }
-        let Some(entry) = self.leftovers.get(index) else {
+        let Some(entry) = self.leftovers.entries.get(index) else {
             return;
         };
         let path = entry.path.clone();
@@ -461,8 +461,8 @@ impl Shika {
                 this.busy = false;
                 match result {
                     Ok(()) => {
-                        this.leftovers.remove(index);
-                        this.overlay = if this.leftovers.is_empty() {
+                        this.leftovers.entries.remove(index);
+                        this.overlay = if this.leftovers.entries.is_empty() {
                             None
                         } else {
                             Some(Overlay::Leftovers)

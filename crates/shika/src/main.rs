@@ -548,14 +548,8 @@ enum Overlay {
         retry: Option<Arc<Mutex<HostState>>>,
     },
     Leftovers,
-    Recover {
-        entry: JournalEntry,
-        index: usize,
-    },
-    Quit {
-        previous: Option<Box<Overlay>>,
-        focus: Option<FocusHandle>,
-    },
+    Recover(recovery::RecoverDialog),
+    Quit(recovery::QuitDialog),
     RemoveLeftover(usize),
     RemoveProject(String),
     /// `section` is Appearance, Keyboard, Agents, Projects, or Usage. `row` is the selected row
@@ -608,10 +602,8 @@ impl Overlay {
             Self::RestingMenu { .. } => "a card menu",
             Self::LeadClose(_) => "the Lead's Stop dialog",
             Self::Preparation { .. } => "the setup approval dialog",
-            Self::Leftovers | Self::RemoveLeftover(_) | Self::Recover { .. } => {
-                "the leftovers list"
-            }
-            Self::Quit { .. } => "the Quit dialog",
+            Self::Leftovers | Self::RemoveLeftover(_) | Self::Recover(_) => "the leftovers list",
+            Self::Quit(_) => "the Quit dialog",
             Self::RemoveProject(_) => "the Remove project dialog",
             Self::Settings { .. } => "Settings",
             Self::Base { .. } => "the Base branch dialog",
@@ -662,8 +654,7 @@ struct Shika {
     update_notice: Option<updates::UpdateCard>,
     /// Clicks on the sample card only change the picture.
     preview_update: bool,
-    leftovers: Vec<JournalEntry>,
-    leftover_selected: usize,
+    leftovers: recovery::LeftoverList,
     clock: Instant,
     /// How long the selected card has been on screen, for clearing its dot.
     dwell: model::Dwell,
@@ -803,8 +794,7 @@ impl Shika {
             },
             update_notice: preview_update.then(sample_update_notice),
             preview_update,
-            leftovers,
-            leftover_selected: 0,
+            leftovers: recovery::LeftoverList::new(leftovers),
             clock: Instant::now(),
             dwell: model::Dwell::default(),
             branch_check_at: Instant::now(),
@@ -1439,10 +1429,10 @@ mod host_tests {
         );
         assert!(Overlay::CheckoutClose(close::CheckoutCloseDialog { index: 0 }).dims_background());
         assert!(
-            Overlay::Quit {
+            Overlay::Quit(recovery::QuitDialog {
                 previous: None,
                 focus: None,
-            }
+            })
             .dims_background()
         );
     }

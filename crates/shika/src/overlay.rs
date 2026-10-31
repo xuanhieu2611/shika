@@ -3,7 +3,7 @@ use super::*;
 
 impl Shika {
     pub(super) fn cancel_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.overlay, Some(Overlay::Quit { .. })) {
+        if matches!(self.overlay, Some(Overlay::Quit(_))) {
             self.cancel_quit(window, cx);
             return;
         }
@@ -497,129 +497,11 @@ impl Shika {
             Overlay::CheckoutClose(dialog) => self.checkout_close_view(dialog, chrome, max_h, cx),
             Overlay::Close(dialog) => self.close_view(dialog, chrome, max_h, cx),
             Overlay::SwitchedClose(dialog) => self.switched_close_view(dialog, chrome, max_h, cx),
-            Overlay::Quit { .. } => self.quit_dialog(chrome, max_h, cx),
-            Overlay::Recover { .. } => self.recovery_dialog(chrome, max_h, cx),
-            Overlay::Leftovers => {
-                let mut panel = dialog(chrome, max_h)
-                    .child(dialog_title(div()).child("Leftover worktrees"))
-                    .child(dialog_text(chrome).child(
-                        "Their work remains on disk. Reopen a worktree to continue, or remove it to discard its work.",
-                    ));
-                let mut rows = div().flex().flex_col().gap(px(2.)).mt(px(4.));
-                for (i, entry) in self.leftovers.iter().enumerate() {
-                    rows = rows.child(
-                        list_row(i == self.leftover_selected, chrome)
-                            .gap(px(12.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .font_family(MONO)
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(12.))
-                                            .child(entry.branch.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(11.))
-                                            .text_color(chrome.ink_3)
-                                            .child(model::tilde(&entry.path, home)),
-                                    ),
-                            )
-                            .child(
-                                secondary_button(SharedString::from(format!("reopen-{i}")), chrome)
-                                    .px(px(10.))
-                                    .py(px(4.))
-                                    .text_size(px(12.))
-                                    .child("Reopen")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.inspect_leftover(i, window, cx)
-                                    })),
-                            )
-                            .child(
-                                secondary_button(SharedString::from(format!("remove-{i}")), chrome)
-                                    .px(px(10.))
-                                    .py(px(4.))
-                                    .text_size(px(12.))
-                                    .child("Remove worktree")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.overlay = Some(Overlay::RemoveLeftover(i));
-                                        cx.notify();
-                                    })),
-                            ),
-                    );
-                }
-                panel = panel.child(rows).child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_x(px(12.))
-                        .gap_y(px(6.))
-                        .mt(px(4.))
-                        .child(hint("j k", "choose", chrome))
-                        .child(hint("↵", "reopen", chrome))
-                        .child(hint("d", "remove", chrome))
-                        .child(hint("esc", "keep worktrees", chrome)),
-                );
-                panel.child(dialog_buttons().child(self.cancel_button("Cancel", chrome, cx)))
-            }
-            Overlay::RemoveProject(id) => {
-                let id = id.clone();
-                dialog(chrome, max_h)
-                    .child(dialog_title(div()).child("Remove project?"))
-                    .child(dialog_text(chrome).child(
-                        "Stops its sessions and forgets this project. Worktrees remain on disk in the leftovers list.",
-                    ))
-                    .child(
-                        dialog_buttons().child(self.cancel_button("Cancel", chrome, cx)).child(
-                            primary_button(
-                                "remove-project",
-                                "Remove project",
-                                "\u{2318}\u{232b}",
-                                chrome,
-                            )
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.remove_project(id.clone(), cx)
-                                })),
-                        ),
-                    )
-            }
-            Overlay::RemoveLeftover(i) => {
-                let i = *i;
-                dialog(chrome, max_h)
-                    .child(dialog_title(div()).child("Remove leftover worktree?"))
-                    .child(
-                        dialog_text(chrome)
-                            .font_family(MONO)
-                            .text_size(px(12.))
-                            .child(model::tilde(&self.leftovers[i].path, home)),
-                    )
-                    .child(
-                        dialog_text(chrome)
-                            .child("This deletes any uncommitted work and the local branch."),
-                    )
-                    .child(
-                        dialog_buttons()
-                            .child(self.cancel_button("Cancel", chrome, cx))
-                            .child(
-                                primary_button(
-                                    "remove-confirm",
-                                    "Discard worktree",
-                                    "\u{2318}\u{232b}",
-                                    chrome,
-                                )
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.remove_leftover(i, cx)),
-                                ),
-                            ),
-                    )
-            }
+            Overlay::Quit(_) => self.quit_dialog(chrome, max_h, cx),
+            Overlay::Recover(recover) => self.recovery_dialog(recover, chrome, max_h, cx),
+            Overlay::Leftovers => self.leftovers_view(chrome, home, max_h, cx),
+            Overlay::RemoveProject(id) => self.remove_project_view(id, chrome, max_h, cx),
+            Overlay::RemoveLeftover(i) => self.remove_leftover_view(*i, chrome, home, max_h, cx),
             Overlay::Base {
                 project,
                 text,
