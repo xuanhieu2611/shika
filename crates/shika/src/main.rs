@@ -66,7 +66,6 @@ use gpui::{
     PathPromptOptions, Pixels, Render, Rgba, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Window, WindowBounds, WindowOptions, div, prelude::FluentBuilder, px, size,
 };
-use lead_chat::markdown as lead_chat_markdown;
 use model::{PromptCapture, Status, TitleWatch};
 use notifications::Notifications;
 use shika_core::{

@@ -95,7 +95,9 @@ impl Shika {
                                 _ => None,
                             })
                             .max_by_key(|(id, _)| *id)
-                            .and_then(|(_, text)| crate::lead_chat_markdown::reply_first_line(text))
+                            .and_then(|(_, text)| {
+                                crate::lead_chat::markdown::reply_first_line(text)
+                            })
                     })
                     .await;
                 let _ = this.update(cx, |this, cx| {
