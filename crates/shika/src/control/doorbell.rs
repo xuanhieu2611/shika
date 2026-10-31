@@ -169,6 +169,50 @@ pub fn doorbell_line(tasks: &[&TaskInfo]) -> String {
     )
 }
 
+/// The event rows a chat Lead shows for a doorbell: one per due worker,
+/// with its CLI when titles repeat and a note when only its report changed
+/// since the last ring.
+fn bell_events(
+    due: &[&Observed],
+    tasks: &[Observed],
+    rung: &Ledger,
+) -> Vec<(String, Option<String>)> {
+    due.iter()
+        .map(|task| {
+            let label = match task.info.status {
+                TaskStatus::Asking => "is asking you",
+                TaskStatus::Exited => "exited",
+                _ => "is ready to check",
+            };
+            let updated = rung
+                .reported
+                .get(&task.info.id)
+                .is_some_and(|(_, turn, receipt)| {
+                    *turn == task.turn
+                        && *receipt != task.report_received
+                        && task.report_received.is_some()
+                });
+            let title = if tasks
+                .iter()
+                .filter(|other| other.info.title == task.info.title)
+                .count()
+                > 1
+            {
+                format!("{} ({})", task.info.title, task.info.cli)
+            } else {
+                task.info.title.clone()
+            };
+            (
+                format!(
+                    "{title} {label}{}",
+                    if updated { " - Report updated" } else { "" }
+                ),
+                Some(format!("worker:{}:{:?}", task.info.id, task.turn)),
+            )
+        })
+        .collect()
+}
+
 impl Shika {
     /// Rings each Lead whose workers settled, when [`Gate`] is open.
     pub(crate) fn chat_delivery_finished(&mut self, index: usize, accepted: bool) {
@@ -238,40 +282,7 @@ impl Shika {
             let line = doorbell_line(&due.iter().map(|task| &task.info).collect::<Vec<_>>());
             let ids: Vec<String> = due.iter().map(|task| task.info.id.clone()).collect();
             if chat {
-                let events = due
-                    .iter()
-                    .map(|task| {
-                        let label = match task.info.status {
-                            TaskStatus::Asking => "is asking you",
-                            TaskStatus::Exited => "exited",
-                            _ => "is ready to check",
-                        };
-                        let updated = doorbell.rung.reported.get(&task.info.id).is_some_and(
-                            |(_, turn, receipt)| {
-                                *turn == task.turn
-                                    && *receipt != task.report_received
-                                    && task.report_received.is_some()
-                            },
-                        );
-                        let title = if tasks
-                            .iter()
-                            .filter(|other| other.info.title == task.info.title)
-                            .count()
-                            > 1
-                        {
-                            format!("{} ({})", task.info.title, task.info.cli)
-                        } else {
-                            task.info.title.clone()
-                        };
-                        (
-                            format!(
-                                "{title} {label}{}",
-                                if updated { " - Report updated" } else { "" }
-                            ),
-                            Some(format!("worker:{}:{:?}", task.info.id, task.turn)),
-                        )
-                    })
-                    .collect();
+                let events = bell_events(&due, &tasks, &doorbell.rung);
                 self.cards[lead].chat_delivery = Some(ChatDelivery::Bell(
                     due.iter()
                         .map(|task| (task.info.id.clone(), task.settlement()))
