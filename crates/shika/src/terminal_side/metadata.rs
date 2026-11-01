@@ -167,7 +167,9 @@ fn create_pr_button(chrome: &Chrome, cx: &mut Context<Shika>) -> gpui::Stateful<
 
 /// The hint at the right of the metadata row: what typing or Enter does now.
 fn focus_hint(card: &Card, cards_focused: bool) -> &'static str {
-    if card.creating && card.is_checkout() {
+    if card.creating && card.is_checkout() && card.launch_preset == "terminal" {
+        "starting terminal"
+    } else if card.creating && card.is_checkout() {
         "starting agent"
     } else if card.creating {
         "setup is non-interactive"

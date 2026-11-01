@@ -68,7 +68,8 @@ pub struct Session {
 }
 
 impl Session {
-    /// Shell-only task. The pinned PTY is a shell, not a detected agent.
+    /// Shell-only session, worktree task or checkout. The pinned PTY is a
+    /// login shell, not an agent.
     pub fn is_terminal(&self) -> bool {
         self.preset_id == "terminal"
     }

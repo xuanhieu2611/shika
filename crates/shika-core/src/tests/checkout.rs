@@ -437,3 +437,143 @@ fn a_checkout_folder_is_never_a_usage_source() {
     );
     assert_eq!(core.token_usage().claude, 0);
 }
+
+#[test]
+fn a_checkout_terminal_is_a_login_shell_in_the_repository_root() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    git(&repo, &["checkout", "-b", "dev"]);
+    fs::write(repo.join("wip.txt"), "the author's edit\n").unwrap();
+    let (core, log) = core_with_logged_git(&scratch);
+    let project = core.add_project(&repo).unwrap().project;
+    let (sink, rx) = channel_sink();
+    let session = core
+        .create_checkout_terminal(&project.id, PtySize::new(30, 90), sink)
+        .unwrap();
+    assert!(session.is_terminal() && session.is_checkout() && !session.is_lead());
+    assert_eq!(session.worktree, repo);
+    assert_eq!(session.repo, repo);
+    assert_eq!(session.branch, "");
+    assert_eq!(session.base_ref, None);
+    assert_eq!(session.started_by, None);
+    assert_eq!(session.title, format!("Terminal {}", session.id));
+    assert!(!session.named());
+    assert!(core.worktree_journal().unwrap().is_empty());
+    assert!(core.leftovers_list().unwrap().is_empty());
+    assert!(!repo.join(".worktrees").exists());
+    assert!(
+        !git_log(&log).contains("worktree add"),
+        "starting a checkout shell allocates nothing: {}",
+        git_log(&log)
+    );
+
+    core.write(session.pty.unwrap(), b"pwd -P\r").unwrap();
+    let printed = collect_until(&rx, &repo.display().to_string(), Duration::from_secs(5));
+    assert!(printed.contains(&repo.display().to_string()), "{printed}");
+    assert_eq!(
+        core.session_rename_from_prompt(&session.id, "npm install")
+            .unwrap(),
+        session
+    );
+    assert_eq!(core.session_apply_cli_title(&session.id).unwrap(), None);
+    assert_eq!(core.session_diff_stat(&session.id).unwrap().files, 1);
+
+    assert_eq!(
+        core.session_discard(&session.id),
+        Err(Error::CheckoutUnsupported)
+    );
+    assert_eq!(
+        core.session_close(&session.id, true),
+        Err(Error::CloseNeedsConfirmation)
+    );
+    let before_close = git_log(&log);
+    core.session_close(&session.id, false).unwrap();
+    assert_eq!(git_log(&log), before_close, "idle close runs no git");
+    assert!(repo.join("wip.txt").exists());
+    assert_eq!(core.checkout_session(&project.id), None);
+    assert_eq!(
+        core.write(session.pty.unwrap(), b"x"),
+        Err(Error::UnknownPty)
+    );
+}
+
+#[test]
+fn a_checkout_terminal_uses_the_projects_single_checkout_slot() {
+    let scratch = Scratch::new();
+    let core = core_with_switch_clis(&scratch);
+    let project = core.add_project(&scratch.repo("demo")).unwrap().project;
+    let (sink, _rx) = channel_sink();
+    assert_eq!(
+        core.create_checkout_session(&project.id, "terminal", PtySize::default(), sink),
+        Err(Error::UnknownCli)
+    );
+    assert!(core.sessions().is_empty());
+
+    let (sink, _rx) = channel_sink();
+    let session = core
+        .create_checkout_terminal(&project.id, PtySize::default(), sink)
+        .unwrap();
+    let (sink, _rx) = channel_sink();
+    assert_eq!(
+        core.create_checkout_session(&project.id, "claude", PtySize::default(), sink),
+        Err(Error::CheckoutExists)
+    );
+    let (sink, _rx) = channel_sink();
+    assert_eq!(
+        core.create_checkout_terminal(&project.id, PtySize::default(), sink),
+        Err(Error::CheckoutExists)
+    );
+    assert_eq!(core.sessions(), std::slice::from_ref(&session));
+
+    core.session_close(&session.id, false).unwrap();
+    let (agent, _) = start_checkout(&core, &project.id, "claude");
+    let (sink, _rx) = channel_sink();
+    assert_eq!(
+        core.create_checkout_terminal(&project.id, PtySize::default(), sink),
+        Err(Error::CheckoutExists)
+    );
+    core.session_stop_checkout(&agent.id).unwrap();
+    assert_eq!(core.checkout_session(&project.id), None);
+}
+
+#[test]
+fn a_checkout_terminal_refuses_a_folder_that_is_not_its_own_checkout() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    let core = core_with_switch_clis(&scratch);
+    let project = core.add_project(&repo).unwrap().project;
+    fs::rename(repo.join(".git"), repo.join("moved.git")).unwrap();
+    let (sink, _rx) = channel_sink();
+    assert!(matches!(
+        core.create_checkout_terminal(&project.id, PtySize::default(), sink),
+        Err(Error::GitStatus(_))
+    ));
+    assert!(core.sessions().is_empty());
+    assert!(core.worktree_journal().unwrap().is_empty());
+}
+
+#[test]
+fn switching_a_checkout_terminal_keeps_the_shell_in_the_checkout() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    let core = core_with_switch_clis(&scratch);
+    let project = core.add_project(&repo).unwrap().project;
+    let (sink, _rx) = channel_sink();
+    let session = core
+        .create_checkout_terminal(&project.id, PtySize::default(), sink)
+        .unwrap();
+    let (switched, _) = switch_agent(&core, &session.id, "claude", None, None);
+    assert!(switched.is_checkout() && !switched.is_terminal());
+    assert_eq!(switched.worktree, repo);
+    assert_eq!(switched.branch, "");
+    assert_eq!(switched.shell_ptys, vec![session.pty.unwrap()]);
+    assert!(core.worktree_journal().unwrap().is_empty());
+    assert!(
+        core.write(session.pty.unwrap(), b"printf kept\\n\r")
+            .is_ok()
+    );
+    core.session_stop_checkout(&switched.id).unwrap();
+    for pty in [session.pty.unwrap(), switched.pty.unwrap()] {
+        assert_eq!(core.write(pty, b"x"), Err(Error::UnknownPty));
+    }
+}

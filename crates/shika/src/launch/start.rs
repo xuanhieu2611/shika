@@ -78,6 +78,7 @@ impl SessionStart {
             Launch::Recover { path, resume } => {
                 core.reopen_leftover(&path, &preset.id, resume, size, sink)
             }
+            Launch::Checkout if shell_only => core.create_checkout_terminal(&project, size, sink),
             Launch::Checkout => core.create_checkout_session(&project, &preset.id, size, sink),
             Launch::Worker(options) => core.create_session_with_preparation(
                 &project, &preset.id, size, sink, options, control, report,
@@ -220,10 +221,10 @@ fn launch_card(
         discard: false,
         launch_control: Some(control),
         launch_error: None,
-        stage: if matches!(launch, Launch::Checkout) {
-            "Starting agent..."
-        } else {
-            "Creating worktree..."
+        stage: match launch {
+            Launch::Checkout if preset.id == "terminal" => "Starting terminal...",
+            Launch::Checkout => "Starting agent...",
+            _ => "Creating worktree...",
         }
         .into(),
         closing: false,
@@ -602,7 +603,9 @@ impl Shika {
     ) {
         self.stop_cancelled_launch(session.id, cx);
         self.cards[index].launch_error = Some(
-            if self.cards[index].is_checkout() {
+            if self.cards[index].launch_preset == "terminal" && self.cards[index].is_checkout() {
+                "Terminal start was cancelled."
+            } else if self.cards[index].is_checkout() {
                 "Agent start was cancelled."
             } else {
                 "Worktree preparation was cancelled."

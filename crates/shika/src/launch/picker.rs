@@ -10,17 +10,14 @@ pub(crate) struct PickerDialog {
 }
 
 impl PickerDialog {
-    /// Changing location never starts a session. Terminal is worktree-only;
-    /// preserve a selected agent, but reset a removed Terminal row to the first.
-    pub(super) fn toggle_worktree(&mut self, agent_count: usize) -> bool {
+    /// Changing location never starts a session. Terminal is in both lists,
+    /// so the selected row stays. Lead has no switch.
+    pub(super) fn toggle_worktree(&mut self) -> bool {
         self.mode = match self.mode {
             PickerMode::Task => PickerMode::Checkout,
             PickerMode::Checkout => PickerMode::Task,
             PickerMode::Lead => return false,
         };
-        if self.index >= agent_count {
-            self.index = 0;
-        }
         true
     }
 }
@@ -92,11 +89,10 @@ impl Shika {
 
     /// Reuse the existing launch routes, including core's one-checkout guard.
     fn toggle_picker_worktree(&mut self, cx: &mut Context<Self>) {
-        let agent_count = self.offered_presets().len();
         let Some(Overlay::Picker(dialog)) = &mut self.overlay else {
             return;
         };
-        if !dialog.toggle_worktree(agent_count) {
+        if !dialog.toggle_worktree() {
             return;
         }
         let (project, mode) = (dialog.project.clone(), dialog.mode);
