@@ -71,13 +71,15 @@ Settings > Agents turns each CLI on or off for New. [Switch agent](agent-switch.
 
 ## Start with a terminal
 
-Choose **Terminal** at the bottom of Cmd+N's picker to open your login shell in a fresh worktree without starting an agent. It is available even without agents installed and uses the same optional setup and safe Close. The task gets a generated name; Cmd+Shift+R renames its display name, not its branch. Shell commands never trigger agent status, naming, or completion notifications.
+With **Create worktree** on, choose **Terminal** at the bottom of Cmd+N's picker to open your login shell in a fresh worktree without starting an agent. It is available even without agents installed and uses the same optional setup and safe Close. The task gets a generated name; Cmd+Shift+R renames its display name, not its branch. Shell commands never trigger agent status, naming, or completion notifications.
 
 Changes and Create PR still work. Cmd+Shift+A starts an agent later in the same task, keeping your original terminal as a Shell tab. After quitting, Leftover worktrees > Reopen > Terminal opens a fresh shell without rerunning setup or restoring old programs. See [Terminal tasks](terminal-tasks.md).
 
 ## An agent in your checkout
 
-For a quick question about the repository folder you added, press **Cmd+Shift+N** or choose **Agent > New Agent in Checkout**. Pick a CLI in **In checkout**; Tab changes projects. There is one checkout session per project, so invoking it again focuses the existing card. Cmd+N still always creates a fresh worktree.
+In **New agent** (Cmd+N), turn off **Create worktree** in the footer to run an agent directly in the repository folder you added. Click the switch or its label, or press Space. The picker shows the current branch; Tab changes projects. Cmd+N defaults to creating a fresh worktree each time, and the switch is not a saved preference. Terminal is only available with the switch on.
+
+**Cmd+Shift+N** or **Agent > New Agent in Checkout** opens the same picker with the switch off. There is one checkout session per project, so invoking that shortcut again focuses the existing card; starting from New with the switch off also focuses an existing checkout rather than creating another.
 
 The checkout card sits first in its project and shows a checkout icon and the current branch. It runs directly in your folder, with no new branch or setup. It is not read-only: the agent can change your files. Shell tabs, Switch agent, and rename work normally, but Shika never renames your branch or offers Create PR here. Diff stat and Changes show uncommitted changes against `HEAD`, including edits already present at launch. Close only stops the agent and shells, asking **Stop the agent?** with **Cmd+Enter** if a turn is active or blocked; it never discards files or deletes branches. Quit leaves no leftover. See [checkout lifecycle](tasks-and-worktrees.md#checkout).
 

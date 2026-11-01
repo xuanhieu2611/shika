@@ -23,9 +23,8 @@ impl PickerMode {
 
     pub(super) fn title(self) -> &'static str {
         match self {
-            Self::Task => "New agent",
+            Self::Task | Self::Checkout => "New agent",
             Self::Lead => "New Lead",
-            Self::Checkout => "In checkout",
         }
     }
 }
