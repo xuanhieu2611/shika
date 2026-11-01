@@ -56,6 +56,21 @@ impl<'de> Deserialize<'de> for Envelope {
     }
 }
 
+impl Envelope {
+    pub(super) fn quota(&self) -> Option<crate::QuotaSnapshot> {
+        if self.kind != "event_msg" {
+            return None;
+        }
+        let payload = self.payload.as_ref()?;
+        if payload.kind != "token_count" {
+            return None;
+        }
+        let observed = super::super::timestamp_seconds(self.timestamp.as_deref()?)?;
+        let snapshot = payload.rate_limits.snapshot(observed);
+        (!snapshot.is_empty()).then_some(snapshot)
+    }
+}
+
 #[derive(Default, Deserialize, Debug)]
 pub(super) struct Message {
     #[serde(default)]
@@ -80,6 +95,8 @@ pub(super) struct Payload {
     kind: String,
     #[serde(default)]
     info: Option<TokenInfo>,
+    #[serde(default)]
+    rate_limits: crate::limits::CodexLimits,
     #[serde(default)]
     response_id: Option<String>,
     #[serde(default)]

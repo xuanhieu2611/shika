@@ -117,6 +117,8 @@ Create PR (Cmd+Shift+P) previews every non-ignored change, an editable title, an
 
 For worktree tasks, Close asks before discarding uncommitted work or unpushed commits, and offers push when the tree is clean. A `git push` keeps the card open, and Close never commits. A clean idle task on its own branch closes immediately. After a branch switch, Close can verify both branches and remove the worktree while keeping both local branches; unsafe or unverifiable work blocks that. See [branch-switch close](branch-switch-close.md) for the safety rules.
 
-## Changes and token usage
+## Changes and usage
 
-Cmd+Option+B opens a read-only diff of the selected task beside the terminal; see [Changes panel](changes-panel.md). Cmd+Shift+U opens Settings on Usage, with local Claude Code and Codex token totals by week, month, or year; see [token usage](token-usage.md).
+Cmd+Option+B opens a read-only diff of the selected task beside the terminal; see [Changes panel](changes-panel.md). Cmd+Shift+U opens Settings on Usage. Subscription limits show Claude Code and Codex five-hour/weekly percentages and reset times when available. Claude updates after activity in a Shika terminal; Refresh limits (`r`) checks Codex without a model turn. Missing or expired observations are unavailable, not zero; these are snapshots, not live balances. See [subscription limits](subscription-limits.md).
+
+Below them are local Claude Code and Codex token totals by week, month, or year, independent of subscription allowances; see [token usage](token-usage.md).

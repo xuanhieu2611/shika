@@ -36,14 +36,22 @@ pub(crate) struct Collector {
 }
 
 impl Collector {
+    #[cfg(test)]
     pub(crate) fn start(data_dir: PathBuf) -> Self {
+        Self::start_with_limits(data_dir, None)
+    }
+
+    pub(crate) fn start_with_limits(
+        data_dir: PathBuf,
+        limits: Option<Arc<crate::limits::Limits>>,
+    ) -> Self {
         let queue = Arc::new(Queue::new());
         let worker_queue = queue.clone();
         let worker_dir = data_dir.clone();
         if thread::Builder::new()
             .name("shika-usage".into())
             .spawn(move || {
-                run(&worker_dir, &worker_queue);
+                run(&worker_dir, &worker_queue, limits.as_deref());
             })
             .is_err()
         {
@@ -120,7 +128,7 @@ impl Drop for Collector {
     }
 }
 
-fn run(data_dir: &Path, queue: &Queue) {
+fn run(data_dir: &Path, queue: &Queue, limits: Option<&crate::limits::Limits>) {
     background_priority();
     let mut recovery = Recovery::default();
     let mut connection = None;
@@ -144,6 +152,11 @@ fn run(data_dir: &Path, queue: &Queue) {
         })();
         match result {
             Ok(outcome) => {
+                if let (Some(limits), Target::Codex { root, .. }) =
+                    (limits, request.target.as_ref())
+                {
+                    limits.observe_codex(root, outcome.quota);
+                }
                 let mut failures = queue.failures.lock().unwrap_or_else(|e| e.into_inner());
                 if registered {
                     failures.remove(&request.target.id());

@@ -598,6 +598,47 @@ fn locked_provider_database_has_a_bounded_wait_and_can_be_retried() {
 }
 
 #[test]
+fn codex_quota_is_extracted_incrementally_without_counting_context_counters() {
+    let scratch = Scratch::new();
+    let (target, parent, _, _) = codex_fixture(&scratch);
+    append(
+        &parent,
+        &format!(
+            "{}\n",
+            json!({"timestamp":"2026-10-14T12:00:00Z","type":"event_msg","payload":{
+                "type":"token_count","info":{"total_token_usage":{"total_tokens":99999}},
+                "rate_limits":{"primary":{"used_percent":18,"window_minutes":300,"resets_at":2000000000}}
+            }})
+        ),
+    );
+    // Bad optional quota fields must not discard a valid durable response receipt.
+    let mut receipt: serde_json::Value =
+        serde_json::from_str(&codex("quota-receipt", "parent", 5)).unwrap();
+    receipt["payload"]["rate_limits"] =
+        json!({"primary":{"used_percent":"malformed"},"limit_id":42});
+    append(&parent, &format!("{receipt}\n"));
+    let mut conn = open_store(&scratch.data()).unwrap();
+    let mut quota = crate::QuotaSnapshot::default();
+    for _ in 0..100 {
+        let outcome = collect(&mut conn, &target, day(), &stopped()).unwrap();
+        quota.merge(outcome.quota);
+        if !outcome.more {
+            break;
+        }
+    }
+    assert_eq!(quota.five_hour.unwrap().used_percent, 18.);
+    assert!(quota.weekly.is_none());
+    assert_eq!(scratch.shown().codex, 32);
+    assert!(
+        collect(&mut conn, &target, day(), &stopped())
+            .unwrap()
+            .quota
+            .is_empty()
+    );
+    assert_eq!(scratch.shown().codex, 32);
+}
+
+#[test]
 fn older_codex_context_counters_are_reported_as_a_gap_not_fresh_api_usage() {
     let scratch = Scratch::new();
     let (target, parent, _, _) = codex_fixture(&scratch);

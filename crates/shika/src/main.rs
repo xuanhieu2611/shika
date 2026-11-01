@@ -29,6 +29,7 @@ mod overlay;
 mod project_motion;
 mod projects;
 mod publish;
+mod quota_dashboard;
 mod recovery;
 mod rename;
 mod scrollbar;
@@ -747,6 +748,10 @@ fn install_menus(cx: &mut App) {
 }
 
 fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--shika-statusline") {
+        std::process::exit(shika_core::run_quota_statusline(&args[1..]));
+    }
     run_client_if_invoked();
     let StartupOptions {
         data,
@@ -754,6 +759,7 @@ fn main() -> anyhow::Result<()> {
         preview_update,
     } = StartupOptions::parse()?;
     let core = Arc::new(Core::open(data.unwrap_or(shika_core::app_data_dir()?))?);
+    core.start_subscription_limits(std::env::current_exe()?);
     core.start_usage_collection();
     gpui_platform::application().run(move |cx: &mut App| {
         add_bundled_fonts(cx);

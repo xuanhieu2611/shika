@@ -212,6 +212,40 @@ impl Shika {
             });
         })
         .detach();
+        self.refresh_subscription_limits(window, cx);
+    }
+
+    fn refresh_subscription_limits(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.usage_view_mut() else {
+            return;
+        };
+        if view.quota_loading {
+            return;
+        }
+        view.quota_loading = true;
+        view.quota_request = Arc::new(());
+        let request = view.quota_request.clone();
+        let core = self.core.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let quotas = cx
+                .background_executor()
+                .spawn(async move { core.subscription_limits(true) })
+                .await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                if let Some(view) = this.usage_view_mut()
+                    && Arc::ptr_eq(&view.quota_request, &request)
+                {
+                    view.quotas = Some(quotas);
+                    view.quota_loading = false;
+                    view.quota_time = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs() as i64);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn usage_view_mut(&mut self) -> Option<&mut UsageView> {
@@ -549,6 +583,7 @@ impl Shika {
     pub(crate) fn on_usage_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         let filter = self.usage_view_mut().map(|view| view.filter);
         match key {
+            "r" => self.refresh_subscription_limits(window, cx),
             "h" | "left" | "l" | "right" => {
                 if let Some(filter) = filter {
                     let step = if matches!(key, "h" | "left") { -1 } else { 1 };

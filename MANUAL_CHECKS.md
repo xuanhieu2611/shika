@@ -2,6 +2,17 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Subscription limits
+
+- PASS: formatting, strict workspace/all-targets Clippy, debug build, and parallel workspace tests: 777 passed, one existing ignored, with the documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` excluded. An earlier unfiltered run failed only that existing PATH expectation. Fixtures cover quota parsing/non-regression/expiry, configuration bounds and launch epochs, settings composition/padding/no writes, failed-spawn registration, positional-prompt order, token-receipt isolation, coalesced metadata-only RPC, timeout, quit cancellation and child reaping.
+- PASS (built binary): the internal status-line entry point preserved exact synthetic delegated stdin/stdout and saved only private numeric five-hour/weekly observations. Installed CLI help confirms Claude's `--settings <file-or-json>` and Codex app-server's `--listen stdio://`.
+- PASS (installed Codex, signed out): an empty disposable HOME/CODEX_HOME accepted the production initialize/initialized and `account/read` sequence and returned no account. The child was killed/reaped. No rate-limit request, login, thread or turn was sent. This is not authenticated quota validation.
+- PASS (limited native visual): a uniquely identified ad hoc scratch bundle, with an unconditional launcher and temporary startup hook hard-coded to disposable app data and provider roots, rendered unavailable and synthetic populated quotas in Shika Light, Shika Dark and derived Dracula. Neutral bars, percentages, local reset times, observation age, Usage-only key hints and fixed footer are visible. The token bar chart was given explicit fixed dimensions after this exposed its intrinsic-width collapse. No normal data, account, real agent task or inference was used. Scratch hooks/binaries were removed; the normal binary was rebuilt. Captures stayed outside the repo. This establishes visual rendering, not end-to-end provider delivery.
+- [ ] Authenticated Claude status-line delivery with an existing custom command, padding, disabled/managed settings and older clients; account-tier windows and percentages against the provider UI; a native Lead alone correctly supplies no Claude status-line observation.
+- [ ] Authenticated Codex rate-limit replies, supported account types, model-specific/unknown windows, login changes and failure states. Configuration roots are not account identity: external switches are not continuously detected; verify the documented latest-launch and snapshot limitations.
+- [ ] Pointer and `r` refresh, shortcut/opening-focus restoration, closing/reopening during a read, minimum-size scrolling, many configuration roots, expired windows and errors in the native app; glass and Reduce transparency. Synthetic keystrokes were blocked by macOS Accessibility permission, so startup fixtures do not establish these paths.
+- [ ] Native CPU/RSS, startup/PTY latency and idle wakeup measurements with real CLIs. Bounded fixtures and no idle timer do not prove zero overhead.
+
 ## 0.11.3 release validation, 2026-10-29
 
 - PASS: formatting, strict workspace/all-targets Clippy, bundled dependency notices, and parallel workspace tests: 765 passed, one existing ignored, and the documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` excluded.

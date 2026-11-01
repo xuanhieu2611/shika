@@ -135,6 +135,10 @@ impl UsageRange {
 pub struct UsageView {
     pub request: Arc<()>,
     pub report: Option<UsageReport>,
+    pub quotas: Option<Vec<shika_core::SubscriptionQuota>>,
+    pub quota_request: Arc<()>,
+    pub quota_loading: bool,
+    pub quota_time: i64,
     pub range: UsageRange,
     pub filter: UsageFilter,
     pub chart: Option<Entity<UsageChart>>,
@@ -145,6 +149,10 @@ impl UsageView {
         Self {
             request: Arc::new(()),
             report: None,
+            quotas: None,
+            quota_request: Arc::new(()),
+            quota_loading: false,
+            quota_time: 0,
             range: UsageRange::default(),
             filter: UsageFilter::default(),
             chart: None,
@@ -548,6 +556,8 @@ fn bar_chart(
         );
     }
     div()
+        .w(px(GRID_WIDTH))
+        .h(px(GRID_HEIGHT))
         .flex_none()
         .flex()
         .flex_col()

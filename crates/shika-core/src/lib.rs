@@ -64,6 +64,7 @@ mod lead;
 mod lead_chat;
 mod lead_chat_store;
 mod lead_transport;
+mod limits;
 mod memory;
 mod path_env;
 mod preparation;
@@ -94,6 +95,9 @@ pub use lead::{FreshReason, LeadConversation, LeadLaunch, LeadLoss, LeadStart, L
 pub use lead_chat_store::{ChatContent, ChatOrigin, ChatRecord};
 pub use lead_transport::{
     ChatEvent, ChatQuestion, ChatQuestionItem, ChatQuestionOption, ChatStatus,
+};
+pub use limits::{
+    QuotaSnapshot, QuotaStatus, QuotaWindow, SubscriptionQuota, run_quota_statusline,
 };
 pub use memory::{MAX_NOTE_CHARS, MAX_TOTAL_BYTES, MemoryNote};
 pub use path_env::{LoginShellError, PathEnv};
@@ -217,6 +221,7 @@ pub struct Core {
     cli_home: Option<CliHome>,
     /// Opt-in app-owned worker. Tests never read the user's provider data.
     usage: OnceLock<usage::Collector>,
+    limits: OnceLock<std::sync::Arc<limits::Limits>>,
     /// The latest base branch fetch per project id, and a signal when one ends.
     fetches: Mutex<HashMap<String, BaseFetch>>,
     fetched: Condvar,
@@ -246,6 +251,7 @@ impl Core {
             operations: Mutex::new(()),
             cli_home: CliHome::detect(),
             usage: OnceLock::new(),
+            limits: OnceLock::new(),
             fetches: Mutex::new(HashMap::new()),
             fetched: Condvar::new(),
             preparing: Mutex::new(HashMap::new()),
@@ -1084,11 +1090,16 @@ impl Core {
         size: PtySize,
         control: Option<&WorkerEnv>,
         track_usage: bool,
-        args: Vec<String>,
+        mut args: Vec<String>,
         prompt: Option<&str>,
         sink: impl PtySink,
     ) -> Result<(PtyId, Option<activity::ActivityBridge>)> {
         let env = self.path_env();
+        let limits_launch = self
+            .limits
+            .get()
+            .zip(self.cli_home.as_ref())
+            .and_then(|(limits, home)| limits.prepare(home, &preset.id, worktree, &mut args));
         let usage = self
             .cli_home
             .as_ref()
@@ -1132,7 +1143,12 @@ impl Core {
                     .open(request, activity::activity_sink(activity.clone(), sink))
             });
         match opened {
-            Ok(pty) => Ok((pty, activity)),
+            Ok(pty) => {
+                if let (Some(limits), Some(launch)) = (self.limits.get(), limits_launch) {
+                    limits.launched(launch);
+                }
+                Ok((pty, activity))
+            }
             Err(err) => {
                 if let Some(activity) = &activity {
                     activity.cleanup();
@@ -1508,8 +1524,9 @@ impl Core {
     /// Starts the app's single background usage worker and restart recovery.
     /// No provider reads on this caller. Explicit so tests remain isolated.
     pub fn start_usage_collection(&self) {
-        self.usage
-            .get_or_init(|| usage::Collector::start(self.data_dir.clone()));
+        self.usage.get_or_init(|| {
+            usage::Collector::start_with_limits(self.data_dir.clone(), self.limits.get().cloned())
+        });
     }
 
     /// Coalesces a recovery request. No provider I/O or operations lock. A

@@ -138,6 +138,7 @@ pub(crate) fn install_app_handlers(cx: &mut App, core: &Arc<Core>) {
     let quitting_core = core.clone();
     cx.on_app_quit(move |_| {
         quitting_core.cancel_preparations();
+        quitting_core.stop_subscription_limits();
         quitting_core.stop_lead_chats();
         async {}
     })
