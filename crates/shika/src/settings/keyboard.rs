@@ -141,47 +141,61 @@ impl Shika {
         row: usize,
         editing: bool,
     ) -> &'static [(&'static str, &'static str)] {
-        if section == SettingsSection::Keyboard {
-            return if self.key_recording() {
-                &[("esc", "cancel")]
-            } else {
-                &[
-                    ("j k", "choose"),
-                    ("\u{21b5}", "set"),
-                    ("\u{232b}", "clear"),
-                    ("[ ]", "section"),
-                    ("esc", "done"),
-                ]
-            };
-        }
-        if section == SettingsSection::Projects {
-            return &[
+        match section {
+            SettingsSection::Keyboard => self.keyboard_keys(),
+            SettingsSection::Projects => &[
                 ("j k", "project"),
                 ("↵", "setup"),
                 ("[ ]", "section"),
                 ("esc", "done"),
-            ];
-        }
-        if section == SettingsSection::Usage {
-            return &[
+            ],
+            SettingsSection::Usage => &[
                 ("h l", "provider"),
                 ("w m y", "range"),
                 ("[ ]", "section"),
                 ("esc", "done"),
-            ];
+            ],
+            SettingsSection::Agents => self.agents_keys(),
+            SettingsSection::Appearance => self.appearance_keys(row, editing),
         }
-        if section == SettingsSection::Agents {
-            return if self.catalog.is_none() {
-                &[("[ ]", "section"), ("esc", "done")]
-            } else {
-                &[
-                    ("j k", "choose"),
-                    ("h l", "enable"),
-                    ("[ ]", "section"),
-                    ("esc", "done"),
-                ]
-            };
+    }
+
+    /// Settings > Keyboard hints: recording takes only Escape.
+    fn keyboard_keys(&self) -> &'static [(&'static str, &'static str)] {
+        if self.key_recording() {
+            &[("esc", "cancel")]
+        } else {
+            &[
+                ("j k", "choose"),
+                ("\u{21b5}", "set"),
+                ("\u{232b}", "clear"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ]
         }
+    }
+
+    /// Settings > Agents hints: no rows to choose until the PATH resolves.
+    fn agents_keys(&self) -> &'static [(&'static str, &'static str)] {
+        if self.catalog.is_none() {
+            &[("[ ]", "section"), ("esc", "done")]
+        } else {
+            &[
+                ("j k", "choose"),
+                ("h l", "enable"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ]
+        }
+    }
+
+    /// Settings > Appearance hints for the selected row, or for typing into
+    /// its field.
+    fn appearance_keys(
+        &self,
+        row: usize,
+        editing: bool,
+    ) -> &'static [(&'static str, &'static str)] {
         match (editing, row) {
             (true, PREFIX_ROW) => &[("", "type a prefix"), ("↵", "apply"), ("esc", "cancel")],
             (true, _) => &[("", "type a number"), ("↵", "apply"), ("esc", "cancel")],
