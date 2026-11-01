@@ -25,6 +25,7 @@ use super::stream::{
 pub(super) struct Outcome {
     pub(super) more: bool,
     pub(super) pending: bool,
+    pub(super) quota: crate::QuotaSnapshot,
 }
 
 pub(super) fn modified(metadata: &fs::Metadata) -> String {
@@ -148,6 +149,7 @@ pub(super) fn collect_inner(
         outcome: Outcome {
             more: false,
             pending: discovery_pending,
+            quota: crate::QuotaSnapshot::default(),
         },
         bytes: 0,
     };
@@ -335,6 +337,12 @@ impl Pass<'_, '_> {
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
             match record {
                 Ok(record) => {
+                    if input.file.cli == "codex"
+                        && line.complete
+                        && let Some(snapshot) = record.quota()
+                    {
+                        self.outcome.quota.merge(snapshot);
+                    }
                     tx.execute_batch("SAVEPOINT receipt")?;
                     match receipt(tx, input.file, record, self.day) {
                         Ok(()) => tx.execute_batch("RELEASE receipt")?,

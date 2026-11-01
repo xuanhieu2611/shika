@@ -309,7 +309,7 @@ pub(crate) fn recorded_date(timestamp: &str) -> Option<Date> {
     local_date(timestamp_seconds(timestamp)?)
 }
 
-fn timestamp_seconds(timestamp: &str) -> Option<i64> {
+pub(crate) fn timestamp_seconds(timestamp: &str) -> Option<i64> {
     let bytes = timestamp.as_bytes();
     if !(20..=64).contains(&bytes.len())
         || !bytes.is_ascii()

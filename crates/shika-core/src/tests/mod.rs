@@ -19,6 +19,7 @@ mod lead_chat;
 mod lead_lifecycle;
 mod lead_resume;
 mod lead_safety;
+mod limits;
 mod naming;
 mod recovery;
 mod sessions;

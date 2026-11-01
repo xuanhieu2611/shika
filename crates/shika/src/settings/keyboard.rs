@@ -152,6 +152,7 @@ impl Shika {
             SettingsSection::Usage => &[
                 ("h l", "provider"),
                 ("w m y", "range"),
+                ("r", "limits"),
                 ("[ ]", "section"),
                 ("esc", "done"),
             ],

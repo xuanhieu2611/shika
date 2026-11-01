@@ -670,6 +670,42 @@ impl Shika {
         else {
             return panel;
         };
+        panel = panel
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        dialog_text(chrome)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Subscription limits"),
+                    )
+                    .child(
+                        secondary_button("refresh-quota", chrome)
+                            .px(px(10.))
+                            .py(px(4.))
+                            .gap(px(8.))
+                            .child(if view.quota_loading {
+                                "Reading limits..."
+                            } else {
+                                "Refresh limits"
+                            })
+                            .child(kbd("r", chrome.sunken, chrome.ink_3))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.refresh_subscription_limits(window, cx)
+                            })),
+                    ),
+            )
+            .child(crate::quota_dashboard::rows(
+                view.quotas.as_deref(),
+                view.quota_time,
+                chrome,
+            ))
+            .child(dialog_text(chrome).child(
+                "Account-level snapshots. Refresh checks Codex; Claude Code updates with activity.",
+            ));
         let (range, filter) = (view.range, view.filter);
         let mut segments = div()
             .flex()
