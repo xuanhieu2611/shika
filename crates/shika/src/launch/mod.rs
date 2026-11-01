@@ -15,7 +15,7 @@ pub(super) enum PickerMode {
 
 impl PickerMode {
     pub(super) fn choices(self, mut agents: Vec<CliPreset>) -> Vec<CliPreset> {
-        if self == Self::Task {
+        if self != Self::Lead {
             agents.push(shika_core::terminal_choice());
         }
         agents
@@ -82,7 +82,7 @@ impl Shika {
             .collect()
     }
 
-    /// Terminal is a task launch choice, never an installed agent or a Lead.
+    /// Terminal is a worktree or checkout launch choice, never an installed agent or a Lead.
     pub(super) fn new_choices(&self, mode: PickerMode) -> Vec<CliPreset> {
         mode.choices(self.offered_presets())
     }

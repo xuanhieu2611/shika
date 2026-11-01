@@ -75,7 +75,8 @@ impl CliCatalog {
 }
 
 /// Launch metadata for the shell-only choice. Never part of the agent catalog,
-/// discovery, Settings, Lead selection, or agent switching.
+/// discovery, Settings, Lead selection, or agent switching. New offers it for
+/// a worktree task and for a checkout session.
 pub fn terminal_choice() -> CliPreset {
     CliPreset {
         id: "terminal".into(),

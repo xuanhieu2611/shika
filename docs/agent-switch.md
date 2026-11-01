@@ -8,7 +8,7 @@ Read [AGENTS.md](../AGENTS.md), [design/DESIGN.md](../design/DESIGN.md), [keyboa
 
 ## What it does
 
-On a [Terminal task](terminal-tasks.md), this starts its first agent. The original pinned shell moves to an additional numbered Shell tab without stopping or recreating it; its programs, output and draft stay. Existing shells stay too. Terminal itself is not a choice in Switch agent. A still-generated branch can then be named by the agent as an ordinary draft would be.
+On a [Terminal task](terminal-tasks.md), this starts its first agent. The original pinned shell moves to an additional numbered Shell tab without stopping or recreating it; its programs, output and draft stay. Existing shells stay too. Terminal itself is not a choice in Switch agent. A still-generated branch can then be named by the agent as an ordinary draft would be. A checkout Terminal does the same in the project folder: the shell becomes a Shell tab, and a later name changes only the card, never the checked-out branch.
 
 Agent > Switch agent…, or Cmd+Shift+A, opens a 400px dialog for the selected ordinary task. Both do nothing while the app is busy or any overlay is open. There is no header button and no card context-menu item.
 

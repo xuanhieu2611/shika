@@ -11,6 +11,7 @@
 //! - **Blocking.** [`Core::add_project`], [`Core::project_preparation_draft`],
 //!   [`Core::save_project_preparation`], [`Core::create_session`],
 //!   [`Core::create_session_with_preparation`], [`Core::create_checkout_session`],
+//!   [`Core::create_checkout_terminal`],
 //!   [`Core::checkout_head`], [`Core::session_stop_checkout`], [`Core::start_lead`],
 //!   [`Core::forget_lead`], [`Core::discover_lead_session`], [`Core::set_lead_session`],
 //!   [`Core::open_shell`], [`Core::session_dirty`], [`Core::session_git_state`],
@@ -938,9 +939,10 @@ impl Core {
     /// override names the repository root) and no prompt, so the session
     /// waits for the author. It is never a Lead's worker and gets no control
     /// variables. One per project: [`Error::CheckoutExists`] while the
-    /// project has one, checked under the operations lock. A folder that is
-    /// no longer the top of its own git checkout is refused before anything
-    /// runs. Blocking: runs git and spawns a process.
+    /// project has one, checked under the operations lock, including a
+    /// checkout Terminal from [`Core::create_checkout_terminal`]. A folder
+    /// that is no longer the top of its own git checkout is refused before
+    /// anything runs. Blocking: runs git and spawns a process.
     pub fn create_checkout_session(
         &self,
         project_id: &str,
@@ -1000,6 +1002,58 @@ impl Core {
         if let Some(activity) = activity {
             self.sessions.remember_activity(&session.id, activity);
         }
+        self.sessions.insert(session.clone());
+        Ok(session)
+    }
+
+    /// Starts a login shell in the project's own folder, on whatever the
+    /// author has checked out. The same checkout session as
+    /// [`Core::create_checkout_session`]: no worktree, branch, preparation,
+    /// journal entry, agent, activity, or usage source, and nothing in git
+    /// is written. The shell is the pinned PTY (`Session::is_terminal`).
+    /// One per project. A folder that is no longer the top of its own git
+    /// checkout is refused before the shell starts. Blocking: runs git and
+    /// spawns the login shell.
+    pub fn create_checkout_terminal(
+        &self,
+        project_id: &str,
+        size: PtySize,
+        sink: impl PtySink,
+    ) -> Result<Session> {
+        let env = self.path_env();
+        let shell = path_env::user_shell();
+        let preset = agents::terminal_choice();
+        let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
+        let project = self.projects.get(project_id)?;
+        if self.checkout_session(project_id).is_some() {
+            return Err(Error::CheckoutExists);
+        }
+        worktree::checkout_head(&self.git()?, env.path(), &project.path)?;
+        let id = session::new_id(&self.taken_ids()?);
+        let started = SystemTime::now();
+        let pty = self.ptys.open(
+            session::shell_request(&shell, &project.path, env.path(), size),
+            sink,
+        )?;
+        let session = Session {
+            id: id.clone(),
+            project_id: project.id.clone(),
+            preset_id: preset.id,
+            title: format!("Terminal {id}"),
+            manual_title: false,
+            preset_name: preset.name,
+            branch: String::new(),
+            repo: project.path.clone(),
+            worktree: project.path.clone(),
+            base_ref: None,
+            pty: Some(pty),
+            shell_ptys: Vec::new(),
+            cli_titled: false,
+            prompt_named: false,
+            agent_started: started,
+            kind: SessionKind::Checkout,
+            started_by: None,
+        };
         self.sessions.insert(session.clone());
         Ok(session)
     }

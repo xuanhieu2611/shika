@@ -704,16 +704,26 @@ Implemented; `cargo test -p shika` and clippy pass. The GUI checks below are not
 
 ## New agent worktree switch (2026-10-31)
 
-Implemented the author-approved footer toggle: **Create worktree**, on for ordinary New, off for the checkout shortcut; both use the title **New agent**. Click label/track or Space changes location without launch. Off shows the checkout branch and excludes Terminal; Lead has no switch. The temporary HTML prototype was removed after approval.
+Implemented the author-approved footer toggle: **Create worktree**, on for ordinary New, off for the checkout shortcut; both use the title **New agent**. Click label/track or Space changes location without launch. Off shows the checkout branch. Terminal in that mode is covered by the checkout terminal section below; this section's original exclusion no longer applies. Lead has no switch. The temporary HTML prototype was removed after approval.
 
 Automated validation: 780 workspace tests passed with the existing environment-sensitive `path_env::tests::finder_launch_path_resolves_installed_clis` explicitly skipped (plus one existing ignored test). The unfiltered run reproduced its already-recorded Homebrew-versus-`.local/bin/claude` assertion. Strict workspace/all-targets Clippy, formatting, and diff checks passed. New regression tests cover selected-agent/project retention, removing a selected Terminal with zero/one/multiple agents, Lead refusal, and the shared title. These do not establish native visual or focus acceptance.
 
 Pending native checks, with disposable repositories and isolated app data only:
 
 - [ ] Click label and track, and Space, toggle without launching or moving focus; agent selection, Tab, numbers/Enter and Escape retain existing behavior. Closing/reopening resets the switch; Cmd+Shift+N defaults off and Cmd+N/`+` default on.
-- [ ] Off shows the current branch or detached commit, excludes Terminal, and offers Settings with no agents; switching back restores Terminal. Lead has no toggle and keeps its existing footer.
+- [ ] Off shows the current branch or detached commit and still offers Terminal, including with no agents installed. A selected Terminal stays selected when the switch changes. Lead has no toggle and keeps its existing footer.
 - [ ] Off launches in the checkout without setup/allocation, or focuses its existing checkout card; on follows existing fresh-worktree/setup behavior. Cancel writes no config and allocates nothing.
 - [ ] Light, dark, a derived theme, opaque/glass, narrow windows and long branch names: footer switch/thumb/tooltip contrast, readable checkout fact, no clipping or focus changes.
+
+## Checkout terminal (2026-11-01)
+
+Terminal stays in New when Create worktree is off. It starts a login shell in the project folder, with no agent, setup, or worktree. One checkout card per project. Close stops the shell and leaves files alone.
+
+Automated tests cover the shell's directory, naming isolation, the shared checkout slot, a refused non-checkout folder, idle close with no git writes, and Switch agent keeping the shell. Native acceptance is not done:
+
+- [ ] With Create worktree off, Terminal is the last row, including when no agents are installed. Choosing it opens a login shell in the project folder. `pwd` is that folder. No agent starts, and the card shows no working signal.
+- [ ] An existing checkout card is focused instead of a second one. Closing the shell leaves files in place, including a command that was still running. Quit does not restore the card.
+- [ ] Switch agent keeps that shell as a Shell tab and starts the agent in the same folder.
 
 ## Checkout sessions (2026-10-26)
 
