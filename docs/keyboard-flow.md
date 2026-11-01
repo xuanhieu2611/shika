@@ -203,7 +203,7 @@ A successful Close records its replacement selection as already revealed. When a
 | Command action does not fire in the terminal | Check binding spelling, root `Shika` context, action listeners, and busy/overlay guards. Check for a conflicting terminal binding before changing PTY encoding. |
 | App shortcut sends bytes to the CLI | Inspect `key_for`'s early Command exclusion and terminal input handling. Do not implement these app actions as terminal input sequences. |
 | Switching agents loses focus or lands in the wrong terminal | Inspect `move_agent`, `selected_card`, `focus_terminal`, and the destination's `active_tab`. |
-| Next agent changes unexpectedly | Inspect `sorted_cards` and status updates. Attention sorting is still live; stable navigation order was not implemented here. |
+| Next agent changes unexpectedly | Inspect `Shika::rows` and `adjacent_agent` (`selection.rs`): navigation follows the column's display order, so a project group reordering (cards before empty headers) changes the next agent. |
 | Picker/Settings dismissal lands on cards instead of the original terminal | Check that the opener saved `window.focused(cx)` before focusing the overlay, and that exit consumes the saved handle. |
 | Close cancellation changes the shown tab or opens a shell | `cancel_overlay` restores opening focus and must leave `active_tab` unchanged. A Lead-requested Close then moves to the Lead in `settle_lead_dialog`. |
 | Early shell typing goes to agent, or startup steals focus | Check `new_shell`'s immediate focus and completion branch, then `pending_input` / `bind_host`. |
