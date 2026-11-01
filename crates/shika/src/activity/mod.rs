@@ -13,7 +13,7 @@ mod turn;
 
 pub use detect::detect;
 pub use evidence::OutputEvidence;
-pub use turn::Activity;
+pub use turn::{Activity, Transition};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Signal {
