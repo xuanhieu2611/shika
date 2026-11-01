@@ -165,9 +165,7 @@ async fn wait_for_measured_grid(
         cx.background_executor()
             .timer(Duration::from_millis(16))
             .await;
-        if this.upgrade().is_none() {
-            return None;
-        }
+        this.upgrade()?;
     }
 }
 

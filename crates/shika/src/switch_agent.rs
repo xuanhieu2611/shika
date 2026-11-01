@@ -108,24 +108,8 @@ impl Shika {
         if self.busy {
             return;
         }
-        let (session_id, prompt_text, preset_index) = {
-            let Some(Overlay::SwitchAgent(SwitchDialog {
-                session_id,
-                prompt,
-                index,
-                ..
-            })) = &self.overlay
-            else {
-                return;
-            };
-            if prompt.read(cx).composing() {
-                return;
-            }
-            (
-                session_id.clone(),
-                prompt.read(cx).value().to_string(),
-                *index,
-            )
+        let Some((session_id, prompt_text, preset_index)) = self.switch_dialog_input(cx) else {
+            return;
         };
         let Some(card_index) = self.cards.iter().position(|card| {
             card.session
@@ -150,41 +134,14 @@ impl Shika {
             return;
         };
         let preset_id = preset.id.clone();
-        let control = if self.cards[card_index].started_by.is_some() {
-            match (
-                self.cards[card_index].worker_token.clone(),
-                self.control.as_ref(),
-            ) {
-                (Some(token), Some(server)) => Some(WorkerEnv {
-                    socket: server.socket(),
-                    token,
-                    bin_dir: server.bin_dir(),
-                }),
-                (None, _) => {
-                    self.switch_error("This worker has no control token.".into(), cx);
-                    return;
-                }
-                (_, None) => {
-                    self.switch_error("Shika's control socket is not running.".into(), cx);
-                    return;
-                }
+        let control = match self.switch_worker_env(card_index) {
+            Ok(control) => control,
+            Err(why) => {
+                self.switch_error(why.into(), cx);
+                return;
             }
-        } else {
-            None
         };
-        let measured = lock(&self.cards[card_index].agent.state)
-            .measured
-            .unwrap_or(TerminalSize::new(32, 100));
-        let pane = Pane::new(
-            self.core.clone(),
-            true,
-            self.terminal_opacity(),
-            self.font_size.points(),
-            self.terminal_palette(window),
-            window,
-            cx,
-        );
-        pane.terminal.resize(measured);
+        let (pane, measured) = self.next_agent_pane(card_index, window, cx);
         let size = PtySize::new(measured.rows, measured.cols);
         let sink = agent_sink(pane.terminal.clone(), pane.state.clone());
         let state = pane.state.clone();
@@ -212,25 +169,102 @@ impl Shika {
                     Ok::<_, shika_core::Error>(session)
                 })
                 .await;
-            let _ =
-                this.update_in(cx, |this, window, cx| {
-                    this.busy = false;
-                    match result {
-                        Ok(session) => {
-                            this.install_switched_agent(session, prompt_for_card, window, cx)
-                        }
-                        Err(err) => {
-                            if let Some(card) = this.cards.iter_mut().find(|card| {
-                                card.session.as_ref().is_some_and(|s| s.id == switched_id)
-                            }) {
-                                card.next_agent = None;
-                            }
-                            this.switch_error(err.to_string(), cx);
-                        }
-                    }
-                });
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.finish_switch(result, prompt_for_card, &switched_id, window, cx);
+            });
         })
         .detach();
+    }
+
+    /// The open dialog's task, prompt text, and agent row. `None` without
+    /// the dialog or while the prompt is composing.
+    fn switch_dialog_input(&self, cx: &mut Context<Self>) -> Option<(String, String, usize)> {
+        let Some(Overlay::SwitchAgent(SwitchDialog {
+            session_id,
+            prompt,
+            index,
+            ..
+        })) = &self.overlay
+        else {
+            return None;
+        };
+        if prompt.read(cx).composing() {
+            return None;
+        }
+        Some((
+            session_id.clone(),
+            prompt.read(cx).value().to_string(),
+            *index,
+        ))
+    }
+
+    /// A worker the Lead started keeps its control environment on the new
+    /// agent PTY. `Err` is why it cannot.
+    fn switch_worker_env(&self, card_index: usize) -> Result<Option<WorkerEnv>, &'static str> {
+        if self.cards[card_index].started_by.is_some() {
+            match (
+                self.cards[card_index].worker_token.clone(),
+                self.control.as_ref(),
+            ) {
+                (Some(token), Some(server)) => Ok(Some(WorkerEnv {
+                    socket: server.socket(),
+                    token,
+                    bin_dir: server.bin_dir(),
+                })),
+                (None, _) => Err("This worker has no control token."),
+                (_, None) => Err("Shika's control socket is not running."),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// The pane for the new agent, sized like the current one.
+    fn next_agent_pane(
+        &self,
+        card_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Pane, TerminalSize) {
+        let measured = lock(&self.cards[card_index].agent.state)
+            .measured
+            .unwrap_or(TerminalSize::new(32, 100));
+        let pane = Pane::new(
+            self.core.clone(),
+            true,
+            self.terminal_opacity(),
+            self.font_size.points(),
+            self.terminal_palette(window),
+            window,
+            cx,
+        );
+        pane.terminal.resize(measured);
+        (pane, measured)
+    }
+
+    /// Core's answer: install the new agent, or drop its pane and show why.
+    fn finish_switch(
+        &mut self,
+        result: Result<Session, shika_core::Error>,
+        prompt_for_card: Option<String>,
+        switched_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.busy = false;
+        match result {
+            Ok(session) => self.install_switched_agent(session, prompt_for_card, window, cx),
+            Err(err) => {
+                if let Some(card) = self
+                    .cards
+                    .iter_mut()
+                    .find(|card| card.session.as_ref().is_some_and(|s| s.id == switched_id))
+                {
+                    card.next_agent = None;
+                }
+                self.switch_error(err.to_string(), cx);
+            }
+        }
     }
 
     fn install_switched_agent(
@@ -408,31 +442,7 @@ impl Shika {
         };
         prompt.update(cx, |input, _| input.set_chrome(*chrome));
         let presets = self.offered_presets();
-        let mut panel = dialog(chrome, max_h)
-            .child(dialog_title(div()).child(if terminal {
-                "Start agent?"
-            } else {
-                "Switch agent?"
-            }))
-            .child(dialog_text(chrome).child(if terminal {
-                "The current terminal keeps running as a Shell tab."
-            } else {
-                "This stops the current agent only after the new one starts."
-            }))
-            .child(dialog_text(chrome).child(if checkout {
-                "Your checkout, branch, commits, and uncommitted files stay. Shell tabs stay."
-            } else {
-                "The worktree, branch, commits, and uncommitted files stay. Shell tabs stay."
-            }))
-            .child(dialog_text(chrome).child("No transcript is copied."))
-            .child(dialog_text(chrome).child("Prompt"))
-            .child(prompt.clone())
-            .child(
-                dialog_text(chrome)
-                    .text_color(chrome.ink_3)
-                    .child("What should this agent do? Leave it empty to type in the terminal."),
-            )
-            .child(dialog_text(chrome).child("Agent"));
+        let mut panel = switch_dialog_intro(&prompt, terminal, checkout, chrome, max_h);
         if self.catalog.is_none() {
             panel = panel.child(dialog_text(chrome).child("Resolving login-shell PATH..."));
         } else if presets.is_empty() {
@@ -444,57 +454,7 @@ impl Shika {
                         .child("Turn one on in Settings."),
                 );
         } else {
-            let mut rows = div()
-                .id("switch-agents")
-                .max_h(px(BASE_LIST_MAX))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col();
-            for (i, preset) in presets.iter().enumerate() {
-                let detail = preset
-                    .path
-                    .as_deref()
-                    .map(|path| model::tilde(path, home))
-                    .unwrap_or_else(|| format!("{} not found on PATH", preset.binary));
-                rows = rows.child(
-                    list_row(i == index, chrome)
-                        .id(SharedString::from(format!("switch-agent-{}", preset.id)))
-                        .gap(px(12.))
-                        .cursor_pointer()
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(px(13.5))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(chrome.ink_1)
-                                .child(preset.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_right()
-                                .font_family(MONO)
-                                .text_size(px(11.))
-                                .text_color(chrome.ink_3)
-                                .child(detail),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            if this.busy {
-                                return;
-                            }
-                            if let Some(Overlay::SwitchAgent(SwitchDialog { index, .. })) =
-                                &mut this.overlay
-                            {
-                                *index = i;
-                            }
-                            window.focus(&this.focus, cx);
-                            cx.notify();
-                        })),
-                );
-            }
-            panel = panel.child(rows);
+            panel = panel.child(switch_agent_rows(&presets, index, home, chrome, cx));
         }
         if let Some(error) = error {
             panel = panel.child(dialog_text(chrome).child(error.to_string()));
@@ -506,30 +466,129 @@ impl Shika {
         } else {
             "Switch"
         };
-        panel
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_x(px(12.))
-                    .gap_y(px(6.))
-                    .child(hint("j k", "choose", chrome))
-                    .child(hint("tab", "edit prompt", chrome))
-                    .child(hint(
-                        "enter",
-                        if terminal { "start" } else { "switch" },
-                        chrome,
-                    ))
-                    .child(hint("esc", "cancel", chrome)),
-            )
-            .child(
-                dialog_buttons()
-                    .child(self.cancel_button("Cancel", chrome, cx))
-                    .child(primary_button("switch-agent", label, "↵", chrome).on_click(
+        panel.child(switch_dialog_hints(terminal, chrome)).child(
+            dialog_buttons()
+                .child(self.cancel_button("Cancel", chrome, cx))
+                .child(
+                    primary_button("switch-agent", label, "↵", chrome).on_click(
                         cx.listener(|this, _, window, cx| this.confirm_switch(window, cx)),
-                    )),
-            )
+                    ),
+                ),
+        )
     }
+}
+
+/// The dialog's title, what stays and what does not, and the prompt field.
+fn switch_dialog_intro(
+    prompt: &Entity<name_input::NameInput>,
+    terminal: bool,
+    checkout: bool,
+    chrome: &Chrome,
+    max_h: Pixels,
+) -> gpui::Stateful<gpui::Div> {
+    dialog(chrome, max_h)
+        .child(dialog_title(div()).child(if terminal {
+            "Start agent?"
+        } else {
+            "Switch agent?"
+        }))
+        .child(dialog_text(chrome).child(if terminal {
+            "The current terminal keeps running as a Shell tab."
+        } else {
+            "This stops the current agent only after the new one starts."
+        }))
+        .child(dialog_text(chrome).child(if checkout {
+            "Your checkout, branch, commits, and uncommitted files stay. Shell tabs stay."
+        } else {
+            "The worktree, branch, commits, and uncommitted files stay. Shell tabs stay."
+        }))
+        .child(dialog_text(chrome).child("No transcript is copied."))
+        .child(dialog_text(chrome).child("Prompt"))
+        .child(prompt.clone())
+        .child(
+            dialog_text(chrome)
+                .text_color(chrome.ink_3)
+                .child("What should this agent do? Leave it empty to type in the terminal."),
+        )
+        .child(dialog_text(chrome).child("Agent"))
+}
+
+/// The agents to switch to, with the chosen one at `index`.
+fn switch_agent_rows(
+    presets: &[CliPreset],
+    index: usize,
+    home: Option<&std::path::Path>,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    let mut rows = div()
+        .id("switch-agents")
+        .max_h(px(BASE_LIST_MAX))
+        .overflow_y_scroll()
+        .flex()
+        .flex_col();
+    for (i, preset) in presets.iter().enumerate() {
+        let detail = preset
+            .path
+            .as_deref()
+            .map(|path| model::tilde(path, home))
+            .unwrap_or_else(|| format!("{} not found on PATH", preset.binary));
+        rows = rows.child(
+            list_row(i == index, chrome)
+                .id(SharedString::from(format!("switch-agent-{}", preset.id)))
+                .gap(px(12.))
+                .cursor_pointer()
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(13.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(chrome.ink_1)
+                        .child(preset.name.clone()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_right()
+                        .font_family(MONO)
+                        .text_size(px(11.))
+                        .text_color(chrome.ink_3)
+                        .child(detail),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if this.busy {
+                        return;
+                    }
+                    if let Some(Overlay::SwitchAgent(SwitchDialog { index, .. })) =
+                        &mut this.overlay
+                    {
+                        *index = i;
+                    }
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                })),
+        );
+    }
+    rows
+}
+
+/// The dialog's key hints.
+fn switch_dialog_hints(terminal: bool, chrome: &Chrome) -> gpui::Div {
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_x(px(12.))
+        .gap_y(px(6.))
+        .child(hint("j k", "choose", chrome))
+        .child(hint("tab", "edit prompt", chrome))
+        .child(hint(
+            "enter",
+            if terminal { "start" } else { "switch" },
+            chrome,
+        ))
+        .child(hint("esc", "cancel", chrome))
 }
 
 /// The prompt for a same-worktree switch. Empty starts the CLI with no

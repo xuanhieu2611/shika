@@ -14,6 +14,37 @@ enum LeadCloseOutcome {
     ForgetFailed(shika_core::Error),
 }
 
+/// Blocking: stops the Lead's process, then forgets it when `forget` is set.
+/// Forget without `discard` first checks that the worktree has nothing new.
+fn stop_or_forget_lead(
+    core: &Core,
+    lead_project: &str,
+    lead_session: Option<&str>,
+    forget: bool,
+    discard: bool,
+) -> LeadCloseOutcome {
+    if let Some(id) = lead_session
+        && let Err(e) = core.stop_lead(id)
+    {
+        return LeadCloseOutcome::NotStopped(e);
+    }
+    if !forget {
+        return LeadCloseOutcome::Done;
+    }
+    if !discard {
+        // The tree can change while the dialog is open.
+        match core.lead_loss(lead_project) {
+            Ok(loss) if loss.any() => return LeadCloseOutcome::Changed(loss),
+            Ok(_) => {}
+            Err(e) => return LeadCloseOutcome::ForgetFailed(e),
+        }
+    }
+    match core.forget_lead(lead_project, discard) {
+        Ok(()) => LeadCloseOutcome::Done,
+        Err(e) => LeadCloseOutcome::ForgetFailed(e),
+    }
+}
+
 /// Lead-only state on the root view. Memory only.
 #[derive(Default)]
 pub(super) struct Leads {
@@ -629,26 +660,13 @@ impl Shika {
             let outcome = cx
                 .background_executor()
                 .spawn(async move {
-                    if let Some(id) = &lead_session
-                        && let Err(e) = core.stop_lead(id)
-                    {
-                        return LeadCloseOutcome::NotStopped(e);
-                    }
-                    if !forget {
-                        return LeadCloseOutcome::Done;
-                    }
-                    if !discard {
-                        // The tree can change while the dialog is open.
-                        match core.lead_loss(&lead_project) {
-                            Ok(loss) if loss.any() => return LeadCloseOutcome::Changed(loss),
-                            Ok(_) => {}
-                            Err(e) => return LeadCloseOutcome::ForgetFailed(e),
-                        }
-                    }
-                    match core.forget_lead(&lead_project, discard) {
-                        Ok(()) => LeadCloseOutcome::Done,
-                        Err(e) => LeadCloseOutcome::ForgetFailed(e),
-                    }
+                    stop_or_forget_lead(
+                        &core,
+                        &lead_project,
+                        lead_session.as_deref(),
+                        forget,
+                        discard,
+                    )
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -669,20 +687,7 @@ impl Shika {
                         this.lead_departed(session.as_deref(), &project, forgotten, cx);
                         let was = this.overlay_return_focus.clone();
                         this.overlay = None;
-                        match outcome {
-                            LeadCloseOutcome::Changed(loss) => {
-                                this.overlay = Some(Overlay::LeadClose(LeadCloseDialog {
-                                    project,
-                                    session: None,
-                                    step: model::LeadClose::Forget { working, loss },
-                                }));
-                            }
-                            LeadCloseOutcome::ForgetFailed(e) => {
-                                this.overlay_return_focus = None;
-                                this.message(e.to_string());
-                            }
-                            _ => this.overlay_return_focus = None,
-                        }
+                        this.ask_again_or_report_forget(outcome, project, working);
                         // A dialog asking again keeps the focus it needs.
                         if this.overlay.is_some() {
                             window.focus(&this.focus, cx);
@@ -696,6 +701,30 @@ impl Shika {
             });
         })
         .detach();
+    }
+
+    /// After the Lead stopped: a Forget that found its worktree changed asks
+    /// again with the new facts, and a failed Forget is reported.
+    fn ask_again_or_report_forget(
+        &mut self,
+        outcome: LeadCloseOutcome,
+        project: String,
+        working: bool,
+    ) {
+        match outcome {
+            LeadCloseOutcome::Changed(loss) => {
+                self.overlay = Some(Overlay::LeadClose(LeadCloseDialog {
+                    project,
+                    session: None,
+                    step: model::LeadClose::Forget { working, loss },
+                }));
+            }
+            LeadCloseOutcome::ForgetFailed(e) => {
+                self.overlay_return_focus = None;
+                self.message(e.to_string());
+            }
+            _ => self.overlay_return_focus = None,
+        }
     }
 
     /// A stopped Lead leaves the column: its card departs and the selection
