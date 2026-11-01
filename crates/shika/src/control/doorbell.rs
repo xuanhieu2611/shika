@@ -214,7 +214,6 @@ fn bell_events(
 }
 
 impl Shika {
-    /// Rings each Lead whose workers settled, when [`Gate`] is open.
     pub(crate) fn chat_delivery_finished(&mut self, index: usize, accepted: bool) {
         let Some(delivery) = self.cards[index].chat_delivery.take() else {
             return;
@@ -244,6 +243,7 @@ impl Shika {
         }
     }
 
+    /// Rings each Lead whose workers settled, when [`Gate`] is open.
     pub(super) fn ring_doorbells(
         &mut self,
         now: Instant,
