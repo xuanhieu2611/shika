@@ -349,6 +349,27 @@ impl ChatInput {
         if self.composing() {
             return;
         }
+        if self.emit_command_key(stroke, cx) {
+            return;
+        }
+        if stroke.key == "enter" && !self.readonly {
+            self.enter_key(m, cx);
+            return;
+        }
+        if stroke.key == "z" && m.platform && !self.readonly {
+            self.undo_key(m, cx);
+            return;
+        }
+        if self.link_key(stroke, cx) {
+            return;
+        }
+        self.edit_key(stroke, cx);
+    }
+    /// Keys the composer hands to its owner: Command-A and Command-C on a
+    /// read-only message, Ctrl+Q back to the cards, and Escape. True when the
+    /// key was one of them.
+    fn emit_command_key(&mut self, stroke: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        let m = stroke.modifiers;
         if self.readonly && m.platform && matches!(stroke.key.as_str(), "a" | "c") {
             cx.emit(if stroke.key == "a" {
                 InputEvent::SelectMessage
@@ -356,58 +377,66 @@ impl ChatInput {
                 InputEvent::CopySelection
             });
             cx.stop_propagation();
-            return;
+            return true;
         }
         if stroke.key == "q" && m.control {
             cx.emit(InputEvent::Back);
             cx.stop_propagation();
-            return;
+            return true;
         }
         if stroke.key == "escape" {
             cx.emit(InputEvent::Interrupt);
             cx.stop_propagation();
-            return;
+            return true;
         }
-        if stroke.key == "enter" && !self.readonly {
-            let chord = m.platform || m.control || m.alt;
-            let newline = (m.shift && !chord) || (self.newline_on_enter && !chord);
-            if newline {
-                let range = self.text.selection();
-                if let Some(inserted) = self.accept(range.clone(), "\n") {
-                    self.checkpoint();
-                    self.ensure_cursor = true;
-                    self.text.replace(range, &inserted);
-                    cx.emit(InputEvent::Changed);
-                    cx.notify();
-                }
-            } else if !self.newline_on_enter {
-                cx.emit(InputEvent::Submit);
-            }
-            cx.stop_propagation();
-            return;
-        }
-        if stroke.key == "z" && m.platform && !self.readonly {
-            let from = if m.shift {
-                &mut self.redo
-            } else {
-                &mut self.history
-            };
-            if let Some((value, anchor, cursor)) = from.pop() {
-                let old = (self.text.value.clone(), self.text.anchor, self.text.cursor);
-                if m.shift {
-                    self.history.push(old);
-                } else {
-                    self.redo.push(old);
-                }
-                self.text = Text::new(value);
-                self.text.anchor = anchor;
-                self.text.cursor = cursor;
+        false
+    }
+    /// Enter in an editable composer: a newline with Shift (or when Enter
+    /// inserts newlines), otherwise Submit.
+    fn enter_key(&mut self, m: gpui::Modifiers, cx: &mut Context<Self>) {
+        let chord = m.platform || m.control || m.alt;
+        let newline = (m.shift && !chord) || (self.newline_on_enter && !chord);
+        if newline {
+            let range = self.text.selection();
+            if let Some(inserted) = self.accept(range.clone(), "\n") {
+                self.checkpoint();
+                self.ensure_cursor = true;
+                self.text.replace(range, &inserted);
                 cx.emit(InputEvent::Changed);
                 cx.notify();
             }
-            cx.stop_propagation();
-            return;
+        } else if !self.newline_on_enter {
+            cx.emit(InputEvent::Submit);
         }
+        cx.stop_propagation();
+    }
+    /// Command-Z undoes, Command-Shift-Z redoes.
+    fn undo_key(&mut self, m: gpui::Modifiers, cx: &mut Context<Self>) {
+        let from = if m.shift {
+            &mut self.redo
+        } else {
+            &mut self.history
+        };
+        if let Some((value, anchor, cursor)) = from.pop() {
+            let old = (self.text.value.clone(), self.text.anchor, self.text.cursor);
+            if m.shift {
+                self.history.push(old);
+            } else {
+                self.redo.push(old);
+            }
+            self.text = Text::new(value);
+            self.text.anchor = anchor;
+            self.text.cursor = cursor;
+            cx.emit(InputEvent::Changed);
+            cx.notify();
+        }
+        cx.stop_propagation();
+    }
+    /// Links in a read-only message: Tab and Shift-Tab select the next or
+    /// previous one, Enter opens the selected one. True when the key was
+    /// handled.
+    fn link_key(&mut self, stroke: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
+        let m = stroke.modifiers;
         if self.readonly && stroke.key == "tab" && !self.links.is_empty() {
             let next = if m.shift {
                 self.active_link.and_then(|i| i.checked_sub(1))
@@ -420,7 +449,7 @@ impl ChatInput {
                 self.text.cursor = self.links[next].0.end;
                 cx.stop_propagation();
                 cx.notify();
-                return;
+                return true;
             }
             self.active_link = None;
         }
@@ -430,8 +459,13 @@ impl ChatInput {
         {
             let _ = super::open_terminal_link(&self.links[index].1);
             cx.stop_propagation();
-            return;
+            return true;
         }
+        false
+    }
+    /// Select all, the clipboard, and text editing and movement keys.
+    fn edit_key(&mut self, stroke: &gpui::Keystroke, cx: &mut Context<Self>) {
+        let m = stroke.modifiers;
         let before = self.text.value.clone();
         self.ensure_cursor = !self.readonly;
         let selected = self.text.selection();
@@ -500,6 +534,195 @@ impl ChatInput {
         }
         cx.stop_propagation();
         cx.notify();
+    }
+    /// The words and highlights painted: the composer's spans, the marked
+    /// text's underline, the selection, and hidden ink under inline code.
+    fn highlights(
+        &self,
+        placeholder: bool,
+        window: &Window,
+    ) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+        let mut spans = self.spans.clone();
+        if let Some(marked) = &self.text.marked {
+            spans.push((
+                marked.clone(),
+                gpui::HighlightStyle {
+                    underline: Some(gpui::UnderlineStyle {
+                        color: Some(self.chrome.ink_1.into()),
+                        thickness: px(1.),
+                        wavy: false,
+                    }),
+                    ..Default::default()
+                },
+            ));
+        }
+        let selection = self.text.selection();
+        if !placeholder
+            && !selection.is_empty()
+            && (self.focus.is_focused(window) || self.shared_selection)
+        {
+            spans.push((
+                selection,
+                gpui::HighlightStyle {
+                    background_color: Some(self.chrome.row_selected.into()),
+                    color: Some(
+                        crate::appearance::legible(
+                            self.chrome.ink_1,
+                            self.chrome.row_selected,
+                            self.chrome.ink_1,
+                            4.5,
+                        )
+                        .into(),
+                    ),
+                    ..Default::default()
+                },
+            ));
+        }
+        for range in &self.monos {
+            spans.push((
+                range.clone(),
+                gpui::HighlightStyle {
+                    color: Some(crate::appearance::with_alpha(self.chrome.ink_1, 0.).into()),
+                    ..Default::default()
+                },
+            ));
+        }
+        spans
+    }
+    /// A press focuses the composer: one click places the caret (Shift
+    /// extends), two select a word, three select everything.
+    fn mouse_down(
+        &mut self,
+        event: &gpui::MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.focus, cx);
+        let index = self.index(event.position);
+        if event.click_count >= 3 {
+            self.text.anchor = 0;
+            self.text.cursor = self.text.value.len();
+        } else if event.click_count == 2 {
+            let range = self
+                .text
+                .value
+                .split_word_bound_indices()
+                .find(|(i, w)| *i <= index && index < i + w.len())
+                .map(|(i, w)| i..i + w.len())
+                .unwrap_or(index..index);
+            self.text.anchor = range.start;
+            self.text.cursor = range.end;
+        } else {
+            let upstream = self.upstream_at(index, event.position);
+            self.text.move_to(index, event.modifiers.shift);
+            self.text.upstream = upstream;
+        }
+        self.selecting = true;
+        if self.readonly {
+            cx.emit(InputEvent::Select {
+                anchor: self.text.anchor,
+                cursor: self.text.cursor,
+                start: true,
+                shift: event.modifiers.shift,
+            });
+        }
+        cx.notify();
+    }
+    /// The pointer moved: the hovered link, and the selection while dragging.
+    fn mouse_move(&mut self, event: &gpui::MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let index = self.index(event.position);
+        self.hover_link = self
+            .links
+            .iter()
+            .find(|(range, _)| range.contains(&index))
+            .map(|(_, link)| link.clone());
+        if self.selecting {
+            let upstream = self.upstream_at(index, event.position);
+            self.text.move_to(index, true);
+            self.text.upstream = upstream;
+        }
+        if self.readonly && event.pressed_button == Some(MouseButton::Left) {
+            cx.emit(InputEvent::Select {
+                anchor: self.text.anchor,
+                cursor: index,
+                start: false,
+                shift: false,
+            });
+        }
+        cx.notify();
+    }
+    /// A release ends the drag; a click with nothing selected opens the link
+    /// under it.
+    fn mouse_up(&mut self, event: &gpui::MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+        self.selecting = false;
+        if self.text.selection().is_empty() {
+            let index = self.index(event.position);
+            if let Some((_, link)) = self.links.iter().find(|(range, _)| range.contains(&index)) {
+                let _ = super::open_terminal_link(link);
+            }
+        }
+    }
+    /// The top layer: inline code drawn over the text, the input handler, the
+    /// caret, and scrolling the caret into view after an edit.
+    fn caret_canvas(
+        paint: gpui::Entity<Self>,
+        layout: TextLayout,
+        readonly: bool,
+        placeholder: bool,
+    ) -> impl IntoElement {
+        gpui::canvas(
+            move |bounds, _, _| bounds,
+            move |bounds, _, window, cx| {
+                paint.update(cx, |input, cx| {
+                    input.paint_inline_code(&layout, bounds, false, window, cx)
+                });
+                let input = paint.read(cx);
+                let focused = input.focus.is_focused(window);
+                let selection = input.text.selection();
+                if !readonly {
+                    window.handle_input(
+                        &input.focus,
+                        gpui::ElementInputHandler::new(bounds, paint.clone()),
+                        cx,
+                    );
+                }
+                if focused && !readonly && selection.is_empty() {
+                    let position = if placeholder {
+                        Some(bounds.origin)
+                    } else {
+                        input.caret(&layout)
+                    };
+                    if let Some(position) = position {
+                        window.paint_quad(fill(
+                            Bounds::new(position, size(px(1.), px(20.))),
+                            input.chrome.focus,
+                        ));
+                    }
+                }
+                let cursor = input.caret(&layout);
+                paint.update(cx, |input, cx| {
+                    input.bounds = Some(bounds);
+                    if !readonly
+                        && std::mem::take(&mut input.ensure_cursor)
+                        && let Some(cursor) = cursor
+                    {
+                        let mut offset = input.scroll.offset();
+                        if cursor.y + px(20.) > bounds.bottom() {
+                            offset.y -= cursor.y + px(20.) - bounds.bottom();
+                        }
+                        if cursor.y < bounds.top() {
+                            offset.y += bounds.top() - cursor.y;
+                        }
+                        if offset != input.scroll.offset() {
+                            input.scroll.set_offset(offset);
+                            cx.notify();
+                        }
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full()
     }
 }
 impl Focusable for ChatInput {
@@ -650,51 +873,7 @@ impl Render for ChatInput {
         } else {
             self.text.value.clone()
         };
-        let mut spans = self.spans.clone();
-        if let Some(marked) = &self.text.marked {
-            spans.push((
-                marked.clone(),
-                gpui::HighlightStyle {
-                    underline: Some(gpui::UnderlineStyle {
-                        color: Some(self.chrome.ink_1.into()),
-                        thickness: px(1.),
-                        wavy: false,
-                    }),
-                    ..Default::default()
-                },
-            ));
-        }
-        let selection = self.text.selection();
-        if !placeholder
-            && !selection.is_empty()
-            && (self.focus.is_focused(window) || self.shared_selection)
-        {
-            spans.push((
-                selection,
-                gpui::HighlightStyle {
-                    background_color: Some(self.chrome.row_selected.into()),
-                    color: Some(
-                        crate::appearance::legible(
-                            self.chrome.ink_1,
-                            self.chrome.row_selected,
-                            self.chrome.ink_1,
-                            4.5,
-                        )
-                        .into(),
-                    ),
-                    ..Default::default()
-                },
-            ));
-        }
-        for range in &self.monos {
-            spans.push((
-                range.clone(),
-                gpui::HighlightStyle {
-                    color: Some(crate::appearance::with_alpha(self.chrome.ink_1, 0.).into()),
-                    ..Default::default()
-                },
-            ));
-        }
+        let spans = self.highlights(placeholder, window);
         let text = gpui::StyledText::new(value)
             .with_highlights(spans)
             .with_font_family_overrides(
@@ -738,77 +917,9 @@ impl Render for ChatInput {
             })
             .when(self.code, |d| d.overflow_x_scroll())
             .on_key_down(cx.listener(Self::key))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
-                    window.focus(&this.focus, cx);
-                    let index = this.index(event.position);
-                    if event.click_count >= 3 {
-                        this.text.anchor = 0;
-                        this.text.cursor = this.text.value.len();
-                    } else if event.click_count == 2 {
-                        let range = this
-                            .text
-                            .value
-                            .split_word_bound_indices()
-                            .find(|(i, w)| *i <= index && index < i + w.len())
-                            .map(|(i, w)| i..i + w.len())
-                            .unwrap_or(index..index);
-                        this.text.anchor = range.start;
-                        this.text.cursor = range.end;
-                    } else {
-                        let upstream = this.upstream_at(index, event.position);
-                        this.text.move_to(index, event.modifiers.shift);
-                        this.text.upstream = upstream;
-                    }
-                    this.selecting = true;
-                    if this.readonly {
-                        cx.emit(InputEvent::Select {
-                            anchor: this.text.anchor,
-                            cursor: this.text.cursor,
-                            start: true,
-                            shift: event.modifiers.shift,
-                        });
-                    }
-                    cx.notify();
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
-                let index = this.index(event.position);
-                this.hover_link = this
-                    .links
-                    .iter()
-                    .find(|(range, _)| range.contains(&index))
-                    .map(|(_, link)| link.clone());
-                if this.selecting {
-                    let upstream = this.upstream_at(index, event.position);
-                    this.text.move_to(index, true);
-                    this.text.upstream = upstream;
-                }
-                if this.readonly && event.pressed_button == Some(MouseButton::Left) {
-                    cx.emit(InputEvent::Select {
-                        anchor: this.text.anchor,
-                        cursor: index,
-                        start: false,
-                        shift: false,
-                    });
-                }
-                cx.notify();
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseUpEvent, _, _| {
-                    this.selecting = false;
-                    if this.text.selection().is_empty() {
-                        let index = this.index(event.position);
-                        if let Some((_, link)) =
-                            this.links.iter().find(|(range, _)| range.contains(&index))
-                        {
-                            let _ = super::open_terminal_link(link);
-                        }
-                    }
-                }),
-            )
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_mouse_move(cx.listener(Self::mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.selecting = false),
@@ -841,60 +952,6 @@ impl Render for ChatInput {
                     .when(self.code, |d| d.whitespace_nowrap())
                     .child(text),
             )
-            .child(
-                gpui::canvas(
-                    move |bounds, _, _| bounds,
-                    move |bounds, _, window, cx| {
-                        paint.update(cx, |input, cx| {
-                            input.paint_inline_code(&layout, bounds, false, window, cx)
-                        });
-                        let input = paint.read(cx);
-                        let focused = input.focus.is_focused(window);
-                        let selection = input.text.selection();
-                        if !readonly {
-                            window.handle_input(
-                                &input.focus,
-                                gpui::ElementInputHandler::new(bounds, paint.clone()),
-                                cx,
-                            );
-                        }
-                        if focused && !readonly && selection.is_empty() {
-                            let position = if placeholder {
-                                Some(bounds.origin)
-                            } else {
-                                input.caret(&layout)
-                            };
-                            if let Some(position) = position {
-                                window.paint_quad(fill(
-                                    Bounds::new(position, size(px(1.), px(20.))),
-                                    input.chrome.focus,
-                                ));
-                            }
-                        }
-                        let cursor = input.caret(&layout);
-                        paint.update(cx, |input, cx| {
-                            input.bounds = Some(bounds);
-                            if !readonly
-                                && std::mem::take(&mut input.ensure_cursor)
-                                && let Some(cursor) = cursor
-                            {
-                                let mut offset = input.scroll.offset();
-                                if cursor.y + px(20.) > bounds.bottom() {
-                                    offset.y -= cursor.y + px(20.) - bounds.bottom();
-                                }
-                                if cursor.y < bounds.top() {
-                                    offset.y += bounds.top() - cursor.y;
-                                }
-                                if offset != input.scroll.offset() {
-                                    input.scroll.set_offset(offset);
-                                    cx.notify();
-                                }
-                            }
-                        });
-                    },
-                )
-                .absolute()
-                .size_full(),
-            )
+            .child(Self::caret_canvas(paint, layout, readonly, placeholder))
     }
 }
