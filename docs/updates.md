@@ -81,7 +81,7 @@ In zsh, `log` is a builtin. Use `/usr/bin/log stream --predicate 'process == "Au
 
 | Where | What |
 | --- | --- |
-| `crates/shika/src/updates.rs` | `Updater::start` loads Sparkle and starts `SPUUpdater` with Shika's driver; `UpdateCard` is the corner notice; `Updater::check` is the menu action |
+| `crates/shika/src/updates/` | `Updater::start` loads Sparkle and starts `SPUUpdater` with Shika's driver; `UpdateCard` is the corner notice; `Updater::check` is the menu action |
 | `crates/shika/src/main.rs` | `CheckForUpdates`, and the Shika menu item added only when the updater started |
 | `assets/macos/Info.plist` | `SUFeedURL`, `SUPublicEDKey`, `SUVerifyUpdateBeforeExtraction`, `SURequireSignedFeed` |
 | `scripts/sparkle.sh` | Pinned Sparkle version and checksum; downloads to `target/sparkle/` and checks the committed license |

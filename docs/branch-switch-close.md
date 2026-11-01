@@ -45,7 +45,7 @@ The core operations lock serializes Shika's lifecycle actions, not external Git 
 | Piece | Location and symbols | Responsibility |
 | --- | --- | --- |
 | Identity protection | `crates/shika-core/src/lib.rs`: `ensure_session_branch` | Ordinary close, discard, and push still require recorded branch identity or proven rename |
-| Verification | `crates/shika-core/src/worktree.rs`: `switched_close_tips` | Dirty check, resolve both refs, test reachability, return commit tips |
+| Verification | `crates/shika-core/src/worktree/close.rs`: `switched_close_tips` | Dirty check, resolve both refs, test reachability, return commit tips |
 | Preview | `crates/shika-core/src/lib.rs`: `SwitchedBranchClose`, `session_switched_close_check`, `switched_close_check_locked` | Return an opaque confirmation snapshot without changing ownership |
 | Cleanup | `Core::session_close_switched`, `hang_up`, `forget_session` | Recheck preview, stop all owned PTYs, recheck, remove only worktree, forget session |
 | Refusal copy | `crates/shika-core/src/error.rs`: `SwitchedCloseUnsafe` | Explain why safe recovery is unavailable |

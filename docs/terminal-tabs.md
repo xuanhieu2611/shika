@@ -65,18 +65,18 @@ UI symbols below are in `crates/shika/src/main.rs` unless the table names anothe
 
 | Layer | Symbols | Responsibility |
 | --- | --- | --- |
-| Task UI state | `Card`, `Card::active_pane` | Own agent and shell panes; resolve the selected terminal |
-| Terminal pane | `Pane`, `Pane::new` | Own one GPUI `TerminalView`, terminal engine, and shared `HostState` per PTY |
-| Header rendering | `terminal_side.rs`: `terminal_side`; `tabs.rs`: `TAB_HEIGHT`, `TAB_FLARE`, `TAB_LEAD`, `paint_active_tab`, `tab_shape`, `tab_canvas`; `Card::reveal_active_tab`, `Card::hovered_tab`; `ui.rs`: `KeyTip`; `column/mod.rs`: `title_drag`; `appearance.rs`: `Chrome::term_tab`, `over_to_match` | Tab strip, shell close/add controls, metadata row, task close, and drag behavior |
+| Task UI state | `card.rs`: `Card`, `Card::active_pane` | Own agent and shell panes; resolve the selected terminal |
+| Terminal pane | `host.rs`: `Pane`, `Pane::new` | Own one GPUI `TerminalView`, terminal engine, and shared `HostState` per PTY |
+| Header rendering | `terminal_side/mod.rs`: `terminal_side`; `terminal_side/header.rs`: `terminal_header`, `tab_strip`; `tabs.rs`: `TAB_HEIGHT`, `TAB_FLARE`, `TAB_LEAD`, `paint_active_tab`, `tab_shape`, `tab_canvas`; `card.rs`: `Card::reveal_active_tab`, `Card::hovered_tab`; `ui.rs`: `KeyTip`; `column/mod.rs`: `title_drag`; `appearance/chrome.rs`: `Chrome::term_tab`; `appearance/color.rs`: `over_to_match` | Tab strip, shell close/add controls, metadata row, task close, and drag behavior |
 | Tab actions | `tabs.rs`: `new_shell`, `select_tab`, `cycle_tab`, `close_tab`; `selection.rs`: `SelectTerminal` | Shell startup, selection, numbered jump, removal, and focus |
 | Native dispatch | `gpui::actions!`, `Shika::render`, `main` | Root action handlers, Shika key context, key bindings, and Agent menu |
-| Focus and scroll | `focus.rs`: `focus_terminal`; `Card::tab_scroll`; `selection.rs`: `move_agent` | Focus the selected view and reveal tabs without resetting manual scrolling on every render |
+| Focus and scroll | `focus.rs`: `focus_terminal`; `card.rs`: `Card::tab_scroll`; `selection.rs`: `move_agent` | Focus the selected view and reveal tabs without resetting manual scrolling on every render |
 | Selection arithmetic | `crates/shika/src/model.rs`: `adjacent_tab`, `tab_after_close` | GPUI-independent wrap and removal rules |
-| Startup bridge | `Host::write`, `Host::resize`, `bind_host` | Queue pre-bind input/replies, measure terminal size, bind/resize PTY, and flush queued bytes |
+| Startup bridge | `host.rs`: `Host::write`, `Host::resize`, `bind_host` | Queue pre-bind input/replies, measure terminal size, bind/resize PTY, and flush queued bytes |
 | Task shell ownership | `crates/shika-core/src/session.rs`: `Session`, `SessionStore` | Record shell PTYs and validate ownership on removal |
 | Core lifecycle | `crates/shika-core/src/lib.rs`: `open_shell`, `close_shell`, `hang_up` | Spawn independent shells, close one shell, or stop every task-owned PTY |
 | PTY implementation | `crates/shika-core/src/pty.rs`: `PtyHub` | Process/PTY ownership, reader threads, writes, resize, and teardown |
-| Terminal keyboard | `crates/shika-terminal/src/view.rs`: `key_for` | Keep Command combinations, Ctrl+Tab, and Ctrl+Shift+Tab out of terminal key encoding |
+| Terminal keyboard | `crates/shika-terminal/src/view/keys.rs`: `key_for` | Keep Command combinations, Ctrl+Tab, and Ctrl+Shift+Tab out of terminal key encoding |
 | Appearance updates | `settings/mod.rs`: `set_font_size`; `theme.rs`: `push_terminal_theme` | Update the agent and every shell, including hidden ones |
 
 ### State and identity

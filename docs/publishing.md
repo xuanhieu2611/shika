@@ -232,10 +232,10 @@ Use symbols rather than line numbers, which change frequently.
 | Same file: `publish_now`, `MAX_PR_BODY_CHARS` | A Lead's one-step publish with the dialog's defaults, and the body limit. |
 | `crates/shika-core/src/lib.rs`: `session_publish_preview`, `session_publish`, `session_publish_now`, `ensure_session_branch` | Public API, operation locking, CLI resolution, task ownership, and supported external renames. |
 | `crates/shika-core/src/error.rs`: `Error::Publish`, `Error::TaskBranchChanged`, `Error::PublishNoTarget` | Publishing details, a distinct task-branch mismatch, and a Lead publish with no recorded target. |
-| `crates/shika/src/control.rs`: `Shika::control_pr`, `pr_refusal`, `pr_reply`, `LEAD_PUBLISHING`; `Card::lead_publishing` in `main.rs` | A Lead's `shika pr`: refusals, the per-card in-flight mark, and the reply. |
-| `crates/shika/src/publish.rs`: `create_pr`, `publish_pr`, `PublishDialog`; `main.rs`: `CreatePr`, `Overlay::Publish` | Action dispatch, workers, validation, dialog state, and completion. |
-| `terminal_side.rs`: `terminal_side`; `publish.rs`: `publish_key`, `publish_view`; `overlay.rs`: `overlay_view`, `cancel_overlay`; `keys.rs`: `key`; `focus.rs`: `restore_overlay_focus`; `main.rs`: `main` | Control/menu/binding registration, field editing, focus, and busy dismissal. |
-| `crates/shika-core/src/session.rs`: `Session::base_ref`; `worktree.rs`: base resolution and `JournalEntry` | Existing starting-base ownership/persistence; no new schema for publishing. |
+| `crates/shika/src/control/publish.rs`: `Shika::control_pr`, `pr_refusal`, `pr_reply`, `LEAD_PUBLISHING`; `Card::lead_publishing` in `card.rs` | A Lead's `shika pr`: refusals, the per-card in-flight mark, and the reply. |
+| `crates/shika/src/publish.rs`: `create_pr`, `publish_pr`, `PublishDialog`; `main.rs`: `CreatePr`; `overlay.rs`: `Overlay::Publish` | Action dispatch, workers, validation, dialog state, and completion. |
+| `terminal_side/metadata.rs`: `create_pr_button`; `publish.rs`: `publish_key`, `publish_view`; `overlay.rs`: `overlay_view`, `cancel_overlay`; `keys.rs`: `key`; `focus.rs`: `restore_overlay_focus`; `main.rs`: `main` | Control/menu/binding registration, field editing, focus, and busy dismissal. |
+| `crates/shika-core/src/session.rs`: `Session::base_ref`; `worktree/base.rs`: base resolution; `worktree/journal.rs`: `JournalEntry` | Existing starting-base ownership/persistence; no new schema for publishing. |
 
 ## Debugging playbook
 

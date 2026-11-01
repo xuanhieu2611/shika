@@ -95,7 +95,7 @@ Never promote raw PTY bytes into a new-turn signal. A draft and a redraw are not
 - Asking survives Unknown until visible resume, confirmed idle, or process exit. An unreadable overlay is not evidence that the user answered it.
 - Process exit settles immediately and is terminal for that `Activity` instance.
 
-The debounce, quiet, and startup-grace constants are in `activity.rs` and `model.rs`. Change them only alongside timeline tests and an explanation of which failure mode the change addresses.
+The debounce, quiet, and startup-grace constants are in `activity/turn.rs` and `model.rs`. Change them only alongside timeline tests and an explanation of which failure mode the change addresses.
 
 ## How the implementation fits together
 
@@ -154,7 +154,7 @@ A CLI can be started with its prompt as an argument (`shika new` for a Lead's wo
 1. **The prompt is the first submission.** When the session exists, `HostState::seed_launch_prompt` sets what a typed first line sets: `submission` and `last_submission` are bumped, the card name is the prompt's first nonblank line (the Lead keeps its title), and the naming capture is finished so a line typed later neither renames the card nor the branch. The tick then consumes it exactly as it consumes a typed one: `Lifecycle::submitted` fences the previous (startup) report, the candidate turn and `turn_started` begin, the notification budget resets, the CLI title watch starts (not for a Lead), and `Card::running` protects Close before the tick runs. `Card::control_status` also reports Working in that gap so a `wait` right after `new` is not told there is nothing to wait for.
 2. **The turn is marked as booting.** The tick calls `Activity::hold_for_launch` right before the `advance` that consumes the seeded submission. For that turn only, until a strong Working or Blocked observation, the CLI's banner is not "output" for the idle rule and the quiet rule: an idle editor or an unreadable screen ends the turn only through the eight-second startup grace (measured from the last output), or an authoritative report. Without this, a CLI that draws its banner and an idle editor for more than half a second before it starts on the prompt would turn Ready, notify, and then resume Working on the same turn with no second notification.
 
-Provider paths: Pi's startup Idle report (sequence 1) is ignored while its first turn is pending, so Pi's `agent_start` and `agent_settled` reports drive the launch turn like a typed one; Claude Code, Codex, and Cursor use live-screen chrome, so they depend on their Working chrome appearing within the grace. The tests are `a_launch_prompt_*` in `activity::tests` and `host_tests` (`a_launch_prompt_counts_as_the_first_submission_and_names_the_task_once`, `a_launch_prompt_turn_runs_the_same_steps_as_a_typed_one`, which walks the tick's steps including Pi's reports). Real-CLI behavior is a manual check in `MANUAL_CHECKS.md`.
+Provider paths: Pi's startup Idle report (sequence 1) is ignored while its first turn is pending, so Pi's `agent_start` and `agent_settled` reports drive the launch turn like a typed one; Claude Code, Codex, and Cursor use live-screen chrome, so they depend on their Working chrome appearing within the grace. The tests are `a_launch_prompt_*` in `activity::tests` and `host::tests` (`a_launch_prompt_counts_as_the_first_submission_and_names_the_task_once`, `a_launch_prompt_turn_runs_the_same_steps_as_a_typed_one`, which walks the tick's steps including Pi's reports). Real-CLI behavior is a manual check in `MANUAL_CHECKS.md`.
 
 Switch agent uses that launch-turn path only when the prompt is non-empty: `apply_switch_turn` calls `seed_launch_prompt(prompt, name, now)`, so the prompt counts as a submission and names the card only while the task is still on its draft branch. It replaces `Activity` first: an exited activity ignores later submissions. It calls `hold_for_launch` and `advance` immediately, then clears the host's `launch_turn` and sets `Card.submitted` to the seeded count so the tick does not count that submission again. An empty prompt leaves a fresh Waiting activity, so the card stays Waiting until the author types. For a named task it also finishes the naming capture and `TitleWatch`, so neither that later line nor the new CLI's session title renames the branch; a draft task keeps both open, as after New. See [agent-switch.md](agent-switch.md).
 
@@ -167,7 +167,7 @@ A Lead can type into terminals (see [lead-agent.md](lead-agent.md)). Those write
 - **Paste, then Enter.** The text is a bracketed paste and the Enter is a separate write 150 ms later, because some TUIs (Codex's paste-burst handling) read an Enter inside a paste burst as a newline and never submit.
 - **A draft is typed text not yet submitted.** `HostState::has_draft` is true while the submission capture holds text on its line, or after a history recall (Up) until Enter or clear. A CLI's grey suggestion is not typed, so it does not count. The doorbell and `send`/`key` refuse while the draft exists.
 
-Tests: `a_pasted_line_and_its_separate_enter_are_one_submission`, `injected_steps_are_refused_after_the_author_types_or_the_cli_exits`, and the doorbell tests in `shika/src/control_tests.rs`.
+Tests: `a_pasted_line_and_its_separate_enter_are_one_submission`, `injected_steps_are_refused_after_the_author_types_or_the_cli_exits`, and the doorbell tests in `shika/src/control/tests.rs`.
 
 ### Turn clock, attention, and Close
 
@@ -226,16 +226,16 @@ Search by symbol rather than historical line numbers:
 
 | File | Symbols and responsibility |
 | --- | --- |
-| [`shika/src/activity.rs`](../crates/shika/src/activity.rs) | `detect`, `working_row`, `transcript_signature`, `OutputEvidence`, `Activity`, `Transition`: original screen rules, evidence, clock, debounce, notification budget |
+| [`shika/src/activity/`](../crates/shika/src/activity/) | `detect`, `working_row`, `transcript_signature`, `OutputEvidence`, `Activity`, `Transition`: original screen rules, evidence, clock, debounce, notification budget |
 | [`shika/src/lifecycle.rs`](../crates/shika/src/lifecycle.rs) | `Lifecycle::submitted`, `observe`: report fencing, precedence, and recovery |
-| [`shika/src/main.rs`](../crates/shika/src/main.rs), [`tick.rs`](../crates/shika/src/tick.rs), [`column/card.rs`](../crates/shika/src/column/card.rs) | `Host::write`, `HostState::note_lifecycle`, `Card::running`, `tick`, `card_view`: input, sampling, background polling, attention, rendering, and Close wiring |
-| [`shika/src/control.rs`](../crates/shika/src/control.rs) | `HostState::seed_launch_prompt`, `Card::control_status`: launch prompts as the first submission, and the status the Lead sees; `HostState::inject`, `Doorbell`, `Shika::type_into`: the Lead's typing |
+| [`shika/src/host.rs`](../crates/shika/src/host.rs), [`card.rs`](../crates/shika/src/card.rs), [`tick.rs`](../crates/shika/src/tick.rs), [`column/card.rs`](../crates/shika/src/column/card.rs) | `Host::write`, `HostState::note_lifecycle`, `Card::running`, `tick`, `card_view`: input, sampling, background polling, attention, rendering, and Close wiring |
+| [`shika/src/control/`](../crates/shika/src/control/) | `HostState::seed_launch_prompt`, `Card::control_status`: launch prompts as the first submission, and the status the Lead sees; `HostState::inject`, `Doorbell`, `Shika::type_into`: the Lead's typing |
 | [`shika/src/model.rs`](../crates/shika/src/model.rs) | `PromptCapture`, `Status`, `activity_requires_confirmation`, `ECHO`, `QUIET`: input parser, state vocabulary, safe-close predicate |
 | [`shika-core/src/activity.rs`](../crates/shika-core/src/activity.rs) | `ActivityBridge`, `read_report`, `activity_sink`: optional launch wiring, validation, and cleanup |
 | [`shika-core/src/pi-activity.ts`](../crates/shika-core/src/pi-activity.ts) | Pi event/version handling and atomic metadata writer |
 | [`shika-core/src/lib.rs`](../crates/shika-core/src/lib.rs), [`session.rs`](../crates/shika-core/src/session.rs) | `Core::session_activity`, Pi launch wiring, and session-store bridge ownership |
 | [`shika-terminal/src/engine.rs`](../crates/shika-terminal/src/engine.rs), [`terminal.rs`](../crates/shika-terminal/src/terminal.rs) | `live_text_lines`: read-only text independent of display offset |
-| [`shika/src/appearance.rs`](../crates/shika/src/appearance.rs) | Asking light/dark/glass tokens restored from the archived design/demo |
+| [`shika/src/appearance/shika_chrome.rs`](../crates/shika/src/appearance/shika_chrome.rs) | Asking light/dark/glass tokens restored from the archived design/demo |
 
 ## Debugging playbook
 
@@ -263,7 +263,7 @@ Fast deterministic checks from the repository root:
 source "$HOME/.cargo/env"
 cargo test -p shika activity::tests
 cargo test -p shika lifecycle::tests
-cargo test -p shika host_tests
+cargo test -p shika host::tests
 cargo test -p shika-core activity::tests
 cargo test -p shika-terminal live_
 cargo fmt --all --check

@@ -428,7 +428,7 @@ The design goal is a local helper that can drive one project's workers and canno
 
 ## wait in detail
 
-`wait` is built from the pure function `crates/shika/src/control.rs::resolve`, called by `Shika::resolve_waiters` from the app tick (every 100 ms) and once more immediately when a `wait` arrives. There is no polling thread and no cost while waiting.
+`wait` is built from the pure function `crates/shika/src/control/wait.rs::resolve`, called by `Shika::resolve_waiters` from the app tick (every 100 ms) and once more immediately when a `wait` arrives. There is no polling thread and no cost while waiting.
 
 **Which tasks.** With no ids: every card in the Lead's project that this Lead started and that is not marked for discard (`Shika::wait_set`), including finished ones the author has not closed. With ids: those cards only. Each named id must exist in the project and have been started by this Lead, or the whole command is refused before it waits. A card with no session yet is not in the set.
 
@@ -599,20 +599,20 @@ The server writes no log. To see its state:
 Follow this order. The compiler enforces some of it (the `match` on `Command` in `handle_control` is exhaustive); the rest is by hand.
 
 1. **Decide the contract first** in [lead-agent.md](lead-agent.md): what it does, what it refuses, and which tasks it may touch (own workers only, or the whole project). A command that writes needs an ownership check. A command that closes must open the existing author-confirmed flow and never skip it. `pr` is the one command the author chose to let publish without a dialog; it reuses the publish pipeline and every recheck. Do not extend that exception to another command, another target, or the author's cards without the author's decision.
-2. **`crates/shika-core/src/control.rs`**:
-   - Add the `Command` variant, with `///` docs on its fields.
-   - Add its word to `is_command` (the client is chosen by this list, and the list is not derived from the enum).
+2. **`crates/shika-core/src/control/`**:
+   - Add the `Command` variant in `protocol.rs`, with `///` docs on its fields.
+   - Add its word to `is_command` in `args.rs` (the client is chosen by this list, and the list is not derived from the enum).
    - Add the parsing arm to `parse_args` (or a helper like `parse_new`), and a line to `USAGE`.
-   - If the reply needs a new shape, add a `Reply` variant and its `render_text` arm. Keep text compact, one line per task, since a model reads it. `exit_code` needs a change only if the new reply is not a success.
+   - If the reply needs a new shape, add a `Reply` variant (`protocol.rs`) and its `render_text` arm (`render.rs`). Keep text compact, one line per task, since a model reads it. `exit_code` needs a change only if the new reply is not a success.
    - Tests: extend `requests_and_replies_round_trip_as_json`, `arguments_parse_into_commands`, `bad_arguments_return_a_short_usage`, `text_is_one_compact_line_per_task`, and `command_words_decide_client_mode`.
-3. **`crates/shika/src/control.rs`**, on the app thread in `Shika::handle_control`:
+3. **`crates/shika/src/control/commands.rs`**, on the app thread in `Shika::handle_control`:
    - Add the match arm. Scope by project (`project_tasks`) and check ownership (`started_by`) the way `wait_refusal` does. Answer expected declines with `refused(..)` and real failures with `Reply::Error`.
    - Anything that blocks (git, files, approval) runs in `cx.spawn_in` on the background executor and answers when done, as `control_new` does. Never block the tick.
    - Only append cards from this path. Removal goes through the tick (`Card::discard`), because open dialogs hold card positions (`CloseDialog`'s `index`).
    - If the command takes selection, focus, or opens a dialog, follow the author-only rules in `begin_launch`: a worker launch deliberately touches none of them.
    - Per-session core methods refuse a Lead; the command operates on workers, so check that the core method you call accepts them.
 4. **`crates/shika/src/lead_guide.md`**: add the command to the list the Lead reads, with the refusal cases that matter. This is what the model sees via `shika help`; keep it short and keep it true.
-5. **Tests**: pure logic (anything like `resolve`) as a unit test; the socket path through the existing test harness (`answer_with` in `control_tests.rs`).
+5. **Tests**: pure logic (anything like `resolve`) as a unit test; the socket path through the existing test harness (`answer_with` in `control/tests.rs`).
 6. **Docs**: this file (command section, refusals, and any error table row), the implementation map and rollout in [lead-agent.md](lead-agent.md), [crates/shika-core/README.md](../crates/shika-core/README.md) if the module map changes, a line in [AGENTS.md](../AGENTS.md) if behavior changes, and a manual check in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#lead-agent-spike).
 7. **`PROTOCOL_VERSION`**. The code requires equality and says to bump when a request or reply changes shape. Recommended policy: bump whenever an existing variant or field changes, and also when a variant is added. An old app would otherwise answer the new client with `Bad control message: unknown variant`, which does not tell the Lead what to do, whereas a mismatch says `Restart the Lead from the app.` The cost of a bump is only that Leads started before an app update must be restarted.
 
@@ -629,17 +629,17 @@ Guardrails (from [lead-agent.md](lead-agent.md)):
 
 | Piece | Where |
 | --- | --- |
-| Request, reply, task types; `parse_args`; `render_text`; `send`, `read_request`, `write_reply`; `ControlDir`; `new_token`; constants | `crates/shika-core/src/control.rs` |
+| Request, reply, task types; `parse_args`; `render_text`; `send`, `read_request`, `write_reply`; `ControlDir`; `new_token`; constants | `crates/shika-core/src/control/` |
 | Client entry: environment, parse, round trip, print, exit status | `crates/shika/src/control_client.rs` (`run`), called at the top of `main` in `crates/shika/src/main.rs` |
-| Server: `Server`, `accept_loop`, `serve`, `peer_closed`, `Incoming` | `crates/shika/src/control.rs` |
-| Command handling: `Shika::drain_control`, `handle_control`, `control_new`, `control_diff`, `control_input`, `new_refusal`, `wait_refusal`, `wait_set`, `resolve_waiters`; `resolve`, `Ledger`, `Observed`; `Card::control_status`, `task_info`, `is_live_worker_of`; `failure_reply` | `crates/shika/src/control.rs` |
-| `pr`: `Shika::control_pr`, `pr_refusal`, `worker_refusal`; `pr_gate_refusal`, `pr_status_refusal`, `pr_reply`, `publish_failure`, `LEAD_PUBLISHING`; `Card::lead_publishing` and its checks in `publish_blocker`, `switch_blocker`, `close`, `input_refusal`; core `Core::session_publish_now`, `publish::publish_now`, `Error::PublishNoTarget`, `MAX_PR_BODY_CHARS`; parsing `parse_pr` | `crates/shika/src/control.rs`; `crates/shika/src/main.rs`, `publish.rs`, `switch_agent.rs`, `close.rs`; `crates/shika-core/src/lib.rs`, `publish.rs`, `error.rs`, `control.rs` |
-| `close`: `Shika::control_close`, `worker_refusal`, `settle_lead_dialog`, `lead_dialog_succeeded`, `lead_dialog_failed`; `LeadDialog`, `dialog_gate_refusal`, `dialog_reply`, `close_outcome`; `Overlay::name` | `crates/shika/src/control.rs` (`Overlay::name` in `main.rs`); hooks in `close`, `finish_close` in `crates/shika/src/close.rs` and `cancel_overlay` in `overlay.rs` |
-| Doorbell and typing: `Doorbell`, `Gate`, `doorbell_line`, `Shika::ring_doorbells`, `Shika::type_into`, `Step`, `paste_steps`, `key_steps`, `key_bytes`, `input_refusal`, `HostState::inject` | `crates/shika/src/control.rs`; `HostState::capture_typed`, `has_draft` in `crates/shika/src/main.rs` |
+| Server: `Server`, `accept_loop`, `serve`, `peer_closed`, `Incoming` | `crates/shika/src/control/server.rs` |
+| Command handling: `Shika::drain_control`, `handle_control`, `control_new`, `control_diff`, `control_input`, `new_refusal`, `wait_refusal`, `wait_set`, `resolve_waiters`; `resolve`, `Ledger`, `Observed`; `Card::control_status`, `task_info`, `is_live_worker_of`; `failure_reply` | `crates/shika/src/control/` |
+| `pr`: `Shika::control_pr`, `pr_refusal`, `worker_refusal`; `pr_gate_refusal`, `pr_status_refusal`, `pr_reply`, `publish_failure`, `LEAD_PUBLISHING`; `Card::lead_publishing` and its checks in `publish_blocker`, `switch_blocker`, `close`, `input_refusal`; core `Core::session_publish_now`, `publish::publish_now`, `Error::PublishNoTarget`, `MAX_PR_BODY_CHARS`; parsing `parse_pr` | `crates/shika/src/control/`; `crates/shika/src/card.rs`, `publish.rs`, `switch_agent.rs`, `close.rs`; `crates/shika-core/src/lib.rs`, `publish.rs`, `error.rs`, `control/args.rs` |
+| `close`: `Shika::control_close`, `worker_refusal`, `settle_lead_dialog`, `lead_dialog_succeeded`, `lead_dialog_failed`; `LeadDialog`, `dialog_gate_refusal`, `dialog_reply`, `close_outcome`; `Overlay::name` | `crates/shika/src/control/` (`Overlay::name` in `overlay.rs`); hooks in `close`, `finish_close` in `crates/shika/src/close.rs` and `cancel_overlay` in `overlay.rs` |
+| Doorbell and typing: `Doorbell`, `Gate`, `doorbell_line`, `Shika::ring_doorbells`, `Shika::type_into`, `Step`, `paste_steps`, `key_steps`, `key_bytes`, `input_refusal`, `HostState::inject` | `crates/shika/src/control/`; `HostState::capture_typed`, `has_draft` in `crates/shika/src/host.rs` |
 | Terminal text with scrollback | `Terminal::text_with_history` in `crates/shika-terminal/src/terminal.rs` |
-| Diff text | `shika_core::render_unified`, `RENDER_CAP_BYTES` in `crates/shika-core/src/diff.rs` |
-| Worker tokens and reports: `worker_command`, `Shika::handle_worker`, `WorkerReport`, `worker_prompt`, `WORKER_FOOTER`; `clean_report`, `WORKER_HELP`, `MAX_REPORT_BYTES` (core) | `crates/shika/src/control.rs`; `Card::worker_token`, `Card::report` in `crates/shika/src/main.rs`; `WorkerEnv` and `LaunchOptions::control` in `crates/shika-core/src/session.rs` |
-| Lead card state | `Card::lead` (`LeadState`: token, ledger, waiters), `Card::started_by`, `Card::launch` (`Launch::{Task, Worker, Lead}`) in `crates/shika/src/main.rs` |
+| Diff text | `shika_core::render_unified`, `RENDER_CAP_BYTES` in `crates/shika-core/src/diff/render.rs` |
+| Worker tokens and reports: `worker_command`, `Shika::handle_worker`, `WorkerReport`, `worker_prompt`, `WORKER_FOOTER`; `clean_report`, `WORKER_HELP`, `MAX_REPORT_BYTES` (core) | `crates/shika/src/control/`; `Card::worker_token`, `Card::report` in `crates/shika/src/card.rs`; `WorkerEnv` and `LaunchOptions::control` in `crates/shika-core/src/session.rs` |
+| Lead card state | `Card::lead` (`LeadState`: token, ledger, waiters), `Card::started_by`, `Card::launch` (`Launch::{Task, Worker, Lead}`) in `crates/shika/src/card.rs` |
 | Lead session, fixed worktree, PTY environment, `LeadLaunch`, `LaunchOptions` | `Core::start_lead`, `Core::create_session_with_preparation`, `pty::CONTROL_VARS`, `crates/shika-core/src/session.rs` |
 | Guide text | `crates/shika/src/lead_guide.md` |
-| Lead memory commands: `MemoryNote`, `parse_text`, `parse_forget` (core `control.rs`); the three arms in `Shika::handle_control`; storage in `crates/shika-core/src/memory.rs` | `crates/shika-core/src/control.rs`, `crates/shika/src/control.rs`, `crates/shika-core/src/memory.rs` |
+| Lead memory commands: `MemoryNote`, `parse_text`, `parse_forget` (core `control/args.rs`); the three arms in `Shika::handle_control`; storage in `crates/shika-core/src/memory.rs` | `crates/shika-core/src/control/args.rs`, `crates/shika/src/control/commands.rs`, `crates/shika-core/src/memory.rs` |

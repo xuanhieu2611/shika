@@ -179,15 +179,15 @@ Use symbols rather than line numbers, which change frequently.
 | `crates/shika-core/src/publish.rs`: `PublishedPr`, `pr_number` | Publish result; PR number parsed from `/pull/N` at the end of the URL, or none. |
 | Same file: `checks`, `PrView`, `RollupItem`, `classify`, `PrChecks`, `ChecksState` | The one bounded gh read and its classification. |
 | Same file: `gh`, `gh_cmd`, `run_with_timeout` | Shared subprocess environment with publishing. |
-| `crates/shika-core/src/worktree.rs`: `pushed_head` | Local `origin/<branch>` commit. |
+| `crates/shika-core/src/worktree/branch.rs`: `pushed_head` | Local `origin/<branch>` commit. |
 | `crates/shika-core/src/lib.rs`: `session_publish`, `session_pr_checks`, `session_pushed_head` | Public, blocking API. The last two are lock-free reads. |
 | `crates/shika/src/checks.rs`: `PrWatch`, `Due`, `Read`, `Polled`, `Mark`, `interval` | Schedule and state machine. Pure logic, no GPUI, no processes. |
-| `crates/shika/src/main.rs`: `Card::pr`; `publish.rs`: `publish_pr` | Starting a watch when publishing succeeds. |
+| `crates/shika/src/card.rs`: `Card::pr`; `publish.rs`: `publish_pr` | Starting a watch when publishing succeeds. |
 | `crates/shika/src/tick.rs`: `tick`; `checks.rs`: `watch_checks`, `checks_read` | Running due reads in the background, applying results, notifying. |
 | `crates/shika/src/column/card.rs`: `pr_mark` | The mark on the card's second line, tooltip, and click. |
 | `crates/shika/src/model.rs`: `CHECKS_FAILED`, `checks_tip` | Notification body and tooltip copy. |
 | `crates/shika/src/notifications.rs`: `Notifications::post` | Native notification with a caller-supplied body. |
-| `crates/shika/src/appearance.rs`: `Chrome::failed` | Hand-tuned Shika values; ANSI red for derived themes, with the 4.5:1 text rule. |
+| `crates/shika/src/appearance/`: `Chrome::failed` | Hand-tuned Shika values; ANSI red for derived themes, with the 4.5:1 text rule. |
 
 ## Debugging playbook
 

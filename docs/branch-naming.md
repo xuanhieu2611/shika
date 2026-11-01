@@ -77,7 +77,7 @@ Both renames go through `rename_task_branch`, which adds the prefix, picks a fre
 | Prompt rename (immediate fallback) | `Core::session_rename_from_prompt` in `crates/shika-core/src/lib.rs` |
 | CLI title rename (once) | `Core::session_apply_cli_title` in `crates/shika-core/src/lib.rs` |
 | Prefix, free name, journal update | `Core::rename_task_branch` in `crates/shika-core/src/lib.rs` |
-| Slug, prefix cleanup, git checks | `crates/shika-core/src/worktree.rs`: `branch_slug`, `normalize_prefix`, `is_valid_branch`, `head_branch`, `is_published`, `rename_branch` |
+| Slug, prefix cleanup, git checks | `crates/shika-core/src/worktree/branch.rs`: `branch_slug`, `normalize_prefix`, `is_valid_branch`, `head_branch`, `is_published`, `rename_branch` |
 | "Already applied" flag | `Session::cli_titled` in `crates/shika-core/src/session.rs` |
 | Prefix setting | `Settings::branch_prefix` in `crates/shika-core/src/settings.rs`, stored as `branchPrefix` in `settings.json` |
 | Polling schedule | `TitleWatch` in `crates/shika/src/model.rs` (checks every `EVERY` = 2 s for `FOR` = 120 s, or `PI_FOR` = 600 s for Pi) |
@@ -186,8 +186,8 @@ If these find nothing, check whether the CLI moved its files, then update `cli_t
 
 ## Tests
 
-- `cli_title.rs`: sample files for each CLI, no title yet, broken JSON or a broken database, wrong `cwd`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, Pi's session and agent directories, a symlinked worktree path, an unknown CLI.
-- `worktree_tests.rs`: slugs and word-boundary cuts, project-name removal, prefix cleanup checked against `git check-ref-format`, renames that skip local and remote names, `is_published`.
+- `cli_title_tests.rs`: sample files for each CLI, no title yet, broken JSON or a broken database, wrong `cwd`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, Pi's session and agent directories, a symlinked worktree path, an unknown CLI.
+- `worktree/tests.rs`: slugs and word-boundary cuts, project-name removal, prefix cleanup checked against `git check-ref-format`, renames that skip local and remote names, `is_published`.
 - `tests/naming.rs`: the full flow on real git repositories: prompt rename, then CLI title rename, once; journal kept in step; the prefix; a branch pushed without `-u` keeps its name; a switched worktree keeps its branch.
 - `model.rs`: `TitleWatch` timing (one check at a time, gives up), and Option+Backspace in `PromptCapture`, using the real typing that produced a doubled branch name.
 
