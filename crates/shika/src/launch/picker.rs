@@ -9,6 +9,22 @@ pub(crate) struct PickerDialog {
     pub(crate) mode: PickerMode,
 }
 
+impl PickerDialog {
+    /// Changing location never starts a session. Terminal is worktree-only;
+    /// preserve a selected agent, but reset a removed Terminal row to the first.
+    pub(super) fn toggle_worktree(&mut self, agent_count: usize) -> bool {
+        self.mode = match self.mode {
+            PickerMode::Task => PickerMode::Checkout,
+            PickerMode::Checkout => PickerMode::Task,
+            PickerMode::Lead => return false,
+        };
+        if self.index >= agent_count {
+            self.index = 0;
+        }
+        true
+    }
+}
+
 /// Approval for a project's worktree setup before New starts `preset`.
 /// `retry` is the failed card's agent state when this is a Retry.
 pub(crate) struct PreparationDialog {
@@ -21,6 +37,10 @@ pub(crate) struct PreparationDialog {
 impl Shika {
     /// A plain key while the picker is open.
     pub(crate) fn picker_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if key == "space" {
+            self.toggle_picker_worktree(cx);
+            return;
+        }
         let offered_len = match &self.overlay {
             Some(Overlay::Picker(dialog)) => self.new_choices(dialog.mode).len(),
             _ => return,
@@ -68,6 +88,24 @@ impl Shika {
                 self.prefetch_base(project, cx);
             }
         }
+    }
+
+    /// Reuse the existing launch routes, including core's one-checkout guard.
+    fn toggle_picker_worktree(&mut self, cx: &mut Context<Self>) {
+        let agent_count = self.offered_presets().len();
+        let Some(Overlay::Picker(dialog)) = &mut self.overlay else {
+            return;
+        };
+        if !dialog.toggle_worktree(agent_count) {
+            return;
+        }
+        let (project, mode) = (dialog.project.clone(), dialog.mode);
+        if mode == PickerMode::Checkout {
+            self.refresh_checkout_head(project, cx);
+        } else {
+            self.prefetch_base(project, cx);
+        }
+        cx.notify();
     }
 
     /// A plain key while the setup approval dialog is open.
@@ -131,7 +169,27 @@ impl Shika {
                 panel = panel.child(picker_preset_row(i, preset, i == *index, home, chrome, cx));
             }
         }
-        panel.child(self.picker_footer(project, *mode, name, offer_settings, chrome))
+        if *mode == PickerMode::Checkout {
+            panel = panel.child(
+                div()
+                    .px(px(10.))
+                    .pt(px(6.))
+                    .text_size(px(11.))
+                    .text_color(chrome.ink_3)
+                    .child("Runs in your project folder on ")
+                    .child(
+                        div().flex_1().min_w_0().truncate().font_family(MONO).child(
+                            self.checkout_branch(project)
+                                .unwrap_or("Reading branch...")
+                                .to_owned(),
+                        ),
+                    )
+                    .flex()
+                    .flex_wrap()
+                    .items_center(),
+            );
+        }
+        panel.child(self.picker_footer(project, *mode, offer_settings, chrome, cx))
     }
 
     /// The picker's footer: the keys, then where the start lands.
@@ -139,11 +197,11 @@ impl Shika {
         &self,
         project: &str,
         mode: PickerMode,
-        name: &str,
         offer_settings: bool,
         chrome: &Chrome,
+        cx: &mut Context<Self>,
     ) -> gpui::Div {
-        div()
+        let footer = div()
             .flex()
             .gap(px(14.))
             .mt(px(6.))
@@ -159,28 +217,79 @@ impl Shika {
             } else {
                 "↵ start"
             })
-            .child("esc cancel")
-            .child(if mode == PickerMode::Checkout {
-                div().min_w_0().truncate().font_family(MONO).child(format!(
-                    "{name} · {}",
-                    self.checkout_branch(project).unwrap_or("Reading branch...")
-                ))
-            } else {
-                match self.bases.get(project).and_then(|b| b.name.clone()) {
-                    // Where New will start, so it is never a surprise.
-                    Some(name) => div()
-                        .flex()
-                        .gap(px(4.))
-                        .child(if mode == PickerMode::Lead {
-                            "reads a checkout of"
-                        } else {
-                            "branches from"
-                        })
-                        .child(div().font_family(MONO).child(name)),
-                    None if mode == PickerMode::Lead => div().child("reads a detached worktree"),
-                    None => div().child("creates a branch and a worktree"),
-                }
+            .child("esc cancel");
+        if mode != PickerMode::Lead {
+            return footer
+                .items_center()
+                .child(div().flex_1())
+                .child(self.picker_worktree_switch(project, mode, chrome, cx));
+        }
+        footer.child(match self.bases.get(project).and_then(|b| b.name.clone()) {
+            Some(name) => div()
+                .flex()
+                .gap(px(4.))
+                .child("reads a checkout of")
+                .child(div().font_family(MONO).child(name)),
+            None => div().child("reads a detached worktree"),
+        })
+    }
+
+    /// Quiet, neutral switch. The label and track share one click target;
+    /// focus stays on the picker so navigation and Escape keep working.
+    fn picker_worktree_switch(
+        &self,
+        project: &str,
+        mode: PickerMode,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let on = mode == PickerMode::Task;
+        let tip = if on {
+            match self.bases.get(project).and_then(|b| b.name.as_deref()) {
+                Some(base) => format!("Creates an isolated worktree from {base}. Space to toggle."),
+                None => "Creates an isolated worktree. Space to toggle.".to_owned(),
+            }
+        } else {
+            "Runs in your project folder, no worktree. Space to toggle.".to_owned()
+        };
+        let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
+        let ink = chrome.ink_1;
+        div()
+            .id("picker-create-worktree")
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .cursor_pointer()
+            .hover(move |style| style.text_color(ink))
+            .child("Create worktree")
+            .child(
+                div()
+                    .w(px(28.))
+                    .h(px(17.))
+                    .rounded_full()
+                    .bg(if on { chrome.ink_1 } else { chrome.sunken })
+                    .border_1()
+                    .border_color(if on { chrome.ink_1 } else { chrome.ink_3 })
+                    .flex()
+                    .items_center()
+                    .px(px(2.))
+                    .when(on, |track| track.justify_end())
+                    .child(div().size(px(11.)).rounded_full().bg(if on {
+                        chrome.overlay
+                    } else {
+                        chrome.ink_3
+                    })),
+            )
+            .tooltip(move |_, cx| {
+                cx.new(|_| KeyTip {
+                    bg: tip_bg,
+                    fg: tip_fg,
+                    text: tip.clone().into(),
+                })
+                .into()
             })
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_picker_worktree(cx)))
     }
 
     pub(crate) fn preparation_view(

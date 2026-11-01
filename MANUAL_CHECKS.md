@@ -702,6 +702,19 @@ Implemented; `cargo test -p shika` and clippy pass. The GUI checks below are not
 - [ ] `j`/`k` never stops on a section header; light, dark, glass, and a derived theme render the headers with existing tokens.
 - [ ] The column opens at 30% of the window (420px at 1400px), keeps that share while the window resizes (never under 320 or over 800, terminal keeps 420), a drag sets a new share that survives a relaunch, and a double-click on the edge restores 30%.
 
+## New agent worktree switch (2026-10-31)
+
+Implemented the author-approved footer toggle: **Create worktree**, on for ordinary New, off for the checkout shortcut; both use the title **New agent**. Click label/track or Space changes location without launch. Off shows the checkout branch and excludes Terminal; Lead has no switch. The temporary HTML prototype was removed after approval.
+
+Automated validation: 780 workspace tests passed with the existing environment-sensitive `path_env::tests::finder_launch_path_resolves_installed_clis` explicitly skipped (plus one existing ignored test). The unfiltered run reproduced its already-recorded Homebrew-versus-`.local/bin/claude` assertion. Strict workspace/all-targets Clippy, formatting, and diff checks passed. New regression tests cover selected-agent/project retention, removing a selected Terminal with zero/one/multiple agents, Lead refusal, and the shared title. These do not establish native visual or focus acceptance.
+
+Pending native checks, with disposable repositories and isolated app data only:
+
+- [ ] Click label and track, and Space, toggle without launching or moving focus; agent selection, Tab, numbers/Enter and Escape retain existing behavior. Closing/reopening resets the switch; Cmd+Shift+N defaults off and Cmd+N/`+` default on.
+- [ ] Off shows the current branch or detached commit, excludes Terminal, and offers Settings with no agents; switching back restores Terminal. Lead has no toggle and keeps its existing footer.
+- [ ] Off launches in the checkout without setup/allocation, or focuses its existing checkout card; on follows existing fresh-worktree/setup behavior. Cancel writes no config and allocates nothing.
+- [ ] Light, dark, a derived theme, opaque/glass, narrow windows and long branch names: footer switch/thumb/tooltip contrast, readable checkout fact, no clipping or focus changes.
+
 ## Checkout sessions (2026-10-26)
 
 The [checkout-session app flow](docs/tasks-and-worktrees.md#checkout) is complete. After the automated and injected checks below, the author confirmed the pending native keyboard flow and real Ready notification checks on 2026-10-26. This confirmation is author-reported, not agent-observed. Automated validation: 747 workspace tests passed with the existing environment-sensitive `path_env::tests::finder_launch_path_resolves_installed_clis` explicitly skipped (plus one existing ignored test). The unfiltered run fails that test because Claude resolves to `/opt/homebrew/bin/claude`, not the test's expected `.local/bin/claude`. Formatting, strict workspace/all-targets Clippy, debug bundle build, and strict signature verification passed. New app tests cover checkout-first ordering, shortcut default/rebind/clear/conflict, picker titles, and coalesced branch reads/retry; core's item-1 tests cover git safety.

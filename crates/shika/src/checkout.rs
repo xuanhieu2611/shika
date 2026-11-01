@@ -178,8 +178,8 @@ mod tests {
     }
 
     #[test]
-    fn picker_titles_distinguish_checkout_from_new_and_lead() {
-        assert_eq!(PickerMode::Checkout.title(), "In checkout");
+    fn picker_title_stays_new_agent_when_location_changes() {
+        assert_eq!(PickerMode::Checkout.title(), "New agent");
         assert_eq!(PickerMode::Task.title(), "New agent");
         assert_eq!(PickerMode::Lead.title(), "New Lead");
     }
