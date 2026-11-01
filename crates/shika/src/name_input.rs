@@ -109,6 +109,108 @@ impl NameInput {
         cx.stop_propagation();
         cx.notify();
     }
+    /// Shapes the value on one line, the marked text underlined, and the
+    /// horizontal scroll that keeps the caret inside `bounds`.
+    fn shape_value(
+        input: &Self,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) -> (ShapedLine, Pixels) {
+        let style = window.text_style();
+        let value: SharedString = input.text.value.clone().into();
+        let run = TextRun {
+            len: value.len(),
+            font: style.font(),
+            color: style.color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let runs = if let Some(marked) = &input.text.marked {
+            vec![
+                TextRun {
+                    len: marked.start,
+                    ..run.clone()
+                },
+                TextRun {
+                    len: marked.len(),
+                    underline: Some(UnderlineStyle {
+                        color: Some(style.color),
+                        thickness: px(1.),
+                        wavy: false,
+                    }),
+                    ..run.clone()
+                },
+                TextRun {
+                    len: value.len() - marked.end,
+                    ..run
+                },
+            ]
+            .into_iter()
+            .filter(|run| run.len > 0)
+            .collect()
+        } else {
+            vec![run]
+        };
+        let line = window.text_system().shape_line(
+            value,
+            style.font_size.to_pixels(window.rem_size()),
+            &runs,
+            None,
+        );
+        let cursor = line.x_for_index(input.text.cursor);
+        let width = (bounds.size.width - px(1.)).max(px(0.));
+        let scroll = input.scroll.max(cursor - width).min(cursor).max(px(0.));
+        (line, scroll)
+    }
+    /// Registers the input handler, paints the selection, the line, and the
+    /// caret, and keeps the layout for hit testing and IME bounds.
+    fn paint_value(
+        paint: &gpui::Entity<Self>,
+        bounds: Bounds<Pixels>,
+        line: ShapedLine,
+        scroll: Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let input = paint.read(cx);
+        let selection = input.text.selection();
+        let cursor = input.text.cursor;
+        let focus = input.focus.clone();
+        let chrome = input.chrome;
+        let origin = point(bounds.left() - scroll, bounds.top());
+        window.handle_input(
+            &focus,
+            gpui::ElementInputHandler::new(bounds, paint.clone()),
+            cx,
+        );
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            if focus.is_focused(window) && !selection.is_empty() {
+                window.paint_quad(fill(
+                    Bounds::from_corners(
+                        point(origin.x + line.x_for_index(selection.start), bounds.top()),
+                        point(origin.x + line.x_for_index(selection.end), bounds.bottom()),
+                    ),
+                    chrome.row_selected,
+                ));
+            }
+            let _ = line.paint(origin, px(16.), gpui::TextAlign::Left, None, window, cx);
+            if focus.is_focused(window) && selection.is_empty() {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(origin.x + line.x_for_index(cursor), bounds.top()),
+                        size(px(1.), bounds.size.height),
+                    ),
+                    chrome.focus,
+                ));
+            }
+        });
+        paint.update(cx, |input, _| {
+            input.layout = Some(line);
+            input.bounds = Some(bounds);
+            input.scroll = scroll;
+        });
+    }
 }
 impl Focusable for NameInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -266,100 +368,9 @@ impl Render for NameInput {
         )
         .child(
             gpui::canvas(
-                move |bounds, window, cx| {
-                    let input = measure.read(cx);
-                    let style = window.text_style();
-                    let value: SharedString = input.text.value.clone().into();
-                    let run = TextRun {
-                        len: value.len(),
-                        font: style.font(),
-                        color: style.color,
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    };
-                    let runs = if let Some(marked) = &input.text.marked {
-                        vec![
-                            TextRun {
-                                len: marked.start,
-                                ..run.clone()
-                            },
-                            TextRun {
-                                len: marked.len(),
-                                underline: Some(UnderlineStyle {
-                                    color: Some(style.color),
-                                    thickness: px(1.),
-                                    wavy: false,
-                                }),
-                                ..run.clone()
-                            },
-                            TextRun {
-                                len: value.len() - marked.end,
-                                ..run
-                            },
-                        ]
-                        .into_iter()
-                        .filter(|run| run.len > 0)
-                        .collect()
-                    } else {
-                        vec![run]
-                    };
-                    let line = window.text_system().shape_line(
-                        value,
-                        style.font_size.to_pixels(window.rem_size()),
-                        &runs,
-                        None,
-                    );
-                    let cursor = line.x_for_index(input.text.cursor);
-                    let width = (bounds.size.width - px(1.)).max(px(0.));
-                    let scroll = input.scroll.max(cursor - width).min(cursor).max(px(0.));
-                    (line, scroll)
-                },
+                move |bounds, window, cx| Self::shape_value(measure.read(cx), bounds, window),
                 move |bounds, (line, scroll), window, cx| {
-                    let input = paint.read(cx);
-                    let selection = input.text.selection();
-                    let cursor = input.text.cursor;
-                    let focus = input.focus.clone();
-                    let chrome = input.chrome;
-                    let origin = point(bounds.left() - scroll, bounds.top());
-                    window.handle_input(
-                        &focus,
-                        gpui::ElementInputHandler::new(bounds, paint.clone()),
-                        cx,
-                    );
-                    window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-                        if focus.is_focused(window) && !selection.is_empty() {
-                            window.paint_quad(fill(
-                                Bounds::from_corners(
-                                    point(
-                                        origin.x + line.x_for_index(selection.start),
-                                        bounds.top(),
-                                    ),
-                                    point(
-                                        origin.x + line.x_for_index(selection.end),
-                                        bounds.bottom(),
-                                    ),
-                                ),
-                                chrome.row_selected,
-                            ));
-                        }
-                        let _ =
-                            line.paint(origin, px(16.), gpui::TextAlign::Left, None, window, cx);
-                        if focus.is_focused(window) && selection.is_empty() {
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    point(origin.x + line.x_for_index(cursor), bounds.top()),
-                                    size(px(1.), bounds.size.height),
-                                ),
-                                chrome.focus,
-                            ));
-                        }
-                    });
-                    paint.update(cx, |input, _| {
-                        input.layout = Some(line);
-                        input.bounds = Some(bounds);
-                        input.scroll = scroll;
-                    });
+                    Self::paint_value(&paint, bounds, line, scroll, window, cx)
                 },
             )
             .w_full()

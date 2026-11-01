@@ -105,7 +105,7 @@ Close task is available from the terminal header, the Agent menu, Cmd+Shift+W, o
   - **Push changes** (`⌘↵`), only when the tree is clean and there is something to push: `git push -u origin HEAD`, then remove the card and the worktree and keep the local branch. A failed push keeps the card and shows the error.
   - Plain `d`, `p`, and Enter do nothing, and the dialog ignores every key but Escape for its first 300ms. See [keyboard-flow.md](keyboard-flow.md#accidental-typing).
   - **Escape** cancels. The shown tab stays, and focus returns to where the dialog opened. Cancelling does not open or select a shell.
-- **Close shows its progress.** Stopping the PTYs and removing the worktree can take seconds in a large repository. From the moment that work starts until it returns, the card is dimmed and reads "Closing...", and the terminal fades behind "Closing..." instead of showing the CLI's exit line. On success the card shrinks, fades, and collapses its row; on failure the card and terminal come back and the error is shown. The app finds the card again by session id when the work returns, since card positions can change while it runs. Reduce Motion skips the animation. The motion values are in [DESIGN.md](../design/DESIGN.md) under Motion; the code is `Shika::finish_close` and `Shika::depart` in `crates/shika/src/close.rs`, `departing_view` in `column/projects.rs`, and `closing_terminal` in `terminal_side.rs`.
+- **Close shows its progress.** Stopping the PTYs and removing the worktree can take seconds in a large repository. From the moment that work starts until it returns, the card is dimmed and reads "Closing...", and the terminal fades behind "Closing..." instead of showing the CLI's exit line. On success the card shrinks, fades, and collapses its row; on failure the card and terminal come back and the error is shown. The app finds the card again by session id when the work returns, since card positions can change while it runs. Reduce Motion skips the animation. The motion values are in [DESIGN.md](../design/DESIGN.md) under Motion; the code is `Shika::finish_close` and `Shika::depart` in `crates/shika/src/close.rs`, `departing_view` in `column/projects.rs`, and `closing_terminal` in `terminal_side/mod.rs`.
 - **A Lead can ask.** `shika close <task>` on a worker it started runs this same flow: closed at once where Close would not ask, otherwise this dialog for the author, with the Lead's command blocking on their choice ([shika-cli.md](shika-cli.md#shika-close-task)). Cancelling returns focus to the Lead.
 - **Close never commits.** The only path that commits for the user is the confirmed Create PR flow in [publishing.md](publishing.md).
 - **Branch identity.** Discard and Push act only on the task's own branch. External renames are followed as described in [branch-naming.md](branch-naming.md#external-branch-renames). After a real branch switch, Close offers the separate recovery in [branch-switch-close.md](branch-switch-close.md).
@@ -131,15 +131,15 @@ Recovery is explicit, not automatic session restoration. Lead recovery and check
 
 | Where | What |
 | --- | --- |
-| `shika-core/src/worktree.rs` | `create_draft`, `resolve_base`, `configured_ref`, `known_branches`, `fetch_target`, `fetch_branch`, `is_dirty`, `git_state`, `diff_stat`, `push`, `remove_worktree`, `remove_draft`, and the journal (`Journal`) |
+| `shika-core/src/worktree/` | `create_draft`, `resolve_base`, `configured_ref`, `known_branches`, `fetch_target`, `fetch_branch`, `is_dirty`, `git_state`, `diff_stat`, `push`, `remove_worktree`, `remove_draft`, and the journal (`Journal`) |
 | `shika-core/src/lib.rs` | `Core::add_project`, `project_base`, `project_branches`, `prefetch_base`, `create_session`, `session_git_state`, `session_diff_stat`, `session_close`, `session_discard`, `session_push_and_close`, `leftovers_list`, `leftover_remove` |
 | `shika-core/src/recovery.rs`, `shika/src/recovery.rs` | `leftover_recovery`, `reopen_leftover`, `checkpoint_sessions`; Quit confirmation, recovery dialog and launch routing |
 | `shika-core/src/session.rs` | `SessionKind::{Task, Checkout, Lead}`, `Session::is_checkout`; checkout sessions own no git state |
 | `shika-core/src/lib.rs` | `create_checkout_session`, `checkout_session`, `checkout_head`, `session_stop_checkout`; checkout guards for naming, diff baselines, publishing, and worktree-only Close APIs |
-| `shika-core/src/worktree.rs`, `diff.rs` | `checkout_head`, bounded repository-root reads, and `HEAD` diff comparison |
-| `shika-core/src/control.rs` | Lead visibility and targeting exclude checkout sessions |
+| `shika-core/src/worktree/branch.rs`, `worktree/task_diff.rs`, `diff/` | `checkout_head`, bounded repository-root reads, and `HEAD` diff comparison |
+| `shika/src/control/tasks.rs` | Lead visibility and targeting exclude checkout sessions |
 | `shika/src/checkout.rs` | `new_in_checkout`, `start_checkout`, existing-card focus, selection/Ready branch-read coalescing |
-| `shika/src/main.rs`, `launch.rs`, `model.rs`, `shortcuts.rs` | `NewInCheckout`, `PickerMode::Checkout`, `Launch::Checkout`, `Overlay::CheckoutClose`, checkout-first ordering, and rebindable `newInCheckout` chord |
+| `shika/src/main.rs`, `launch/mod.rs`, `card.rs`, `close.rs`, `overlay.rs`, `model.rs`, `shortcuts.rs` | `NewInCheckout`, `PickerMode::Checkout`, `Launch::Checkout`, `Overlay::CheckoutClose(CheckoutCloseDialog)`, checkout-first ordering, and rebindable `newInCheckout` chord |
 | `shika-core/src/projects.rs` | `projects.json` |
 | `shika-core/src/pty.rs`, `path_env.rs` | Child environment and the login-shell `PATH` |
 

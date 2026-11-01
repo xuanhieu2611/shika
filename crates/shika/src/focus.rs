@@ -23,7 +23,8 @@ impl Shika {
                 .chain(card.shells.iter())
                 .any(|pane| pane.view.focus_handle(cx) == focus)
         }) || self
-            .lead_chats
+            .leads
+            .chats
             .values()
             .any(|chat| chat.read(cx).owns_focus(&focus, cx)))
             && !self.busy

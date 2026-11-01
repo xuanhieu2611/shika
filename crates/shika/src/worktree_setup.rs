@@ -238,6 +238,138 @@ fn entry(value: String, chrome: Chrome, cx: &mut Context<Shika>) -> Entry {
         remove: cx.focus_handle(),
     }
 }
+/// The top of the setup dialog: the title, what setup does, where the
+/// config lives, and the editor's note.
+fn setup_intro(
+    editor: &Editor,
+    name: &str,
+    config_path: String,
+    chrome: &Chrome,
+    max_h: Pixels,
+) -> gpui::Stateful<gpui::Div> {
+    let panel = dialog(chrome, max_h)
+        .track_scroll(&editor.scroll)
+        .child(dialog_title(div()).child(if editor.onboarding() { format!("Set up worktrees for {name}?") } else { format!("Worktree setup for {name}") }))
+        .child(dialog_text(chrome).child(if editor.onboarding() {
+            "Setup is optional. Commands run with your permissions before each agent starts. Approve only a repository you trust, including its scripts."
+        } else {
+            "Applies to new agents. Saving does not run setup; New asks for approval when configuration changes."
+        }))
+        .child(dialog_text(chrome).font_family(MONO).child(config_path));
+    panel.child(dialog_text(chrome).child(editor.note.clone()))
+}
+/// The full editor's two lists, Files to copy then Setup commands: a label,
+/// help, one row per entry, and an Add button.
+fn setup_lists(
+    mut panel: gpui::Stateful<gpui::Div>,
+    editor: &Editor,
+    chrome: &Chrome,
+    window: &Window,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    for (command, list, label, help, add_focus) in [
+        (
+            false,
+            &editor.files,
+            "Files to copy",
+            "Literal paths from the main checkout, such as .env.local. Must be ignored on the task's base too. Contents are never shown.",
+            &editor.add_file,
+        ),
+        (
+            true,
+            &editor.commands,
+            "Setup commands",
+            "Run in order before the agent starts. Trusted commands, not a sandbox. Use unattended commands, not a dev server.",
+            &editor.add_command,
+        ),
+    ] {
+        panel = panel
+            .child(dialog_title(div()).child(label))
+            .child(dialog_text(chrome).child(help));
+        for (index, entry) in list.iter().enumerate() {
+            panel = panel.child(setup_entry_row(command, index, entry, chrome, window, cx));
+        }
+        panel = panel.child(add_entry_button(command, add_focus, chrome, window, cx));
+    }
+    panel
+}
+/// One file or command: its input and a Remove button.
+fn setup_entry_row(
+    command: bool,
+    index: usize,
+    entry: &Entry,
+    chrome: &Chrome,
+    window: &Window,
+    cx: &mut Context<Shika>,
+) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(div().flex_1().min_w_0().child(entry.input.clone()))
+        .child(
+            secondary_button(
+                (
+                    if command {
+                        "remove-command"
+                    } else {
+                        "remove-copy"
+                    },
+                    index,
+                ),
+                chrome,
+            )
+            .track_focus(&entry.remove)
+            .when(entry.remove.is_focused(window), |d| {
+                d.border_color(chrome.focus)
+            })
+            .px(px(8.))
+            .py(px(4.))
+            .child("Remove")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.remove_setup_entry(command, index, window, cx)
+            })),
+        )
+}
+/// Add file path or Add command, under its list.
+fn add_entry_button(
+    command: bool,
+    add_focus: &FocusHandle,
+    chrome: &Chrome,
+    window: &Window,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    secondary_button(if command { "add-command" } else { "add-copy" }, chrome)
+        .track_focus(add_focus)
+        .when(add_focus.is_focused(window), |d| {
+            d.border_color(chrome.focus)
+        })
+        .px(px(12.))
+        .py(px(6.))
+        .child(if command {
+            "Add command"
+        } else {
+            "Add file path"
+        })
+        .on_click(cx.listener(move |this, _, window, cx| this.add_setup_entry(command, window, cx)))
+}
+/// Disable setup, shown when the project already has a configuration.
+fn disable_setup_button(
+    editor: &Editor,
+    chrome: &Chrome,
+    window: &Window,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    secondary_button("disable-setup", chrome)
+        .track_focus(&editor.disable)
+        .when(editor.disable.is_focused(window), |d| {
+            d.border_color(chrome.focus)
+        })
+        .px(px(12.))
+        .py(px(6.))
+        .child("Disable setup")
+        .on_click(cx.listener(|this, _, window, cx| this.save_worktree_setup(true, window, cx)))
+}
 impl Shika {
     pub(super) fn open_worktree_setup(
         &mut self,
@@ -247,11 +379,8 @@ impl Shika {
     ) {
         if self.busy
             || !matches!(
-                self.overlay,
-                Some(Overlay::Settings {
-                    section: SettingsSection::Projects,
-                    ..
-                })
+                &self.overlay,
+                Some(Overlay::Settings(dialog)) if dialog.section() == SettingsSection::Projects
             )
         {
             return;
@@ -302,7 +431,7 @@ impl Shika {
         cx: &mut Context<Self>,
     ) {
         let picker_index = match &self.overlay {
-            Some(Overlay::Picker { index, .. }) => *index,
+            Some(Overlay::Picker(picker)) => picker.index,
             _ => 0,
         };
         let editor = Editor::new(
@@ -380,11 +509,11 @@ impl Shika {
         };
         match &editor.entry_point {
             EntryPoint::New { picker_index, .. } => {
-                self.overlay = Some(Overlay::Picker {
+                self.overlay = Some(Overlay::Picker(crate::PickerDialog {
                     project: editor.project.clone(),
                     index: *picker_index,
                     mode: crate::PickerMode::Task,
-                });
+                }));
             }
             EntryPoint::Settings(settings_row) => {
                 let row = self
@@ -392,13 +521,11 @@ impl Shika {
                     .iter()
                     .position(|p| p.id == editor.project)
                     .unwrap_or((*settings_row).min(self.projects.len().saturating_sub(1)));
-                self.overlay = Some(Overlay::Settings {
-                    section: SettingsSection::Projects,
+                self.overlay = Some(Overlay::Settings(SettingsDialog::new(
+                    SettingsSection::Projects,
                     row,
-                    edit: None,
-                    usage: None,
-                });
-                self.settings_scroll.scroll_to_item(row);
+                )));
+                self.settings_ui.scroll_to(row);
             }
         }
         window.focus(&self.focus, cx);
@@ -659,129 +786,11 @@ impl Shika {
         for input in editor.inputs() {
             input.update(cx, |input, _| input.set_chrome(*chrome));
         }
-        let mut panel = dialog(chrome, max_h)
-            .track_scroll(&editor.scroll)
-            .child(dialog_title(div()).child(if editor.onboarding() { format!("Set up worktrees for {name}?") } else { format!("Worktree setup for {name}") }))
-            .child(dialog_text(chrome).child(if editor.onboarding() {
-                "Setup is optional. Commands run with your permissions before each agent starts. Approve only a repository you trust, including its scripts."
-            } else {
-                "Applies to new agents. Saving does not run setup; New asks for approval when configuration changes."
-            }))
-            .child(dialog_text(chrome).font_family(MONO).child(config_path));
-        panel = panel.child(dialog_text(chrome).child(editor.note.clone()));
+        let panel = setup_intro(editor, name, config_path, chrome, max_h);
         if editor.compact() {
-            if !editor.has_setup() {
-                panel = panel.child(dialog_text(chrome).child("No files or commands selected."));
-            }
-            for (list, heading) in [
-                (&editor.files, "Copy before each agent"),
-                (&editor.commands, "Run before each agent"),
-            ] {
-                if !list.is_empty() {
-                    panel = panel.child(dialog_title(div()).child(heading));
-                    for entry in list {
-                        panel = panel.child(
-                            dialog_text(chrome)
-                                .font_family(MONO)
-                                .child(entry.input.read(cx).value().to_string()),
-                        );
-                    }
-                }
-            }
-            panel = panel.child(dialog_text(chrome).child(format!(
-                "Timeout: {} seconds",
-                editor.timeout.read(cx).value()
-            )));
-            if let Some(error) = &editor.error {
-                panel = panel.child(dialog_text(chrome).child(error.clone()));
-            }
-            return panel
-                .child(
-                    secondary_button("customize-setup", chrome)
-                        .track_focus(&editor.customize)
-                        .when(editor.customize.is_focused(window), |d| {
-                            d.border_color(chrome.focus)
-                        })
-                        .px(px(12.))
-                        .py(px(6.))
-                        .child("Customize setup…")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.customize_preparation(window, cx)
-                        })),
-                )
-                .child(self.worktree_setup_buttons(editor, chrome, window, cx));
+            return self.compact_setup_preview(panel, editor, chrome, window, cx);
         }
-        for (command, list, label, help, add_focus) in [
-            (
-                false,
-                &editor.files,
-                "Files to copy",
-                "Literal paths from the main checkout, such as .env.local. Must be ignored on the task's base too. Contents are never shown.",
-                &editor.add_file,
-            ),
-            (
-                true,
-                &editor.commands,
-                "Setup commands",
-                "Run in order before the agent starts. Trusted commands, not a sandbox. Use unattended commands, not a dev server.",
-                &editor.add_command,
-            ),
-        ] {
-            panel = panel
-                .child(dialog_title(div()).child(label))
-                .child(dialog_text(chrome).child(help));
-            for (index, entry) in list.iter().enumerate() {
-                panel = panel.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(div().flex_1().min_w_0().child(entry.input.clone()))
-                        .child(
-                            secondary_button(
-                                (
-                                    if command {
-                                        "remove-command"
-                                    } else {
-                                        "remove-copy"
-                                    },
-                                    index,
-                                ),
-                                chrome,
-                            )
-                            .track_focus(&entry.remove)
-                            .when(entry.remove.is_focused(window), |d| {
-                                d.border_color(chrome.focus)
-                            })
-                            .px(px(8.))
-                            .py(px(4.))
-                            .child("Remove")
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.remove_setup_entry(command, index, window, cx)
-                                },
-                            )),
-                        ),
-                );
-            }
-            panel = panel.child(
-                secondary_button(if command { "add-command" } else { "add-copy" }, chrome)
-                    .track_focus(add_focus)
-                    .when(add_focus.is_focused(window), |d| {
-                        d.border_color(chrome.focus)
-                    })
-                    .px(px(12.))
-                    .py(px(6.))
-                    .child(if command {
-                        "Add command"
-                    } else {
-                        "Add file path"
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.add_setup_entry(command, window, cx)
-                    })),
-            );
-        }
+        let mut panel = setup_lists(panel, editor, chrome, window, cx);
         panel = panel
             .child(dialog_text(chrome).child("Timeout in seconds (1 to 3600)"))
             .child(editor.timeout.clone());
@@ -789,21 +798,60 @@ impl Shika {
             panel = panel.child(dialog_text(chrome).child(error.clone()));
         }
         if editor.expected.is_some() {
-            panel = panel.child(
-                secondary_button("disable-setup", chrome)
-                    .track_focus(&editor.disable)
-                    .when(editor.disable.is_focused(window), |d| {
+            panel = panel.child(disable_setup_button(editor, chrome, window, cx));
+        }
+        panel.child(self.worktree_setup_buttons(editor, chrome, window, cx))
+    }
+    /// The compact onboarding preview: the suggested files and commands as
+    /// text, the timeout, Customize setup…, and the footer.
+    fn compact_setup_preview(
+        &self,
+        mut panel: gpui::Stateful<gpui::Div>,
+        editor: &Editor,
+        chrome: &Chrome,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        if !editor.has_setup() {
+            panel = panel.child(dialog_text(chrome).child("No files or commands selected."));
+        }
+        for (list, heading) in [
+            (&editor.files, "Copy before each agent"),
+            (&editor.commands, "Run before each agent"),
+        ] {
+            if !list.is_empty() {
+                panel = panel.child(dialog_title(div()).child(heading));
+                for entry in list {
+                    panel = panel.child(
+                        dialog_text(chrome)
+                            .font_family(MONO)
+                            .child(entry.input.read(cx).value().to_string()),
+                    );
+                }
+            }
+        }
+        panel = panel.child(dialog_text(chrome).child(format!(
+            "Timeout: {} seconds",
+            editor.timeout.read(cx).value()
+        )));
+        if let Some(error) = &editor.error {
+            panel = panel.child(dialog_text(chrome).child(error.clone()));
+        }
+        panel
+            .child(
+                secondary_button("customize-setup", chrome)
+                    .track_focus(&editor.customize)
+                    .when(editor.customize.is_focused(window), |d| {
                         d.border_color(chrome.focus)
                     })
                     .px(px(12.))
                     .py(px(6.))
-                    .child("Disable setup")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.save_worktree_setup(true, window, cx)
-                    })),
-            );
-        }
-        panel.child(self.worktree_setup_buttons(editor, chrome, window, cx))
+                    .child("Customize setup…")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.customize_preparation(window, cx)),
+                    ),
+            )
+            .child(self.worktree_setup_buttons(editor, chrome, window, cx))
     }
     fn worktree_setup_buttons(
         &self,

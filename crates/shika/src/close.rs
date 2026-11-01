@@ -18,6 +18,22 @@ enum CloseCheck {
     Switched(shika_core::SwitchedBranchClose),
 }
 
+/// Stops PTYs only. Never offers Discard or reads the checkout's git.
+pub(super) struct CheckoutCloseDialog {
+    pub(super) index: usize,
+}
+
+pub(super) struct CloseDialog {
+    pub(super) index: usize,
+    state: SessionGitState,
+}
+
+pub(super) struct SwitchedCloseDialog {
+    pub(super) index: usize,
+    preview: shika_core::SwitchedBranchClose,
+    working: bool,
+}
+
 impl Shika {
     pub(super) fn remove_card(&mut self, index: usize) {
         self.project_target = None;
@@ -137,7 +153,7 @@ impl Shika {
         if self.cards[index].is_checkout() {
             self.overlay_return_focus = window.focused(cx);
             if working {
-                self.overlay = Some(Overlay::CheckoutClose { index });
+                self.overlay = Some(Overlay::CheckoutClose(CheckoutCloseDialog { index }));
                 window.focus(&self.focus, cx);
                 cx.notify();
             } else {
@@ -165,15 +181,15 @@ impl Shika {
                 this.busy = false;
                 match result {
                     Ok(CloseCheck::Switched(preview)) => {
-                        this.overlay = Some(Overlay::SwitchedClose {
+                        this.overlay = Some(Overlay::SwitchedClose(SwitchedCloseDialog {
                             index,
                             preview,
                             working,
-                        });
+                        }));
                         window.focus(&this.focus, cx);
                     }
                     Ok(CloseCheck::Normal(state)) if state.requires_confirmation() => {
-                        this.overlay = Some(Overlay::Close { index, state });
+                        this.overlay = Some(Overlay::Close(CloseDialog { index, state }));
                         window.focus(&this.focus, cx);
                     }
                     Ok(_) => this.finish_close(index, 0, window, cx),
@@ -213,7 +229,7 @@ impl Shika {
         // task. Redraw bytes and draft typing are never active-turn evidence.
         let working = self.cards[index].running();
         let preview = match &self.overlay {
-            Some(Overlay::SwitchedClose { preview, .. }) if action == 3 => Some(preview.clone()),
+            Some(Overlay::SwitchedClose(dialog)) if action == 3 => Some(dialog.preview.clone()),
             _ => None,
         };
         let core = self.core.clone();
@@ -280,11 +296,157 @@ impl Shika {
         .detach();
     }
 
+    /// Plain keys in a Close dialog. Escape is the only one; the
+    /// destructive and publishing choices are Command chords, handled by
+    /// [`Self::close_chord_key`].
+    pub(super) fn close_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if key == "escape" {
+            self.cancel_overlay(window, cx);
+        }
+    }
+
+    /// The Command chords that choose in a Close dialog, past the grace
+    /// window and busy checks in `dialog_chord_key`.
+    pub(super) fn close_chord_key(
+        &mut self,
+        chord: model::DialogChord,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use model::DialogChord::{Discard, Primary};
+        match (&self.overlay, chord) {
+            (Some(Overlay::CheckoutClose(dialog)), Primary) => {
+                let i = dialog.index;
+                self.finish_close(i, 4, window, cx);
+            }
+            (Some(Overlay::Close(dialog)), Discard) => {
+                let i = dialog.index;
+                self.finish_close(i, 1, window, cx);
+            }
+            (Some(Overlay::Close(dialog)), Primary) if dialog.state.can_push() => {
+                let i = dialog.index;
+                self.finish_close(i, 2, window, cx);
+            }
+            (Some(Overlay::SwitchedClose(dialog)), Primary) => {
+                let i = dialog.index;
+                self.finish_close(i, 3, window, cx);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn checkout_close_view(
+        &self,
+        close_dialog: &CheckoutCloseDialog,
+        chrome: &Chrome,
+        max_h: Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let CheckoutCloseDialog { index } = close_dialog;
+        let i = *index;
+        dialog(chrome, max_h)
+            .child(dialog_title(div()).child("Stop the agent?"))
+            .child(dialog_text(chrome).child("The agent is still active. This stops its terminals. Your checkout and files stay unchanged."))
+            .child(dialog_buttons()
+                .child(self.cancel_button("Cancel", chrome, cx))
+                .child(primary_button("stop-checkout", "Stop agent", "⌘↵", chrome)
+                    .on_click(cx.listener(move |this, _, window, cx| this.finish_close(i, 4, window, cx)))))
+    }
+
+    pub(super) fn close_view(
+        &self,
+        close_dialog: &CloseDialog,
+        chrome: &Chrome,
+        max_h: Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let CloseDialog { index, state } = close_dialog;
+        let i = *index;
+        let can_push = state.can_push();
+        let mut panel = dialog(chrome, max_h)
+            .child(dialog_title(div()).child(format!("Close “{}”?", self.cards[i].title)));
+        if state.agent_working {
+            panel = panel.child(dialog_text(chrome).child("The agent is still working."));
+        }
+        if state.dirty {
+            panel = panel.child(dialog_text(chrome).child(
+                "The worktree has uncommitted changes. Commit in the shell or use Create PR before closing. Close does not commit.",
+            ));
+        }
+        if state.unpushed {
+            panel = panel.child(
+                dialog_text(chrome).child("The branch has commits that are not on the remote."),
+            );
+        }
+        panel = panel.child(
+            dialog_text(chrome)
+                .child("Discard stops the session and deletes the worktree and local branch."),
+        );
+        let discard = cx.listener(move |this, _, window, cx| this.finish_close(i, 1, window, cx));
+        let buttons = dialog_buttons().child(self.cancel_button("Cancel", chrome, cx));
+        // The primary action is Push when it is offered.
+        let buttons = if can_push {
+            buttons
+                .child(
+                    dialog_button("discard", "Discard changes", "\u{2318}D", chrome)
+                        .on_click(discard),
+                )
+                .child(
+                    primary_button("push", "Push changes", "\u{2318}\u{21b5}", chrome).on_click(
+                        cx.listener(move |this, _, window, cx| this.finish_close(i, 2, window, cx)),
+                    ),
+                )
+        } else {
+            buttons.child(
+                primary_button("discard", "Discard changes", "\u{2318}D", chrome).on_click(discard),
+            )
+        };
+        panel.child(buttons)
+    }
+
+    pub(super) fn switched_close_view(
+        &self,
+        close_dialog: &SwitchedCloseDialog,
+        chrome: &Chrome,
+        max_h: Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let SwitchedCloseDialog {
+            index,
+            preview,
+            working,
+        } = close_dialog;
+        let i = *index;
+        let mut panel = dialog(chrome, max_h)
+            .child(dialog_title(div()).child(format!("Close “{}” after branch switch?", self.cards[i].title)))
+            .child(dialog_text(chrome).child("This task started on:"))
+            .child(dialog_text(chrome).font_family(MONO).child(preview.recorded.clone()))
+            .child(dialog_text(chrome).child("The worktree is now on:"))
+            .child(dialog_text(chrome).font_family(MONO).child(preview.current.clone()))
+            .child(dialog_text(chrome).child("No unpublished work was found. Closing removes the worktree and stops all task terminals. Both local branches will be kept."));
+        if *working {
+            panel = panel.child(
+                dialog_text(chrome)
+                    .child("The agent is still active. Closing stops its current turn."),
+            );
+        }
+        panel.child(
+            dialog_buttons()
+                .child(self.cancel_button("Cancel", chrome, cx))
+                .child(
+                    primary_button("close-switched", "Close task", "\u{2318}\u{21b5}", chrome)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.finish_close(i, 3, window, cx)
+                        })),
+                ),
+        )
+    }
+
     pub(super) fn remove_leftover(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
-        let Some(entry) = self.leftovers.get(index) else {
+        let Some(entry) = self.leftovers.entries.get(index) else {
             return;
         };
         let path = entry.path.clone();
@@ -299,8 +461,8 @@ impl Shika {
                 this.busy = false;
                 match result {
                     Ok(()) => {
-                        this.leftovers.remove(index);
-                        this.overlay = if this.leftovers.is_empty() {
+                        this.leftovers.entries.remove(index);
+                        this.overlay = if this.leftovers.entries.is_empty() {
                             None
                         } else {
                             Some(Overlay::Leftovers)

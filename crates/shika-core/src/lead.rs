@@ -26,10 +26,10 @@ use crate::control::random_bytes;
 use crate::error::{Error, Result};
 use crate::memory::{self, MemoryNote};
 use crate::projects::{Project, SavedLead};
-use crate::pty::{CONTROL_VARS, PtySink, PtySize};
+use crate::pty::{CONTROL_VARS, PtyId, PtySink, PtySize};
 use crate::session::{self, Session, WorkerEnv};
 use crate::worktree::{self, GIT_REDIRECTS, JournalEntry, LeadWorktree};
-use crate::{Core, PreparationControl};
+use crate::{Core, PathEnv, PreparationControl};
 
 /// How long Cursor's `create-chat` may take before the Lead starts without a
 /// conversation id.
@@ -119,6 +119,21 @@ pub struct LeadStart {
     pub started_at: SystemTime,
 }
 
+/// What a Lead start has settled before it spawns the CLI: the session id,
+/// the journaled worktree and its base, the CLI, and the conversation.
+struct LeadPlan<'a> {
+    id: &'a str,
+    project: &'a Project,
+    preset: &'a CliPreset,
+    path: &'a Path,
+    base_ref: &'a Option<String>,
+    env: &'a PathEnv,
+    instructions: &'a str,
+    conversation: &'a Conversation,
+    launch: &'a LeadLaunch,
+    chat: bool,
+}
+
 impl Core {
     /// Starts a project's Lead in its fixed worktree
     /// (`<repo>/.worktrees/shika-lead`, detached, no branch, no preparation).
@@ -190,14 +205,7 @@ impl Core {
         let notes = self.memory.list(project_id).unwrap_or_default();
         let instructions = memory::instructions_with_notes(&launch.instructions, &notes);
         let env = self.path_env();
-        let preset = agents::presets_from(env)
-            .into_iter()
-            .find(|preset| preset.id == preset_id)
-            .ok_or(Error::UnknownCli)?;
-        let program = preset
-            .path
-            .clone()
-            .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+        let (preset, program) = lead_cli(env, preset_id)?;
         if self.lead_for_project(project_id).is_some() {
             return Err(Error::LeadExists);
         }
@@ -224,29 +232,7 @@ impl Core {
         let tree = worktree::prepare_lead_worktree(&git, env.path(), &project.path, base.start())?;
         let created = tree == LeadWorktree::Created;
         let path = worktree::lead_worktree_path(&project.path);
-        // An entry left by an earlier incarnation of this project (removed
-        // and added again) is claimed by the current one, or Leftovers would
-        // offer the tree.
-        let journaled = self.journal.list().map(|entries| {
-            entries
-                .iter()
-                .find(|entry| entry.path == path)
-                .map(|entry| entry.project_id.clone())
-        });
-        let journal = match journaled {
-            Ok(Some(owner)) if owner == project.id => Ok(()),
-            Ok(Some(_)) => self.journal.set_project(&path, &project.id),
-            Ok(None) => self.journal.add(&JournalEntry {
-                project_id: project.id.clone(),
-                branch: String::new(),
-                path: path.clone(),
-                base_ref: base.reference.clone(),
-                started_by_lead: false,
-                recovery: None,
-            }),
-            Err(err) => Err(err),
-        };
-        if let Err(err) = journal {
+        if let Err(err) = self.claim_lead_journal_entry(&project, &path, &base.reference) {
             if created {
                 let _ = worktree::remove_worktree(&git, env.path(), &project.path, &path, true);
             }
@@ -260,149 +246,25 @@ impl Core {
                 path.clone(),
                 (project.id.clone(), PreparationControl::default()),
             );
-        let mut bootstrap_sent = false;
-        let launched = (|| {
-            let control = WorkerEnv {
-                socket: launch.socket.clone(),
-                token: launch.token.clone(),
-                bin_dir: launch.bin_dir.clone(),
-            };
-            let args = agents::lead_flags(&preset, &path, &instructions, &conversation);
-            let bootstrap = match &conversation {
-                Conversation::Fresh { .. } if preset.id == "cursor" => {
-                    launch.cursor_bootstrap.as_deref()
-                }
-                _ => None,
-            };
-            bootstrap_sent = bootstrap.is_some();
-            let chat_transport = if chat {
-                let conversation_id = match &conversation {
-                    Conversation::Fresh { id: Some(id) } | Conversation::Resume { id } => {
-                        id.clone()
-                    }
-                    _ => return Err(Error::UnknownCli),
-                };
-                Some(
-                    crate::lead_transport::ChatTransport::start(
-                        crate::lead_transport::ChatLaunch {
-                            usage: self
-                                .cli_home
-                                .as_ref()
-                                .and_then(|home| self.usage.get()?.register(home, "claude", &path)),
-                            program: program.clone(),
-                            cwd: path.clone(),
-                            path: session::control_path(&control.bin_dir, env.path()),
-                            env: session::control_env(&control.socket, &control.token),
-                            instructions: instructions.clone(),
-                            conversation: conversation_id,
-                            resumed: matches!(conversation, Conversation::Resume { .. }),
-                            history: project
-                                .lead
-                                .as_ref()
-                                .and_then(|saved| saved.chat_history.clone()),
-                            data: self.data_dir.clone(),
-                            project: project.id.clone(),
-                        },
-                    )
-                    .map_err(Error::LeadChat)?,
-                )
-            } else {
-                None
-            };
-            let started = std::time::SystemTime::now();
-            let (pty, activity) = if chat {
-                (None, None)
-            } else {
-                let (pty, activity) = self.open_agent(
-                    &preset,
-                    program,
-                    &path,
-                    size,
-                    Some(&control),
-                    true,
-                    args,
-                    bootstrap,
-                    sink,
-                )?;
-                (Some(pty), activity)
-            };
-            let saved = SavedLead {
-                cli: preset.id.clone(),
-                session_id: match &conversation {
-                    Conversation::Fresh { id } => {
-                        if chat {
-                            None
-                        } else {
-                            id.clone()
-                        }
-                    }
-                    Conversation::Resume { id } => Some(id.clone()),
-                },
-                chat_history: chat_transport
-                    .as_ref()
-                    .map(|transport| transport.history.clone())
-                    .or_else(|| {
-                        project
-                            .lead
-                            .as_ref()
-                            .and_then(|saved| saved.chat_history.clone())
-                    }),
-                reported_workers: project
-                    .lead
-                    .as_ref()
-                    .map(|lead| {
-                        let mut kept = lead.reported_workers.clone();
-                        kept.retain(|path| path.exists());
-                        kept
-                    })
-                    .unwrap_or_default(),
-            };
-            if let Err(err) = self.projects.set_lead(&project.id, Some(saved)) {
-                if let Some(pty) = pty {
-                    self.ptys.close(pty);
-                }
-                if let Some(activity) = &activity {
-                    activity.cleanup();
-                }
-                return Err(err);
-            }
-            let session = Session {
-                id: id.clone(),
-                project_id: project.id.clone(),
-                preset_id: preset.id.clone(),
-                preset_name: preset.name.clone(),
-                title: "Lead".into(),
-                manual_title: false,
-                branch: String::new(),
-                repo: project.path.clone(),
-                worktree: path.clone(),
-                base_ref: base.reference.clone(),
-                pty,
-                shell_ptys: Vec::new(),
-                cli_titled: false,
-                prompt_named: false,
-                agent_started: started,
-                kind: crate::SessionKind::Lead,
-                started_by: None,
-            };
-            if let Some(activity) = activity {
-                self.sessions.remember_activity(&session.id, activity);
-            }
-            if let Some(transport) = chat_transport {
-                self.chats
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(id.clone(), std::sync::Arc::new(transport));
-            }
-            self.sessions.insert(session.clone());
-            Ok(session)
-        })();
+        let plan = LeadPlan {
+            id: &id,
+            project: &project,
+            preset: &preset,
+            path: &path,
+            base_ref: &base.reference,
+            env,
+            instructions: &instructions,
+            conversation: &conversation,
+            launch: &launch,
+            chat,
+        };
+        let launched = self.launch_lead(&plan, program, size, sink);
         self.preparing
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&path);
-        let session = match launched {
-            Ok(session) => session,
+        let (session, bootstrap_sent) = match launched {
+            Ok(launched) => launched,
             Err(err) => {
                 // Nothing ran in a tree made for this start, so it is safe to
                 // remove outright. An older tree may hold the author's work.
@@ -415,19 +277,7 @@ impl Core {
                 return Err(err);
             }
         };
-        let reported = self
-            .projects
-            .get(&project.id)
-            .ok()
-            .and_then(|project| project.lead)
-            .map(|lead| lead.reported_workers)
-            .unwrap_or_default();
-        let lost_workers = self
-            .lost_workers(&project.id)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|worker| !reported.contains(&worker.path))
-            .collect();
+        let lost_workers = self.unreported_lost_workers(&project.id);
         Ok(LeadStart {
             session,
             conversation: how,
@@ -436,6 +286,158 @@ impl Core {
             bootstrap_sent,
             started_at,
         })
+    }
+
+    /// An entry left by an earlier incarnation of this project (removed and
+    /// added again) is claimed by the current one, or Leftovers would offer
+    /// the tree. A missing entry is added.
+    fn claim_lead_journal_entry(
+        &self,
+        project: &Project,
+        path: &Path,
+        base_ref: &Option<String>,
+    ) -> Result<()> {
+        let journaled = self.journal.list().map(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.path == path)
+                .map(|entry| entry.project_id.clone())
+        });
+        match journaled {
+            Ok(Some(owner)) if owner == project.id => Ok(()),
+            Ok(Some(_)) => self.journal.set_project(path, &project.id),
+            Ok(None) => self.journal.add(&JournalEntry {
+                project_id: project.id.clone(),
+                branch: String::new(),
+                path: path.to_path_buf(),
+                base_ref: base_ref.clone(),
+                started_by_lead: false,
+                recovery: None,
+            }),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Spawns the Lead's CLI, or its chat transport for a Claude chat Lead,
+    /// saves its record, and registers the session. Returns the session and
+    /// whether Cursor's bootstrap prompt was passed. A failed save stops what
+    /// was spawned.
+    fn launch_lead(
+        &self,
+        plan: &LeadPlan,
+        program: PathBuf,
+        size: PtySize,
+        sink: impl PtySink,
+    ) -> Result<(Session, bool)> {
+        let control = WorkerEnv {
+            socket: plan.launch.socket.clone(),
+            token: plan.launch.token.clone(),
+            bin_dir: plan.launch.bin_dir.clone(),
+        };
+        let args = agents::lead_flags(plan.preset, plan.path, plan.instructions, plan.conversation);
+        let bootstrap = match plan.conversation {
+            Conversation::Fresh { .. } if plan.preset.id == "cursor" => {
+                plan.launch.cursor_bootstrap.as_deref()
+            }
+            _ => None,
+        };
+        let bootstrap_sent = bootstrap.is_some();
+        let chat_transport = if plan.chat {
+            Some(self.start_lead_chat(plan, &program, &control)?)
+        } else {
+            None
+        };
+        let started = std::time::SystemTime::now();
+        let (pty, activity) = if plan.chat {
+            (None, None)
+        } else {
+            let (pty, activity) = self.open_agent(
+                plan.preset,
+                program,
+                plan.path,
+                size,
+                Some(&control),
+                true,
+                args,
+                bootstrap,
+                sink,
+            )?;
+            (Some(pty), activity)
+        };
+        let saved = saved_lead(plan, chat_transport.as_ref());
+        if let Err(err) = self.projects.set_lead(&plan.project.id, Some(saved)) {
+            if let Some(pty) = pty {
+                self.ptys.close(pty);
+            }
+            if let Some(activity) = &activity {
+                activity.cleanup();
+            }
+            return Err(err);
+        }
+        let session = lead_session(plan, pty, started);
+        if let Some(activity) = activity {
+            self.sessions.remember_activity(&session.id, activity);
+        }
+        if let Some(transport) = chat_transport {
+            self.chats
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(plan.id.to_string(), std::sync::Arc::new(transport));
+        }
+        self.sessions.insert(session.clone());
+        Ok((session, bootstrap_sent))
+    }
+
+    /// Starts the Claude Code chat transport on the chosen conversation, with
+    /// the same control environment a terminal Lead gets.
+    fn start_lead_chat(
+        &self,
+        plan: &LeadPlan,
+        program: &Path,
+        control: &WorkerEnv,
+    ) -> Result<crate::lead_transport::ChatTransport> {
+        let conversation_id = match plan.conversation {
+            Conversation::Fresh { id: Some(id) } | Conversation::Resume { id } => id.clone(),
+            _ => return Err(Error::UnknownCli),
+        };
+        crate::lead_transport::ChatTransport::start(crate::lead_transport::ChatLaunch {
+            usage: self
+                .cli_home
+                .as_ref()
+                .and_then(|home| self.usage.get()?.register(home, "claude", plan.path)),
+            program: program.to_path_buf(),
+            cwd: plan.path.to_path_buf(),
+            path: session::control_path(&control.bin_dir, plan.env.path()),
+            env: session::control_env(&control.socket, &control.token),
+            instructions: plan.instructions.to_string(),
+            conversation: conversation_id,
+            resumed: matches!(plan.conversation, Conversation::Resume { .. }),
+            history: plan
+                .project
+                .lead
+                .as_ref()
+                .and_then(|saved| saved.chat_history.clone()),
+            data: self.data_dir.clone(),
+            project: plan.project.id.clone(),
+        })
+        .map_err(Error::LeadChat)
+    }
+
+    /// Workers a Lead started that have no live session, except those an
+    /// earlier restart summary already named.
+    fn unreported_lost_workers(&self, project_id: &str) -> Vec<LostWorker> {
+        let reported = self
+            .projects
+            .get(project_id)
+            .ok()
+            .and_then(|project| project.lead)
+            .map(|lead| lead.reported_workers)
+            .unwrap_or_default();
+        self.lost_workers(project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|worker| !reported.contains(&worker.path))
+            .collect()
     }
 
     /// The project's live Lead, if any. Quick.
@@ -848,6 +850,82 @@ fn create_chat_within(
     std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
     let id = out.trim().to_string();
     agents::valid_conversation_id(&id).then_some(id)
+}
+
+/// The chosen CLI preset and its binary on the login-shell PATH.
+fn lead_cli(env: &PathEnv, preset_id: &str) -> Result<(CliPreset, PathBuf)> {
+    let preset = agents::presets_from(env)
+        .into_iter()
+        .find(|preset| preset.id == preset_id)
+        .ok_or(Error::UnknownCli)?;
+    let program = preset
+        .path
+        .clone()
+        .ok_or_else(|| Error::CliNotFound(preset.name.clone()))?;
+    Ok((preset, program))
+}
+
+/// The record `projects.json` keeps for a Lead just started: its CLI, the
+/// conversation id to resume (none yet for a fresh chat Lead), the chat
+/// history identity, and reported workers whose folders still exist.
+fn saved_lead(
+    plan: &LeadPlan,
+    chat_transport: Option<&crate::lead_transport::ChatTransport>,
+) -> SavedLead {
+    SavedLead {
+        cli: plan.preset.id.clone(),
+        session_id: match plan.conversation {
+            Conversation::Fresh { id } => {
+                if plan.chat {
+                    None
+                } else {
+                    id.clone()
+                }
+            }
+            Conversation::Resume { id } => Some(id.clone()),
+        },
+        chat_history: chat_transport
+            .map(|transport| transport.history.clone())
+            .or_else(|| {
+                plan.project
+                    .lead
+                    .as_ref()
+                    .and_then(|saved| saved.chat_history.clone())
+            }),
+        reported_workers: plan
+            .project
+            .lead
+            .as_ref()
+            .map(|lead| {
+                let mut kept = lead.reported_workers.clone();
+                kept.retain(|path| path.exists());
+                kept
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// The live session for a Lead: kind `Lead`, title `Lead`, no branch.
+fn lead_session(plan: &LeadPlan, pty: Option<PtyId>, started: SystemTime) -> Session {
+    Session {
+        id: plan.id.to_string(),
+        project_id: plan.project.id.clone(),
+        preset_id: plan.preset.id.clone(),
+        preset_name: plan.preset.name.clone(),
+        title: "Lead".into(),
+        manual_title: false,
+        branch: String::new(),
+        repo: plan.project.path.clone(),
+        worktree: plan.path.to_path_buf(),
+        base_ref: plan.base_ref.clone(),
+        pty,
+        shell_ptys: Vec::new(),
+        cli_titled: false,
+        prompt_named: false,
+        agent_started: started,
+        kind: crate::SessionKind::Lead,
+        started_by: None,
+    }
 }
 
 #[cfg(test)]

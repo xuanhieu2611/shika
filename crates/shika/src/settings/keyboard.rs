@@ -3,33 +3,50 @@
 use super::*;
 
 impl Shika {
+    /// Settings is open and waiting for the next Command shortcut.
+    pub(super) fn key_recording(&self) -> bool {
+        matches!(&self.overlay, Some(Overlay::Settings(dialog)) if dialog.key_recording)
+    }
+
+    pub(super) fn set_key_recording(&mut self, on: bool) {
+        if let Some(Overlay::Settings(dialog)) = &mut self.overlay {
+            dialog.key_recording = on;
+        }
+    }
+
+    pub(super) fn set_key_note(&mut self, note: Option<String>) {
+        if let Some(Overlay::Settings(dialog)) = &mut self.overlay {
+            dialog.key_note = note;
+        }
+    }
+
     pub(crate) fn recording_shortcut(&self) -> bool {
-        self.key_recording
+        self.key_recording()
             && matches!(
                 self.overlay,
-                Some(Overlay::Settings {
+                Some(Overlay::Settings(SettingsDialog {
                     section: SettingsSection::Keyboard,
                     ..
-                })
+                }))
             )
     }
 
     fn begin_key_recording(&mut self, row: usize, cx: &mut Context<Self>) {
         if !matches!(
             self.overlay,
-            Some(Overlay::Settings {
+            Some(Overlay::Settings(SettingsDialog {
                 section: SettingsSection::Keyboard,
                 ..
-            })
+            }))
         ) {
             return;
         }
-        if let Some(Overlay::Settings { row: at, .. }) = &mut self.overlay {
+        if let Some(Overlay::Settings(SettingsDialog { row: at, .. })) = &mut self.overlay {
             *at = row;
-            self.settings_scroll.scroll_to_item(row);
+            self.settings_ui.scroll.scroll_to_item(row);
         }
-        self.key_recording = true;
-        self.key_note = None;
+        self.set_key_recording(true);
+        self.set_key_note(None);
         cx.notify();
     }
 
@@ -40,13 +57,13 @@ impl Shika {
         match shortcuts::assign(&self.keys, command.id, None) {
             Ok(next) => {
                 self.keys = next;
-                self.key_note = None;
+                self.set_key_note(None);
                 self.save_settings();
                 install_keys(cx, &self.keys);
                 cx.notify();
             }
             Err(text) => {
-                self.key_note = Some(text);
+                self.set_key_note(Some(text));
                 cx.notify();
             }
         }
@@ -58,15 +75,15 @@ impl Shika {
             && !stroke.modifiers.alt
             && !stroke.modifiers.shift;
         if plain && stroke.key == "escape" {
-            self.key_recording = false;
-            self.key_note = None;
+            self.set_key_recording(false);
+            self.set_key_note(None);
             return;
         }
         let Some(command) = self
             .keyboard_row()
             .and_then(|row| shortcuts::COMMANDS.get(row))
         else {
-            self.key_recording = false;
+            self.set_key_recording(false);
             return;
         };
         let id = command.id;
@@ -74,24 +91,24 @@ impl Shika {
             Ok(chord) => match shortcuts::assign(&self.keys, id, Some(chord)) {
                 Ok(next) => {
                     self.keys = next;
-                    self.key_recording = false;
-                    self.key_note = None;
+                    self.set_key_recording(false);
+                    self.set_key_note(None);
                     self.save_settings();
                     install_keys(cx, &self.keys);
                 }
-                Err(text) => self.key_note = Some(text),
+                Err(text) => self.set_key_note(Some(text)),
             },
-            Err(text) => self.key_note = Some(text),
+            Err(text) => self.set_key_note(Some(text)),
         }
     }
 
     fn keyboard_row(&self) -> Option<usize> {
         match self.overlay {
-            Some(Overlay::Settings {
+            Some(Overlay::Settings(SettingsDialog {
                 section: SettingsSection::Keyboard,
                 row,
                 ..
-            }) => Some(row),
+            })) => Some(row),
             _ => None,
         }
     }
@@ -124,47 +141,61 @@ impl Shika {
         row: usize,
         editing: bool,
     ) -> &'static [(&'static str, &'static str)] {
-        if section == SettingsSection::Keyboard {
-            return if self.key_recording {
-                &[("esc", "cancel")]
-            } else {
-                &[
-                    ("j k", "choose"),
-                    ("\u{21b5}", "set"),
-                    ("\u{232b}", "clear"),
-                    ("[ ]", "section"),
-                    ("esc", "done"),
-                ]
-            };
-        }
-        if section == SettingsSection::Projects {
-            return &[
+        match section {
+            SettingsSection::Keyboard => self.keyboard_keys(),
+            SettingsSection::Projects => &[
                 ("j k", "project"),
                 ("↵", "setup"),
                 ("[ ]", "section"),
                 ("esc", "done"),
-            ];
-        }
-        if section == SettingsSection::Usage {
-            return &[
+            ],
+            SettingsSection::Usage => &[
                 ("h l", "provider"),
                 ("w m y", "range"),
                 ("[ ]", "section"),
                 ("esc", "done"),
-            ];
+            ],
+            SettingsSection::Agents => self.agents_keys(),
+            SettingsSection::Appearance => self.appearance_keys(row, editing),
         }
-        if section == SettingsSection::Agents {
-            return if self.catalog.is_none() {
-                &[("[ ]", "section"), ("esc", "done")]
-            } else {
-                &[
-                    ("j k", "choose"),
-                    ("h l", "enable"),
-                    ("[ ]", "section"),
-                    ("esc", "done"),
-                ]
-            };
+    }
+
+    /// Settings > Keyboard hints: recording takes only Escape.
+    fn keyboard_keys(&self) -> &'static [(&'static str, &'static str)] {
+        if self.key_recording() {
+            &[("esc", "cancel")]
+        } else {
+            &[
+                ("j k", "choose"),
+                ("\u{21b5}", "set"),
+                ("\u{232b}", "clear"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ]
         }
+    }
+
+    /// Settings > Agents hints: no rows to choose until the PATH resolves.
+    fn agents_keys(&self) -> &'static [(&'static str, &'static str)] {
+        if self.catalog.is_none() {
+            &[("[ ]", "section"), ("esc", "done")]
+        } else {
+            &[
+                ("j k", "choose"),
+                ("h l", "enable"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ]
+        }
+    }
+
+    /// Settings > Appearance hints for the selected row, or for typing into
+    /// its field.
+    fn appearance_keys(
+        &self,
+        row: usize,
+        editing: bool,
+    ) -> &'static [(&'static str, &'static str)] {
         match (editing, row) {
             (true, PREFIX_ROW) => &[("", "type a prefix"), ("↵", "apply"), ("esc", "cancel")],
             (true, _) => &[("", "type a number"), ("↵", "apply"), ("esc", "cancel")],
@@ -238,13 +269,13 @@ impl Shika {
     ) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings {
+            Some(Overlay::Settings(SettingsDialog {
                 section: SettingsSection::Keyboard,
                 row,
                 ..
-            }) if *row == index
+            })) if *row == index
         );
-        let recording = selected && self.key_recording;
+        let recording = selected && self.key_recording();
         let label = command.label;
         let chord = shortcuts::bound_label(&self.keys, command.id);
         let value = if recording {

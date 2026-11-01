@@ -132,24 +132,24 @@ With `--diagnostics-file /path/report`, each read appends one line to `/path/rep
 
 ## Architecture and code map
 
-Search by symbol rather than line number. App symbols are in `crates/shika/src/changes.rs` unless another file is named.
+Search by symbol rather than line number. App symbols are in `crates/shika/src/changes/` unless another file is named: `mod.rs` holds `Panel`, `keys.rs` opening, closing, focus, and keys, `refresh.rs` reads and folding, `rows.rs` the row index, `text.rs` labels, `paint.rs` row painting, and `view.rs` the view and its resizable edge.
 
 | Layer | Symbols | Responsibility |
 | --- | --- | --- |
 | Core API | `crates/shika-core/src/lib.rs`: `Core::session_diff`, `Core::session_file_diff`, `Core::session_diff_stat` | Read the shown task's diff without a core lock, with the same base resolution as the stat |
-| Diff reading | `crates/shika-core/src/worktree.rs`: `diff_stat`, `session_diff`, `file_diff`, `diff_base`, `compare_base`, `read_only_git`, `check_worktree` | Base resolution and fallback, lock-free git confined to the worktree, `git diff` plus untracked files |
-| Diff types | `crates/shika-core/src/diff.rs`: `SessionDiff`, `FileDiff`, `Collapse`, `FileKey`, `FileStatus`, `Hunk`, `DiffLine`, `LineKind`, `Budget` | Owned, UI-free, testable results; caps recorded as `collapsed: Option<Collapse>` (why) and `hidden_lines` |
+| Diff reading | `crates/shika-core/src/worktree/` (`task_diff.rs`, `base.rs`, `git.rs`): `diff_stat`, `session_diff`, `file_diff`, `diff_base`, `compare_base`, `read_only_git`, `check_worktree` | Base resolution and fallback, lock-free git confined to the worktree, `git diff` plus untracked files |
+| Diff types | `crates/shika-core/src/diff/`: `SessionDiff`, `FileDiff`, `Collapse`, `FileKey`, `FileStatus`, `Hunk`, `DiffLine`, `LineKind`, `Budget` | Owned, UI-free, testable results; caps recorded as `collapsed: Option<Collapse>` (why) and `hidden_lines` |
 | Expansion | `Core::session_file_diff`; `Shika::expand_changes_file`, `DiffView::with_file` | One file without the per-file cap, up to the hard limit, read off the UI thread and spliced into a new row index there |
 | Settings | `crates/shika-core/src/settings.rs`: `Changes`, `changes_or_default` | `changes.width`, 320 to 900, default 480, an invalid field read as the default; no open state |
 | Toggle and focus | `ToggleChanges` (action, binding, and View menu item in `main.rs`); `Shika::toggle_changes`, `open_changes`, `close_changes`, `restore_changes_focus`, `Panel::return_focus`; `move_agent` in `selection.rs` keeps panel focus | Open/close, saved focus, busy/overlay guards |
-| Layout | `pane_widths`, `drag_width`, `Shika::drag_changes`, `changes_handle`, `ChangesDrag`; `Shika::pane_widths`, `column_width`, `drag_column` in `column/mod.rs`, `MIN_TERMINAL_WIDTH` in `terminal_side.rs` | Yield order: panel, then column, then terminal; widths saved when a drag ends (`tick`) |
+| Layout | `pane_widths`, `drag_width`, `Shika::drag_changes`, `changes_handle`, `ChangesDrag`; `Shika::pane_widths`, `column_width`, `drag_column` in `column/mod.rs`, `MIN_TERMINAL_WIDTH` in `terminal_side/mod.rs` | Yield order: panel, then column, then terminal; widths saved when a drag ends (`tick`) |
 | Panel view | `Panel`, `Shika::changes_panel`, `changes_list`, `changes_toggle`, `changes_key`, `RowPaint`, `CHANGES_ICON`; `DiffView`, `Row` | Title row, toggle, card slices, horizontal offset, empty states, keys |
-| File folding | `VisibleRows`, `Panel::set_view`, `Shika::toggle_changes_file`, `folded_top`, `card_labels`; `Chrome::diff_file_header` in `appearance.rs` | O(files) range mapping, stable fold identities, scroll anchoring, filename/directory labels, opaque header wash |
+| File folding | `VisibleRows`, `Panel::set_view`, `Shika::toggle_changes_file`, `folded_top`, `card_labels`; `Chrome::diff_file_header` in `appearance/chrome.rs` | O(files) range mapping, stable fold identities, scroll anchoring, filename/directory labels, opaque header wash |
 | Refresh | `Shika::sync_changes` (runs each paint, acts only on a new target), `fetch_changes`, `Panel::generation`, `Panel::shows`; the Ready hook beside `fetch_diff_stat` in `tick` | Fetch on open, card change, Ready, and `r`; drop stale results |
 | Labels | `crates/shika/src/model.rs`: `diff_stat_label` | The `2 files +64 −3` text shared by the card and the title row |
-| Diff colors | `crates/shika/src/appearance.rs`: `diff_colors`, `Chrome::diff_added`, `diff_removed`, `term_text` | ANSI green/red text and opaque tints per theme and glass |
-| Terminal keys | `crates/shika-terminal/src/view.rs`: `key_for` | Keeps Cmd+Option+B, like every Command key, out of PTY input |
-| Pure logic | `visible_text`, `columns`, `glyph`, `safe_label`, `file_label`, `collapsed_label`, `size_label`, `thousands`, `lines_label`, `panel_body`, `scroll_top`, `first_in_view` | Unit tested in `changes.rs` |
+| Diff colors | `crates/shika/src/appearance/chrome.rs`: `diff_colors`, `Chrome::diff_added`, `diff_removed`, `term_text` | ANSI green/red text and opaque tints per theme and glass |
+| Terminal keys | `crates/shika-terminal/src/view/keys.rs`: `key_for` | Keeps Cmd+Option+B, like every Command key, out of PTY input |
+| Pure logic | `visible_text`, `columns`, `glyph`, `safe_label`, `file_label`, `collapsed_label`, `size_label`, `thousands`, `lines_label`, `panel_body`, `scroll_top`, `first_in_view` | Unit tested in `changes/tests.rs` |
 
 Keep the core types free of GPUI and the UI free of git. The panel must not shell out itself; it asks core.
 

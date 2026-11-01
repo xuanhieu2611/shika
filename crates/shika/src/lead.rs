@@ -14,6 +14,56 @@ enum LeadCloseOutcome {
     ForgetFailed(shika_core::Error),
 }
 
+/// Blocking: stops the Lead's process, then forgets it when `forget` is set.
+/// Forget without `discard` first checks that the worktree has nothing new.
+fn stop_or_forget_lead(
+    core: &Core,
+    lead_project: &str,
+    lead_session: Option<&str>,
+    forget: bool,
+    discard: bool,
+) -> LeadCloseOutcome {
+    if let Some(id) = lead_session
+        && let Err(e) = core.stop_lead(id)
+    {
+        return LeadCloseOutcome::NotStopped(e);
+    }
+    if !forget {
+        return LeadCloseOutcome::Done;
+    }
+    if !discard {
+        // The tree can change while the dialog is open.
+        match core.lead_loss(lead_project) {
+            Ok(loss) if loss.any() => return LeadCloseOutcome::Changed(loss),
+            Ok(_) => {}
+            Err(e) => return LeadCloseOutcome::ForgetFailed(e),
+        }
+    }
+    match core.forget_lead(lead_project, discard) {
+        Ok(()) => LeadCloseOutcome::Done,
+        Err(e) => LeadCloseOutcome::ForgetFailed(e),
+    }
+}
+
+/// Lead-only state on the root view. Memory only.
+#[derive(Default)]
+pub(super) struct Leads {
+    pub(super) chats: HashMap<String, Entity<lead_chat::LeadChat>>,
+    /// First line of each project's latest Lead reply, for its card. Filled
+    /// from live replies and one off-thread read of the saved history.
+    pub(super) snippets: HashMap<String, String>,
+    pub(super) snippets_requested: std::collections::HashSet<String>,
+    pub(super) questions: Vec<(String, String, shika_core::ChatQuestion)>,
+}
+
+/// Stop a live Lead, or forget one. `session` is the live Lead's id,
+/// None for a resting one.
+pub(super) struct LeadCloseDialog {
+    pub(super) project: String,
+    session: Option<String>,
+    pub(super) step: model::LeadClose,
+}
+
 /// What the app tracks for a started Lead: what core said about the start
 /// and what is still to be done about it. Memory only.
 pub(super) struct LeadRun {
@@ -177,11 +227,11 @@ impl Shika {
         }
         self.prefetch_base(project.clone(), cx);
         self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Picker {
+        self.overlay = Some(Overlay::Picker(PickerDialog {
             project,
             index: 0,
             mode: PickerMode::Lead,
-        });
+        }));
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -376,7 +426,8 @@ impl Shika {
             run.resume_exit = None;
         }
         let focused = self
-            .lead_chats
+            .leads
+            .chats
             .get(&self.cards[index].project)
             .is_some_and(|chat| self.cards[index].chat && chat.read(cx).focused(window, cx))
             || self.cards[index]
@@ -549,11 +600,11 @@ impl Shika {
                 } else {
                     model::LeadClose::Forget { working, loss }
                 };
-                this.overlay = Some(Overlay::LeadClose {
+                this.overlay = Some(Overlay::LeadClose(LeadCloseDialog {
                     project,
                     session,
                     step,
-                });
+                }));
                 window.focus(&this.focus, cx);
                 cx.notify();
             });
@@ -578,11 +629,11 @@ impl Shika {
         if self.busy {
             return;
         }
-        let Some(Overlay::LeadClose {
+        let Some(Overlay::LeadClose(LeadCloseDialog {
             project,
             session,
             step,
-        }) = &self.overlay
+        })) = &self.overlay
         else {
             return;
         };
@@ -609,26 +660,13 @@ impl Shika {
             let outcome = cx
                 .background_executor()
                 .spawn(async move {
-                    if let Some(id) = &lead_session
-                        && let Err(e) = core.stop_lead(id)
-                    {
-                        return LeadCloseOutcome::NotStopped(e);
-                    }
-                    if !forget {
-                        return LeadCloseOutcome::Done;
-                    }
-                    if !discard {
-                        // The tree can change while the dialog is open.
-                        match core.lead_loss(&lead_project) {
-                            Ok(loss) if loss.any() => return LeadCloseOutcome::Changed(loss),
-                            Ok(_) => {}
-                            Err(e) => return LeadCloseOutcome::ForgetFailed(e),
-                        }
-                    }
-                    match core.forget_lead(&lead_project, discard) {
-                        Ok(()) => LeadCloseOutcome::Done,
-                        Err(e) => LeadCloseOutcome::ForgetFailed(e),
-                    }
+                    stop_or_forget_lead(
+                        &core,
+                        &lead_project,
+                        lead_session.as_deref(),
+                        forget,
+                        discard,
+                    )
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -649,20 +687,7 @@ impl Shika {
                         this.lead_departed(session.as_deref(), &project, forgotten, cx);
                         let was = this.overlay_return_focus.clone();
                         this.overlay = None;
-                        match outcome {
-                            LeadCloseOutcome::Changed(loss) => {
-                                this.overlay = Some(Overlay::LeadClose {
-                                    project,
-                                    session: None,
-                                    step: model::LeadClose::Forget { working, loss },
-                                });
-                            }
-                            LeadCloseOutcome::ForgetFailed(e) => {
-                                this.overlay_return_focus = None;
-                                this.message(e.to_string());
-                            }
-                            _ => this.overlay_return_focus = None,
-                        }
+                        this.ask_again_or_report_forget(outcome, project, working);
                         // A dialog asking again keeps the focus it needs.
                         if this.overlay.is_some() {
                             window.focus(&this.focus, cx);
@@ -676,6 +701,30 @@ impl Shika {
             });
         })
         .detach();
+    }
+
+    /// After the Lead stopped: a Forget that found its worktree changed asks
+    /// again with the new facts, and a failed Forget is reported.
+    fn ask_again_or_report_forget(
+        &mut self,
+        outcome: LeadCloseOutcome,
+        project: String,
+        working: bool,
+    ) {
+        match outcome {
+            LeadCloseOutcome::Changed(loss) => {
+                self.overlay = Some(Overlay::LeadClose(LeadCloseDialog {
+                    project,
+                    session: None,
+                    step: model::LeadClose::Forget { working, loss },
+                }));
+            }
+            LeadCloseOutcome::ForgetFailed(e) => {
+                self.overlay_return_focus = None;
+                self.message(e.to_string());
+            }
+            _ => self.overlay_return_focus = None,
+        }
     }
 
     /// A stopped Lead leaves the column: its card departs and the selection
@@ -696,15 +745,15 @@ impl Shika {
         });
         self.reload_projects();
         if forgotten {
-            self.lead_chats.remove(project);
-        } else if let Some(chat) = self.lead_chats.get(project) {
+            self.leads.chats.remove(project);
+        } else if let Some(chat) = self.leads.chats.get(project) {
             chat.update(cx, |chat, cx| {
                 chat.live = false;
                 chat.busy = false;
                 cx.notify();
             });
         }
-        self.leftovers = self.core.leftovers_list().unwrap_or_default();
+        self.leftovers.entries = self.core.leftovers_list().unwrap_or_default();
         let before = self.selection.clone();
         let mine = match (&before, index) {
             (Some(Selection::Card(at)), Some(index)) => *at == index,
@@ -737,7 +786,7 @@ impl Shika {
     /// with something to lose first shows the Forget step with those facts;
     /// otherwise, and from the Forget step, the Lead is forgotten.
     pub(super) fn forget_lead_from_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Overlay::LeadClose { step, .. }) = &mut self.overlay else {
+        let Some(Overlay::LeadClose(LeadCloseDialog { step, .. })) = &mut self.overlay else {
             return;
         };
         if matches!(step, model::LeadClose::Stop { .. }) && step.discards() {
@@ -746,5 +795,61 @@ impl Shika {
         } else {
             self.finish_lead_close(true, window, cx);
         }
+    }
+
+    /// Escape, and Enter to Stop the Lead, are the only plain keys in the
+    /// Lead's close dialog.
+    pub(super) fn lead_close_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Overlay::LeadClose(LeadCloseDialog { step, .. })) = &self.overlay else {
+            return;
+        };
+        let stopping = matches!(step, model::LeadClose::Stop { .. });
+        match key {
+            "enter" if stopping => self.finish_lead_close(false, window, cx),
+            "escape" => self.cancel_overlay(window, cx),
+            _ => {}
+        }
+    }
+
+    pub(super) fn lead_close_view(
+        &self,
+        close: &LeadCloseDialog,
+        chrome: &Chrome,
+        max_h: Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let step = &close.step;
+        let stopping = matches!(step, model::LeadClose::Stop { .. });
+        let mut panel = dialog(chrome, max_h).child(dialog_title(div()).child(step.title()));
+        for fact in step.facts() {
+            panel = panel.child(dialog_text(chrome).child(fact));
+        }
+        let buttons = dialog_buttons().child(self.cancel_button("Cancel", chrome, cx));
+        panel.child(if stopping {
+            buttons
+                .child(
+                    dialog_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome).on_click(
+                        cx.listener(|this, _, window, cx| {
+                            if !this.busy {
+                                this.forget_lead_from_dialog(window, cx);
+                            }
+                        }),
+                    ),
+                )
+                .child(primary_button("stop-lead", "Stop", "↵", chrome).on_click(
+                    cx.listener(|this, _, window, cx| this.finish_lead_close(false, window, cx)),
+                ))
+        } else {
+            buttons.child(
+                primary_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome).on_click(
+                    cx.listener(|this, _, window, cx| this.finish_lead_close(true, window, cx)),
+                ),
+            )
+        })
     }
 }

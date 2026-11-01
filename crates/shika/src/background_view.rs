@@ -74,6 +74,164 @@ fn ring(radius: Pixels, chrome: &Chrome) -> gpui::Div {
         .border_color(chrome.line_control)
 }
 
+/// The Adjust preview's pointer input: a drag pans the image, scroll and
+/// pinch zoom around the pointer.
+fn with_preview_gestures(
+    preview: gpui::Stateful<gpui::Div>,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    preview
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _, _| {
+                if let Some(Overlay::Adjust(adjust)) = &mut this.overlay {
+                    adjust.drag = Some(event.position);
+                }
+            }),
+        )
+        .on_drag(PanDrag, |_, _, _, cx| cx.new(|_| PanDrag))
+        .on_scroll_wheel(
+            cx.listener(|this, event: &gpui::ScrollWheelEvent, window, cx| {
+                let Some(draft) = this.adjust_draft() else {
+                    return;
+                };
+                let dy = f32::from(event.delta.pixel_delta(window.line_height()).y);
+                this.zoom_draft(
+                    draft.zoom_factor() * (1. + dy * 0.005),
+                    Some(event.position),
+                    cx,
+                );
+            }),
+        )
+        .on_pinch(cx.listener(|this, event: &gpui::PinchEvent, _, cx| {
+            let Some(draft) = this.adjust_draft() else {
+                return;
+            };
+            this.zoom_draft(
+                draft.zoom_factor() * (1. + event.delta),
+                Some(event.position),
+                cx,
+            );
+        }))
+}
+
+/// The Adjust zoom controls: minus, the track, plus, and the percent.
+fn zoom_row(adjust: &Adjust, chrome: &Chrome, cx: &mut Context<Shika>) -> gpui::Div {
+    let draft = adjust.draft;
+    let track = zoom_track(adjust, chrome, cx);
+    let step = |id: &'static str, label: &'static str, delta: f32| {
+        step_button(id, label, chrome).on_click(cx.listener(move |this, _, _, cx| {
+            if let Some(draft) = this.adjust_draft() {
+                this.zoom_draft(draft.zoom_factor() + delta, None, cx);
+            }
+        }))
+    };
+    let percent = format!("{}%", draft.zoom);
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .child(step("background-zoom-out", "-", -ZOOM_STEP))
+        .child(track)
+        .child(step("background-zoom-in", "+", ZOOM_STEP))
+        .child(
+            div()
+                .w(px(44.))
+                .flex_none()
+                .text_right()
+                .font_family(MONO)
+                .text_size(px(12.))
+                .text_color(chrome.ink_3)
+                .child(percent),
+        )
+}
+
+/// The zoom track: a filled bar and a knob at the draft zoom. A click or
+/// drag sets the zoom under the pointer.
+fn zoom_track(
+    adjust: &Adjust,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    let track_cell = adjust.track.clone();
+    let fraction = zoom_fraction(adjust.draft.zoom_factor());
+    let knob = chrome.ink_1;
+    div()
+        .id("background-zoom")
+        .relative()
+        .flex_1()
+        .h(px(20.))
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .child(
+            gpui::canvas(
+                move |bounds, _, _| track_cell.set(Some(bounds)),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        )
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(4.))
+                .rounded(px(2.))
+                .bg(chrome.sunken)
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(gpui::relative(fraction))
+                        .rounded(px(2.))
+                        .bg(chrome.ink_3),
+                ),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(3.))
+                .left(gpui::relative(fraction))
+                .ml(px(-7.))
+                .size(px(14.))
+                .rounded_full()
+                .bg(chrome.raised)
+                .border_1()
+                .border_color(knob),
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, event: &MouseDownEvent, _, cx| this.drag_zoom(event.position.x, cx)),
+        )
+        .on_drag(ZoomDrag, |_, _, _, cx| cx.new(|_| ZoomDrag))
+}
+
+/// The Adjust buttons: Reset on the left, Cancel and Apply on the right.
+fn adjust_buttons(chrome: &Chrome, cx: &mut Context<Shika>) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .mt(px(4.))
+        .child(
+            dialog_button("background-reset", "Reset", "0", chrome).on_click(
+                cx.listener(|this, _, _, cx| this.set_draft(BackgroundFraming::default(), cx)),
+            ),
+        )
+        .child(div().flex_1())
+        .child(
+            dialog_button("background-cancel", "Cancel", "esc", chrome)
+                .on_click(cx.listener(|this, _, window, cx| this.close_adjust(false, window, cx))),
+        )
+        .child(
+            primary_button("background-apply", "Apply", "↵", chrome)
+                .on_click(cx.listener(|this, _, window, cx| this.close_adjust(true, window, cx))),
+        )
+}
+
 impl Shika {
     /// The raster the settings ask for: the image, its effect on the side
     /// that paints, and the blur. None while glass is off, so a solid window
@@ -309,7 +467,7 @@ impl Shika {
     pub(super) fn image_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row, .. }) if *row == IMAGE_ROW
+            Some(Overlay::Settings(dialog)) if dialog.row() == IMAGE_ROW
         );
         let small = |id: &'static str, label: &'static str| {
             secondary_button(id, chrome)
@@ -409,7 +567,7 @@ impl Shika {
         };
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row, .. }) if *row == EFFECT_ROW
+            Some(Overlay::Settings(dialog)) if dialog.row() == EFFECT_ROW
         );
         let shadow = chrome.control_shadow;
         let mut choices = div()
@@ -499,13 +657,11 @@ impl Shika {
             background.framing = draft;
             self.save_settings();
         }
-        self.overlay = Some(Overlay::Settings {
-            section: SettingsSection::Appearance,
-            row: IMAGE_ROW,
-            edit: None,
-            usage: None,
-        });
-        self.settings_scroll.scroll_to_item(IMAGE_ROW);
+        self.overlay = Some(Overlay::Settings(SettingsDialog::new(
+            SettingsSection::Appearance,
+            IMAGE_ROW,
+        )));
+        self.settings_ui.scroll_to(IMAGE_ROW);
         window.focus(&self.focus, cx);
         cx.notify();
     }
@@ -607,6 +763,28 @@ impl Shika {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let preview = self.adjust_preview(adjust, chrome, window, cx);
+        dialog_shell(ADJUST_WIDTH, max_h, chrome)
+            .pt(px(20.))
+            .px(px(20.))
+            .pb(px(16.))
+            .gap(px(12.))
+            .child(dialog_title(div()).child("Adjust background"))
+            .child(dialog_text(chrome).child("Drag to move the image. Scroll or pinch to zoom."))
+            .child(div().flex().justify_center().child(preview))
+            .child(zoom_row(adjust, chrome, cx))
+            .child(adjust_buttons(chrome, cx))
+    }
+
+    /// The preview: the window's shape, the image with the draft framing,
+    /// and a shade where the column falls. Drag, scroll, and pinch on it.
+    fn adjust_preview(
+        &self,
+        adjust: &Adjust,
+        chrome: &Chrome,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let viewport = window.viewport_size();
         let aspect = f32::from(viewport.height) / f32::from(viewport.width).max(1.);
         let (mut width, mut height) = (PREVIEW_WIDTH, PREVIEW_WIDTH * aspect);
@@ -653,154 +831,7 @@ impl Shika {
                     .border_r_1()
                     .border_color(chrome.hairline)
             }))
-            .child(ring(px(8.), chrome))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, _| {
-                    if let Some(Overlay::Adjust(adjust)) = &mut this.overlay {
-                        adjust.drag = Some(event.position);
-                    }
-                }),
-            )
-            .on_drag(PanDrag, |_, _, _, cx| cx.new(|_| PanDrag))
-            .on_scroll_wheel(
-                cx.listener(|this, event: &gpui::ScrollWheelEvent, window, cx| {
-                    let Some(draft) = this.adjust_draft() else {
-                        return;
-                    };
-                    let dy = f32::from(event.delta.pixel_delta(window.line_height()).y);
-                    this.zoom_draft(
-                        draft.zoom_factor() * (1. + dy * 0.005),
-                        Some(event.position),
-                        cx,
-                    );
-                }),
-            )
-            .on_pinch(cx.listener(|this, event: &gpui::PinchEvent, _, cx| {
-                let Some(draft) = this.adjust_draft() else {
-                    return;
-                };
-                this.zoom_draft(
-                    draft.zoom_factor() * (1. + event.delta),
-                    Some(event.position),
-                    cx,
-                );
-            }));
-        let track_cell = adjust.track.clone();
-        let fraction = zoom_fraction(draft.zoom_factor());
-        let knob = chrome.ink_1;
-        let track = div()
-            .id("background-zoom")
-            .relative()
-            .flex_1()
-            .h(px(20.))
-            .flex()
-            .items_center()
-            .cursor_pointer()
-            .child(
-                gpui::canvas(
-                    move |bounds, _, _| track_cell.set(Some(bounds)),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            )
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .h(px(4.))
-                    .rounded(px(2.))
-                    .bg(chrome.sunken)
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top_0()
-                            .bottom_0()
-                            .w(gpui::relative(fraction))
-                            .rounded(px(2.))
-                            .bg(chrome.ink_3),
-                    ),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(3.))
-                    .left(gpui::relative(fraction))
-                    .ml(px(-7.))
-                    .size(px(14.))
-                    .rounded_full()
-                    .bg(chrome.raised)
-                    .border_1()
-                    .border_color(knob),
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    this.drag_zoom(event.position.x, cx)
-                }),
-            )
-            .on_drag(ZoomDrag, |_, _, _, cx| cx.new(|_| ZoomDrag));
-        let step = |id: &'static str, label: &'static str, delta: f32| {
-            step_button(id, label, chrome).on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(draft) = this.adjust_draft() {
-                    this.zoom_draft(draft.zoom_factor() + delta, None, cx);
-                }
-            }))
-        };
-        let percent = format!("{}%", draft.zoom);
-        dialog_shell(ADJUST_WIDTH, max_h, chrome)
-            .pt(px(20.))
-            .px(px(20.))
-            .pb(px(16.))
-            .gap(px(12.))
-            .child(dialog_title(div()).child("Adjust background"))
-            .child(dialog_text(chrome).child("Drag to move the image. Scroll or pinch to zoom."))
-            .child(div().flex().justify_center().child(preview))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(step("background-zoom-out", "-", -ZOOM_STEP))
-                    .child(track)
-                    .child(step("background-zoom-in", "+", ZOOM_STEP))
-                    .child(
-                        div()
-                            .w(px(44.))
-                            .flex_none()
-                            .text_right()
-                            .font_family(MONO)
-                            .text_size(px(12.))
-                            .text_color(chrome.ink_3)
-                            .child(percent),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .mt(px(4.))
-                    .child(
-                        dialog_button("background-reset", "Reset", "0", chrome).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.set_draft(BackgroundFraming::default(), cx)
-                            }),
-                        ),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        dialog_button("background-cancel", "Cancel", "esc", chrome).on_click(
-                            cx.listener(|this, _, window, cx| this.close_adjust(false, window, cx)),
-                        ),
-                    )
-                    .child(
-                        primary_button("background-apply", "Apply", "↵", chrome).on_click(
-                            cx.listener(|this, _, window, cx| this.close_adjust(true, window, cx)),
-                        ),
-                    ),
-            )
+            .child(ring(px(8.), chrome));
+        with_preview_gestures(preview, cx)
     }
 }

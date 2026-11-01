@@ -309,7 +309,7 @@ impl Shika {
         width: Pixels,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let hints_fit = self.leftovers.is_empty() || width >= px(FOOTER_HINTS_FIT);
+        let hints_fit = self.leftovers.entries.is_empty() || width >= px(FOOTER_HINTS_FIT);
         let hover = chrome.hover;
         let text_button = |id: &'static str| {
             div()
@@ -360,11 +360,14 @@ impl Shika {
                             cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
                         ),
                     )
-                    .when(!self.leftovers.is_empty(), |d| {
+                    .when(!self.leftovers.entries.is_empty(), |d| {
                         d.child(
                             text_button("leftovers")
                                 .flex_none()
-                                .child(format!("Leftover worktrees ({})", self.leftovers.len()))
+                                .child(format!(
+                                    "Leftover worktrees ({})",
+                                    self.leftovers.entries.len()
+                                ))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     if this.busy || this.overlay.is_some() {
                                         return;

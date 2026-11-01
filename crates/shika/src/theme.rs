@@ -37,9 +37,8 @@ impl Shika {
     /// Give every live terminal view the current theme's palette and alpha,
     /// and invalidate Settings' cached usage chart before rendering.
     pub(super) fn push_terminal_theme(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if let Some(Overlay::Settings {
-            usage: Some(view), ..
-        }) = &self.overlay
+        if let Some(Overlay::Settings(dialog)) = &self.overlay
+            && let Some(view) = dialog.usage()
         {
             view.set_chrome(&self.chrome(window), cx);
         }

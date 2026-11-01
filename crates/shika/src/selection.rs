@@ -222,3 +222,7 @@ pub(super) fn adjacent_agent(
     }
     None
 }
+
+#[cfg(test)]
+#[path = "selection_tests.rs"]
+mod tests;

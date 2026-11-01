@@ -1,12 +1,200 @@
 //! Painting the Settings dialog: navigation, rows, and section panels.
 use super::*;
 
+/// The Off / On segments at the right end of an agent row. A click sets the
+/// agent and selects its row.
+fn agent_toggle(
+    index: usize,
+    preset: &CliPreset,
+    on: bool,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Div {
+    let shadow = chrome.control_shadow;
+    let off_id = preset.id.clone();
+    let on_id = preset.id.clone();
+    let segment_shadow = move |chosen: bool, control: gpui::Stateful<gpui::Div>| {
+        control.when(chosen, |d| {
+            d.shadow(vec![
+                BoxShadow::new(px(0.), px(1.), shadow.into()).blur_radius(px(1.)),
+            ])
+        })
+    };
+    div()
+        .flex_none()
+        .flex()
+        .p(px(2.))
+        .gap(px(2.))
+        .rounded(px(7.))
+        .bg(chrome.sunken)
+        .child(
+            segment_shadow(
+                !on,
+                segment(
+                    SharedString::from(format!("agent-{}-off", preset.id)),
+                    "Off",
+                    !on,
+                    chrome.raised,
+                    chrome.ink_1,
+                    chrome.ink_3,
+                ),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.set_agent_enabled(&off_id, false, cx);
+                this.select_setting(index, window, cx);
+            })),
+        )
+        .child(
+            segment_shadow(
+                on,
+                segment(
+                    SharedString::from(format!("agent-{}-on", preset.id)),
+                    "On",
+                    on,
+                    chrome.raised,
+                    chrome.ink_1,
+                    chrome.ink_3,
+                ),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.set_agent_enabled(&on_id, true, cx);
+                this.select_setting(index, window, cx);
+            })),
+        )
+}
+
+/// Apply to: translucency on the sidebar alone, or on the sidebar and
+/// terminal. `h` / `l` change it.
+fn apply_row(row: usize, both: bool, chrome: &Chrome, cx: &mut Context<Shika>) -> gpui::Div {
+    let shadow = chrome.control_shadow;
+    let choice = |id: &'static str, label: &'static str, on: bool| {
+        segment(id, label, on, chrome.raised, chrome.ink_1, chrome.ink_3).when(on, |d| {
+            d.shadow(vec![
+                BoxShadow::new(px(0.), px(1.), shadow.into()).blur_radius(px(1.)),
+            ])
+        })
+    };
+    list_row(row == APPLY_ROW, chrome)
+        .justify_between()
+        .child("Apply to")
+        .child(
+            div()
+                .flex()
+                .p(px(2.))
+                .gap(px(2.))
+                .rounded(px(7.))
+                .bg(chrome.sunken)
+                .child(
+                    choice("translucent-sidebar", "Sidebar", !both).on_click(cx.listener(
+                        |this, _, window, cx| {
+                            this.step_setting(APPLY_ROW, -1, window, cx);
+                            this.select_setting(APPLY_ROW, window, cx);
+                        },
+                    )),
+                )
+                .child(
+                    choice("translucent-both", "Sidebar and terminal", both).on_click(cx.listener(
+                        |this, _, window, cx| {
+                            this.step_setting(APPLY_ROW, 1, window, cx);
+                            this.select_setting(APPLY_ROW, window, cx);
+                        },
+                    )),
+                ),
+        )
+}
+
+/// One saved repository: its name and "Worktree setup…" above its path. A
+/// click opens its worktree setup.
+fn project_row(
+    selected: bool,
+    project: &Project,
+    home: Option<&std::path::Path>,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    let id = project.id.clone();
+    list_row(selected, chrome)
+        .id(SharedString::from(format!("project-setting-{id}")))
+        .flex_col()
+        .items_start()
+        .gap(px(4.))
+        .cursor_pointer()
+        .on_click(
+            cx.listener(move |this, _, window, cx| {
+                this.open_worktree_setup(id.clone(), window, cx)
+            }),
+        )
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(project.name.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(chrome.ink_3)
+                        .child("Worktree setup…"),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .truncate()
+                .font_family(MONO)
+                .text_size(px(11.))
+                .text_color(chrome.ink_3)
+                .child(model::tilde(&project.path, home)),
+        )
+}
+
+/// The Settings footer: the Keyboard section's note, if any, then the key
+/// hints for the selected section and row.
+fn settings_hints(
+    section: SettingsSection,
+    dialog: &SettingsDialog,
+    keys: &[(&str, &str)],
+    chrome: &Chrome,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .flex_wrap()
+        .gap_x(px(12.))
+        .gap_y(px(6.))
+        .px(px(10.))
+        .when_some(
+            (section == SettingsSection::Keyboard)
+                .then(|| dialog.key_note.clone())
+                .flatten(),
+            |row, note| {
+                row.child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(16.))
+                        .text_color(chrome.ink_1)
+                        .child(note),
+                )
+            },
+        )
+        .children(keys.iter().map(|(key, label)| hint(key, label, chrome)))
+}
+
 impl Shika {
     /// System, Light, or Dark. `h` / `l` step one segment.
     fn mode_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row, .. }) if *row == MODE_ROW
+            Some(Overlay::Settings(SettingsDialog { row, .. })) if *row == MODE_ROW
         );
         let shadow = chrome.control_shadow;
         let choice = |id: &'static str, label: &'static str, mode: ThemeMode| {
@@ -49,7 +237,7 @@ impl Shika {
     ) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row: at, .. }) if *at == row
+            Some(Overlay::Settings(SettingsDialog { row: at, .. })) if *at == row
         );
         let name = appearance::resolve_theme(&self.theme, row == DARK_ROW).name;
         let step = |delta: i64| {
@@ -99,7 +287,7 @@ impl Shika {
     /// The branch prefix row: a text field. Enter or a click starts typing.
     fn prefix_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let (selected, edit) = match &self.overlay {
-            Some(Overlay::Settings { row, edit, .. }) => (
+            Some(Overlay::Settings(SettingsDialog { row, edit, .. })) => (
                 *row == PREFIX_ROW,
                 edit.as_deref().filter(|_| *row == PREFIX_ROW),
             ),
@@ -118,11 +306,11 @@ impl Shika {
             .on_click(cx.listener(|this, _, window, cx| {
                 if !matches!(
                     this.overlay,
-                    Some(Overlay::Settings {
+                    Some(Overlay::Settings(SettingsDialog {
                         row: PREFIX_ROW,
                         edit: Some(_),
                         ..
-                    })
+                    }))
                 ) {
                     let prefix = this.branch_prefix.clone();
                     this.edit_setting(PREFIX_ROW, &prefix, window, cx);
@@ -138,7 +326,7 @@ impl Shika {
     fn sound_row(&self, chrome: &Chrome, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings { row, .. }) if *row == SOUND_ROW
+            Some(Overlay::Settings(SettingsDialog { row, .. })) if *row == SOUND_ROW
         );
         let on = self.notification_sound;
         let shadow = chrome.control_shadow;
@@ -151,7 +339,7 @@ impl Shika {
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.step_setting(SOUND_ROW, delta, window, cx);
-                    if let Some(Overlay::Settings { row, .. }) = &mut this.overlay {
+                    if let Some(Overlay::Settings(SettingsDialog { row, .. })) = &mut this.overlay {
                         *row = SOUND_ROW;
                     }
                     cx.notify();
@@ -183,7 +371,7 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (selected, edit) = match &self.overlay {
-            Some(Overlay::Settings { row: at, edit, .. }) => {
+            Some(Overlay::Settings(SettingsDialog { row: at, edit, .. })) => {
                 (*at == row, edit.as_deref().filter(|_| *at == row))
             }
             _ => (false, None),
@@ -191,7 +379,7 @@ impl Shika {
         let step = |delta: i64| {
             cx.listener(move |this: &mut Self, _: &gpui::ClickEvent, window, cx| {
                 this.step_setting(row, delta, window, cx);
-                if let Some(Overlay::Settings { row: at, .. }) = &mut this.overlay {
+                if let Some(Overlay::Settings(SettingsDialog { row: at, .. })) = &mut this.overlay {
                     *at = row;
                 }
             })
@@ -288,11 +476,11 @@ impl Shika {
     ) -> impl IntoElement {
         let selected = matches!(
             &self.overlay,
-            Some(Overlay::Settings {
+            Some(Overlay::Settings(SettingsDialog {
                 section: SettingsSection::Agents,
                 row,
                 ..
-            }) if *row == index
+            })) if *row == index
         );
         let on = self.agents.enabled(&preset.id);
         let detail = match &preset.path {
@@ -303,16 +491,6 @@ impl Shika {
             chrome.ink_1
         } else {
             chrome.ink_4
-        };
-        let shadow = chrome.control_shadow;
-        let off_id = preset.id.clone();
-        let on_id = preset.id.clone();
-        let segment_shadow = move |chosen: bool, control: gpui::Stateful<gpui::Div>| {
-            control.when(chosen, |d| {
-                d.shadow(vec![
-                    BoxShadow::new(px(0.), px(1.), shadow.into()).blur_radius(px(1.)),
-                ])
-            })
         };
         list_row(selected, chrome)
             .id(SharedString::from(format!("agent-setting-{}", preset.id)))
@@ -338,217 +516,38 @@ impl Shika {
                     .text_color(chrome.ink_3)
                     .child(detail),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .p(px(2.))
-                    .gap(px(2.))
-                    .rounded(px(7.))
-                    .bg(chrome.sunken)
-                    .child(
-                        segment_shadow(
-                            !on,
-                            segment(
-                                SharedString::from(format!("agent-{}-off", preset.id)),
-                                "Off",
-                                !on,
-                                chrome.raised,
-                                chrome.ink_1,
-                                chrome.ink_3,
-                            ),
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.set_agent_enabled(&off_id, false, cx);
-                                this.select_setting(index, window, cx);
-                            },
-                        )),
-                    )
-                    .child(
-                        segment_shadow(
-                            on,
-                            segment(
-                                SharedString::from(format!("agent-{}-on", preset.id)),
-                                "On",
-                                on,
-                                chrome.raised,
-                                chrome.ink_1,
-                                chrome.ink_3,
-                            ),
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.set_agent_enabled(&on_id, true, cx);
-                                this.select_setting(index, window, cx);
-                            },
-                        )),
-                    ),
-            )
+            .child(agent_toggle(index, preset, on, chrome, cx))
     }
 
     pub(crate) fn settings_panel(
         &self,
-        section: SettingsSection,
-        row: usize,
+        dialog: &SettingsDialog,
         max_h: Pixels,
         chrome: &Chrome,
         home: Option<&std::path::Path>,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        let (section, row) = (dialog.section, dialog.row);
         let panel_h = if max_h < px(SETTINGS_HEIGHT) {
             max_h
         } else {
             px(SETTINGS_HEIGHT)
         };
-        let editing = matches!(self.overlay, Some(Overlay::Settings { edit: Some(_), .. }));
+        let editing = dialog.edit.is_some();
         let keys = self.settings_keys(section, row, editing);
         let mut rows = div()
             .id("settings-rows")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .track_scroll(&self.settings_scroll)
+            .track_scroll(&self.settings_ui.scroll)
             .flex()
             .flex_col()
             .gap(px(4.));
         match section {
-            SettingsSection::Appearance => {
-                let opacity = self.appearance.opacity.to_string();
-                let blur = self.appearance.blur.to_string();
-                let font = self.font_size.text();
-                let both = self.appearance.translucency == Translucency::SidebarAndTerminal;
-                let shadow = chrome.control_shadow;
-                let choice = |id: &'static str, label: &'static str, on: bool| {
-                    segment(id, label, on, chrome.raised, chrome.ink_1, chrome.ink_3).when(
-                        on,
-                        |d| {
-                            d.shadow(vec![
-                                BoxShadow::new(px(0.), px(1.), shadow.into()).blur_radius(px(1.)),
-                            ])
-                        },
-                    )
-                };
-                rows = rows
-                    .child(self.mode_row(chrome, cx))
-                    .child(self.theme_row(LIGHT_ROW, "Light theme", chrome, cx))
-                    .child(self.theme_row(DARK_ROW, "Dark theme", chrome, cx))
-                    .child(self.image_row(chrome, cx))
-                    .child(self.effect_row(chrome, cx))
-                    .child(self.setting_row(
-                        OPACITY_ROW,
-                        "Background opacity",
-                        &opacity,
-                        "%",
-                        chrome,
-                        cx,
-                    ))
-                    .child(self.setting_row(BLUR_ROW, "Background blur", &blur, "", chrome, cx))
-                    .child(
-                        list_row(row == APPLY_ROW, chrome)
-                            .justify_between()
-                            .child("Apply to")
-                            .child(
-                                div()
-                                    .flex()
-                                    .p(px(2.))
-                                    .gap(px(2.))
-                                    .rounded(px(7.))
-                                    .bg(chrome.sunken)
-                                    .child(
-                                        choice("translucent-sidebar", "Sidebar", !both).on_click(
-                                            cx.listener(|this, _, window, cx| {
-                                                this.step_setting(APPLY_ROW, -1, window, cx);
-                                                this.select_setting(APPLY_ROW, window, cx);
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        choice("translucent-both", "Sidebar and terminal", both)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.step_setting(APPLY_ROW, 1, window, cx);
-                                                this.select_setting(APPLY_ROW, window, cx);
-                                            })),
-                                    ),
-                            ),
-                    )
-                    .child(self.setting_row(
-                        FONT_ROW,
-                        "Terminal font size",
-                        &font,
-                        "px",
-                        chrome,
-                        cx,
-                    ))
-                    .child(self.prefix_row(chrome, cx))
-                    .child(self.sound_row(chrome, cx));
-            }
-            SettingsSection::Agents => {
-                if let Some(presets) = self.catalog.as_ref().map(|catalog| catalog.presets.clone())
-                {
-                    for (index, preset) in presets.iter().enumerate() {
-                        rows = rows.child(self.agent_row(index, preset, home, chrome, cx));
-                    }
-                } else {
-                    rows = rows.child(
-                        list_row(false, chrome)
-                            .text_color(chrome.ink_3)
-                            .child("Resolving login-shell PATH..."),
-                    );
-                }
-            }
-            SettingsSection::Projects => {
-                if self.projects.is_empty() {
-                    rows = rows.child(
-                        dialog_text(chrome).child("Add a project to configure worktree setup."),
-                    );
-                }
-                for (index, project) in self.projects.iter().enumerate() {
-                    let id = project.id.clone();
-                    rows = rows.child(
-                        list_row(row == index, chrome)
-                            .id(SharedString::from(format!("project-setting-{id}")))
-                            .flex_col()
-                            .items_start()
-                            .gap(px(4.))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_worktree_setup(id.clone(), window, cx)
-                            }))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .gap(px(12.))
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .flex_1()
-                                            .truncate()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(project.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(chrome.ink_3)
-                                            .child("Worktree setup…"),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .w_full()
-                                    .truncate()
-                                    .font_family(MONO)
-                                    .text_size(px(11.))
-                                    .text_color(chrome.ink_3)
-                                    .child(model::tilde(&project.path, home)),
-                            ),
-                    );
-                }
-            }
+            SettingsSection::Appearance => rows = self.appearance_rows(rows, row, chrome, cx),
+            SettingsSection::Agents => rows = self.agent_rows(rows, home, chrome, cx),
+            SettingsSection::Projects => rows = self.project_rows(rows, row, home, chrome, cx),
             SettingsSection::Keyboard => {
                 for (index, command) in shortcuts::COMMANDS.iter().enumerate() {
                     rows = rows.child(self.shortcut_row(index, command, chrome, cx));
@@ -581,47 +580,93 @@ impl Shika {
                             .flex_col()
                             .child(rows)
                             .child(scrollbar::vertical(
-                                &self.settings_scroll,
-                                &self.settings_grab,
+                                &self.settings_ui.scroll,
+                                &self.settings_ui.grab,
                                 chrome.ink_4,
                                 chrome.ink_3,
                             )),
                     ),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .flex_wrap()
-                    .gap_x(px(12.))
-                    .gap_y(px(6.))
-                    .px(px(10.))
-                    .when_some(
-                        (section == SettingsSection::Keyboard)
-                            .then(|| self.key_note.clone())
-                            .flatten(),
-                        |row, note| {
-                            row.child(
-                                div()
-                                    .text_size(px(12.))
-                                    .line_height(px(16.))
-                                    .text_color(chrome.ink_1)
-                                    .child(note),
-                            )
-                        },
-                    )
-                    .children(keys.iter().map(|(key, label)| hint(key, label, chrome))),
-            )
+            .child(settings_hints(section, dialog, keys, chrome))
             .child(dialog_buttons().child(self.cancel_button("Done", chrome, cx)))
+    }
+
+    /// Settings > Appearance, top to bottom: theme, background image and
+    /// effect, opacity, blur, Apply to, font size, branch prefix, sound.
+    fn appearance_rows(
+        &self,
+        rows: gpui::Stateful<gpui::Div>,
+        row: usize,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let opacity = self.appearance.opacity.to_string();
+        let blur = self.appearance.blur.to_string();
+        let font = self.font_size.text();
+        let both = self.appearance.translucency == Translucency::SidebarAndTerminal;
+        rows.child(self.mode_row(chrome, cx))
+            .child(self.theme_row(LIGHT_ROW, "Light theme", chrome, cx))
+            .child(self.theme_row(DARK_ROW, "Dark theme", chrome, cx))
+            .child(self.image_row(chrome, cx))
+            .child(self.effect_row(chrome, cx))
+            .child(self.setting_row(OPACITY_ROW, "Background opacity", &opacity, "%", chrome, cx))
+            .child(self.setting_row(BLUR_ROW, "Background blur", &blur, "", chrome, cx))
+            .child(apply_row(row, both, chrome, cx))
+            .child(self.setting_row(FONT_ROW, "Terminal font size", &font, "px", chrome, cx))
+            .child(self.prefix_row(chrome, cx))
+            .child(self.sound_row(chrome, cx))
+    }
+
+    /// Settings > Agents: one row per preset, or a note while the
+    /// login-shell PATH is still resolving.
+    fn agent_rows(
+        &self,
+        mut rows: gpui::Stateful<gpui::Div>,
+        home: Option<&std::path::Path>,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        if let Some(presets) = self.catalog.as_ref().map(|catalog| catalog.presets.clone()) {
+            for (index, preset) in presets.iter().enumerate() {
+                rows = rows.child(self.agent_row(index, preset, home, chrome, cx));
+            }
+        } else {
+            rows = rows.child(
+                list_row(false, chrome)
+                    .text_color(chrome.ink_3)
+                    .child("Resolving login-shell PATH..."),
+            );
+        }
+        rows
+    }
+
+    /// Settings > Projects: one row per saved repository, each opening its
+    /// worktree setup.
+    fn project_rows(
+        &self,
+        mut rows: gpui::Stateful<gpui::Div>,
+        row: usize,
+        home: Option<&std::path::Path>,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        if self.projects.is_empty() {
+            rows =
+                rows.child(dialog_text(chrome).child("Add a project to configure worktree setup."));
+        }
+        for (index, project) in self.projects.iter().enumerate() {
+            rows = rows.child(project_row(row == index, project, home, chrome, cx));
+        }
+        rows
     }
 
     /// Settings > Usage, from the snapshot read when it first showed: the
     /// range, the provider totals that filter the chart, then the chart.
     fn usage_rows(&self, chrome: &Chrome, cx: &mut Context<Self>) -> gpui::Div {
         let mut panel = div().flex().flex_col().gap(px(12.)).px(px(10.)).pt(px(4.));
-        let Some(Overlay::Settings {
+        let Some(Overlay::Settings(SettingsDialog {
             usage: Some(view), ..
-        }) = &self.overlay
+        })) = &self.overlay
         else {
             return panel;
         };

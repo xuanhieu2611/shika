@@ -70,8 +70,9 @@ impl Shika {
                     Ok(_) => {
                         this.cards.retain(|c| c.project != removed_id);
                         this.projects.retain(|p| p.id != removed_id);
-                        this.lead_chats.remove(&removed_id);
-                        this.chat_questions
+                        this.leads.chats.remove(&removed_id);
+                        this.leads
+                            .questions
                             .retain(|(_, project, _)| project != &removed_id);
                         this.bases.remove(&removed_id);
                         this.checkout_heads.remove(&removed_id);
@@ -80,7 +81,7 @@ impl Shika {
                             .first()
                             .map(|p| Selection::Project(p.id.clone()));
                         this.selection.set(next);
-                        this.leftovers = this.core.leftovers_list().unwrap_or_default();
+                        this.leftovers.entries = this.core.leftovers_list().unwrap_or_default();
                         this.overlay = None;
                     }
                     Err(e) => this.message(e.to_string()),
@@ -89,5 +90,44 @@ impl Shika {
             });
         })
         .detach();
+    }
+
+    pub(super) fn remove_project_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if key == "escape" {
+            self.cancel_overlay(window, cx);
+        }
+    }
+
+    pub(super) fn remove_project_view(
+        &self,
+        id: &str,
+        chrome: &Chrome,
+        max_h: Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let id = id.to_string();
+        dialog(chrome, max_h)
+            .child(dialog_title(div()).child("Remove project?"))
+            .child(dialog_text(chrome).child(
+                "Stops its sessions and forgets this project. Worktrees remain on disk in the leftovers list.",
+            ))
+            .child(
+                dialog_buttons().child(self.cancel_button("Cancel", chrome, cx)).child(
+                    primary_button(
+                        "remove-project",
+                        "Remove project",
+                        "\u{2318}\u{232b}",
+                        chrome,
+                    )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.remove_project(id.clone(), cx)
+                        })),
+                ),
+            )
     }
 }

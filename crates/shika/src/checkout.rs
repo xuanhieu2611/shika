@@ -109,11 +109,11 @@ impl Shika {
         }
         self.refresh_checkout_head(project.clone(), cx);
         self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Picker {
+        self.overlay = Some(Overlay::Picker(PickerDialog {
             project,
             index: 0,
             mode: PickerMode::Checkout,
-        });
+        }));
         window.focus(&self.focus, cx);
         cx.notify();
     }
