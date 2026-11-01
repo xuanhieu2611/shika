@@ -308,124 +308,18 @@ impl Shika {
                     .child(format!("{}: {}", preview.repository, preview.branch)),
             )
             .child(dialog_text(chrome).child("Commit and PR title"))
-            .child(
-                text_field("pr-title", 360., *row == 0, chrome)
-                    .overflow_hidden()
-                    .child(title.clone())
-                    .when(*row == 0, |d| {
-                        d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if !this.busy {
-                            if let Some(Overlay::Publish(PublishDialog { row, .. })) =
-                                &mut this.overlay
-                            {
-                                *row = 0;
-                            }
-                            window.focus(&this.focus, cx);
-                            cx.notify();
-                        }
-                    })),
-            )
+            .child(publish_title_field(title, *row, chrome, cx))
             .child(dialog_text(chrome).child("PR description"))
-            .child(
-                div()
-                    .id("pr-body-field")
-                    .w(px(360.))
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(6.))
-                    .bg(chrome.raised)
-                    .border_1()
-                    .border_color(if *row == 1 {
-                        chrome.focus
-                    } else {
-                        chrome.line_control
-                    })
-                    .cursor_text()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            if this.busy {
-                                return;
-                            }
-                            let body =
-                                if let Some(Overlay::Publish(PublishDialog { row, body, .. })) =
-                                    &mut this.overlay
-                                {
-                                    *row = 1;
-                                    Some(body.clone())
-                                } else {
-                                    None
-                                };
-                            if let Some(body) = body {
-                                window.focus(&body.focus_handle(cx), cx);
-                            }
-                            cx.notify();
-                        }),
-                    )
-                    .child(description),
-            )
+            .child(publish_body_field(description, *row, chrome, cx))
             .child(dialog_text(chrome).child("PR target"))
-            .child(
-                text_field("pr-target", 360., *row == 2, chrome)
-                    .overflow_hidden()
-                    .child(target.clone())
-                    .when(*row == 2, |d| {
-                        d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if !this.busy {
-                            if let Some(Overlay::Publish(PublishDialog { row, .. })) =
-                                &mut this.overlay
-                            {
-                                *row = 2;
-                            }
-                            window.focus(&this.focus, cx);
-                            cx.notify();
-                        }
-                    })),
-            );
+            .child(publish_target_field(target, *row, chrome, cx));
         if preview.target.is_none() {
             panel = panel.child(dialog_text(chrome).child(
                 "The recorded base is not an existing GitHub branch. Choose a target explicitly.",
             ));
         }
         if *row == 2 {
-            panel = panel.child(
-                div()
-                    .id("pr-branches")
-                    .max_h(px(BASE_LIST_MAX))
-                    .overflow_y_scroll()
-                    .children(
-                        preview
-                            .branches
-                            .iter()
-                            .filter(|b| b.starts_with(target) && **b != preview.branch)
-                            .map(|b| {
-                                let branch = b.clone();
-                                list_row(b == target, chrome)
-                                    .id(SharedString::from(format!("pr-branch-{b}")))
-                                    .cursor_pointer()
-                                    .font_family(MONO)
-                                    .child(b.clone())
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if !this.busy {
-                                            if let Some(Overlay::Publish(PublishDialog {
-                                                target,
-                                                error,
-                                                ..
-                                            })) = &mut this.overlay
-                                            {
-                                                *target = branch.clone();
-                                                *error = None;
-                                            }
-                                            cx.notify();
-                                        }
-                                    }))
-                            }),
-                    ),
-            );
+            panel = panel.child(publish_target_branches(preview, target, chrome, cx));
         }
         let file_count = preview.files.len();
         panel = panel.child(dialog_text(chrome).child(publish_change_label(file_count)));
@@ -457,28 +351,162 @@ impl Shika {
                         hints.child(hint("enter", "new line", chrome))
                     }),
             )
+            .child(self.publish_buttons(*row, chrome, cx))
+    }
+
+    /// Cancel, and the publish button with the key that confirms from `row`.
+    fn publish_buttons(&self, row: usize, chrome: &Chrome, cx: &mut Context<Self>) -> gpui::Div {
+        dialog_buttons()
+            .child(self.cancel_button("Cancel", chrome, cx))
             .child(
-                dialog_buttons()
-                    .child(self.cancel_button("Cancel", chrome, cx))
-                    .child(
-                        primary_button(
-                            "publish-pr",
-                            if self.busy {
-                                "Publishing..."
-                            } else {
-                                "Commit, push, create PR"
-                            },
-                            if *row == 1 {
-                                "\u{2318}\u{21a9}"
-                            } else {
-                                "\u{21a9}"
-                            },
-                            chrome,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| this.publish_pr(window, cx))),
-                    ),
+                primary_button(
+                    "publish-pr",
+                    if self.busy {
+                        "Publishing..."
+                    } else {
+                        "Commit, push, create PR"
+                    },
+                    if row == 1 {
+                        "\u{2318}\u{21a9}"
+                    } else {
+                        "\u{21a9}"
+                    },
+                    chrome,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.publish_pr(window, cx))),
             )
     }
+}
+
+/// Row 0: the commit and PR title. A click selects it.
+fn publish_title_field(
+    title: &str,
+    row: usize,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    text_field("pr-title", 360., row == 0, chrome)
+        .overflow_hidden()
+        .child(title.to_string())
+        .when(row == 0, |d| {
+            d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
+        })
+        .on_click(cx.listener(|this, _, window, cx| {
+            if !this.busy {
+                if let Some(Overlay::Publish(PublishDialog { row, .. })) = &mut this.overlay {
+                    *row = 0;
+                }
+                window.focus(&this.focus, cx);
+                cx.notify();
+            }
+        }))
+}
+
+/// Row 1: the multi-line description input. A click focuses it.
+fn publish_body_field(
+    description: Entity<chat_input::ChatInput>,
+    row: usize,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id("pr-body-field")
+        .w(px(360.))
+        .px(px(8.))
+        .py(px(4.))
+        .rounded(px(6.))
+        .bg(chrome.raised)
+        .border_1()
+        .border_color(if row == 1 {
+            chrome.focus
+        } else {
+            chrome.line_control
+        })
+        .cursor_text()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, window, cx| {
+                if this.busy {
+                    return;
+                }
+                let body = if let Some(Overlay::Publish(PublishDialog { row, body, .. })) =
+                    &mut this.overlay
+                {
+                    *row = 1;
+                    Some(body.clone())
+                } else {
+                    None
+                };
+                if let Some(body) = body {
+                    window.focus(&body.focus_handle(cx), cx);
+                }
+                cx.notify();
+            }),
+        )
+        .child(description)
+}
+
+/// Row 2: the PR target branch. A click selects it.
+fn publish_target_field(
+    target: &str,
+    row: usize,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    text_field("pr-target", 360., row == 2, chrome)
+        .overflow_hidden()
+        .child(target.to_string())
+        .when(row == 2, |d| {
+            d.child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
+        })
+        .on_click(cx.listener(|this, _, window, cx| {
+            if !this.busy {
+                if let Some(Overlay::Publish(PublishDialog { row, .. })) = &mut this.overlay {
+                    *row = 2;
+                }
+                window.focus(&this.focus, cx);
+                cx.notify();
+            }
+        }))
+}
+
+/// Remote branches that match the typed target, except the task's own.
+fn publish_target_branches(
+    preview: &PublishPreview,
+    target: &str,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id("pr-branches")
+        .max_h(px(BASE_LIST_MAX))
+        .overflow_y_scroll()
+        .children(
+            preview
+                .branches
+                .iter()
+                .filter(|b| b.starts_with(target) && **b != preview.branch)
+                .map(|b| {
+                    let branch = b.clone();
+                    list_row(b == target, chrome)
+                        .id(SharedString::from(format!("pr-branch-{b}")))
+                        .cursor_pointer()
+                        .font_family(MONO)
+                        .child(b.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.busy {
+                                if let Some(Overlay::Publish(PublishDialog {
+                                    target, error, ..
+                                })) = &mut this.overlay
+                                {
+                                    *target = branch.clone();
+                                    *error = None;
+                                }
+                                cx.notify();
+                            }
+                        }))
+                }),
+        )
 }
 
 /// The proposed new commit. Zero means the worktree is clean; commits already

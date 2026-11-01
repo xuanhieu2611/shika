@@ -349,12 +349,7 @@ impl Shika {
             .map(|p| p.name.as_str())
             .unwrap_or("");
         let default = self.bases.get(project).and_then(|b| b.default_name.clone());
-        let field = text_field("base-branch-value", 360., true, chrome)
-            .when(!text.is_empty(), |d| d.child(text.clone()))
-            .child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
-            .when_some(default.filter(|_| text.is_empty()), |d, default| {
-                d.child(div().text_color(chrome.ink_4).child(default))
-            });
+        let field = base_field(text, default, chrome);
         let names = choices
             .as_ref()
             .map(|choices| choices.names.as_slice())
@@ -394,37 +389,14 @@ impl Shika {
                 .track_scroll(scroll);
             for (row, index) in matched.iter().copied().enumerate() {
                 let branch = names[index].clone();
-                let label = branch.clone();
-                let checked = checked_out.as_deref() == Some(label.as_str());
-                rows = rows.child(
-                    list_row(highlight == Some(row), chrome)
-                        .id(("base-branch-row", row))
-                        .w_full()
-                        .justify_between()
-                        .gap(px(8.))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.apply_base(branch.clone(), window, cx);
-                        }))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex_1()
-                                .truncate()
-                                .font_family(MONO)
-                                .text_size(px(12.))
-                                .child(label),
-                        )
-                        .when(checked, |row| {
-                            row.child(
-                                div()
-                                    .flex_none()
-                                    .text_size(px(12.))
-                                    .text_color(chrome.ink_3)
-                                    .child("checked out"),
-                            )
-                        }),
-                );
+                rows = rows.child(base_branch_row(
+                    row,
+                    branch,
+                    highlight == Some(row),
+                    checked_out.as_deref(),
+                    chrome,
+                    cx,
+                ));
             }
             panel = panel.child(rows);
         }
@@ -452,4 +424,54 @@ impl Shika {
                     ),
             )
     }
+}
+
+/// The branch field, with the default branch as its placeholder.
+fn base_field(text: &str, default: Option<String>, chrome: &Chrome) -> gpui::Stateful<gpui::Div> {
+    text_field("base-branch-value", 360., true, chrome)
+        .when(!text.is_empty(), |d| d.child(text.to_string()))
+        .child(div().w(px(1.)).h(px(14.)).bg(chrome.focus))
+        .when_some(default.filter(|_| text.is_empty()), |d, default| {
+            d.child(div().text_color(chrome.ink_4).child(default))
+        })
+}
+
+/// One local branch under the field. A click applies it.
+fn base_branch_row(
+    row: usize,
+    branch: String,
+    highlighted: bool,
+    checked_out: Option<&str>,
+    chrome: &Chrome,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    let label = branch.clone();
+    let checked = checked_out == Some(label.as_str());
+    list_row(highlighted, chrome)
+        .id(("base-branch-row", row))
+        .w_full()
+        .justify_between()
+        .gap(px(8.))
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.apply_base(branch.clone(), window, cx);
+        }))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .font_family(MONO)
+                .text_size(px(12.))
+                .child(label),
+        )
+        .when(checked, |row| {
+            row.child(
+                div()
+                    .flex_none()
+                    .text_size(px(12.))
+                    .text_color(chrome.ink_3)
+                    .child("checked out"),
+            )
+        })
 }
