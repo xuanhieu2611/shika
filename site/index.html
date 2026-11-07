@@ -13,20 +13,21 @@
 <meta property="og:title" content="Shika - Run your coding agents side by side.">
 <meta property="og:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side, each in its own git worktree.">
 <meta property="og:url" content="https://useshika.com/">
-<meta property="og:image" content="https://useshika.com/img/og.png">
-<meta property="og:image:width" content="2800">
-<meta property="og:image:height" content="1760">
-<meta property="og:image:alt" content="Native Shika app with three tasks across two sample projects and a task-owned shell tab. CLI output is simulated.">
-<meta name="twitter:image:alt" content="Native Shika app with sample projects and simulated CLI output.">
+<meta property="og:image" content="https://useshika.com/img/og.jpg">
+<meta property="og:image:width" content="2400">
+<meta property="og:image:height" content="1260">
+<meta property="og:image:alt" content="Shika on a forest backdrop: a Lead with one worker, four tasks across two sample projects, and a finished Claude Code session.">
+<meta name="twitter:image:alt" content="Shika running several coding agents across sample projects.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Shika - Run your coding agents side by side.">
 <meta name="twitter:description" content="A free, open source Mac app for running Claude Code, Codex, Cursor CLI, and Pi side by side, each in its own git worktree.">
-<meta name="twitter:image" content="https://useshika.com/img/og.png">
+<meta name="twitter:image" content="https://useshika.com/img/og.jpg">
 <link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png">
 <link rel="icon" type="image/png" sizes="64x64" href="img/favicon-64.png">
 <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
 <link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/JetBrainsMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="img/shika-window.webp" as="image" type="image/webp" fetchpriority="high">
 <script>
   // Theme: a saved choice wins, otherwise the system appearance. Set before paint.
   // data-theme holds the saved choice; data-resolved-theme is what is showing.
@@ -51,6 +52,7 @@
   <symbol id="i-copy" viewBox="0 0 24 24"><path d="M7 7m0 2.667a2.667 2.667 0 0 1 2.667 -2.667h8.666a2.667 2.667 0 0 1 2.667 2.667v8.666a2.667 2.667 0 0 1 -2.667 2.667h-8.666a2.667 2.667 0 0 1 -2.667 -2.667z"/><path d="M4.012 16.737a2.005 2.005 0 0 1 -1.012 -1.737v-10c0 -1.1 .9 -2 2 -2h10c.75 0 1.158 .385 1.5 1"/></symbol>
   <symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"/><path d="M3 12h1m8 -9v1m8 8h1m-9 8v1m-6.4 -15.4l.7 .7m12.1 -.7l-.7 .7m0 11.4l.7 .7m-12.1 -.7l-.7 .7"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4v16l13 -8z"/></symbol>
   <symbol id="i-branch" viewBox="0 0 24 24"><path d="M7 18m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M7 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M17 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M7 8l0 8"/><path d="M9 18h6a2 2 0 0 0 2 -2v-5"/><path d="M14 14l3 -3l3 3"/></symbol>
 </svg>
 </head>
@@ -88,12 +90,13 @@
     <div class="wrap hero-demo">
       <div class="demo rise" style="--i:5" id="demo">
         <div class="demo-frame" id="demo-frame">
-          <iframe id="demo-iframe" data-src="demo/" title="Interactive Shika prototype with sample data. Click inside, then use j and k to move, Enter to focus the terminal, or Cmd+N for a new agent." tabindex="0"></iframe>
+          <img class="demo-shot" src="img/shika-window.webp" width="1400" height="880" fetchpriority="high" alt="Shika with a forest picture behind its glass. A routekit Lead and its worker sit above two projects: a finished Claude Code task with a diff stat, Codex working, Claude Code asking a question, and a new Pi waiting for its prompt. The terminal shows Claude Code's summary of the finished task.">
+          <button class="demo-play" id="demo-play" type="button"><svg class="icon"><use href="#i-play"/></svg>Try it in your browser</button>
         </div>
         <div class="demo-caption">
-          <p class="demo-keys"><strong>Interactive prototype, sample data.</strong> Try <kbd>j</kbd><kbd>k</kbd> to move, <kbd>↵</kbd> to focus the terminal, or click <kbd>+</kbd> to add a shell tab.</p>
-          <p class="demo-mobile-note"><strong>Prototype with sample data.</strong> Open it on a laptop to try the keyboard flow.</p>
-          <a href="demo/" target="_blank" rel="noopener">Open full screen<svg class="icon"><use href="#i-out"/></svg></a>
+          <p class="demo-keys" id="demo-keys"><strong>The real app, with sample projects.</strong> The live prototype runs on sample data: <kbd>j</kbd><kbd>k</kbd> to move, <kbd>↵</kbd> to focus the terminal, <kbd>⌘N</kbd> for a new agent.</p>
+          <p class="demo-mobile-note"><strong>The real app, with sample projects.</strong> Open the prototype on a laptop to try the keyboard flow.</p>
+          <a href="demo/" target="_blank" rel="noopener">Open the prototype<svg class="icon"><use href="#i-out"/></svg></a>
         </div>
       </div>
     </div>
@@ -146,27 +149,12 @@
         <article class="cell cell-cards">
           <div class="cell-copy">
             <h3>Status on every card, without reading output.</h3>
-            <p>Each card shows the task, the CLI, and the branch. Working, asking, and ready each have their own signal, and a ready card adds a diff stat.</p>
+            <p>Moving pixels while an agent works, an amber dot when it asks you something, and a green dot with a diff stat when it is ready to check.</p>
           </div>
           <div class="cell-visual">
-            <div class="m m-column" aria-hidden="true">
-              <div class="m-project"><b>storefront</b><span class="m-path">~/code/storefront</span><span class="m-base"><svg class="icon"><use href="#i-branch"/></svg>main</span></div>
-              <div class="m-card asking">
-                <div class="m-row1"><span class="m-task">Migrate the orders table to UUID keys</span><span class="m-sig"><span class="dot asking"></span></span></div>
-                <div class="m-row2"><span>Codex</span><span class="sep">·</span><span class="br">orders-uuid-keys</span></div>
-              </div>
-              <div class="m-card ready is-selected">
-                <div class="m-row1"><span class="m-task">Retry failed Stripe webhooks with backoff</span><span class="m-sig"><span class="dot ready"></span></span></div>
-                <div class="m-row2"><span>Claude Code</span><span class="sep">·</span><span class="br">retry-failed-webhooks</span><span class="sep">·</span><span class="m-stat">2 files +64 −3</span><span class="m-hint"><span class="m-kbd">↵</span>read</span></div>
-              </div>
-              <div class="m-card">
-                <div class="m-row1"><span class="m-task">Calculate sales tax at checkout</span><span class="m-time">6m</span><span class="m-sig"><span class="pixels"><i></i><i></i><i></i></span></span></div>
-                <div class="m-row2"><span>Cursor CLI</span><span class="sep">·</span><span class="br">sales-tax-at-checkout</span></div>
-              </div>
-              <div class="m-card">
-                <div class="m-row1"><span class="m-task is-new">New Pi</span><span class="m-sig"><span class="dot waiting"></span></span></div>
-                <div class="m-row2"><span>Pi</span><span class="sep">·</span><span class="br">shika-draft-3f2a</span></div>
-              </div>
+            <div class="shot shot-cards">
+              <img class="on-dark" src="img/cards-dark.webp" width="419" height="380" loading="lazy" alt="Two projects in Shika&#39;s column: a ready Claude Code task with 2 files +107 −7, Codex working for 23 seconds, Claude Code asking a question, and a new Pi waiting for its prompt.">
+              <img class="on-light" src="img/cards-light.webp" width="419" height="380" loading="lazy" alt="Two projects in Shika&#39;s column: a ready Claude Code task with 2 files +107 −7, Codex working for 23 seconds, Claude Code asking a question, and a new Pi waiting for its prompt.">
             </div>
           </div>
         </article>
@@ -220,14 +208,14 @@
           </div>
           <div class="cell-visual">
             <div class="m m-dialog" aria-hidden="true">
-              <span class="title">Create pull request</span>
+              <span class="title">Create PR?</span>
               <span class="m-field">Retry failed Stripe webhooks with backoff</span>
               <span class="m-route"><span class="br">retry-failed-webhooks</span><span class="arrow">into</span><span class="br">main</span></span>
               <span class="m-files"><span>src/webhooks/retry.ts</span><span class="add">+58 −3</span></span>
               <span class="m-files"><span>src/webhooks/retry.test.ts</span><span class="add">+6</span></span>
               <div class="buttons">
                 <span class="m-btn">Cancel<span>esc</span></span>
-                <span class="m-btn primary">Create PR<span>↵</span></span>
+                <span class="m-btn primary">Commit, push, create PR<span>↵</span></span>
               </div>
             </div>
           </div>
