@@ -49,35 +49,34 @@
     reveals.forEach(function (el) { io.observe(el); });
   }
 
-  // The sample-data prototype is 1280x800, scaled to fit its frame.
-  // It loads after the page so its runtime does not delay first paint,
-  // and it reloads in the page's theme when the theme changes.
+  // The hero is a native capture. "Try it" swaps in the sample-data prototype,
+  // the same 1400x880 window scaled to fit, and hands it the keyboard. Theme
+  // changes reach it as a message, so its state survives.
   var frame = document.getElementById('demo-frame');
-  var iframe = document.getElementById('demo-iframe');
-  var started = false;
-  function demoSrc() { return iframe.getAttribute('data-src') + '?glass=off&theme=' + resolved(); }
+  var play = document.getElementById('demo-play');
+  var iframe = null;
   function themeDemo() {
-    if (!started || !iframe) return;
-    var next = demoSrc();
-    if (iframe.getAttribute('src') === next) return;
-    frame.classList.remove('is-live');
-    iframe.src = next;
+    if (iframe && iframe.contentWindow) iframe.contentWindow.postMessage({ type: 'shika-theme', theme: resolved() }, location.origin);
   }
-  if (frame && iframe) {
+  if (frame && play) {
     var fit = function () {
-      frame.style.setProperty('--demo-scale', String(frame.clientWidth / 1280));
+      frame.style.setProperty('--demo-scale', String(frame.clientWidth / 1400));
     };
     fit();
     if ('ResizeObserver' in window) new ResizeObserver(fit).observe(frame);
     else window.addEventListener('resize', fit);
 
-    iframe.addEventListener('load', function () {
-      // Give the prototype a moment to render before revealing it over the poster.
-      setTimeout(function () { frame.classList.add('is-live'); }, 350);
+    play.addEventListener('click', function () {
+      if (iframe) return;
+      iframe = document.createElement('iframe');
+      iframe.title = 'Shika prototype with sample data. Use j and k to move, Enter to focus the terminal, Control Q to return to the cards, or Command N for a new agent.';
+      iframe.src = 'demo/?embed=1&theme=' + resolved();
+      iframe.addEventListener('load', function () {
+        frame.classList.add('is-live');
+        iframe.focus();
+      });
+      frame.appendChild(iframe);
     });
-    var start = function () { started = true; iframe.src = demoSrc(); };
-    if (document.readyState === 'complete') start();
-    else window.addEventListener('load', start);
   }
   labelToggle();
 

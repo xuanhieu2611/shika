@@ -300,22 +300,37 @@ h1 {
 .lede { margin: 18px 0 0; max-width: 34em; font-size: 18px; line-height: 1.55; color: var(--ink-2); text-wrap: balance; }
 .cta-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 28px; }
 
-/* Demo: the prototype window floats on the forest. */
+/* Demo: a native capture of the app floats on the forest. "Try it" swaps in
+   the browser prototype, which is the same 1400x880 window scaled to fit.
+   The radius is the capture's 18pt window corner, as a share of each side. */
 .demo { position: relative; }
 .demo-frame {
-  position: relative; width: 100%; aspect-ratio: 1280 / 800;
-  border-radius: 14px; overflow: hidden;
+  position: relative; width: 100%; aspect-ratio: 1400 / 880;
+  border-radius: 1.286% / 2.045%; overflow: hidden;
   box-shadow: var(--frame-shadow);
-  background: var(--frame-bg);
+  background: #181a17;
 }
-:root[data-resolved-theme="dark"] .demo-frame { background: var(--frame-bg) url("img/demo-poster.png") center / cover no-repeat; }
+.demo-shot { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .demo-frame iframe {
   position: absolute; top: 0; left: 0;
-  width: 1280px; height: 800px; border: 0;
+  width: 1400px; height: 880px; border: 0;
   transform-origin: 0 0; transform: scale(var(--demo-scale, 1));
-  opacity: 0; transition: opacity 500ms var(--ease);
+  opacity: 0; transition: opacity 400ms var(--ease);
 }
 .demo-frame.is-live iframe { opacity: 1; }
+.demo-play {
+  position: absolute; left: 50%; bottom: 5.5%; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 9px;
+  height: 44px; padding: 0 20px 0 16px; border: 0; border-radius: 999px;
+  background: rgba(242, 245, 236, 0.94); color: #1c1f1a;
+  font: 500 15px/1 var(--font-sans); cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3), 0 12px 32px -8px rgba(0, 0, 0, 0.55);
+  transition: transform 160ms var(--ease), background-color 160ms var(--ease), opacity 200ms var(--ease);
+}
+.demo-play:hover { background: #fff; transform: translateX(-50%) translateY(-1px); }
+.demo-play:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.demo-play .icon { width: 14px; height: 14px; fill: currentColor; stroke: none; }
+.demo-frame.is-live .demo-play { opacity: 0; pointer-events: none; }
 .demo-caption { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; margin-top: 18px; font-size: 14px; color: var(--ink-3); }
 .demo-caption p { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .demo-caption strong { color: var(--ink-1); font-weight: 500; }
@@ -643,8 +658,7 @@ h2 { margin: 0; font-size: clamp(32px, 4.2vw, 50px); line-height: 1.06; letter-s
   .lede { font-size: 17px; }
   .cta-row { width: 100%; }
   .cta-row .btn { flex: 1 1 auto; }
-  .demo-frame { border-radius: 10px; }
-  .demo-frame iframe { pointer-events: none; }
+  .demo-play { display: none; }
   .demo-caption .demo-keys { display: none; }
   .demo-caption .demo-mobile-note { display: block; }
   .section { padding-top: 104px; }
@@ -659,3 +673,10 @@ h2 { margin: 0; font-size: clamp(32px, 4.2vw, 50px); line-height: 1.06; letter-s
   .final { margin-top: 100px; padding: 110px 0 120px; }
   .code pre { font-size: 12.5px; padding: 18px 16px 22px; }
 }
+
+/* Native captures inside the feature grid, one per page theme. */
+.shot { width: 100%; max-width: 420px; border-radius: 12px; overflow: hidden; box-shadow: var(--m-shadow); }
+.shot img { display: block; width: 100%; height: auto; }
+.shot .on-light { display: none; }
+:root[data-resolved-theme="light"] .shot .on-light { display: block; }
+:root[data-resolved-theme="light"] .shot .on-dark { display: none; }

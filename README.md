@@ -1,26 +1,27 @@
 <div align="center">
 
-<img src="design/assets/shika-app-icon.png" alt="Shika app icon" width="128" height="128">
+<img src="design/assets/shika-app-icon.png" alt="Shika app icon" width="112" height="112">
 
 # Shika
 
 **Run your coding agents side by side.**
 
-Shika handles the worktrees, branches, and terminals. Every task isolated. Every project organized.
+A native Mac app for Claude Code, Codex, Cursor CLI, and Pi.<br>
+Every task gets its own worktree, branch, and terminal. You only look when an agent needs you.
 
 [![Download for Mac](https://img.shields.io/badge/Download_for_Mac-Shika.dmg-4d6745?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/xuanhieu2611/shika/releases/latest/download/Shika.dmg)
 
-[Website and interactive demo](https://useshika.com) · [Guide](https://useshika.com/guide/) · [Releases](https://github.com/xuanhieu2611/shika/releases) · [Contributing](CONTRIBUTING.md)
+[Website](https://useshika.com) · [Try it in your browser](https://useshika.com/demo/) · [Guide](https://useshika.com/guide/) · [Releases](https://github.com/xuanhieu2611/shika/releases)
 
 ![macOS 13+ on Apple silicon](https://img.shields.io/badge/macOS_13%2B-Apple_silicon-555?logo=apple&logoColor=white) [![MIT license](https://img.shields.io/badge/license-MIT-555)](LICENSE)
 
-</div>
-
 <br>
 
-![Shika with disposable sample projects and a simulated Codex session](site/img/demo-poster.png)
+<a href="https://useshika.com"><img src="site/img/shika-hero.webp" alt="Shika with a forest picture behind its glass: a routekit Lead and its worker above two projects, with tasks that are ready, working, asking a question, and waiting for a prompt. The terminal shows Claude Code's summary of a finished task." width="100%"></a>
 
-*Sample projects and simulated CLI output. This capture shows an earlier interface.*
+<sub>Real CLIs on sample projects. The background is Settings &gt; Appearance &gt; Background image, with the Halftone effect.</sub>
+
+</div>
 
 ## Why Shika
 
