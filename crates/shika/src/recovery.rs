@@ -108,9 +108,9 @@ impl Shika {
             .child(dialog_text(chrome).child("This stops all agents and shell terminals. Worktrees and files stay on disk. Reopen unfinished tasks from Leftover worktrees next time."))
             .child(dialog_text(chrome).child("Unsaved terminal input and shell tabs are not restored. Agent conversations can resume when the CLI saved them."))
             .child(dialog_buttons()
-                .child(dialog_button("cancel-quit", "Cancel", "esc", chrome)
+                .child(dialog_button("cancel-quit", "No, keep working", "esc", chrome)
                     .on_click(cx.listener(|this, _, window, cx| this.cancel_quit(window, cx))))
-                .child(primary_button("confirm-quit", if self.busy { "Saving..." } else { "Quit Shika" }, "⌘↵", chrome)
+                .child(primary_button("confirm-quit", if self.busy { "Saving..." } else { "Yes, quit" }, "⌘↵", chrome)
                     .on_click(cx.listener(|this, _, window, cx| this.confirm_quit(window, cx)))))
     }
 
