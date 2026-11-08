@@ -69,7 +69,7 @@ impl Shika {
 
     /// Walking order for `j` / `k`, Cmd+] / Cmd+[ and Go to agent N: the Leads
     /// section (no headers), then each project's header and cards.
-    fn rows(&self) -> Vec<Selection> {
+    fn rows(&mut self) -> Vec<Selection> {
         let layout = self.column_layout();
         let mut rows = vec![];
         for entry in &layout.leads {

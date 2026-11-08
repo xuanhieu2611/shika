@@ -87,7 +87,16 @@ Not yet seen natively: the agent shell that built this could not capture the scr
 - [ ] Adjust: drag pans and stops at the edges, scroll and pinch zoom around the pointer, the track and `-`/`+` zoom, arrows and `h j k l` pan, `0` resets, Apply saves and returns to the image row, Cancel and Escape drop the draft, focus returns to where Settings opened.
 - [ ] `backgrounds/` keeps only the current copy after Replace and Remove; Settings shows "Image unavailable" with Replace and Remove after the copy is deleted.
 
-## Occupied-first projects, 2026-10-24
+## Sticky project promotion
+
+Supersedes the last-card demotion behavior below. A project that has shown its own card stays promoted for this app run, even after its last card closes. Promotions reset on relaunch; saved project, picker, Settings, and Lead order stay unchanged. Existing promotion motion and card exits are unchanged.
+
+Automated: `cargo test -p shika` passes all 284 app tests. Regression coverage includes closing every card, reopening a promoted project, promoting another project, removed/added projects, relaunch reset, and Lead/worker placement. Workspace validation passes 785 tests with one existing ignored when skipping the already-documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis`; the unfiltered run fails that test (`claude` resolves to `/opt/homebrew/bin/claude`). Formatting, strict workspace Clippy, and `./scripts/bundle-app.sh --debug` pass. The bundle was built, not launched; native acceptance remains pending.
+
+- [ ] In the full app with disposable repositories: promote a bottom project, close its last card, and confirm only the card's exit/collapse plays while the project keeps its place. Repeat with Reduce Motion, multiple projects, failed/cancelled starts, and reopening a task.
+- [ ] Confirm navigation follows the displayed order, new first-card promotions still slide, stopping a Lead promotes returned workers' projects, and relaunch restores the saved project order without starting agents.
+
+## Occupied-first projects, 2026-10-24 (historical behavior)
 
 Projects with cards shown in Projects precede empty headers, retaining saved repository order within each tier. Last-card exits finish before demotion. Groups slide together over 220ms on the existing curve; Reduce Motion is instant. Leads, picker order, Settings order, selection, and saved projects are unchanged.
 
@@ -95,7 +104,7 @@ Automated: 255 app tests pass, including occupied/empty ordering, Lead/worker pl
 
 - PASS (limited native measurements): a temporary fixture using the production `project_motion` wrapper, opened with `open -n -W` as an ad hoc signed app with a unique fixture bundle ID, never opened Core or any app data. The last project moved monotonically from y=282 to y=194 while both empty headers moved down; header/group heights stayed fixed. Scrolling changed screen coordinates without starting another transition. Reversing the reorder after 70ms retargeted without returning to the original start and settled at y=194. The fixture and its logging are not shipped. This checks native wrapper layout, not complete task lifecycle or perceived smoothness.
 - [ ] In the full app with disposable repositories: start a first agent under an empty bottom project. Its header/cards slide above the empty projects; `j`/`k`, Cmd+]/Cmd+[, and numbered agent shortcuts follow the displayed order. Focus and the live terminal stay intact.
-- [ ] Close its last card: the existing shrink/collapse finishes before the project slides back among empty headers. Close failures, retries, multiple cards, rapid launches/closes, and stopping a Lead preserve the right groups and selection.
+- Superseded: last-card demotion is no longer intended. Use the sticky project promotion checks above.
 - [ ] With a tall scrolled sidebar, new selection reveals its final position; manual scrolling and ordinary status redraws do not replay motion. Click moving headers/cards and confirm hitboxes track their visible positions.
 - [ ] Check full-app perceived smoothness in Shika Light, Shika Dark, a derived theme, and glass. Reduce Motion skips translation, including when enabled mid-animation; no terminal resize occurs. Native palette/focus/lifecycle acceptance remains pending.
 

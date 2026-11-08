@@ -1,6 +1,9 @@
 //! Navigation, first-prompt capture, the base branch list, and the CLI title
 //! watch, independent of GPUI.
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 
 /// Agent is tab zero. Removing a shell preserves other selections and
 /// selects the preceding tab when the active shell closes.
@@ -162,20 +165,7 @@ pub struct ColumnLayout {
 }
 
 impl ColumnLayout {
-    #[cfg(test)]
     pub fn new(projects: &[&str], cards: &[Placement], resting: &[Resting]) -> Self {
-        Self::with_departing(projects, cards, resting, &[])
-    }
-
-    /// Nonempty project groups precede empty headers, preserving saved order
-    /// within each tier. A departing card keeps its group nonempty until its
-    /// exit finishes, so the project does not move halfway through Close.
-    pub fn with_departing(
-        projects: &[&str],
-        cards: &[Placement],
-        resting: &[Resting],
-        departing: &[&str],
-    ) -> Self {
         let by_attention = |indices: &mut Vec<usize>| indices.sort_by_key(|&i| cards[i].rank);
         let mut leads = Vec::new();
         let mut led = vec![false; cards.len()];
@@ -214,7 +204,7 @@ impl ColumnLayout {
                 });
             }
         }
-        let mut projects = projects
+        let projects = projects
             .iter()
             .map(|project| {
                 let mut owned = (0..cards.len())
@@ -227,10 +217,21 @@ impl ColumnLayout {
                 }
             })
             .collect::<Vec<_>>();
-        projects.sort_by_key(|entry| {
-            entry.cards.is_empty() && !departing.contains(&entry.project.as_str())
-        });
         Self { leads, projects }
+    }
+
+    /// Projects that have shown their own cards stay promoted for this app
+    /// run, even after their last card closes. Saved order breaks ties; Leads
+    /// and their workers do not promote a project until shown in Projects.
+    pub fn promote_projects(&mut self, promoted: &mut HashSet<String>) {
+        promoted.retain(|id| self.projects.iter().any(|entry| entry.project == *id));
+        for entry in &self.projects {
+            if !entry.cards.is_empty() && !promoted.contains(&entry.project) {
+                promoted.insert(entry.project.clone());
+            }
+        }
+        self.projects
+            .sort_by_key(|entry| !promoted.contains(&entry.project));
     }
 }
 
@@ -664,51 +665,71 @@ mod layout_tests {
         assert_eq!(layout.projects[0].cards, vec![1]);
     }
 
+    fn project_layout(
+        projects: &[&str],
+        cards: &[Placement],
+        promoted: &mut HashSet<String>,
+    ) -> ColumnLayout {
+        let mut layout = ColumnLayout::new(projects, cards, &[]);
+        layout.promote_projects(promoted);
+        layout
+    }
+
+    fn project_ids(layout: &ColumnLayout) -> Vec<&str> {
+        layout.projects.iter().map(|p| p.project.as_str()).collect()
+    }
+
     #[test]
-    fn occupied_projects_precede_empty_ones_in_saved_order() {
+    fn promoted_projects_keep_their_order_after_the_last_card_closes() {
         let projects = ["shika", "rivet", "dotfiles", "selfroom"];
+        let mut promoted = HashSet::new();
         let cards = [task("shika", 3), task("selfroom", 3)];
-        let layout = ColumnLayout::new(&projects, &cards, &[]);
+        let expected = ["shika", "selfroom", "rivet", "dotfiles"];
         assert_eq!(
-            layout
-                .projects
-                .iter()
-                .map(|p| p.project.as_str())
-                .collect::<Vec<_>>(),
-            ["shika", "selfroom", "rivet", "dotfiles"]
+            project_ids(&project_layout(&projects, &cards, &mut promoted)),
+            expected
         );
-        // Status changes and additional cards do not reorder projects.
+        // Status changes, additional cards, and closing every card keep order.
         let cards = [task("shika", 3), task("selfroom", 0), task("selfroom", 1)];
+        for cards in [&cards[..], &cards[..2], &cards[..1], &[]] {
+            assert_eq!(
+                project_ids(&project_layout(&projects, cards, &mut promoted)),
+                expected
+            );
+        }
+        // Reopening an already promoted project also keeps its position.
         assert_eq!(
-            ColumnLayout::new(&projects, &cards, &[]).projects[0].project,
-            "shika"
+            project_ids(&project_layout(&projects, &cards[1..2], &mut promoted)),
+            expected
         );
-        // Removing the last card restores the saved order among empty groups.
-        let layout = ColumnLayout::new(&projects, &cards[..1], &[]);
+        // Promotions are session-only, never a change to the saved order.
         assert_eq!(
-            layout
-                .projects
-                .iter()
-                .map(|p| p.project.as_str())
-                .collect::<Vec<_>>(),
+            project_ids(&project_layout(&projects, &[], &mut HashSet::new())),
             projects
         );
+    }
+
+    #[test]
+    fn another_project_can_promote_without_demoting_a_closed_project() {
+        let projects = ["a", "b", "c", "d"];
+        let mut promoted = HashSet::new();
+        project_layout(&projects, &[task("d", 3)], &mut promoted);
+        project_layout(&projects, &[], &mut promoted);
         assert_eq!(
-            ColumnLayout::new(&projects, &[], &[]).projects,
-            projects
-                .iter()
-                .map(|p| ProjectEntry {
-                    project: (*p).into(),
-                    cards: vec![],
-                })
-                .collect::<Vec<_>>()
+            project_ids(&project_layout(&projects, &[task("c", 3)], &mut promoted)),
+            ["c", "d", "a", "b"]
+        );
+        assert_eq!(
+            project_ids(&project_layout(&projects, &[], &mut promoted)),
+            ["c", "d", "a", "b"]
         );
     }
 
     #[test]
     fn only_cards_in_the_projects_section_promote_a_project() {
         let cards = [lead("a", Some("la"), 2), worker("b", "la", 0), task("c", 3)];
-        let layout = ColumnLayout::new(&["a", "b", "c"], &cards, &[]);
+        let mut promoted = HashSet::new();
+        let layout = project_layout(&["a", "b", "c"], &cards, &mut promoted);
         assert_eq!(
             layout
                 .projects
@@ -719,7 +740,7 @@ mod layout_tests {
         );
         assert_eq!(layout.leads[0].workers, [1]);
         // Once the Lead stops its worker becomes an ordinary project card.
-        let layout = ColumnLayout::new(&["a", "b", "c"], &cards[1..], &[]);
+        let layout = project_layout(&["a", "b", "c"], &cards[1..], &mut promoted);
         assert_eq!(
             layout
                 .projects
@@ -731,21 +752,17 @@ mod layout_tests {
     }
 
     #[test]
-    fn a_project_waits_for_its_last_card_exit_before_moving_down() {
-        let projects = ["a", "b", "c"];
-        let cards = [task("c", 3)];
-        let layout = ColumnLayout::with_departing(&projects, &cards, &[], &["b"]);
+    fn removed_projects_lose_their_promotion_and_new_projects_stay_empty() {
+        let mut promoted = HashSet::new();
+        project_layout(&["a", "b", "c"], &[task("c", 3)], &mut promoted);
         assert_eq!(
-            layout
-                .projects
-                .iter()
-                .map(|p| p.project.as_str())
-                .collect::<Vec<_>>(),
-            ["b", "c", "a"]
+            project_ids(&project_layout(&["a", "b", "d"], &[], &mut promoted)),
+            ["a", "b", "d"]
         );
+        assert!(promoted.is_empty());
         assert_eq!(
-            ColumnLayout::new(&projects, &cards, &[]).projects[0].project,
-            "c"
+            project_ids(&project_layout(&["a", "b", "c", "d"], &[], &mut promoted)),
+            ["a", "b", "c", "d"]
         );
     }
 
