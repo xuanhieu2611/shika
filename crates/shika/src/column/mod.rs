@@ -37,7 +37,7 @@ const WORDMARK_INSET: f32 = 90.;
 impl Shika {
     /// The Leads section above the projects, each Lead followed by its
     /// workers; then every project's own cards, sorted by attention.
-    pub(crate) fn column_layout(&self) -> model::ColumnLayout {
+    pub(crate) fn column_layout(&mut self) -> model::ColumnLayout {
         let placements = self
             .cards
             .iter()
@@ -63,15 +63,9 @@ impl Shika {
                 cli: self.cli_name(cli),
             })
             .collect::<Vec<_>>();
-        let departing = self
-            .departing
-            .iter()
-            .filter_map(|d| match &d.home {
-                Home::Project(project) => Some(project.as_str()),
-                Home::Leads(_) => None,
-            })
-            .collect::<Vec<_>>();
-        model::ColumnLayout::with_departing(&projects, &placements, &resting, &departing)
+        let mut layout = model::ColumnLayout::new(&projects, &placements, &resting);
+        layout.promote_projects(&mut self.promoted_projects);
+        layout
     }
 
     /// Hide or show the agent column. Focus stays where it is: with the

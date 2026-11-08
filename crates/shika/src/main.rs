@@ -88,7 +88,7 @@ use shika_terminal::{
     TerminalSize, TerminalView, Theme, openable_uri,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -223,6 +223,9 @@ struct Shika {
     /// Closed cards playing their exit. See [`Departing`].
     departing: Vec<Departing>,
     departing_serial: u64,
+    /// Projects promoted during this app run. Closing their cards never
+    /// demotes them; the saved repository list stays unchanged.
+    promoted_projects: HashSet<String>,
     /// Last rendered project order, independent of the saved repository list.
     project_order: Vec<String>,
     project_order_epoch: u64,
@@ -321,6 +324,7 @@ impl Shika {
             control_error,
             departing: Vec::new(),
             departing_serial: 0,
+            promoted_projects: HashSet::new(),
             project_order: Vec::new(),
             project_order_epoch: 0,
         };

@@ -16,6 +16,8 @@ The user guide: what Shika does on your machine, every shortcut, and the everyda
 
 One terminal is visible at a time; hidden task terminals keep running. Projects persist, live sessions do not restore (a project's Lead comes back resting, ready to resume), and quitting leaves worktrees for explicit cleanup on the next launch. App data lives in `~/Library/Application Support/com.hieule.shika/`. See [tasks and worktrees](tasks-and-worktrees.md) for the full lifecycle.
 
+An empty project moves up when you start its first task. It stays promoted after you close its last task, rather than moving back down. Promotions last until you quit Shika; the saved project order is unchanged.
+
 ## Keyboard shortcuts
 
 On the cards (the column has focus):
