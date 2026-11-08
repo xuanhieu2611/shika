@@ -351,6 +351,14 @@ impl Shika {
                 .unwrap_or(TerminalSize::new(32, 100));
             terminal.resize(fallback);
         }
+        if !retried
+            && matches!(
+                launch,
+                Launch::Task | Launch::Checkout | Launch::Recover { .. }
+            )
+        {
+            model::promote_project(&mut self.promoted_projects, &project);
+        }
         let control = PreparationControl::default();
         let index = self.cards.len();
         self.cards.push(launch_card(
