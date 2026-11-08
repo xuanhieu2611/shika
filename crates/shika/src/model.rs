@@ -1,9 +1,6 @@
 //! Navigation, first-prompt capture, the base branch list, and the CLI title
 //! watch, independent of GPUI.
-use std::{
-    collections::HashSet,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 /// Agent is tab zero. Removing a shell preserves other selections and
 /// selects the preceding tab when the active shell closes.
@@ -220,19 +217,28 @@ impl ColumnLayout {
         Self { leads, projects }
     }
 
-    /// Projects that have shown their own cards stay promoted for this app
-    /// run, even after their last card closes. Saved order breaks ties; Leads
-    /// and their workers do not promote a project until shown in Projects.
-    pub fn promote_projects(&mut self, promoted: &mut HashSet<String>) {
+    /// Remember most recently used projects for this app run. Workers only
+    /// count when they move from the Leads section into Projects.
+    pub fn promote_projects(&mut self, promoted: &mut Vec<String>) {
         promoted.retain(|id| self.projects.iter().any(|entry| entry.project == *id));
         for entry in &self.projects {
             if !entry.cards.is_empty() && !promoted.contains(&entry.project) {
-                promoted.insert(entry.project.clone());
+                promote_project(promoted, &entry.project);
             }
         }
-        self.projects
-            .sort_by_key(|entry| !promoted.contains(&entry.project));
+        self.projects.sort_by_key(|entry| {
+            promoted
+                .iter()
+                .position(|id| *id == entry.project)
+                .unwrap_or(usize::MAX)
+        });
     }
+}
+
+/// Move a project to the front without changing the saved repository list.
+pub fn promote_project(promoted: &mut Vec<String>, project: &str) {
+    promoted.retain(|id| id != project);
+    promoted.insert(0, project.to_string());
 }
 
 /// A resumed Lead that exits this soon after launch did not take its
@@ -668,7 +674,7 @@ mod layout_tests {
     fn project_layout(
         projects: &[&str],
         cards: &[Placement],
-        promoted: &mut HashSet<String>,
+        promoted: &mut Vec<String>,
     ) -> ColumnLayout {
         let mut layout = ColumnLayout::new(projects, cards, &[]);
         layout.promote_projects(promoted);
@@ -682,9 +688,9 @@ mod layout_tests {
     #[test]
     fn promoted_projects_keep_their_order_after_the_last_card_closes() {
         let projects = ["shika", "rivet", "dotfiles", "selfroom"];
-        let mut promoted = HashSet::new();
+        let mut promoted = Vec::new();
         let cards = [task("shika", 3), task("selfroom", 3)];
-        let expected = ["shika", "selfroom", "rivet", "dotfiles"];
+        let expected = ["selfroom", "shika", "rivet", "dotfiles"];
         assert_eq!(
             project_ids(&project_layout(&projects, &cards, &mut promoted)),
             expected
@@ -697,14 +703,15 @@ mod layout_tests {
                 expected
             );
         }
-        // Reopening an already promoted project also keeps its position.
+        // A new task in an already promoted project moves it to the top.
+        promote_project(&mut promoted, "shika");
         assert_eq!(
             project_ids(&project_layout(&projects, &cards[1..2], &mut promoted)),
-            expected
+            ["shika", "selfroom", "rivet", "dotfiles"]
         );
         // Promotions are session-only, never a change to the saved order.
         assert_eq!(
-            project_ids(&project_layout(&projects, &[], &mut HashSet::new())),
+            project_ids(&project_layout(&projects, &[], &mut Vec::new())),
             projects
         );
     }
@@ -712,7 +719,7 @@ mod layout_tests {
     #[test]
     fn another_project_can_promote_without_demoting_a_closed_project() {
         let projects = ["a", "b", "c", "d"];
-        let mut promoted = HashSet::new();
+        let mut promoted = Vec::new();
         project_layout(&projects, &[task("d", 3)], &mut promoted);
         project_layout(&projects, &[], &mut promoted);
         assert_eq!(
@@ -728,7 +735,7 @@ mod layout_tests {
     #[test]
     fn only_cards_in_the_projects_section_promote_a_project() {
         let cards = [lead("a", Some("la"), 2), worker("b", "la", 0), task("c", 3)];
-        let mut promoted = HashSet::new();
+        let mut promoted = Vec::new();
         let layout = project_layout(&["a", "b", "c"], &cards, &mut promoted);
         assert_eq!(
             layout
@@ -753,7 +760,7 @@ mod layout_tests {
 
     #[test]
     fn removed_projects_lose_their_promotion_and_new_projects_stay_empty() {
-        let mut promoted = HashSet::new();
+        let mut promoted = Vec::new();
         project_layout(&["a", "b", "c"], &[task("c", 3)], &mut promoted);
         assert_eq!(
             project_ids(&project_layout(&["a", "b", "d"], &[], &mut promoted)),
