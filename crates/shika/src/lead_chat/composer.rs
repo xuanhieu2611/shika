@@ -1,6 +1,6 @@
 //! The composer: the raised message field and its round Send or Stop action.
 use super::{ChatAction, LeadChat, SEND_ICON};
-use crate::Chrome;
+use crate::{Chrome, scrollbar};
 use gpui::{
     AppContext, Context, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
@@ -36,7 +36,30 @@ impl LeadChat {
                     .items_center()
                     .py(px(12.))
                     .pr(px(8.))
-                    .child(div().flex_1().min_w_0().child(self.composer.clone())),
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.composer.clone())
+                            // The app's scrollbar, shown once the text outgrows the
+                            // field. Its track is the text's height, and its 8px of
+                            // overhang puts the thumb in the gap before the action.
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .bottom_0()
+                                    .left_0()
+                                    .right(px(-8.))
+                                    .child(scrollbar::vertical(
+                                        &self.composer.read(cx).scroll_handle(),
+                                        &self.composer_grab,
+                                        chrome.ink_4,
+                                        chrome.ink_3,
+                                    )),
+                            ),
+                    ),
             )
             .child(
                 div()

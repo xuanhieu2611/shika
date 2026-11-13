@@ -67,6 +67,19 @@ impl Lines for Rows {
                 .unwrap_or_else(|i| i)
     }
 }
+/// How far to move the content so a line `line` tall at window y `top` sits
+/// inside the viewport `view_top..view_bottom`: negative scrolls the content
+/// up, positive down, zero when the line is already in view. A line taller
+/// than the viewport lines up with its top.
+fn reveal(top: Pixels, line: Pixels, view_top: Pixels, view_bottom: Pixels) -> Pixels {
+    if top + line > view_bottom {
+        (view_bottom - (top + line)).max(view_top - top)
+    } else if top < view_top {
+        view_top - top
+    } else {
+        px(0.)
+    }
+}
 fn clean_text(text: &str) -> String {
     text.chars()
         .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
@@ -182,6 +195,10 @@ impl ChatInput {
     }
     pub fn max_height(&mut self, height: Pixels) {
         self.max_h = height;
+    }
+    /// The editor's scroll position, for a scrollbar drawn beside it.
+    pub fn scroll_handle(&self) -> gpui::ScrollHandle {
+        self.scroll.clone()
     }
     /// `None` when a capped field has no room left for `text`.
     fn accept(&self, range: Range<usize>, text: &str) -> Option<String> {
@@ -427,6 +444,7 @@ impl ChatInput {
             self.text = Text::new(value);
             self.text.anchor = anchor;
             self.text.cursor = cursor;
+            self.ensure_cursor = true;
             cx.emit(InputEvent::Changed);
             cx.notify();
         }
@@ -467,7 +485,7 @@ impl ChatInput {
     fn edit_key(&mut self, stroke: &gpui::Keystroke, cx: &mut Context<Self>) {
         let m = stroke.modifiers;
         let before = self.text.value.clone();
-        self.ensure_cursor = !self.readonly;
+        let caret = (self.text.anchor, self.text.cursor);
         let selected = self.text.selection();
         match stroke.key.as_str() {
             "a" if m.platform => {
@@ -501,7 +519,6 @@ impl ChatInput {
                     return;
                 }
                 if let Edit::Scroll(top) = edit {
-                    self.ensure_cursor = false;
                     let offset = self.scroll.offset();
                     let y = if top {
                         px(0.)
@@ -529,6 +546,11 @@ impl ChatInput {
                 }
             }
         }
+        // Only an edit or a caret move brings the caret into view; a key that
+        // changed nothing, or a Home/End scroll, leaves the scroll where the
+        // wheel put it.
+        self.ensure_cursor = !self.readonly
+            && (before != self.text.value || caret != (self.text.anchor, self.text.cursor));
         if before != self.text.value {
             cx.emit(InputEvent::Changed);
         }
@@ -706,13 +728,9 @@ impl ChatInput {
                         && std::mem::take(&mut input.ensure_cursor)
                         && let Some(cursor) = cursor
                     {
+                        let view = input.scroll.bounds();
                         let mut offset = input.scroll.offset();
-                        if cursor.y + px(20.) > bounds.bottom() {
-                            offset.y -= cursor.y + px(20.) - bounds.bottom();
-                        }
-                        if cursor.y < bounds.top() {
-                            offset.y += bounds.top() - cursor.y;
-                        }
+                        offset.y += reveal(cursor.y, px(20.), view.top(), view.bottom());
                         if offset != input.scroll.offset() {
                             input.scroll.set_offset(offset);
                             cx.notify();
@@ -721,7 +739,12 @@ impl ChatInput {
                 });
             },
         )
+        // Pinned to the top of the content: an absolute child with no inset
+        // sits after the text, which gave the editor a blank screenful of
+        // extra scroll below its last line.
         .absolute()
+        .top_0()
+        .left_0()
         .size_full()
     }
 }
@@ -955,3 +978,6 @@ impl Render for ChatInput {
             .child(Self::caret_canvas(paint, layout, readonly, placeholder))
     }
 }
+
+#[cfg(test)]
+mod tests;
