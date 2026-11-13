@@ -13,6 +13,11 @@ pub(super) struct Departing {
     pub(super) key: u64,
 }
 
+/// What Yes does in a Close dialog: Push when it is offered, else Discard.
+fn close_action(state: &SessionGitState) -> u8 {
+    if state.can_push() { 2 } else { 1 }
+}
+
 enum CloseCheck {
     Normal(SessionGitState),
     Switched(shika_core::SwitchedBranchClose),
@@ -296,42 +301,38 @@ impl Shika {
         .detach();
     }
 
-    /// Plain keys in a Close dialog. Escape is the only one; the
-    /// destructive and publishing choices are Command chords, handled by
-    /// [`Self::close_chord_key`].
+    /// Plain keys in a Close dialog past the grace window: Escape is No, and
+    /// `d` discards when Push is the main action. `y` and `n` are handled by
+    /// [`Self::close_answer_key`].
     pub(super) fn close_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if key == "escape" {
-            self.cancel_overlay(window, cx);
-        }
-    }
-
-    /// The Command chords that choose in a Close dialog, past the grace
-    /// window and busy checks in `dialog_chord_key`.
-    pub(super) fn close_chord_key(
-        &mut self,
-        chord: model::DialogChord,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        use model::DialogChord::{Discard, Primary};
-        match (&self.overlay, chord) {
-            (Some(Overlay::CheckoutClose(dialog)), Primary) => {
-                let i = dialog.index;
-                self.finish_close(i, 4, window, cx);
-            }
-            (Some(Overlay::Close(dialog)), Discard) => {
+        match (&self.overlay, key) {
+            (_, "escape") => self.cancel_overlay(window, cx),
+            (Some(Overlay::Close(dialog)), "d") if dialog.state.can_push() => {
                 let i = dialog.index;
                 self.finish_close(i, 1, window, cx);
             }
-            (Some(Overlay::Close(dialog)), Primary) if dialog.state.can_push() => {
-                let i = dialog.index;
-                self.finish_close(i, 2, window, cx);
-            }
-            (Some(Overlay::SwitchedClose(dialog)), Primary) => {
-                let i = dialog.index;
-                self.finish_close(i, 3, window, cx);
-            }
             _ => {}
+        }
+    }
+
+    /// Yes and No in a Close dialog, past the grace window and busy checks in
+    /// `dialog_answer_key`. Yes is the dialog's main action: Push when it is
+    /// offered, otherwise Discard.
+    pub(super) fn close_answer_key(
+        &mut self,
+        answer: model::Answer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (index, action) = match &self.overlay {
+            Some(Overlay::CheckoutClose(dialog)) => (dialog.index, 4),
+            Some(Overlay::Close(dialog)) => (dialog.index, close_action(&dialog.state)),
+            Some(Overlay::SwitchedClose(dialog)) => (dialog.index, 3),
+            _ => return,
+        };
+        match answer {
+            model::Answer::Yes => self.finish_close(index, action, window, cx),
+            model::Answer::No => self.cancel_overlay(window, cx),
         }
     }
 
@@ -346,10 +347,10 @@ impl Shika {
         let i = *index;
         dialog(chrome, max_h)
             .child(dialog_title(div()).child("Stop the agent?"))
-            .child(dialog_text(chrome).child("The agent is still active. This stops its terminals. Your checkout and files stay unchanged."))
+            .child(dialog_text(chrome).child("The agent is still active. Yes stops its terminals. Your checkout and files stay unchanged."))
             .child(dialog_buttons()
-                .child(self.cancel_button("Cancel", chrome, cx))
-                .child(primary_button("stop-checkout", "Stop agent", "⌘↵", chrome)
+                .child(self.no_button("No", chrome, cx))
+                .child(primary_button("stop-checkout", "Yes", "Y", chrome)
                     .on_click(cx.listener(move |this, _, window, cx| this.finish_close(i, 4, window, cx)))))
     }
 
@@ -363,8 +364,12 @@ impl Shika {
         let CloseDialog { index, state } = close_dialog;
         let i = *index;
         let can_push = state.can_push();
-        let mut panel = dialog(chrome, max_h)
-            .child(dialog_title(div()).child(format!("Close “{}”?", self.cards[i].title)));
+        let task = &self.cards[i].title;
+        let mut panel = dialog(chrome, max_h).child(dialog_title(div()).child(if can_push {
+            format!("Push and close “{task}”?")
+        } else {
+            format!("Close “{task}”?")
+        }));
         if state.agent_working {
             panel = panel.child(dialog_text(chrome).child("The agent is still working."));
         }
@@ -378,30 +383,21 @@ impl Shika {
                 dialog_text(chrome).child("The branch has commits that are not on the remote."),
             );
         }
-        panel = panel.child(
-            dialog_text(chrome)
-                .child("Discard stops the session and deletes the worktree and local branch."),
-        );
-        let discard = cx.listener(move |this, _, window, cx| this.finish_close(i, 1, window, cx));
-        let buttons = dialog_buttons().child(self.cancel_button("Cancel", chrome, cx));
-        // The primary action is Push when it is offered.
-        let buttons = if can_push {
-            buttons
-                .child(
-                    dialog_button("discard", "Discard changes", "\u{2318}D", chrome)
-                        .on_click(discard),
-                )
-                .child(
-                    primary_button("push", "Push changes", "\u{2318}\u{21b5}", chrome).on_click(
-                        cx.listener(move |this, _, window, cx| this.finish_close(i, 2, window, cx)),
-                    ),
-                )
+        // Yes is the main action: Push when it is offered, otherwise Discard.
+        panel = panel.child(dialog_text(chrome).child(if can_push {
+            "Yes pushes the branch, stops the session, and removes the worktree. The local branch stays. Discard deletes the worktree and local branch without pushing."
         } else {
-            buttons.child(
-                primary_button("discard", "Discard changes", "\u{2318}D", chrome).on_click(discard),
-            )
-        };
-        panel.child(buttons)
+            "Yes discards the work: it stops the session and deletes the worktree and local branch."
+        }));
+        let action = close_action(state);
+        let yes = cx.listener(move |this, _, window, cx| this.finish_close(i, action, window, cx));
+        let mut buttons = dialog_buttons().child(self.no_button("No", chrome, cx));
+        if can_push {
+            buttons = buttons.child(dialog_button("discard", "Discard", "D", chrome).on_click(
+                cx.listener(move |this, _, window, cx| this.finish_close(i, 1, window, cx)),
+            ));
+        }
+        panel.child(buttons.child(primary_button("close-yes", "Yes", "Y", chrome).on_click(yes)))
     }
 
     pub(super) fn switched_close_view(
@@ -423,7 +419,7 @@ impl Shika {
             .child(dialog_text(chrome).font_family(MONO).child(preview.recorded.clone()))
             .child(dialog_text(chrome).child("The worktree is now on:"))
             .child(dialog_text(chrome).font_family(MONO).child(preview.current.clone()))
-            .child(dialog_text(chrome).child("No unpublished work was found. Closing removes the worktree and stops all task terminals. Both local branches will be kept."));
+            .child(dialog_text(chrome).child("No unpublished work was found. Yes removes the worktree and stops all task terminals. Both local branches will be kept."));
         if *working {
             panel = panel.child(
                 dialog_text(chrome)
@@ -432,12 +428,11 @@ impl Shika {
         }
         panel.child(
             dialog_buttons()
-                .child(self.cancel_button("Cancel", chrome, cx))
+                .child(self.no_button("No", chrome, cx))
                 .child(
-                    primary_button("close-switched", "Close task", "\u{2318}\u{21b5}", chrome)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.finish_close(i, 3, window, cx)
-                        })),
+                    primary_button("close-switched", "Yes", "Y", chrome).on_click(
+                        cx.listener(move |this, _, window, cx| this.finish_close(i, 3, window, cx)),
+                    ),
                 ),
         )
     }

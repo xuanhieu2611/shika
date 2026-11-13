@@ -425,34 +425,32 @@ pub fn typing_quiet(
         .all(|at| now.duration_since(at) >= quiet)
 }
 
-/// The Command chords that choose in a confirmation dialog. A plain letter
-/// or a bare Enter never chooses a destructive or publishing action.
+/// An answer to a yes/no confirmation dialog. Escape is a silent alias for
+/// No, handled by each dialog's own Escape path, so it is not here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DialogChord {
-    /// Cmd+Enter: push, or close after a branch switch.
-    Primary,
-    /// Cmd+D: discard.
-    Discard,
-    /// Cmd+Delete (GPUI's `backspace`): forget, remove.
-    Delete,
+pub enum Answer {
+    Yes,
+    No,
 }
 
-/// The chord a keystroke is, when it is exactly Command and one of the keys.
-pub fn dialog_chord(
+/// The answer a keystroke is: plain `y` or `n`, either case, with no
+/// Command, Control, Option, or Shift. Bare Enter is never an answer.
+pub fn dialog_answer(
     key: &str,
     platform: bool,
     control: bool,
     alt: bool,
     shift: bool,
-) -> Option<DialogChord> {
-    if !platform || control || alt || shift {
+) -> Option<Answer> {
+    if platform || control || alt || shift {
         return None;
     }
-    match key {
-        "enter" => Some(DialogChord::Primary),
-        "d" => Some(DialogChord::Discard),
-        "backspace" => Some(DialogChord::Delete),
-        _ => None,
+    if key.eq_ignore_ascii_case("y") {
+        Some(Answer::Yes)
+    } else if key.eq_ignore_ascii_case("n") {
+        Some(Answer::No)
+    } else {
+        None
     }
 }
 
@@ -490,9 +488,9 @@ impl LeadClose {
                     facts.push("The agent is still working.");
                 }
                 facts.push(
-                    "Its conversation is kept. Select it to resume. Workers it started stay as your tasks.",
+                    "Yes stops the Lead. Its conversation is kept. Select it to resume. Workers it started stay as your tasks.",
                 );
-                facts.push("Forget deletes its worktree and Shika's chat history instead.");
+                facts.push("Forget asks to delete its worktree and Shika's chat history instead.");
                 facts
             }
             Self::Forget { working, loss } => {
@@ -501,7 +499,7 @@ impl LeadClose {
                     facts.push("The agent is still working.");
                 }
                 facts.push(
-                    "Forget deletes the Lead's worktree and Shika's link to its conversation. Its Shika chat history will be deleted. The CLI keeps its own history. Its memory notes stay for the next Lead.",
+                    "Yes deletes the Lead's worktree and Shika's link to its conversation. Its Shika chat history will be deleted. The CLI keeps its own history. Its memory notes stay for the next Lead.",
                 );
                 if loss.uncommitted {
                     facts.push("Its worktree has uncommitted changes, which will be discarded.");
@@ -1694,8 +1692,8 @@ mod lead_tests {
         assert_eq!(
             stop.facts(),
             vec![
-                "Its conversation is kept. Select it to resume. Workers it started stay as your tasks.",
-                "Forget deletes its worktree and Shika's chat history instead.",
+                "Yes stops the Lead. Its conversation is kept. Select it to resume. Workers it started stay as your tasks.",
+                "Forget asks to delete its worktree and Shika's chat history instead.",
             ]
         );
         let busy = LeadClose::Stop {
@@ -1717,7 +1715,7 @@ mod lead_tests {
         assert_eq!(
             forget.facts(),
             vec![
-                "Forget deletes the Lead's worktree and Shika's link to its conversation. Its Shika chat history will be deleted. The CLI keeps its own history. Its memory notes stay for the next Lead.",
+                "Yes deletes the Lead's worktree and Shika's link to its conversation. Its Shika chat history will be deleted. The CLI keeps its own history. Its memory notes stay for the next Lead.",
                 "Its worktree has uncommitted changes, which will be discarded.",
             ]
         );
@@ -1813,25 +1811,59 @@ mod lead_tests {
     }
 
     #[test]
-    fn only_a_bare_command_chord_chooses_in_a_dialog() {
-        use DialogChord::*;
-        assert_eq!(
-            dialog_chord("enter", true, false, false, false),
-            Some(Primary)
-        );
-        assert_eq!(dialog_chord("d", true, false, false, false), Some(Discard));
-        assert_eq!(
-            dialog_chord("backspace", true, false, false, false),
-            Some(Delete)
-        );
-        // Plain keys and extra modifiers never choose.
-        assert_eq!(dialog_chord("enter", false, false, false, false), None);
-        assert_eq!(dialog_chord("d", false, false, false, false), None);
-        assert_eq!(dialog_chord("backspace", false, false, false, false), None);
-        assert_eq!(dialog_chord("d", true, false, false, true), None);
-        assert_eq!(dialog_chord("enter", true, true, false, false), None);
-        assert_eq!(dialog_chord("backspace", true, false, true, false), None);
-        assert_eq!(dialog_chord("p", true, false, false, false), None);
+    fn y_and_n_answer_a_dialog_in_either_case() {
+        let plain = |key: &str| dialog_answer(key, false, false, false, false);
+        assert_eq!(plain("y"), Some(Answer::Yes));
+        assert_eq!(plain("n"), Some(Answer::No));
+        assert_eq!(plain("Y"), Some(Answer::Yes));
+        assert_eq!(plain("N"), Some(Answer::No));
+    }
+
+    #[test]
+    fn enter_and_other_keys_never_answer_a_dialog() {
+        let plain = |key: &str| dialog_answer(key, false, false, false, false);
+        for key in [
+            "enter",
+            "escape",
+            "space",
+            "d",
+            "f",
+            "p",
+            "backspace",
+            "yes",
+            "",
+        ] {
+            assert_eq!(plain(key), None, "{key}");
+        }
+    }
+
+    #[test]
+    fn a_modifier_stops_y_and_n_from_answering() {
+        for key in ["y", "n"] {
+            assert_eq!(dialog_answer(key, true, false, false, false), None);
+            assert_eq!(dialog_answer(key, false, true, false, false), None);
+            assert_eq!(dialog_answer(key, false, false, true, false), None);
+            assert_eq!(dialog_answer(key, false, false, false, true), None);
+            assert_eq!(dialog_answer(key, true, false, false, true), None);
+        }
+    }
+
+    #[test]
+    fn a_key_in_flight_is_dropped_until_the_grace_ends() {
+        // `dialog_ignores_key` asks exactly this of the grace window: an
+        // answer is dropped while it runs and taken once it ends.
+        let t0 = Instant::now();
+        let mut grace = DialogGrace::default();
+        grace.observe(Some(("close", 0)), t0);
+        let answer = dialog_answer("y", false, false, false, false);
+        assert_eq!(answer, Some(Answer::Yes));
+        assert!(grace.active(t0 + Duration::from_millis(50)));
+        assert!(grace.active(t0 + DIALOG_GRACE - Duration::from_millis(1)));
+        assert!(!grace.active(t0 + DIALOG_GRACE));
+        // The Forget step is a new dialog: its own window starts at once.
+        let step = t0 + Duration::from_secs(2);
+        grace.observe(Some(("lead-close", 1)), step);
+        assert!(grace.active(step + Duration::from_millis(10)));
     }
 
     #[test]

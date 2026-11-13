@@ -782,14 +782,14 @@ impl Shika {
         self.last_revealed_selection = self.selection.clone();
     }
 
-    /// Forget from the Lead's close dialog. From the Stop step, a worktree
-    /// with something to lose first shows the Forget step with those facts;
-    /// otherwise, and from the Forget step, the Lead is forgotten.
+    /// Forget from the Lead's close dialog: the Stop step moves to the Forget
+    /// step, which asks again with the facts; from the Forget step, the Lead
+    /// is forgotten.
     pub(super) fn forget_lead_from_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Overlay::LeadClose(LeadCloseDialog { step, .. })) = &mut self.overlay else {
             return;
         };
-        if matches!(step, model::LeadClose::Stop { .. }) && step.discards() {
+        if matches!(step, model::LeadClose::Stop { .. }) {
             *step = step.forget();
             cx.notify();
         } else {
@@ -797,8 +797,9 @@ impl Shika {
         }
     }
 
-    /// Escape, and Enter to Stop the Lead, are the only plain keys in the
-    /// Lead's close dialog.
+    /// Escape (No) and `f` (Forget, the secondary choice on the Stop step)
+    /// are the plain keys in the Lead's close dialog. `y` and `n` are
+    /// handled by [`Self::lead_close_answer`].
     pub(super) fn lead_close_key(
         &mut self,
         key: &str,
@@ -810,9 +811,29 @@ impl Shika {
         };
         let stopping = matches!(step, model::LeadClose::Stop { .. });
         match key {
-            "enter" if stopping => self.finish_lead_close(false, window, cx),
+            "f" if stopping => self.forget_lead_from_dialog(window, cx),
             "escape" => self.cancel_overlay(window, cx),
             _ => {}
+        }
+    }
+
+    /// Yes does the step's main action: Stop on the Stop step, Forget on the
+    /// Forget step. No cancels.
+    pub(super) fn lead_close_answer(
+        &mut self,
+        answer: model::Answer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Overlay::LeadClose(LeadCloseDialog { step, .. })) = &self.overlay else {
+            return;
+        };
+        match answer {
+            model::Answer::Yes => {
+                let forget = matches!(step, model::LeadClose::Forget { .. });
+                self.finish_lead_close(forget, window, cx);
+            }
+            model::Answer::No => self.cancel_overlay(window, cx),
         }
     }
 
@@ -829,27 +850,24 @@ impl Shika {
         for fact in step.facts() {
             panel = panel.child(dialog_text(chrome).child(fact));
         }
-        let buttons = dialog_buttons().child(self.cancel_button("Cancel", chrome, cx));
+        let buttons = dialog_buttons().child(self.no_button("No", chrome, cx));
+        let yes = primary_button("lead-yes", "Yes", "Y", chrome).on_click(
+            cx.listener(move |this, _, window, cx| this.finish_lead_close(!stopping, window, cx)),
+        );
         panel.child(if stopping {
             buttons
                 .child(
-                    dialog_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome).on_click(
-                        cx.listener(|this, _, window, cx| {
+                    dialog_button("forget-lead", "Forget", "F", chrome).on_click(cx.listener(
+                        |this, _, window, cx| {
                             if !this.busy {
                                 this.forget_lead_from_dialog(window, cx);
                             }
-                        }),
-                    ),
+                        },
+                    )),
                 )
-                .child(primary_button("stop-lead", "Stop", "↵", chrome).on_click(
-                    cx.listener(|this, _, window, cx| this.finish_lead_close(false, window, cx)),
-                ))
+                .child(yes)
         } else {
-            buttons.child(
-                primary_button("forget-lead", "Forget", "\u{2318}\u{232b}", chrome).on_click(
-                    cx.listener(|this, _, window, cx| this.finish_lead_close(true, window, cx)),
-                ),
-            )
+            buttons.child(yes)
         })
     }
 }

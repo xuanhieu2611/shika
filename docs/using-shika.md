@@ -51,7 +51,7 @@ From anywhere:
 | Cmd+Shift+U | Open Settings on Usage, or close it |
 | Cmd+, | Settings |
 
-Settings > Keyboard can change the New Agent in Checkout, Changes panel, and Usage chords, and can point Cmd+1 to Cmd+9 at agents (the Nth card in the column) instead of tabs. Typing in a terminal or text field never runs card keys, and a stray click never moves focus out of the terminal. Dialog choices that throw work away or publish it are Command chords (Cmd+D, Cmd+Enter, Cmd+Delete), never a plain letter or bare Enter. Contributor details are in [keyboard flow](keyboard-flow.md).
+Settings > Keyboard can change the New Agent in Checkout, Changes panel, and Usage chords, and can point Cmd+1 to Cmd+9 at agents (the Nth card in the column) instead of tabs. Typing in a terminal or text field never runs card keys, and a stray click never moves focus out of the terminal. Confirmation dialogs are yes/no questions: press `y` to confirm and `n` (or Escape) to cancel, as in other Mac apps. Bare Enter never confirms, and a dialog ignores keys for its first 300ms. Contributor details are in [keyboard flow](keyboard-flow.md).
 
 ## Supported agents
 
@@ -83,7 +83,7 @@ In **New agent** (Cmd+N), turn off **Create worktree** in the footer to run dire
 
 **Cmd+Shift+N** or **Agent > New Agent in Checkout** opens the same picker with the switch off. There is one checkout session per project, so invoking that shortcut again focuses the existing card; starting from New with the switch off also focuses an existing checkout rather than creating another.
 
-The checkout card sits first in its project and shows a checkout icon and the current branch. It runs directly in your folder, with no new branch or setup. It is not read-only: the agent can change your files. Shell tabs, Switch agent, and rename work normally, but Shika never renames your branch or offers Create PR here. Diff stat and Changes show uncommitted changes against `HEAD`, including edits already present at launch. Close only stops the agent and shells, asking **Stop the agent?** with **Cmd+Enter** if a turn is active or blocked; it never discards files or deletes branches. Quit leaves no leftover. See [checkout lifecycle](tasks-and-worktrees.md#checkout).
+The checkout card sits first in its project and shows a checkout icon and the current branch. It runs directly in your folder, with no new branch or setup. It is not read-only: the agent can change your files. Shell tabs, Switch agent, and rename work normally, but Shika never renames your branch or offers Create PR here. Diff stat and Changes show uncommitted changes against `HEAD`, including edits already present at launch. Close only stops the agent and shells, asking **Stop the agent?** (Yes or No) if a turn is active or blocked; it never discards files or deletes branches. Quit leaves no leftover. See [checkout lifecycle](tasks-and-worktrees.md#checkout).
 
 ## The Lead
 
