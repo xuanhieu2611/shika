@@ -482,7 +482,7 @@
     select(c.id, 'terminal');
   }
 
-  // Close: ask before anything is lost, with exact Command chords.
+  // Close: ask before anything is lost, as a yes/no question.
   function requestClose(id) {
     var c = card(id);
     if (!c || S.overlay) return;
@@ -595,11 +595,13 @@
     var o = S.overlay, c = selected();
 
     if (o && o.kind === 'close') {
-      // Destructive and publishing choices are exact Command chords, after 300ms.
+      // Plain y and n answer after 300ms; Escape is a silent No; Enter does nothing.
+      var canPush = !o.dirty && o.unpushed && !o.active, key = k.toLowerCase();
       if (k === 'Escape') { S.overlay = null; render(); }
-      else if (now() - o.opened >= 300 && meta && !ctrl && !alt && !shift) {
-        if (k.toLowerCase() === 'd') remove(o.id, 'Discarded. Worktree and branch deleted.');
-        else if (k === 'Enter' && !o.dirty && o.unpushed && !o.active) { card(o.id).pushed = card(o.id).committed; remove(o.id, 'Pushed ' + card(o.id).branch + '. Card and worktree removed.'); }
+      else if (now() - o.opened >= 300 && !meta && !ctrl && !alt && !shift) {
+        if (key === 'n') { S.overlay = null; render(); }
+        else if (key === 'y' && !canPush || key === 'd' && canPush) remove(o.id, 'Discarded. Worktree and branch deleted.');
+        else if (key === 'y' && canPush) { card(o.id).pushed = card(o.id).committed; remove(o.id, 'Pushed ' + card(o.id).branch + '. Card and worktree removed.'); }
       }
       e.preventDefault(); return;
     }
@@ -909,13 +911,13 @@
       if (o.active) facts.push('The agent is still working.');
       if (o.dirty) facts.push('The worktree has ' + plural(c.files.length, 'uncommitted file') + ': <code>' + c.files.map(function (f) { return esc(f.path); }).join('</code>, <code>') + '</code>.');
       if (o.unpushed) facts.push('The branch has commits that are not on the remote.');
-      facts.push('Discard stops all task terminals and deletes its worktree and local branch.');
       var canPush = !o.dirty && o.unpushed && !o.active;
-      return '<div class="scrim"><div class="panel dialog"><span class="t">Close “' + esc(shorten(c.title || 'New ' + cliOf(c.cli).name, 44)) + '”?</span>' +
+      facts.push(canPush ? 'Yes pushes the branch and removes the worktree. The local branch stays. Discard deletes the worktree and local branch without pushing.' : 'Yes discards the work: it stops all task terminals and deletes its worktree and local branch.');
+      return '<div class="scrim"><div class="panel dialog"><span class="t">' + (canPush ? 'Push and close “' : 'Close “') + esc(shorten(c.title || 'New ' + cliOf(c.cli).name, 44)) + '”?</span>' +
         facts.map(function (f) { return '<span class="f">' + f + '</span>'; }).join('') +
-        '<div class="buttons"><button class="btn" data-act="cancel">Cancel<span class="k">esc</span></button>' +
-        '<button class="btn' + (canPush ? '' : ' primary') + '" data-act="discard">Discard<span class="k">⌘D</span></button>' +
-        (canPush ? '<button class="btn primary" data-act="push">Push<span class="k">⌘↵</span></button>' : '') + '</div></div></div>';
+        '<div class="buttons"><button class="btn" data-act="cancel">No<span class="k">N</span></button>' +
+        (canPush ? '<button class="btn" data-act="discard">Discard<span class="k">D</span></button>' : '') +
+        '<button class="btn primary" data-act="' + (canPush ? 'push' : 'discard') + '">Yes<span class="k">Y</span></button></div></div></div>';
     }
     if (o.kind === 'publish') {
       var pc = card(o.id);

@@ -46,16 +46,17 @@ impl Shika {
         key != "escape" && self.dialog_grace.active(now)
     }
 
-    /// The Command chords that choose in a confirmation dialog. True when
-    /// the keystroke belonged to one (acted on or deliberately dropped), so
-    /// terminals and cards never see it while the dialog is open.
-    fn dialog_chord_key(
+    /// Plain `y` and `n` in a yes/no confirmation dialog. True when the
+    /// keystroke belonged to one (acted on or deliberately dropped), so
+    /// terminals and cards never see it while the dialog is open. Escape is
+    /// No too, through each dialog's plain-key handler.
+    fn dialog_answer_key(
         &mut self,
-        chord: model::DialogChord,
+        answer: model::Answer,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        use model::DialogChord::{Delete, Primary};
+        use model::Answer::{No, Yes};
         if !matches!(
             self.overlay,
             Some(
@@ -63,7 +64,6 @@ impl Shika {
                     | Overlay::CheckoutClose(_)
                     | Overlay::SwitchedClose(_)
                     | Overlay::LeadClose(_)
-                    | Overlay::RestingMenu(_)
                     | Overlay::RemoveProject(_)
                     | Overlay::RemoveLeftover(_)
                     | Overlay::Recover(_)
@@ -75,20 +75,24 @@ impl Shika {
         if self.dialog_ignores_key("") || self.busy {
             return true;
         }
-        match (&self.overlay, chord) {
-            (Some(Overlay::Quit(_)), Primary) => self.confirm_quit(window, cx),
-            (Some(Overlay::Recover(_)), Primary) => self.start_recovery(false, window, cx),
+        match (&self.overlay, answer) {
+            (Some(Overlay::Quit(_)), Yes) => self.confirm_quit(window, cx),
+            (Some(Overlay::Quit(_)), No) => self.cancel_quit(window, cx),
+            (Some(Overlay::Recover(_)), Yes) => self.start_recovery(false, window, cx),
+            (Some(Overlay::Recover(_) | Overlay::RemoveLeftover(_)), No) => {
+                self.overlay = Some(Overlay::Leftovers)
+            }
             (
                 Some(Overlay::CheckoutClose(_) | Overlay::Close(_) | Overlay::SwitchedClose(_)),
                 _,
-            ) => self.close_chord_key(chord, window, cx),
-            (Some(Overlay::LeadClose(_)), Delete) => self.forget_lead_from_dialog(window, cx),
-            (Some(Overlay::RestingMenu(_)), Delete) => self.forget_from_menu(window, cx),
-            (Some(Overlay::RemoveProject(id)), Delete) => {
+            ) => self.close_answer_key(answer, window, cx),
+            (Some(Overlay::LeadClose(_)), _) => self.lead_close_answer(answer, window, cx),
+            (Some(Overlay::RemoveProject(id)), Yes) => {
                 let id = id.clone();
                 self.remove_project(id, cx);
             }
-            (Some(Overlay::RemoveLeftover(i)), Delete) => {
+            (Some(Overlay::RemoveProject(_)), No) => self.cancel_overlay(window, cx),
+            (Some(Overlay::RemoveLeftover(i)), Yes) => {
                 let i = *i;
                 self.remove_leftover(i, cx);
             }
@@ -117,7 +121,7 @@ impl Shika {
     /// The root key router. Each phase takes the keystroke or passes it on,
     /// in this fixed order: Cmd+Q, the dialogs that take every keystroke,
     /// Ctrl+Q out of a terminal, Settings prefix typing, Publish and Base
-    /// branch, shortcut recording, dialog chords, then a plain key for the
+    /// branch, shortcut recording, yes/no answers, then a plain key for the
     /// open overlay or the cards.
     pub(super) fn key(
         &mut self,
@@ -147,13 +151,13 @@ impl Shika {
             cx.notify();
             return;
         }
-        if let Some(chord) = model::dialog_chord(
+        if let Some(answer) = model::dialog_answer(
             &stroke.key,
             stroke.modifiers.platform,
             stroke.modifiers.control,
             stroke.modifiers.alt,
             stroke.modifiers.shift,
-        ) && self.dialog_chord_key(chord, window, cx)
+        ) && self.dialog_answer_key(answer, window, cx)
         {
             cx.stop_propagation();
             cx.notify();
@@ -287,20 +291,20 @@ impl Shika {
             Some(Overlay::Picker(_)) => self.picker_key(key, window, cx),
             Some(Overlay::Adjust(_)) => self.adjust_key(key, window, cx),
             Some(Overlay::Preparation(_)) => self.preparation_key(key, window, cx),
-            // Escape, and Enter to Stop the Lead, are the only plain keys
-            // here. The destructive and publishing choices are Command
-            // chords, handled by `dialog_chord_key`.
+            // Escape (No) and each dialog's secondary choice are the plain
+            // keys here. `y` and `n` are handled by `dialog_answer_key`, and
+            // bare Enter confirms nothing.
             Some(Overlay::Close(_) | Overlay::CheckoutClose(_) | Overlay::SwitchedClose(_)) => {
                 self.close_key(key, window, cx)
             }
-            Some(Overlay::RestingMenu(_)) => {
-                if key == "escape" {
-                    self.cancel_overlay(window, cx);
-                }
-            }
+            Some(Overlay::RestingMenu(_)) => match key {
+                "enter" => self.forget_from_menu(window, cx),
+                "escape" => self.cancel_overlay(window, cx),
+                _ => {}
+            },
             Some(Overlay::LeadClose(_)) => self.lead_close_key(key, window, cx),
             Some(Overlay::Quit(_)) => self.quit_key(key, window, cx),
-            Some(Overlay::Recover(_)) => self.recover_key(key),
+            Some(Overlay::Recover(_)) => self.recover_key(key, window, cx),
             Some(Overlay::RemoveLeftover(_)) => self.remove_leftover_key(key),
             Some(Overlay::Leftovers) => self.leftovers_key(key, window, cx),
             Some(Overlay::RemoveProject(_)) => self.remove_project_key(key, window, cx),
