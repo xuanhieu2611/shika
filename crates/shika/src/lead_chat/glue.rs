@@ -167,8 +167,46 @@ impl Shika {
                     chat.update(cx, |chat, cx| chat.receive(event, cx));
                 }
             }
+            self.deliver_queued_chat(index, &project, now, cx);
             self.sync_lead_chat_card(index, &id, &project, now, window, cx);
         }
+    }
+
+    /// Submits the first queued message once the Lead is free, through the
+    /// path Enter uses. It leaves the queue only if that submit is accepted;
+    /// a refusal keeps it first and pauses delivery briefly.
+    fn deliver_queued_chat(
+        &mut self,
+        index: usize,
+        project: &str,
+        now: Instant,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(chat) = self.leads.chats.get(project).cloned() else {
+            return;
+        };
+        let Some(text) = chat.read(cx).next_queued(now, cx) else {
+            return;
+        };
+        let accepted = self.submit_lead_chat(index, text, ChatOrigin::Author, Vec::new(), cx);
+        chat.update(cx, |chat, cx| {
+            if accepted {
+                chat.queued_delivered(cx);
+            } else {
+                chat.queued_refused(now);
+            }
+        });
+    }
+
+    /// How many queued Lead messages would be lost if `project` (or, with
+    /// None, every project) lost its chat.
+    pub(crate) fn queued_lead_messages(&self, project: Option<&str>, cx: &gpui::App) -> usize {
+        self.leads
+            .chats
+            .iter()
+            .filter(|(id, _)| project.is_none_or(|p| p == id.as_str()))
+            .map(|(_, chat)| chat.read(cx).queued_len())
+            .sum()
     }
 
     /// Opens the oldest queued question once no dialog is open and the

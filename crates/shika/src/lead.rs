@@ -750,6 +750,7 @@ impl Shika {
             chat.update(cx, |chat, cx| {
                 chat.live = false;
                 chat.busy = false;
+                chat.restore_queued(cx);
                 cx.notify();
             });
         }
@@ -849,6 +850,15 @@ impl Shika {
         let mut panel = dialog(chrome, max_h).child(dialog_title(div()).child(step.title()));
         for fact in step.facts() {
             panel = panel.child(dialog_text(chrome).child(fact));
+        }
+        let queued = self.queued_lead_messages(Some(&close.project), cx);
+        let note = if stopping {
+            lead_chat::returns_note(queued)
+        } else {
+            lead_chat::warning(queued)
+        };
+        if let Some(note) = note {
+            panel = panel.child(dialog_text(chrome).child(note));
         }
         let buttons = dialog_buttons().child(self.no_button("No", chrome, cx));
         let yes = primary_button("lead-yes", "Yes", "Y", chrome).on_click(

@@ -162,6 +162,9 @@ impl LeadChat {
             .gap(px(12.))
             .pt(px(12.))
             .when(self.busy, |d| d.child(self.activity_lane(chrome)))
+            .when(!self.queue.is_empty(), |d| {
+                d.child(self.queued_lane(chrome))
+            })
             .when_some(self.error.clone(), |d, error| {
                 d.child(
                     div()
@@ -205,6 +208,50 @@ impl LeadChat {
                     .text_ellipsis()
                     .text_color(if finished { chrome.ink_4 } else { chrome.ink_3 })
                     .child(text)
+            }))
+    }
+
+    /// The messages waiting for the Lead, after the history: author bubbles on
+    /// the raised fill with secondary ink, each marked "Queued". They are not
+    /// history, so they sit in the dock, not the list, and scroll on their
+    /// own when there are many.
+    fn queued_lane(&self, chrome: &Chrome) -> impl IntoElement {
+        let ink = appearance::legible(chrome.ink_2, chrome.raised, chrome.ink_1, 4.5);
+        div()
+            .id("queued-lead-messages")
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .max_h(px(176.))
+            .overflow_y_scroll()
+            .children(self.queue.iter().map(|text| {
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(px(4.))
+                    .child(
+                        div().max_w(gpui::relative(0.8)).child(
+                            div()
+                                .max_w(px(480.))
+                                .rounded(px(22.))
+                                .px(px(20.))
+                                .py(px(12.))
+                                .bg(chrome.raised)
+                                .text_size(px(14.))
+                                .line_height(px(20.))
+                                .text_color(ink)
+                                .child(text.clone()),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .text_size(px(11.5))
+                            .text_color(chrome.ink_3)
+                            .child("Queued"),
+                    )
             }))
     }
 
@@ -298,7 +345,10 @@ impl Render for LeadChat {
             (None, None)
         };
         let (welcome_hint, dock_hint) = if welcome { (hint, None) } else { (None, hint) };
-        let dock_extras = self.error.is_some() || self.retry.is_some() || self.save_failed;
+        let dock_extras = self.error.is_some()
+            || self.retry.is_some()
+            || self.save_failed
+            || !self.queue.is_empty();
         div()
             .flex_1()
             .min_h_0()

@@ -11,6 +11,7 @@ Start here when contributing to this feature. This guide records the decisions a
 - **New to the team:** read the [overview](#two-minute-overview), [evolution](#how-the-feature-evolved), and [decisions](#why-this-design), then [one turn end to end](#one-turn-end-to-end) and the [code map](#code-map).
 - **Debugging:** start with [debugging by symptom](#debugging-by-symptom). A reply the CLI wrote but the chat never showed: read [turns the CLI starts itself](#turns-the-cli-starts-itself). Reproduce with [isolated data and a fake CLI](#isolated-reproduction), never normal app data or a personal repository.
 - **Adding a CLI:** read [extending to other CLIs](#extending-to-other-clis) and the [guardrails](#contributor-guardrails) first. The current transport is Claude-specific in more places than the module name suggests.
+- **Queued messages:** read [Queued messages](#queued-messages) before touching Enter, the composer's Send/Stop action, the doorbell gate, or any path that drops a chat.
 - **Changing visuals:** read [DESIGN.md](../design/DESIGN.md#lead-chat) and the [approved design values](#approved-design-values). Every chat color comes from the active theme.
 
 ## Two-minute overview
@@ -95,7 +96,7 @@ GPUI main thread                         Core (shika-core)
 ### One turn end to end
 
 1. **Typing.** The composer is a `ChatInput`. Each change sets `LeadChat::last_typed`, which feeds the doorbell's 3 second typing gate.
-2. **Enter.** `ChatInput` emits `Submit` (Shift+Enter inserts a newline; IME composition consumes Enter first). `LeadChat::submit` refuses unless the Lead is live, not busy, not saving, and not in save-failed state. It trims outer blank lines, remembers the exact draft as `pending`, sets `saving`, and emits `ChatAction::Send`.
+2. **Enter.** `ChatInput` emits `Submit` (Shift+Enter inserts a newline; IME composition consumes Enter first). `LeadChat::submit` asks `Lane::route`. While the Lead is busy or a send is in flight the text is queued instead (see [Queued messages](#queued-messages)); a blank draft, composition, a resting Lead and a save failure do nothing. Otherwise it trims outer blank lines, remembers the exact draft as `pending`, sets `saving`, and emits `ChatAction::Send`.
 3. **App dispatch.** The subscription in `Shika::ensure_lead_chat` calls `submit_lead_chat`. It refuses while the card is in an active or blocked turn, calls `Core::lead_chat_send`, and advances the card with `Activity::advance_chat(Working, submitted: true)`, which starts the turn clock.
 4. **Outgoing record.** The actor checks there is no active turn, no stop in progress, no save failure, and the same cancel epoch as when Send was queued. It allocates the next turn number and writes the author text, any Shika event rows, and an `Outgoing { origin }` marker in one FULL synchronous transaction. The `Record` events reach the view; the author bubble appears, and the composer is cleared only if its text still equals `pending`.
 5. **Spawn if needed.** If the previous child was interrupted, a new one starts here with `--resume` and emits `Resuming`.
@@ -171,7 +172,7 @@ Shell tools the Lead was running, including a blocking `shika wait` client, norm
 | Child exits during a turn without a result | Event "The reply ended before it was complete", then exit handling below. |
 | Child exits while idle | Event "The Lead stopped unexpectedly". |
 | Any unexpected exit | `ChatEvent::Exit`; the actor ends. The app marks the host exited. Within 5 seconds of a resumed launch it is a [resume refusal](#conversation-identity-resume-and-the-fresh-start-fallback); otherwise the Lead rests with the toast "The Lead stopped unexpectedly. Select it to resume." and the chat shows "Lead is not running" with Resume. |
-| Send while busy or after a save failure | Error "The Lead is still replying or the conversation needs to be saved." |
+| Send while busy or after a save failure | The composer queues the text while the Lead is busy ([Queued messages](#queued-messages)); after a save failure Enter does nothing until Retry save. A direct send the transport refuses (retry, doorbell) gets the error "The Lead is still replying or the conversation needs to be saved." |
 | History write fails | "Could not save this conversation" with Retry save. Records are kept in memory and appended on retry; sends are refused until then. Quitting before a successful retry loses those unsaved rows. |
 
 Errors are muted event rows or a line above the composer, never fake assistant bubbles. stderr is drained and discarded; no raw JSON, stderr or token is painted.
@@ -207,7 +208,7 @@ Location: `<data dir>/leads/<project-id>/chat/history.sqlite`, next to `memory.j
 
 The ledger, batching, and gates are the ones in [shika-cli.md](shika-cli.md#the-doorbell); only delivery changes.
 
-- **Gate.** `lead_gate` reads the chat for a chat Lead: idle also requires not saving, not busy and no save failure; draft is "the composer has text"; last typed is the composer's; alive is `LeadChat::live`.
+- **Gate.** `lead_gate` reads the chat for a chat Lead: idle also requires not saving, not busy, no save failure and no queued author messages (`chat_quiet`); draft is "the composer has text"; last typed is the composer's; alive is `LeadChat::live`.
 - **Bell.** `ring_doorbells` builds the same `[shika] Workers changed: ... Run shika wait.` line and submits it with origin `ShikaEvent`, plus one visible event row per worker: "<title> is ready to check", "<title> is asking you", or "<title> exited", with the CLI in parentheses only when titles repeat. Each row is keyed `worker:<id>:<turn>`; a later report on the same worker turn replaces the row's text with "... - Report updated" in place. The pending marks are held in `Card::chat_delivery`.
 - **Accounting.** `chat_delivery_finished` marks the batch rung only on `Accepted` (a successful pipe write). On delivery failure nothing is marked and the bell rings again later.
 - **Restart summary.** For a chat Lead the summary is not held for quiet output. Rows "Shika restarted. Worker worktrees were kept." and, when the checkout was not moved, "The Lead checkout was kept without moving to the latest base." are shown; the detailed line goes privately to the CLI. `reportedWorkers` is updated only on `Accepted`; on failure the summary is restored for another try.
@@ -229,7 +230,7 @@ The ledger, batching, and gates are the ones in [shika-cli.md](shika-cli.md#the-
 
 `LeadChat` is one GPUI entity per project, created by `ensure_lead_chat` for every project whose saved Lead is Claude, so a resting Lead shows its history and drafts and scroll position survive card switches in memory. `chat_side` replaces the terminal side for a selected live or resting Claude Lead, with the header (antler mark tile, "{project} Lead", the worker summary on a live Lead, Stop Lead `⌘⇧W` or Resume `↵`). The list is a GPUI `list` with bottom alignment and tail follow; rows are time separators (first row, a 5 minute gap, or a new local day, formatted with libc `strftime`), event rows, and one row per markdown block, so a very tall reply builds only visible rows. Prose blocks over 4096 bytes are split for layout without truncating text. Bubble text is a read-only `ChatInput` per visible block, cached by `(record id, block)`. "New messages" appears when not at the bottom, floating over the list's bottom edge so it never resizes the list. Scrolling is described in [Scrolling](#scrolling). Ctrl+Q returns to the cards. Exact geometry, keys and focus rules are in [DESIGN.md](../design/DESIGN.md#lead-chat).
 
-A live Lead with no visible history shows the antler mark, "What should we work on?" and the composer as one centered group with no dock; after the first send the composer docks at the bottom, without animation. The composer has no border (focus is the caret) and a 32px round action: send arrow (sunken and inert when the draft is empty, primary with text) or stop square while Working or Asking.
+A live Lead with no visible history shows the antler mark, "What should we work on?" and the composer as one centered group with no dock; after the first send the composer docks at the bottom, without animation. The composer has no border (focus is the caret) and a 32px round action: send arrow (sunken and inert when the draft is empty, primary with text) or stop square while Working or Asking. Enter in the composer queues while the Lead is Working; the stop square still stops.
 
 #### Scrolling
 
@@ -258,6 +259,96 @@ The previous version of this file was the approved design. Where the implementat
 - Unsaved history rows after a write failure are buffered in memory only; they are lost if the app quits before Retry save succeeds.
 - Chat is selected by preset id (`claude`) with no setting; there is no way to keep a Claude Lead in a terminal.
 
+## Queued messages
+
+Added 2026-11-12. The author can type and press Enter at any time. While the Lead is Working the message waits in a queue shown under the history, and the Lead gets it as soon as it is free.
+
+### What changed
+
+- **Before:** while a turn ran, the composer's action was Stop and Enter did nothing (`LeadChat::submit` refused when `busy`). The author could not even press Enter on the next thought; they had to wait for Ready and retype or remember it.
+- **Now:** Enter (or a click on the action, when it reads Send) while the Lead is Working, Asking or already sending moves the text out of the composer into an in-memory list on the chat, painted as a bubble marked "Queued". At each Ready, the first queued message is submitted through the same path a normal Enter uses. Stop (the button, and Escape) stays available and never takes Enter.
+- **Unchanged:** the actor, `ChatTransport`, history storage, turn numbering, crash recovery, the final-only filter and the control socket know nothing about the queue. A queued message is not a record until the actor accepts it as an ordinary send, so it is never in `history.sqlite` before then.
+
+### Why this design
+
+**The queue is view-layer only.** An earlier attempt put queueing in the actor (a second pending slot beside the active turn). That touched turn numbers, cancel epochs, the outgoing transaction and recovery, all of which are fenced for exactly-once delivery, and it stalled. A list on `LeadChat` plus the existing send needs none of that: delivery is "wait for Ready, then do what Enter does", and everything after the send is the tested path.
+
+**Memory only.** A queued message is not yet something the Lead was told, so it is not history; persisting it would need a new row kind, a schema bump and a rule for whether a restart resends it (the guardrails forbid automatic resends). Instead the author is warned before anything that would lose it.
+
+**In order, exactly once.** One message is taken per Ready. It leaves the queue only when `submit_lead_chat` accepts it; a refusal keeps it first. The next goes at the next Ready, because accepting makes the Lead busy and `Lane::free` is false until then.
+
+**The author's words win over Shika's.** The doorbell stays silent while anything is queued (`chat_quiet`), so a `[shika] Workers changed` line never goes ahead of messages the author wrote. Once the queue drains and the Lead settles, the doorbell rings as usual.
+
+**Warn before loss, no new dialog.** The author chose "warn before loss". Quit, Forget and Remove project each gain one sentence in their existing Yes/No dialog ("2 queued messages have not been sent to the Lead and will be lost."). Stop loses nothing: the queued text goes back into the composer, ahead of any draft, joined by blank lines, and the Stop dialog says so.
+
+**No remove control.** A per-bubble remove button was optional and was left out: it needs a focusable control, tab order and a screen reader label to be correct, and Stop already returns every queued message to the composer for editing. Add one only with the keyboard and accessibility work.
+
+### How it works
+
+`crates/shika/src/lead_chat/queue.rs` is pure (no GPUI) and holds the rules:
+
+- `Lane` is the chat's flags (`live`, `busy`, `saving`, `save_failed`, `composing`, `queued`). `Lane::route(text)` returns `Route::Ignore` (not live, composing, save failed, or blank), `Route::Queue` (busy, a send in flight, or older messages still queued, so order holds even in the frame between Ready and delivery) or `Route::Send`. `Lane::free()` is live, not busy, not sending, not save-failed.
+- `Queue` is a `VecDeque<String>` plus `paused_until`. `next(lane, now)` returns the first message only when the lane is free and no pause is active; `delivered()` pops it; `refused(now)` pauses delivery for `REFUSAL_PAUSE` (2 seconds) so a persistent refusal cannot toast every frame; `restore(draft)` drains it into one string.
+
+The flow:
+
+1. **Enter.** `LeadChat::submit` asks `Lane::route`. `Queue` pushes the trimmed text (`trim_blank_lines`, like a send) and clears the composer with `clear_if`; `Send` is the old path unchanged (`pending`, `saving`, `ChatAction::Send`). Either way the list returns to following the tail.
+2. **Delivery.** `Shika::drain_lead_chats` calls `deliver_queued_chat` for each chat card after draining events and before `sync_lead_chat_card`. If `LeadChat::next_queued` has a message it calls `submit_lead_chat(index, text, ChatOrigin::Author, ...)`, which is what `ChatAction::Send` calls. Accepted: `queued_delivered`. Refused (card still running, or Core refused): `queued_refused`, and it tries again after the pause. Nothing sets `pending`, so delivery never touches the composer.
+3. **After acceptance** it is an ordinary send. The author bubble comes from the actor's `Record` event. The queued bubble leaves the dock in the same update, so for a frame or two the message may be on screen in neither place; nothing is lost or duplicated.
+4. **Doorbell.** `lead_gate` builds `idle` from `chat_quiet(saving, busy, save_failed, queued_len)`.
+5. **Losing the Lead.** Stop (`lead_departed`, not forgotten) and an unexpected `ChatEvent::Exit` call `restore_queued`: the queue is drained into the composer (queued messages first, then the existing draft). A resting Lead has no composer on screen, so the text is waiting there after Resume. A queue never delivers to a Lead that is not live.
+6. **Stop generating.** Interrupt settles the turn as "Reply stopped" and the Lead becomes Ready, so the next queued message is then delivered. That is intended: the author queued it for the Lead.
+
+### View
+
+The queued bubbles are in the dock (`queued_lane` in `view.rs`), after the activity lane and before error banners and the composer, not rows of the history list. The list's anchors, paging and `text_cache` are keyed by saved record ids, and a message that is not a record has none. The lane scrolls on its own above 176px. A bubble is the author bubble's geometry (right aligned, radius 22, 12/20 padding, 80% cap, 480px max, 14/20 type) on the raised fill with ink-2 text made legible on it, so it reads as not yet sent, with "Queued" beneath in 11.5 ink-3. All colors come from `Chrome`. See [DESIGN.md](../design/DESIGN.md#lead-chat).
+
+### Code map
+
+| File | Responsibility |
+| --- | --- |
+| `crates/shika/src/lead_chat/queue.rs` | `Lane`, `Route`, `Queue`, `REFUSAL_PAUSE`, `warning`, `returns_note`, and their unit tests. |
+| `crates/shika/src/lead_chat/mod.rs` | `LeadChat::queue`, `lane`, `submit` (routing), `queued_len`, `next_queued`, `queued_delivered`, `queued_refused`, `restore_queued`; the `Exit` arm restores. |
+| `crates/shika/src/lead_chat/glue.rs` | `deliver_queued_chat` (delivery, called from `drain_lead_chats`) and `queued_lead_messages` (the count for dialogs). |
+| `crates/shika/src/lead_chat/view.rs` | `queued_lane` and its place in the dock. |
+| `crates/shika/src/chat_input.rs` | `ChatInput::set_value`, used by restore. |
+| `crates/shika/src/control/doorbell.rs` | `chat_quiet`, used by `lead_gate`. |
+| `crates/shika/src/lead.rs`, `recovery.rs`, `projects.rs` | The Stop restore in `lead_departed`; the warning sentence in the Lead close dialog, Quit and Remove project. |
+| `crates/shika/src/lead_chat/queue_tests.rs` | GPUI tests over a real `LeadChat`. |
+
+### Debugging
+
+| Symptom | Inspect first |
+| --- | --- |
+| Enter does nothing while Working | `Lane::route` returns `Ignore`: not `live`, `save_failed` (the conversation could not be saved; Retry save), composing text, or blank. |
+| A queued message never goes | `next_queued` needs `live`, not `busy`, not `saving`, not `save_failed` and no active pause. Is the card still Working or Asking (`submit_lead_chat` refuses while `Card::running()`)? A toast repeating every 2 seconds is a Core refusal: read its text. |
+| Queued messages went in the wrong order | They should not: `Queue` is FIFO and Enter queues behind anything queued. Look for a second sender calling `submit_lead_chat` with the queue non-empty (the doorbell is gated by `chat_quiet`). |
+| The doorbell never rings | A non-empty queue closes `chat_quiet`; it reopens when the queue empties and the Lead settles. |
+| A message is in history and still queued | Delivery pops only on acceptance. Check that `deliver_queued_chat` is the only caller and that `queued_delivered` runs in the accepted branch. |
+| Text vanished after Stop | `restore_queued` runs in `lead_departed` (Stop) and on `Exit`. Forget, Remove project and Quit drop it, after the warning. |
+
+Reproduce with the tests below, or in the native app with disposable data per [isolated reproduction](#isolated-reproduction): send a message that makes the Lead run a long `shika wait`, press Enter twice with different text, and watch both bubbles; Escape stops the turn and the first one goes.
+
+### Extension guardrails
+
+- Keep the queue in the view layer. Do not add queue state to `ChatTransport`, the store or `Core`; do not persist it. If the author later wants it to survive a restart, that needs their decision on resends and a schema bump.
+- Deliver only through `submit_lead_chat`, so every gate there (card running, Core refusal) applies. Never write to the transport from the queue.
+- Pop only on acceptance, one per free Lead. Do not batch, merge or reorder queued messages.
+- Keep the doorbell behind the queue. Any new sender that submits to a chat Lead must check `chat_quiet`.
+- A new way to drop a chat (a new close path) must either call `restore_queued` or add `warning(queued_lead_messages(...))` to its dialog.
+- Do not make the composer inert while Working; the author must always be able to type. Colors come from `Chrome`.
+- Other CLIs: Codex, Cursor CLI and Pi Leads are terminals today and have no queue; the terminal keeps its own typing rules. A new chat adapter inherits the queue unchanged because it sits above the transport.
+
+### Tests
+
+| Test | Covers |
+| --- | --- |
+| `lead_chat::queue::tests::*` | Routing (queue while Working, behind older messages, ignore blank, composing, save-failed), FIFO order and one per Ready, kept on refusal with a pause, nothing due while sending, restore order and draft joining, the warning and Stop sentences. |
+| `lead_chat::queue_tests::*` | In a real chat view: Enter while Working queues and empties the composer without a send; Enter while free sends and the next queues; one delivery per free Lead and refusal; Stop and Exit restore the text; the queued bubble takes room under the history without breaking tail following. |
+| `control::tests::the_doorbell_holds_while_a_chat_lead_has_queued_messages` | `chat_quiet` and a gate built from it: held while queued, rings after. |
+
+The Quit, Forget and Remove project sentences come from the tested `warning` and `returns_note`; their native rendering is not covered by tests (see MANUAL_CHECKS.md).
+
 ## Contributor guide
 
 ### Code map
@@ -272,6 +363,7 @@ The previous version of this file was the approved design. Where the implementat
 | `crates/shika-core/src/projects.rs`, `session.rs`, `error.rs` | `SavedLead::chat_history` (`chatHistory`); `Session::pty: Option<PtyId>` (`None` only for a chat Lead; Switch agent refuses it); `Error::LeadChat`. |
 | `crates/shika-core/tests/fixtures/` (new) | Three installed-CLI recordings, one hand-written stream, and their provenance README. |
 | `crates/shika/src/lead_chat/` (new) | `LeadChat` (`mod.rs`) and its view (`view.rs`, `rows.rs`, paging and scroll anchor in `history.rs`, `selection.rs`, composer wiring in `composer.rs`, steps and worker summary in `progress.rs`, banners) and the `Shika` glue: `ensure_lead_chat`, `submit_lead_chat`, `drain_lead_chats` (events to status, notifications, questions, identity confirmation, resume and exit handling) in `glue.rs`, `selected_chat`, `chat_side` in `side.rs`. |
+| `crates/shika/src/lead_chat/queue.rs` (new) | Queued messages: routing, FIFO delivery rules, restore and the loss warnings. See [Queued messages](#queued-messages). |
 | `crates/shika/src/lead_chat/markdown.rs` (new) | Original markdown subset parser, block splitting, `safe_link`, theme-derived highlights. |
 | `crates/shika/src/lead_chat/question.rs` (new) | Native question dialog: open or queue, step through questions, build the answer, cancel, keys and view. |
 | `crates/shika/src/chat_input.rs` (new) | Multiline editor and read-only selectable text: IME, selection, visual rows from GPUI's wrapped layout, caret affinity at soft wraps, undo/redo, links, Enter/Escape/Ctrl+Q events. |

@@ -107,6 +107,10 @@ impl Shika {
             .child(dialog_title(div()).child("Quit Shika?"))
             .child(dialog_text(chrome).child("This stops all agents and shell terminals. Worktrees and files stay on disk. Reopen unfinished tasks from Leftover worktrees next time."))
             .child(dialog_text(chrome).child("Unsaved terminal input and shell tabs are not restored. Agent conversations can resume when the CLI saved them."))
+            .children(
+                crate::lead_chat::warning(self.queued_lead_messages(None, cx))
+                    .map(|note| dialog_text(chrome).child(note)),
+            )
             .child(dialog_buttons()
                 .child(dialog_button("cancel-quit", "No, keep working", "N", chrome)
                     .on_click(cx.listener(|this, _, window, cx| this.cancel_quit(window, cx))))

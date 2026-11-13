@@ -52,6 +52,12 @@ impl Gate {
     }
 }
 
+/// A chat Lead is quiet for the doorbell when it is neither sending, replying,
+/// failing to save, nor holding queued author messages, which go first.
+pub(super) fn chat_quiet(saving: bool, busy: bool, save_failed: bool, queued: usize) -> bool {
+    !saving && !busy && !save_failed && queued == 0
+}
+
 /// The Lead's [`Gate`] right now.
 fn lead_gate(
     card: &Card,
@@ -65,7 +71,9 @@ fn lead_gate(
         idle: !card.creating
             && matches!(card.status, Status::Waiting | Status::Ready)
             && host.submission == card.submitted
-            && chat.is_none_or(|chat| !chat.saving && !chat.busy && !chat.save_failed),
+            && chat.is_none_or(|chat| {
+                chat_quiet(chat.saving, chat.busy, chat.save_failed, chat.queued_len())
+            }),
         draft: chat.map_or_else(|| host.has_draft(), |chat| chat.has_draft(cx)),
         last_typed: chat.map_or(host.last_typed, |chat| chat.last_typed),
         alive: !host.exited && !host.preparing && chat.map_or(host.pty.is_some(), |chat| chat.live),

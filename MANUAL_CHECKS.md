@@ -2,6 +2,17 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Lead chat queued messages, 2026-11-12
+
+Unit and GPUI tests cover the routing, order, refusal, restore and doorbell gate (`lead_chat::queue`, `lead_chat::queue_tests`, `control::tests`). Not yet run natively with an isolated `--data-dir`:
+
+- [ ] While the Lead works (for example a `shika wait`), type and press Enter twice with different text: both appear as "Queued" bubbles right-aligned under the history, the composer is empty and stays editable, and Stop and Escape still stop the turn.
+- [ ] At Ready, exactly the first goes (its real bubble appears in the history, the card goes Working with a new clock and notification), the second waits for the next Ready, and order is kept. A refusal (for example while a Lead dialog is open) keeps the message queued.
+- [ ] A worker settling while messages are queued does not ring the doorbell until they have been delivered.
+- [ ] Stop the Lead with messages queued: the Stop dialog says they return to the composer; after Stop and Resume they are in the composer ahead of any draft, separated by blank lines.
+- [ ] Cmd+Q and Forget (and Remove project) with messages queued show the warning sentence in the Yes/No dialog; No keeps them.
+- [ ] Queued bubbles are legible and distinct from sent bubbles in Shika Light and Dark, a few catalog themes, and with sidebar-and-terminal frost.
+
 ## Subscription limits
 
 - PASS: formatting, strict workspace/all-targets Clippy, debug build, and parallel workspace tests: 777 passed, one existing ignored, with the documented machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` excluded. An earlier unfiltered run failed only that existing PATH expectation. Fixtures cover quota parsing/non-regression/expiry, configuration bounds and launch epochs, settings composition/padding/no writes, failed-spawn registration, positional-prompt order, token-receipt isolation, coalesced metadata-only RPC, timeout, quit cancellation and child reaping.
