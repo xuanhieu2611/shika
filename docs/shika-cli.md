@@ -445,7 +445,7 @@ The design goal is a local helper that can drive one project's workers and canno
 3. Else, if the deadline has passed, reply with no events, `timed_out` true, and the busy tasks in `still_working`.
 4. Else keep waiting.
 
-Because of step 2 a `wait` returns immediately when everything is `waiting` or already reported. The Lead should treat `nothing to wait for` as "nothing more will finish on its own", and then report to the author.
+Because of step 2 a `wait` returns immediately when everything is `waiting` or already reported. The Lead should treat `nothing to wait for` as "nothing more will finish on its own", and then report to the author. More generally, a Lead should not call `wait` again in the same turn for workers that are still running: after handling a `wait`'s events it ends its turn with a message to the author, and the [doorbell](#the-doorbell) wakes it when they settle. A short `--timeout` is for a step its very next action depends on, such as a worker reaching its prompt right after `new`.
 
 **Report once.** Each Lead has a ledger (`Ledger`) of the last settlement reported per task, keyed by `(status, turn, report receipt)`, where turn is the card's current/pending turn epoch. A late or changed report is a new event even for the same status and turn; an identical retry is not. A settlement is reported at most once. A task that works again and settles again has a new turn, so it is reported again. A task that goes `asking` and then `ready` within one turn is reported twice, because the status differs. Two concurrent `wait` commands share the ledger: the first resolved reports the event; the second keeps waiting. The ledger lives and dies with the Lead's card.
 
