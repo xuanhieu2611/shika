@@ -2,7 +2,7 @@
 use super::{ChatAction, LeadChat, SEND_ICON};
 use crate::Chrome;
 use gpui::{
-    AppContext, Context, InteractiveElement, IntoElement, ParentElement,
+    AppContext, Context, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 
@@ -11,6 +11,10 @@ impl LeadChat {
     /// and a round 32px action at its bottom right, Send or Stop. One
     /// element builder for both places it lives (the empty state's center
     /// and the bottom dock), so moving it keeps the same entity and focus.
+    /// A press anywhere on the field, its padding included, focuses the text
+    /// so the caret shows: the text element itself is only one line tall, and
+    /// a press on the padding would otherwise land on the chat's own focus
+    /// handle, which has no caret and takes no typing.
     pub(super) fn composer_box(
         &self,
         chrome: &Chrome,
@@ -18,6 +22,7 @@ impl LeadChat {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let input = self.composer.focus_handle(cx);
         div()
             .flex()
             .items_end()
@@ -27,6 +32,12 @@ impl LeadChat {
             .bg(chrome.raised)
             .pl(px(20.))
             .pr(px(8.))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                if !window.default_prevented() {
+                    window.focus(&input, cx);
+                    window.prevent_default();
+                }
+            })
             .child(
                 div()
                     .flex_1()
