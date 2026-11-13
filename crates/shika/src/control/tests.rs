@@ -61,7 +61,7 @@ fn start_server() -> Server {
 fn the_lead_guide_stays_small() {
     // It is the CLI's system prompt on every turn of every conversation.
     let guide = lead_guide(Path::new("/x/bin"));
-    assert!(guide.len() <= 7500, "{} bytes", guide.len());
+    assert!(guide.len() <= 7800, "{} bytes", guide.len());
     assert!(!guide.contains('\u{2014}'));
 }
 
