@@ -9,7 +9,7 @@ use gpui::{
 use shika_core::{Appearance, Core};
 use shika_terminal::catalog;
 
-fn records(range: std::ops::Range<i64>) -> Vec<Message> {
+pub(super) fn records(range: std::ops::Range<i64>) -> Vec<Message> {
     prepare(
         range
             .map(|id| ChatRecord {
@@ -33,7 +33,7 @@ fn records(range: std::ops::Range<i64>) -> Vec<Message> {
     )
 }
 
-fn make(cx: &mut VisualTestContext) -> Entity<LeadChat> {
+pub(super) fn make(cx: &mut VisualTestContext) -> Entity<LeadChat> {
     let path = std::env::temp_dir().join(format!(
         "shika-chat-scroll-{}-{}",
         std::process::id(),
@@ -52,7 +52,7 @@ fn make(cx: &mut VisualTestContext) -> Entity<LeadChat> {
     })
 }
 
-fn draw(cx: &mut VisualTestContext, chat: &Entity<LeadChat>) {
+pub(super) fn draw(cx: &mut VisualTestContext, chat: &Entity<LeadChat>) {
     let chat = chat.clone();
     cx.draw(
         point(px(0.), px(0.)),

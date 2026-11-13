@@ -7,6 +7,9 @@ mod history;
 pub(crate) mod markdown;
 mod progress;
 mod question;
+mod queue;
+#[cfg(test)]
+mod queue_tests;
 mod rows;
 #[cfg(test)]
 mod scroll_tests;
@@ -16,6 +19,7 @@ mod view;
 
 pub(crate) use progress::*;
 pub(crate) use question::*;
+pub(crate) use queue::{returns_note, warning};
 
 use crate::{
     Chrome,
@@ -27,6 +31,7 @@ use gpui::{
 };
 use history::prepare;
 use markdown::Block;
+use queue::{Lane, Queue, Route};
 use shika_core::{ChatContent, ChatEvent, ChatRecord, ChatStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -108,6 +113,8 @@ pub struct LeadChat {
     pub steps: ActivitySteps,
     workers: WorkerSummary,
     pending: Option<String>,
+    /// Messages the author sent while the Lead was Working. Memory only.
+    queue: Queue,
     error: Option<String>,
     retry: Option<String>,
     pub epoch: u64,
@@ -185,6 +192,7 @@ impl LeadChat {
             steps: ActivitySteps::default(),
             workers: WorkerSummary::default(),
             pending: None,
+            queue: Queue::default(),
             error: None,
             retry: None,
             epoch: 0,
@@ -247,27 +255,65 @@ impl LeadChat {
     pub fn has_draft(&self, cx: &App) -> bool {
         !self.composer.read(cx).value().is_empty()
     }
+    /// The state that decides where Enter goes and when a queued message may.
+    fn lane(&self, cx: &App) -> Lane {
+        Lane {
+            live: self.live,
+            busy: self.busy,
+            saving: self.saving,
+            save_failed: self.save_failed,
+            composing: self.composer.read(cx).composing(),
+            queued: !self.queue.is_empty(),
+        }
+    }
+    /// Enter or Send: submits when the Lead is free, queues behind a running
+    /// turn or older queued messages, and ignores blank text.
     fn submit(&mut self, cx: &mut Context<Self>) {
-        if !self.live
-            || self.busy
-            || self.saving
-            || self.save_failed
-            || self.composer.read(cx).composing()
-        {
-            return;
+        let value = self.composer.read(cx).value().to_string();
+        match self.lane(cx).route(&value) {
+            Route::Ignore => return,
+            Route::Queue => {
+                self.queue.push(trim_blank_lines(&value));
+                self.composer
+                    .update(cx, |input, cx| input.clear_if(&value, cx));
+            }
+            Route::Send => {
+                self.error = None;
+                self.retry = None;
+                self.pending = Some(value.clone());
+                self.saving = true;
+                cx.emit(ChatAction::Send(trim_blank_lines(&value)));
+            }
         }
-        let text = trim_blank_lines(self.composer.read(cx).value());
-        if text.trim().is_empty() {
-            return;
-        }
-        self.error = None;
-        self.retry = None;
-        self.pending = Some(self.composer.read(cx).value().into());
-        self.saving = true;
         self.list.set_follow_mode(gpui::FollowMode::Tail);
         self.newer = false;
-        cx.emit(ChatAction::Send(text));
         cx.notify();
+    }
+    /// How many messages wait for the Lead.
+    pub fn queued_len(&self) -> usize {
+        self.queue.len()
+    }
+    /// The first queued message, when the Lead is free to take it.
+    pub fn next_queued(&self, now: Instant, cx: &App) -> Option<String> {
+        self.queue.next(&self.lane(cx), now).map(str::to_string)
+    }
+    /// The first queued message was accepted: it is no longer queued.
+    pub fn queued_delivered(&mut self, cx: &mut Context<Self>) {
+        self.queue.delivered();
+        cx.notify();
+    }
+    /// The first queued message was refused: it stays queued, first.
+    pub fn queued_refused(&mut self, now: Instant) {
+        self.queue.refused(now);
+    }
+    /// Puts the queued messages back into the composer, ahead of its draft.
+    pub fn restore_queued(&mut self, cx: &mut Context<Self>) {
+        let draft = self.composer.read(cx).value().to_string();
+        if let Some(text) = self.queue.restore(&draft) {
+            self.composer
+                .update(cx, |input, cx| input.set_value(text, cx));
+            cx.notify();
+        }
     }
     pub fn receive(&mut self, event: ChatEvent, cx: &mut Context<Self>) {
         match event {
@@ -332,6 +378,7 @@ impl LeadChat {
                 self.saving = false;
                 self.live = false;
                 self.busy = false;
+                self.restore_queued(cx);
                 self.error = Some("The Lead stopped unexpectedly".into());
             }
             ChatEvent::Confirmed(_)

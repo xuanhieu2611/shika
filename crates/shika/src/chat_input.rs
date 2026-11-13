@@ -160,6 +160,12 @@ impl ChatInput {
             cx.notify();
         }
     }
+    /// Replaces the text, with the caret at its end.
+    pub fn set_value(&mut self, value: String, cx: &mut Context<Self>) {
+        self.text = Text::new(value);
+        self.ensure_cursor = true;
+        cx.notify();
+    }
     pub fn style(
         &mut self,
         chrome: Chrome,

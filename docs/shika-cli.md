@@ -479,6 +479,7 @@ The Lead's guide says a `[shika]` line comes from Shika, not the author, and to 
 | The Lead card is Ready or Waiting, with no unprocessed submission | Never into a running turn or a dialog. |
 | The author has no unsent typed text in the Lead's terminal (`HostState::has_draft`) | Never appended to the author's draft. A CLI's grey suggestion is not typed. |
 | The author has not typed into the Lead's terminal for 3 seconds | Do not race a person who is about to type. |
+| A chat Lead has no queued author messages | Messages the author queued while it worked go first; the bell rings after they are delivered and the Lead settles (see [Queued messages](lead-chat.md#queued-messages)). |
 | The Lead's PTY is alive | Nothing to type into. |
 
 The first unrung settlement starts a 1.5 second batch window (`BELL_BATCH`), so workers that finish together become one line. If a condition fails, the bell waits and rings when it clears. The check is `Shika::ring_doorbells`, run from the app tick with the pure `Doorbell::due`; there is no thread. A settlement is marked rung when the line is sent, and un-marked (`Doorbell::forget`) if the write fails, so it can ring again.

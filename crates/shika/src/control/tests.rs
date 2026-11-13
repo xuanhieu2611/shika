@@ -720,6 +720,33 @@ fn launch_failures_split_into_refusals_and_errors() {
     assert!(render_text(&unreadable).contains("/d/leads/p/memory.json"));
 }
 
+#[test]
+fn the_doorbell_holds_while_a_chat_lead_has_queued_messages() {
+    use doorbell::chat_quiet;
+    assert!(chat_quiet(false, false, false, 0));
+    assert!(!chat_quiet(false, false, false, 1));
+    assert!(!chat_quiet(false, true, false, 0));
+    assert!(!chat_quiet(true, false, false, 0));
+    assert!(!chat_quiet(false, false, true, 0));
+    // The gate built from it stays shut, so the bell does not ring ahead of
+    // the author's messages, and rings once they have gone.
+    let t0 = Instant::now();
+    let tasks = [observed("a", TaskStatus::Ready, Some(t0))];
+    let mut bell = Doorbell::default();
+    let reported = Ledger::default();
+    let held = Gate {
+        idle: chat_quiet(false, false, false, 1),
+        ..gate()
+    };
+    bell.due(&reported, &tasks, &held, t0);
+    assert!(bell.due(&reported, &tasks, &held, at(t0, 5.0)).is_empty());
+    let free = Gate {
+        idle: chat_quiet(false, false, false, 0),
+        ..gate()
+    };
+    assert_eq!(ids(&bell.due(&reported, &tasks, &free, at(t0, 5.1))), ["a"]);
+}
+
 fn gate() -> Gate {
     Gate {
         waiting: false,

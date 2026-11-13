@@ -116,6 +116,10 @@ impl Shika {
             .child(dialog_text(chrome).child(
                 "Yes stops its sessions and forgets this project. Worktrees remain on disk in the leftovers list.",
             ))
+            .children(
+                crate::lead_chat::warning(self.queued_lead_messages(Some(&id), cx))
+                    .map(|note| dialog_text(chrome).child(note)),
+            )
             .child(
                 dialog_buttons()
                     .child(self.no_button("No", chrome, cx))
