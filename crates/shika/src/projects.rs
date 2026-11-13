@@ -114,20 +114,16 @@ impl Shika {
         dialog(chrome, max_h)
             .child(dialog_title(div()).child("Remove project?"))
             .child(dialog_text(chrome).child(
-                "Stops its sessions and forgets this project. Worktrees remain on disk in the leftovers list.",
+                "Yes stops its sessions and forgets this project. Worktrees remain on disk in the leftovers list.",
             ))
             .child(
-                dialog_buttons().child(self.cancel_button("Cancel", chrome, cx)).child(
-                    primary_button(
-                        "remove-project",
-                        "Remove project",
-                        "\u{2318}\u{232b}",
-                        chrome,
-                    )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.remove_project(id.clone(), cx)
-                        })),
-                ),
+                dialog_buttons()
+                    .child(self.no_button("No", chrome, cx))
+                    .child(
+                        primary_button("remove-project", "Yes", "Y", chrome).on_click(
+                            cx.listener(move |this, _, _, cx| this.remove_project(id.clone(), cx)),
+                        ),
+                    ),
             )
     }
 }

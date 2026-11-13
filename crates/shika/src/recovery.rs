@@ -108,9 +108,9 @@ impl Shika {
             .child(dialog_text(chrome).child("This stops all agents and shell terminals. Worktrees and files stay on disk. Reopen unfinished tasks from Leftover worktrees next time."))
             .child(dialog_text(chrome).child("Unsaved terminal input and shell tabs are not restored. Agent conversations can resume when the CLI saved them."))
             .child(dialog_buttons()
-                .child(dialog_button("cancel-quit", "No, keep working", "esc", chrome)
+                .child(dialog_button("cancel-quit", "No, keep working", "N", chrome)
                     .on_click(cx.listener(|this, _, window, cx| this.cancel_quit(window, cx))))
-                .child(primary_button("confirm-quit", if self.busy { "Saving..." } else { "Yes, quit" }, "⌘↵", chrome)
+                .child(primary_button("confirm-quit", if self.busy { "Saving..." } else { "Yes, quit" }, "Y", chrome)
                     .on_click(cx.listener(|this, _, window, cx| this.confirm_quit(window, cx)))))
     }
 
@@ -199,22 +199,17 @@ impl Shika {
         let RecoverDialog { entry, index } = recover;
         let presets = self.recovery_choices();
         let terminal = presets.get(*index).is_some_and(|p| p.id == "terminal");
-        let can_resume = presets.get(*index).is_some_and(|p| {
-            entry
-                .recovery
-                .as_ref()
-                .is_some_and(|r| r.cli == p.id && r.conversation.is_some())
-        });
+        let can_resume = self.recovery_can_resume(entry, *index);
         let mut panel = dialog(chrome, max_h)
             .child(dialog_title(div()).child("Reopen worktree?"))
             .child(dialog_text(chrome).font_family(MONO).child(entry.branch.clone()))
             .child(dialog_text(chrome).child("Keeps its branch, commits, and uncommitted files. Setup is not run again."))
             .child(dialog_text(chrome).child(if terminal {
-                "Open a new login shell in this worktree. Previous shell programs are not restored."
+                "Yes opens a new login shell in this worktree. Previous shell programs are not restored."
             } else if can_resume {
-                "Resume the saved agent conversation, or start a fresh agent in this worktree."
+                "Yes resumes the saved agent conversation. Start fresh begins a new agent in this worktree instead."
             } else {
-                "No saved conversation is available for this agent. Start fresh in the same worktree."
+                "No saved conversation is available for this agent. Yes starts fresh in the same worktree."
             }));
         if presets.is_empty() {
             panel = panel
@@ -236,7 +231,7 @@ impl Shika {
             );
         }
         let mut buttons = dialog_buttons().child(
-            dialog_button("cancel-recovery", "Cancel", "esc", chrome).on_click(cx.listener(
+            dialog_button("cancel-recovery", "No", "N", chrome).on_click(cx.listener(
                 |this, _, _, cx| {
                     this.overlay = Some(Overlay::Leftovers);
                     cx.notify();
@@ -246,25 +241,13 @@ impl Shika {
         if !presets.is_empty() {
             if can_resume {
                 buttons = buttons.child(
-                    dialog_button("fresh-recovery", "Start fresh", "", chrome).on_click(
+                    dialog_button("fresh-recovery", "Start fresh", "F", chrome).on_click(
                         cx.listener(|this, _, window, cx| this.start_recovery(true, window, cx)),
                     ),
                 );
             }
             buttons = buttons.child(
-                primary_button(
-                    "start-recovery",
-                    if terminal {
-                        "Open terminal"
-                    } else if can_resume {
-                        "Resume agent"
-                    } else {
-                        "Start fresh"
-                    },
-                    "⌘↵",
-                    chrome,
-                )
-                .on_click(
+                primary_button("start-recovery", "Yes", "Y", chrome).on_click(
                     cx.listener(|this, _, window, cx| this.start_recovery(false, window, cx)),
                 ),
             );
@@ -278,14 +261,35 @@ impl Shika {
         }
     }
 
-    pub(super) fn recover_key(&mut self, key: &str) {
+    /// Whether the CLI chosen at `index` can resume the leftover's saved
+    /// conversation.
+    fn recovery_can_resume(&self, entry: &JournalEntry, index: usize) -> bool {
+        self.recovery_choices().get(index).is_some_and(|p| {
+            entry
+                .recovery
+                .as_ref()
+                .is_some_and(|r| r.cli == p.id && r.conversation.is_some())
+        })
+    }
+
+    /// Plain keys in Reopen: `j`/`k` choose the CLI, `f` starts fresh when a
+    /// conversation could be resumed, and Escape is No. `y` and `n` are
+    /// handled by `dialog_answer_key`.
+    pub(super) fn recover_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
         let len = self.recovery_choices().len();
+        let fresh = matches!(
+            &self.overlay,
+            Some(Overlay::Recover(RecoverDialog { entry, index })) if self.recovery_can_resume(entry, *index)
+        );
         if let Some(Overlay::Recover(RecoverDialog { index, .. })) = &mut self.overlay {
             match key {
                 "j" | "down" if len > 0 => *index = (*index + 1) % len,
                 "k" | "up" if len > 0 => *index = (*index + len - 1) % len,
                 _ => {}
             }
+        }
+        if key == "f" && fresh {
+            self.start_recovery(true, window, cx);
         }
         if key == "escape" {
             self.overlay = Some(Overlay::Leftovers);
@@ -414,20 +418,15 @@ impl Shika {
                     .child(model::tilde(&self.leftovers.entries[i].path, home)),
             )
             .child(
-                dialog_text(chrome)
-                    .child("This deletes any uncommitted work and the local branch."),
+                dialog_text(chrome).child("Yes deletes any uncommitted work and the local branch."),
             )
             .child(
                 dialog_buttons()
-                    .child(self.cancel_button("Cancel", chrome, cx))
+                    .child(self.no_button("No", chrome, cx))
                     .child(
-                        primary_button(
-                            "remove-confirm",
-                            "Discard worktree",
-                            "\u{2318}\u{232b}",
-                            chrome,
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| this.remove_leftover(i, cx))),
+                        primary_button("remove-confirm", "Yes", "Y", chrome).on_click(
+                            cx.listener(move |this, _, _, cx| this.remove_leftover(i, cx)),
+                        ),
                     ),
             )
     }

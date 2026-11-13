@@ -56,10 +56,30 @@ impl Shika {
         chrome: &Chrome,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
+        self.dismiss_button(label, "esc", chrome, cx)
+    }
+
+    /// No in a yes/no confirmation: the dialog's cancel, with the `N` key.
+    pub(super) fn no_button(
+        &self,
+        label: &'static str,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        self.dismiss_button(label, "N", chrome, cx)
+    }
+
+    fn dismiss_button(
+        &self,
+        label: &'static str,
+        key: &'static str,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         dialog_button(
             "cancel",
             if self.busy { "Working..." } else { label },
-            "esc",
+            key,
             chrome,
         )
         .on_click(cx.listener(|this, _, window, cx| {

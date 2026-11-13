@@ -29,3 +29,8 @@ objc2-user-notifications = "0.3.2"
 block2 = "0.6.2"
 # Same major version GPUI implements, to reach the NSWindow for the blur radius.
 raw-window-handle = "0.6"
+
+# Test windows for the chat's scrolling. Dev only: neither the app nor its
+# license notices (`ignore-dev-dependencies`) include it.
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

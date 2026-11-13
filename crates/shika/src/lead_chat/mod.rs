@@ -8,6 +8,8 @@ pub(crate) mod markdown;
 mod progress;
 mod question;
 mod rows;
+#[cfg(test)]
+mod scroll_tests;
 mod selection;
 mod side;
 mod view;
@@ -76,6 +78,8 @@ pub struct LeadChat {
     project: String,
     core: Arc<shika_core::Core>,
     composer: Entity<ChatInput>,
+    /// The composer scrollbar's thumb while the pointer drags it.
+    composer_grab: crate::scrollbar::Grab,
     focus: FocusHandle,
     action_focus: FocusHandle,
     header_focus: FocusHandle,
@@ -154,6 +158,7 @@ impl LeadChat {
             project,
             core,
             composer,
+            composer_grab: Default::default(),
             focus: cx.focus_handle().tab_stop(true),
             action_focus: cx.focus_handle().tab_stop(true),
             header_focus: cx.focus_handle().tab_stop(true).tab_index(10),

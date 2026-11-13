@@ -292,7 +292,7 @@ closed
 ```
 
 - When Close would not need to ask (clean, nothing unpublished, not working or blocked), the worker is closed directly and the command prints `closed`. No dialog appears.
-- Otherwise the normal close dialog opens on that card: discard (Cmd+D), push when the tree is clean (Cmd+Enter), safe-close for an active or blocked turn, or branch-switch recovery (Cmd+Enter). Shika never chooses. The command blocks until the author decides, then prints what happened.
+- Otherwise the normal close dialog opens on that card: a yes/no question: push and close when the tree is clean (Discard stays a secondary choice), discard otherwise, safe-close for an active or blocked turn, or branch-switch recovery. Shika never chooses. The command blocks until the author decides, then prints what happened.
 - The dialog does not open while the author is typing. It opens once nothing was typed in any terminal (agent or shell) or Lead chat input for 3 seconds, with no overlay open and Shika not busy; until then nothing is selected. After 120 seconds the command is refused: `refused: The author kept typing or had another dialog open. Try again later.` The command is also refused, while waiting, if the worker or the Lead goes away.
 
 | Outcome | Output | Exit |

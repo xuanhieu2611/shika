@@ -264,7 +264,7 @@ impl Shika {
                     .cursor_pointer()
                     .hover(move |style| style.bg(hover))
                     .child("Forget Lead")
-                    .child(kbd("\u{2318}\u{232b}", chrome.sunken, chrome.ink_3))
+                    .child(kbd("\u{21b5}", chrome.sunken, chrome.ink_3))
                     .on_click(cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
                         this.forget_from_menu(window, cx);

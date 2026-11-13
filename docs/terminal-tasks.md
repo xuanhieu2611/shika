@@ -10,7 +10,7 @@ New (Cmd+N) offers **Terminal** after the installed, enabled agents. With **Crea
 - Changes and Create PR retain ordinary worktree behavior. Changes is refreshed explicitly with `r`; shell output adds no watcher or poller. No Ready event is manufactured to refresh the diff stat.
 - Cmd+Shift+A / Switch agent starts an installed agent in the same worktree. The original Terminal becomes an additional numbered Shell tab, preserving its process, output, and draft. Existing shells also stay. Failed starts keep the original task untouched.
 - An untouched generated branch can be named by the explicitly started agent's first prompt and CLI title, as with an ordinary draft task. Manual display names and externally named/published branches keep the existing protections.
-- Quit preserves the tree and checkpoints its display name. Explicit Reopen offers Terminal even without installed agents and opens a fresh shell in that verified tree, without setup or restoring old programs/tabs. Its confirmation is **Open terminal**, exact Cmd+Enter. Agents remain available as alternative recovery choices.
+- Quit preserves the tree and checkpoints its display name. Explicit Reopen offers Terminal even without installed agents and opens a fresh shell in that verified tree, without setup or restoring old programs/tabs. Its confirmation is the Reopen question, answered Yes (`y`), which opens the terminal. Agents remain available as alternative recovery choices.
 
 ## Checkout
 

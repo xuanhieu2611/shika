@@ -146,8 +146,7 @@ impl LeadChat {
     }
 
     /// The dock under the list: activity steps, error and retry banners,
-    /// "New messages", the docked composer, the resting Resume row, and the
-    /// back hint.
+    /// the docked composer, the resting Resume row, and the back hint.
     fn dock(
         &self,
         chrome: &Chrome,
@@ -180,9 +179,6 @@ impl LeadChat {
                     crate::dialog_button("retry-chat-save", "Retry save", "", chrome)
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(ChatAction::RetrySave))),
                 )
-            })
-            .when(self.newer || !self.list.is_following_tail(), |d| {
-                d.child(self.new_messages_button(chrome, cx))
             })
             .children(composer)
             .when(!self.live && !self.starting, |d| {
@@ -336,7 +332,32 @@ impl Render for LeadChat {
                     .when(welcome, |d| {
                         d.child(welcome_state(&chrome, welcome_composer, welcome_hint))
                     })
-                    .when(!self.rows.is_empty(), |d| d.child(list)),
+                    .when(!self.rows.is_empty(), |d| {
+                        // "New messages" floats over the list's bottom edge. In
+                        // the dock it resized the list the moment the author
+                        // scrolled up, clipping the last rows and moving the
+                        // bottom the list was following.
+                        d.child(
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_h_0()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .child(list)
+                                .when(self.newer || !self.list.is_following_tail(), |d| {
+                                    d.child(
+                                        div()
+                                            .absolute()
+                                            .bottom_0()
+                                            .left_0()
+                                            .right_0()
+                                            .child(self.new_messages_button(&chrome, cx)),
+                                    )
+                                }),
+                        )
+                    }),
             )
             .when(!welcome || dock_extras, |d| {
                 d.child(self.dock(&chrome, dock_composer, dock_hint, cx))
