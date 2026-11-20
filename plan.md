@@ -11,7 +11,7 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 | # | Item | Size | Main files |
 | --- | --- | --- | --- |
 | 1 | Close deletes untracked files (done) | Small | `worktree/close.rs`, `worktree/lifecycle.rs` |
-| 2 | Refresh the index after creating a worktree | Small | `worktree/lifecycle.rs` |
+| 2 | Refresh the index after creating a worktree (done) | Small | `worktree/lifecycle.rs` |
 | 3 | Fix the Claude trust note | Docs only | `docs/tasks-and-worktrees.md`, `AGENTS.md` |
 | 4 | Skip the first-New dialog when nothing is suggested | Small | `launch/mod.rs` |
 | 5 | More setup suggestions | Medium | `preparation.rs` |
@@ -44,14 +44,14 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 **Problem.** Right after checkout, most files carry the same timestamp second as the index, so Git treats them as "racily clean" and re-reads them on every `git status` and `git diff`. On a large repo the first diff stat and Changes read are slow until something rewrites the index. T3 Code refreshes once after creating a worktree.
 
 **Steps**
-- [ ] In `create_draft`, after `worktree add` succeeds, run `git -C <worktree> update-index -q --refresh`.
-- [ ] If the index's modification time is still in the checkout's second, wait out that second and refresh once more. T3 does this; see `refreshNewWorktreeIndex` in their `GitVcsDriverCore.ts`.
-- [ ] Best effort: a failed refresh never fails task creation.
-- [ ] Do it before setup runs, so it does not add to the time before the CLI starts more than it must. Measure it.
+- [x] In `create_draft`, after `worktree add` succeeds, run `git -C <worktree> update-index -q --refresh`. Done as `worktree::refresh_index`, called by `Core` right after the operations lock is released rather than inside `create_draft`, which runs under that lock: the wait below would hold up every other operation. It adds `--force-write-index`, as T3 does, for older git that skips the write when racy entries check out clean.
+- [x] If the index's modification time is still in the checkout's second, wait out that second and refresh once more. T3 does this; see `refreshNewWorktreeIndex` in their `GitVcsDriverCore.ts`. Only for an index of 10,000 entries or more: on a small repo the first refresh nearly always lands in the checkout's second, so the wait would add up to a second to every New to save a few milliseconds of background reads.
+- [x] Best effort: a failed refresh never fails task creation.
+- [x] Do it before setup runs, so it does not add to the time before the CLI starts more than it must. Measure it. On a synthetic 50,000-file repo: unrefreshed diff reads 0.13 to 0.34s each, refreshed 0.09s; the refresh with its wait about 0.85s, mostly the wait. Recorded in `MANUAL_CHECKS.md`.
 
 **Tests**
-- [ ] A unit test that creation still succeeds when the refresh fails.
-- [ ] Manual: time the first diff stat on a large repo before and after.
+- [x] A unit test that creation still succeeds when the refresh fails.
+- [ ] Manual: time the first diff stat on a large repo before and after. Measured with git on a synthetic repo; the in-app check on a real large repo is open in `MANUAL_CHECKS.md`.
 
 ---
 

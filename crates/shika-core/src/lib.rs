@@ -783,6 +783,10 @@ impl Core {
                 .insert(draft.path.clone(), (project.id.clone(), control.clone()));
             (project, base, draft)
         };
+        // Outside the operations lock: the refresh can wait out a second.
+        if let Ok(git) = self.git() {
+            worktree::refresh_index(&git, env.path(), &draft.path);
+        }
         let prepared = (|| {
             if let Some(config) = &config {
                 report(PreparationEvent::Stage("Waiting for setup slot...".into()));

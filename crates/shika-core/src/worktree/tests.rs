@@ -556,6 +556,57 @@ fn draft_worktree_stays_out_of_main_status_and_can_be_removed() {
     assert!(String::from_utf8_lossy(&branches.stdout).trim().is_empty());
 }
 
+fn mtime_second(path: &Path) -> u64 {
+    fs::metadata(path)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+#[test]
+fn a_new_worktree_index_is_rewritten_after_its_checkout_second() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git_ok(&repo, &["add", "a.txt"]);
+    git_ok(&repo, &["commit", "-m", "a"]);
+    let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+
+    // Waiting from zero entries makes this one-file index take the wait.
+    try_refresh_index(&git(), "", &draft.path, 0).unwrap();
+    // Every file is stamped before the index's second, so none is racy.
+    let index = repo.join(".git/worktrees/shika-draft-one/index");
+    assert_eq!(index_entries(&index), Some(1));
+    assert!(mtime_second(&index) > mtime_second(&draft.path.join("a.txt")));
+    assert!(!is_dirty(&git(), "", &draft.path).unwrap());
+}
+
+#[test]
+fn a_failed_index_refresh_leaves_the_new_worktree_usable() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    let failing = scratch.path.join("git-no-refresh");
+    fs::write(
+        &failing,
+        "#!/bin/sh\nfor arg; do [ \"$arg\" = update-index ] && exit 1; done\nexec git \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(
+        &failing,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let draft = create_draft(&failing, "", &repo, "one", "HEAD").unwrap();
+
+    assert!(try_refresh_index(&failing, "", &draft.path, 0).is_err());
+    refresh_index(&failing, "", &draft.path);
+    assert!(draft.path.join(".git").exists());
+    assert!(!is_dirty(&git(), "", &draft.path).unwrap());
+}
+
 #[test]
 fn a_dirty_worktree_is_kept_until_removal_is_forced() {
     let scratch = Scratch::new();

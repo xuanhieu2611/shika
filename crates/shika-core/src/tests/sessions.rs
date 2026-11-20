@@ -158,6 +158,41 @@ fn a_session_runs_in_its_worktree_and_close_removes_it() {
 }
 
 #[test]
+fn a_failed_index_refresh_still_starts_the_task() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    let failing = scratch.path.join("git-no-refresh");
+    fs::write(
+        &failing,
+        "#!/bin/sh\nfor arg; do [ \"$arg\" = update-index ] && exit 1; done\nexec git \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&failing, fs::Permissions::from_mode(0o755)).unwrap();
+    let cli = fake_cli(&scratch.path);
+    let env = PathEnv::from_lookup(
+        "/usr/bin:/bin".into(),
+        None,
+        &[("claude", Some(cli)), ("git", Some(failing))],
+    );
+    let core = Core::open_with(scratch.path.join("data"), env).unwrap();
+    let added = core.add_project(&repo).unwrap();
+
+    let (sink, rx) = channel_sink();
+    let session = core
+        .create_session(
+            &added.project.id,
+            "claude",
+            PtySize::new(30, 90),
+            sink,
+            LaunchOptions::default(),
+        )
+        .unwrap();
+    assert!(session.worktree.join(".git").exists());
+    let got = collect_until(&rx, "cwd:", Duration::from_secs(5));
+    assert!(got.contains("args:--dangerously-skip-permissions"), "{got}");
+}
+
+#[test]
 fn a_missing_cli_or_project_creates_nothing() {
     let scratch = Scratch::new();
     let repo = scratch.repo("demo");

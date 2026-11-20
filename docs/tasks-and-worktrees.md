@@ -27,7 +27,14 @@ Before allocation, author New may offer [first-use setup review](worktree-prepar
 
    `--no-track` is required. Starting from `origin/dev` would otherwise make `origin/dev` the upstream, so a fresh card would look pushed and a plain `git push` would target `dev`.
 3. Journal ownership before optional approved [copy/setup](worktree-preparation.md#launch-lifecycle-and-lock-boundaries). If preparation is configured, it must finish successfully before the CLI starts; without configuration, no setup is inferred.
-4. Start the CLI in that folder with the login-shell `PATH`, `PWD` set to the worktree, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, and `GIT_OBJECT_DIRECTORY` removed. The launch arguments are in [AGENTS.md](../AGENTS.md#clis-and-launch-arguments).
+4. Refresh the new index once, outside the operations lock, before that copy/setup and the CLI:
+
+   ```sh
+   git -C <worktree> update-index -q --refresh --force-write-index
+   ```
+
+   A checkout stamps most files in the second it writes the index, and git re-reads every file stamped in the index's own second or later ("racily clean") on each status and diff. The diff stat and Changes read with `GIT_OPTIONAL_LOCKS=0`, so they never rewrite the index themselves. If the refresh lands in the checkout's second and the index has at least 10,000 entries, Shika waits that second out and refreshes once more; a smaller index skips the wait, because its racy reads cost less than up to a second on every New. Measured 2026-11-19 on a synthetic 50,000-file repo: a racy diff read took 0.13 to 0.34s, a refreshed one 0.09s, and the refresh with its wait about 0.85s. The refresh is best effort: a failure never fails the task. `--force-write-index` covers older git (such as 2.30), which skips the write when racy entries check out clean. From T3 Code's `refreshNewWorktreeIndex`.
+5. Start the CLI in that folder with the login-shell `PATH`, `PWD` set to the worktree, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, and `GIT_OBJECT_DIRECTORY` removed. The launch arguments are in [AGENTS.md](../AGENTS.md#clis-and-launch-arguments).
 
 Shika creates the worktree. Never pass a CLI's own worktree flag, such as Cursor's or Codex's `--worktree`.
 

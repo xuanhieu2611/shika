@@ -2,6 +2,12 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## New worktree index refresh, 2026-11-19
+
+Measured with git 2.50.1 on a synthetic 50,000-file repo (396 MB), reading with `GIT_OPTIONAL_LOCKS=0` as the diff stat does: `git diff --numstat HEAD` took 0.13 to 0.34s in an unrefreshed new worktree on every read, and 0.09s after the refresh. The refresh with its wait took about 0.85s (0.16s refresh, about 0.5s wait). Unit tests cover the refreshed index and a failing refresh (`worktree::tests`, `tests::sessions`). Not yet run natively:
+
+- [ ] In a built app on a large real repository, time the first diff stat and the first Changes read of a new task against a build without the refresh, and the time from New to the CLI prompt with and without it.
+
 ## Lead chat queued messages, 2026-11-12
 
 Unit and GPUI tests cover the routing, order, refusal, restore and doorbell gate (`lead_chat::queue`, `lead_chat::queue_tests`, `control::tests`). Not yet run natively with an isolated `--data-dir`:
