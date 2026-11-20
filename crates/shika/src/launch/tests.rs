@@ -83,6 +83,7 @@ fn first_new_reviews_setup_only_when_something_is_suggested() {
                     commands: commands.iter().map(|s| s.to_string()).collect(),
                     copy_files: copies.iter().map(|s| s.to_string()).collect(),
                     timeout_seconds: 600,
+                    clone_dependencies: false,
                 },
                 note: String::new(),
             }

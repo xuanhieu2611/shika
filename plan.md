@@ -15,7 +15,7 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 | 3 | Fix the Claude trust note (done) | Docs only | `docs/tasks-and-worktrees.md`, `AGENTS.md` |
 | 4 | Skip the first-New dialog when nothing is suggested (done) | Small | `launch/mod.rs` |
 | 5 | More setup suggestions (done) | Medium | `preparation.rs` |
-| 6 | Opt-in `node_modules` cloning | Large | `preparation.rs`, new clone module, setup editor |
+| 6 | Opt-in `node_modules` cloning (done) | Large | `preparation.rs`, new clone module, setup editor |
 | 7 | Prompt field in the New picker | Large | `launch/picker.rs`, launch path |
 
 ---
@@ -114,25 +114,28 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 **Config.** A new key in `.shika/worktrees.json`, for example `"clone-dependencies": true`, off by default. Consent compares the parsed config, so the key takes part in approval automatically. A missing key must parse as `false`, so existing approvals stay valid.
 
 **When it clones** (all must hold, else silently skip and let the install run as usual):
-- [ ] The main checkout has `node_modules` at the same place.
-- [ ] Every tracked `package.json` and lockfile is byte-identical between the main checkout and the new worktree (list them with `git ls-files` in the worktree).
-- [ ] The target does not exist and is Git-ignored in the worktree.
-- [ ] Same volume (a clone across volumes fails with `EXDEV`; fall back).
-- [ ] No absolute symlink inside points into the main checkout. pnpm's links are relative, but check, or an agent could write into the main checkout through a link.
+- [x] The main checkout has `node_modules` at the same place. A real directory, reached without following a link.
+- [x] Every tracked `package.json` and lockfile is byte-identical between the main checkout and the new worktree (list them with `git ls-files` in the worktree). Also `pnpm-workspace.yaml`. One differing file skips every folder.
+- [x] The target does not exist and is Git-ignored in the worktree. One `git check-ignore --stdin` call, with trailing slashes so `node_modules/` patterns match missing folders.
+- [x] Same volume (a clone across volumes fails with `EXDEV`; fall back). `EXDEV` and `ENOTSUP` stop the remaining folders.
+- [x] No absolute symlink inside points into the main checkout. pnpm's links are relative, but check, or an agent could write into the main checkout through a link. Relative links that climb out of the task into the main checkout count too; each link is judged at its place in the task, by text and by real path.
 
 **Steps**
-- [ ] Clone with `libc::clonefile` (`libc` is already a dependency). First check that `clonefile` clones a whole directory tree on current macOS; Synara uses a JXA call instead, so confirm before relying on the syscall.
-- [ ] Clone the root `node_modules` and workspace package `node_modules` (paths from tracked `package.json` files), with a cap like Synara's 256.
-- [ ] Drop tool caches that may hold absolute paths: `node_modules/.cache`, `node_modules/.vite`.
-- [ ] Run it after copy-files and before setup commands. Setup still runs the install, which is near-instant when everything matches.
-- [ ] `npm ci` deletes `node_modules` first. When cloning is on, suggest `npm install` instead, or warn in the editor.
-- [ ] Cancellation and failure follow the existing preparation rules: a clone failure falls back, it never fails the task.
-- [ ] Setup editor: a toggle for the new key, per `design/DESIGN.md`. The approval dialog lists it.
-- [ ] Onboarding may suggest it when a lockfile and `node_modules` are both present.
+- [x] Clone with `libc::clonefile` (`libc` is already a dependency). First check that `clonefile` clones a whole directory tree on current macOS; Synara uses a JXA call instead, so confirm before relying on the syscall. Confirmed on macOS 26: `fclonefileat` from an `O_NOFOLLOW` directory fd clones an identical 76,000-entry tree in 1.1s, against 7s for a per-file walk and 10s for `copyfile(3)`. Clones are staged in the task's Git admin folder and moved in with `RENAME_EXCL` after the link check, so Quit or a crash never leaves an unchecked clone in the task.
+- [x] Clone the root `node_modules` and workspace package `node_modules` (paths from tracked `package.json` files), with a cap like Synara's 256. Root first, then by depth.
+- [x] Drop tool caches that may hold absolute paths: `node_modules/.cache`, `node_modules/.vite`.
+- [x] Run it after copy-files and before setup commands. Setup still runs the install, which is near-instant when everything matches. The setup output says what was cloned and why anything was not.
+- [x] `npm ci` deletes `node_modules` first. When cloning is on, suggest `npm install` instead, or warn in the editor. Warn: `npm install` can rewrite `package-lock.json` and dirty the task, so onboarding never suggests the clone with `npm ci`.
+- [x] Cancellation and failure follow the existing preparation rules: a clone failure falls back, it never fails the task.
+- [x] Setup editor: a toggle for the new key, per `design/DESIGN.md`. The approval dialog lists it. A Dependencies section with a Clone node_modules switch (the picker's track, now `ui::switch_track`); the first-New review shows it as a fact. The editor moved to `worktree_setup/` (`mod.rs`, `view.rs`) to stay under the file-size guideline.
+- [x] Onboarding may suggest it when a lockfile and `node_modules` are both present. Only with a locked pnpm, Yarn, or Bun install and an ignored root `node_modules`.
 
 **Docs:** `docs/worktree-preparation.md` (new section, config/consent table) and `AGENTS.md`.
 
 **Tests:** each skip condition, the symlink check, cache removal, fallback on failure, and consent equality with and without the key. Manual: time a React Native repo before and after.
+- [x] Core, in the new `preparation_clone_tests.rs`: clone before setup, each skip, links into the main checkout, fallback on failure, a symlinked source, consent with and without the key, and suggestions. Unit tests in `preparation/clone.rs` for link resolution, an existing target, and the output text. App focus-row tests cover the new rows.
+- [x] Docs: `docs/worktree-preparation.md` (Clone node_modules section, evolution, decisions, state table, map, tests), `AGENTS.md`, `design/DESIGN.md`, `docs/using-shika.md`, `crates/shika-core/README.md`.
+- [ ] Manual: time a React Native repo before and after, and the editor switch, cross-volume, and cancel/quit checks, listed in `MANUAL_CHECKS.md` under Opt-in node_modules clone.
 
 ---
 

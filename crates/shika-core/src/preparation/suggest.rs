@@ -19,6 +19,15 @@ const WORKTREE_INCLUDE: &str = ".worktreeinclude";
 const COPY_LIMIT: usize = 128;
 const NO_LOCK: &str = "No lockfile found. Installation may create one.";
 
+/// Locked installs that reconcile an existing node_modules in place, so a
+/// clone of the main checkout's saves most of the work.
+const KEEPS_NODE_MODULES: [&str; 4] = [
+    "pnpm install --frozen-lockfile",
+    "yarn install --immutable",
+    "yarn install --frozen-lockfile",
+    "bun install --frozen-lockfile",
+];
+
 type Suggestion = (Option<&'static str>, Option<&'static str>);
 
 /// Existing configuration wins; detection never saves, approves, or starts
@@ -41,7 +50,20 @@ pub(crate) fn draft(repo: &Path, git: &Path, path_env: &str) -> Result<Preparati
     let dotenv = candidates.len();
     let include = worktree_include(&root, &mut candidates);
     notes.extend(include.note);
-    let ignored = ignored(git, path_env, repo, &candidates)?;
+    // A trailing slash lets Git match directory patterns.
+    let dependencies = "node_modules/".to_string();
+    let has_dependencies = relative_file(
+        &root,
+        Path::new("node_modules"),
+        libc::O_RDONLY | libc::O_DIRECTORY,
+        0,
+    )
+    .is_ok();
+    let mut queries = candidates.clone();
+    if has_dependencies {
+        queries.push(dependencies.clone());
+    }
+    let ignored = ignored(git, path_env, repo, &queries)?;
     let not_ignored = candidates[dotenv..]
         .iter()
         .filter(|path| !ignored.contains(*path))
@@ -56,8 +78,15 @@ pub(crate) fn draft(repo: &Path, git: &Path, path_env: &str) -> Result<Preparati
         );
     }
     let mut commands = Vec::new();
+    let installer = suggest_installer(&root);
+    // Only a locked install that keeps node_modules: npm ci deletes it first.
+    let clone_dependencies = has_dependencies
+        && ignored.contains(&dependencies)
+        && installer
+            .0
+            .is_some_and(|command| KEEPS_NODE_MODULES.contains(&command));
     // JavaScript first: React Native pods read node_modules.
-    for (command, note) in [suggest_installer(&root), suggest_pods(&root)] {
+    for (command, note) in [installer, suggest_pods(&root)] {
         commands.extend(command.map(String::from));
         notes.extend(note);
     }
@@ -77,6 +106,7 @@ pub(crate) fn draft(repo: &Path, git: &Path, path_env: &str) -> Result<Preparati
             commands,
             copy_files,
             timeout_seconds: default_timeout(),
+            clone_dependencies,
         },
         note,
     })
@@ -113,7 +143,12 @@ fn bounded(root: &File, name: &str) -> std::result::Result<Option<Vec<u8>>, ()> 
 
 /// The subset of `paths` that Git ignores in the main checkout, in one
 /// process. Tracked files are never reported, whatever the patterns say.
-fn ignored(git: &Path, path_env: &str, repo: &Path, paths: &[String]) -> Result<HashSet<String>> {
+pub(super) fn ignored(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    paths: &[String],
+) -> Result<HashSet<String>> {
     if paths.is_empty() {
         return Ok(HashSet::new());
     }

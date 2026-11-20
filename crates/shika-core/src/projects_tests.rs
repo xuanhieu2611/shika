@@ -216,6 +216,7 @@ fn legacy_projects_offer_setup_unless_already_approved() {
         commands: vec![],
         copy_files: vec![],
         timeout_seconds: 600,
+        clone_dependencies: false,
     });
     assert!(!project.preparation_onboarding_pending());
     let roundtrip: Project =

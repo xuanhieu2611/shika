@@ -259,24 +259,7 @@ impl Shika {
             .cursor_pointer()
             .hover(move |style| style.text_color(ink))
             .child("Create worktree")
-            .child(
-                div()
-                    .w(px(28.))
-                    .h(px(17.))
-                    .rounded_full()
-                    .bg(if on { chrome.ink_1 } else { chrome.sunken })
-                    .border_1()
-                    .border_color(if on { chrome.ink_1 } else { chrome.ink_3 })
-                    .flex()
-                    .items_center()
-                    .px(px(2.))
-                    .when(on, |track| track.justify_end())
-                    .child(div().size(px(11.)).rounded_full().bg(if on {
-                        chrome.overlay
-                    } else {
-                        chrome.ink_3
-                    })),
-            )
+            .child(switch_track(on, chrome))
             .tooltip(move |_, cx| {
                 cx.new(|_| KeyTip {
                     bg: tip_bg,
@@ -314,6 +297,9 @@ impl Shika {
                     .font_family(MONO)
                     .child(format!("Copy {path}")),
             );
+        }
+        if config.clone_dependencies {
+            panel = panel.child(dialog_text(chrome).child(crate::worktree_setup::CLONE_FACT));
         }
         for command in &config.commands {
             panel = panel.child(dialog_text(chrome).font_family(MONO).child(command.clone()));

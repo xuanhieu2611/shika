@@ -1,8 +1,8 @@
 # Worktree preparation
 
-Shika keeps creating a fresh, isolated worktree for each card. Optional project preparation makes that worktree ready before its agent starts: copy selected local files, then run the commands the project needs.
+Shika keeps creating a fresh, isolated worktree for each card. Optional project preparation makes that worktree ready before its agent starts: copy selected local files, optionally clone the main checkout's `node_modules` copy-on-write, then run the commands the project needs.
 
-This is preparation, not a warm-worktree pool or a compiler-cache feature. It does not promise faster launches or end-to-end performance parity with another app. Projects without configuration run no preparation. Their first author-created New offers an optional review of unsaved detected defaults; later launches remember that project's choice. Shika never silently infers executable setup, runs a build automatically, shares mutable dependency folders, or executes Cursor/Codex configuration.
+This is preparation, not a warm-worktree pool or a compiler-cache feature. It does not promise faster launches or end-to-end performance parity with another app. Projects without configuration run no preparation. Their first author-created New offers an optional review of unsaved detected defaults; later launches remember that project's choice. Shika never silently infers executable setup, runs a build automatically, shares mutable dependency folders, or executes Cursor/Codex configuration. The opt-in [dependency clone](#clone-node_modules) is copy-on-write: the task's `node_modules` is its own, not a link to the main checkout's.
 
 Start here when contributing to this feature. This document records the product decision and explains usage and implementation. [tasks-and-worktrees.md](tasks-and-worktrees.md) covers the worktree lifecycle it extends. [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#optional-worktree-preparation) separates verified behavior from remaining GUI checks.
 
@@ -36,6 +36,7 @@ The user problem was not just creating a checkout. Developers repeatedly had to 
 | First-New onboarding | The first eligible author New now shows a compact review, optional Customize, combined Save/approve/start, or remembered skip. | Settings-only discovery still interrupted the natural start-a-task flow. A one-time review makes setup discoverable at the point of need without repeated prompts or automatic execution. |
 | Review only suggestions (2026-11-19) | First New opens the review only when detection suggests a file or command. An empty draft starts the task as if there were no config and records no decision. | A review with nothing in it asked a question with no useful answer before every first task in such a project. Not recording a decision keeps the review for a later `.env` or lockfile. |
 | More suggestions (2026-11-19) | Yarn (1 and 2+) and Bun installers, CocoaPods at the root or in `ios/`, and literal paths from a root `.worktreeinclude`. | Yarn, Bun, and React Native projects got no install suggestion, and repositories that already list their local files for other tools had to list them again. |
+| Dependency clone (2026-11-19) | Opt-in `clone-dependencies` clones the main checkout's `node_modules` folders into the task with APFS copy-on-write before the commands, when every tracked package file matches. Idea from Synara's `worktreeDependencyClone.ts`; T3 Code does not do this. | A fresh install in every task is the slowest part of setup for large JavaScript and React Native repositories. A clone costs about a second and almost no disk, and the install that follows has little left to do. |
 
 These are successive usability changes around the same preparation engine, not replacements for worktree isolation or the selected CLI. The former header/menu placement is historical, not a supported alternate entry point. There is no separate setup prompt on Add project.
 
@@ -58,6 +59,7 @@ The goal was "configure once, then prompt several isolated agents", while preser
 | Remember skip locally, not in the repository | Skip is an author's onboarding preference, not a team-wide instruction or approval. It should stop nagging that project without preventing later Settings edits or approval of a subsequently added config. |
 | Conservative, on-demand metadata detection | Fixed commands and literal paths are inspectable. Root-only bounded reads avoid secret-content scanning, script evaluation, package-manager subprocesses, network work, and ongoing startup/watch costs. Unsupported projects remain configurable manually. |
 | Manual dev server and browser workflow | Installation is a finite prerequisite; a server is a long-lived task process. Cmd+T and a localhost link reuse existing shell/terminal ownership rather than introducing a preview service, port manager, or second terminal. |
+| Copy-on-write `node_modules` clone, opt-in, then the usual install | A clone is independent from the first write, so it keeps worktree isolation; a symlink or hardlink to the main checkout's folder would not. It is only a head start: the configured install still runs and reconciles it, and any doubt (changed package files, an unignored target, another volume, a link back into the main checkout) skips it rather than guessing. Off by default, and a parsed-config field, so turning it on asks for approval again. |
 | Two setup slots and fresh-worktree retry | Bounds simultaneous heavyweight work without serializing all app actions. A fresh retry avoids trusting partially installed or modified state; valuable failed work stays separately journaled. The limit is policy, not a measured optimum for every machine. |
 
 ### Evidence behind keeping fresh worktrees
@@ -95,7 +97,7 @@ Repository configuration and local consent are separate atomic files, not one tr
 
 For later changes, open **Settings > Projects** and choose a project's **Worktree setup…**. Each row names the project and main checkout path. `j`/`k` or arrows choose a project; Enter opens setup; `[`/`]` switches Settings sections. The persistent setup entry lives in Settings, not in the project header or Agent menu; first-New onboarding avoids a Settings detour. Empty projects are supported; with no projects, Settings asks you to add one.
 
-The dialog edits literal file paths, ordered commands (one per row), and a timeout. **Add file path** and **Add command** create empty editable rows; **Remove** removes a row. Tab / Shift+Tab moves through fields and buttons, Enter activates a focused button or saves from a field, and Escape cancels. Native fields support clipboard, selection, and IME. Save/cancel/disable returns to Projects with that project selected. Done/Escape in Settings then restores the original terminal/card focus. Card selection never changes.
+The dialog edits literal file paths, ordered commands (one per row), the **Clone node_modules** switch under Dependencies, and a timeout. **Add file path** and **Add command** create empty editable rows; **Remove** removes a row. Enter, Space, or a click toggles the focused switch; its help text warns when a command runs `npm ci`. Tab / Shift+Tab moves through fields and buttons, Enter activates a focused button or saves from a field, and Escape cancels. Native fields support clipboard, selection, and IME. Save/cancel/disable returns to Projects with that project selected. Done/Escape in Settings then restores the original terminal/card focus. Card selection never changes.
 
 **Save setup** creates the folder/file only on explicit save and atomically writes `.shika/worktrees.json` in the project's main checkout. The file remains the only configuration source, shareable through Git; there is no extra global setting or watcher. Opening, cancelling, and adding a project create nothing. You can remove every suggestion and save an empty setup template, with the 600-second default timeout. Save does not execute commands, allocate a task, or approve preparation. New still uses the existing consent rules. Copy paths are checked for existence, regular-file/no-symlink safety, duplicates, and source Git ignore rules on save; the task's ignore rules are checked during launch, as before. File contents are never displayed.
 
@@ -112,6 +114,7 @@ Only when no configuration exists, opening Settings setup or eligible first-New 
 - **Installer:** a regular `package.json` object of at most 64 KiB, its optional `packageManager` (`name` or `name@version`), and regular lockfile presence. npm's `package-lock.json` / `npm-shrinkwrap.json` suggests `npm ci`; pnpm's `pnpm-lock.yaml` suggests `pnpm install --frozen-lockfile`; Bun's `bun.lock` / `bun.lockb` suggests `bun install --frozen-lockfile`; `yarn.lock` suggests `yarn install --immutable` for Yarn 2 or later and `yarn install --frozen-lockfile` for Yarn 1. Yarn is 2 or later when `packageManager` says `yarn@2` or above, or, with no version there, when a regular root `.yarnrc.yml` exists (Yarn 1 reads `.yarnrc`). `.yarnrc.yml` never chooses Yarn by itself. The two npm locks and the two Bun locks each count as one manager. With an explicit `packageManager` but no lock, suggest the plain install (`npm install`, `pnpm install`, `yarn install`, `bun install`) and warn that installation may create a lockfile. No declaration or lock means no installer guess.
 - **CocoaPods:** a regular root `Podfile` suggests `pod install`; `ios/Podfile` suggests `cd ios && pod install`. When a regular root `Gemfile` has a `gem 'cocoapods'` line (either quote, optional parentheses, not commented out), the command runs through Bundler: `bundle exec pod install`, which finds the root Gemfile from `ios/` too. Shika does not suggest `bundle install`: gems normally install outside the worktree, so the main checkout's gems already serve it. The pod command comes after the JavaScript install, because React Native pods read `node_modules`. Podfiles in both places, or an unsafe Podfile, `ios` directory, or Gemfile, give no pod command and a note; the JavaScript install still stands.
 - **Ambiguity:** conflicting manager/lock metadata, multiple managers' locks, unsupported declared managers or a Yarn version that is not a number, `yarn@1` with a `.yarnrc.yml`, unsafe/unreadable/malformed/oversized metadata, and unknown toolchains get no install command. Explanatory notes ask for manual commands. No script fields are executed or copied into commands. Lockfile contents are not read; a suggested frozen install may still fail if the lock is stale, just as a manually configured install would.
+- **Clone node_modules:** turned on only with a locked install that keeps an existing `node_modules` (`pnpm install --frozen-lockfile`, either Yarn command, or `bun install --frozen-lockfile`), when the root `node_modules` is a real directory and ignored by Git. Never with `npm ci`, which deletes `node_modules` before installing; `npm install` is not suggested instead, because it can rewrite `package-lock.json` and dirty the task. See [Clone node_modules](#clone-node_modules).
 - **Limits:** detection is root-only (plus the fixed `ios/Podfile`), not a monorepo environment resolver; an app in `apps/mobile` is not detected. Review workspace/custom installs, nested env paths, runtime versions, available executables, ports, databases, and services yourself. Commands use the installed package manager on the login-shell PATH; Shika does not install or version-pin one. The saved snapshot is never recomputed by New; the existing approval/config-change fences still apply.
 
 This is convenience for first-time configuration, not permission to execute repository code. Reviewed install commands can run dependency lifecycle scripts with your account's access, under the same setup trust warning as other commands.
@@ -121,7 +124,8 @@ You can also create `.shika/worktrees.json` yourself:
 ```json
 {
   "copy-files": [".env.local"],
-  "setup-worktree": ["npm ci"],
+  "clone-dependencies": true,
+  "setup-worktree": ["pnpm install --frozen-lockfile"],
   "timeout-seconds": 600
 }
 ```
@@ -136,7 +140,7 @@ Choose commands appropriate for your repository. For a longer procedure, use a t
 
 The script must exist on the base the new task starts from. The configuration is read from the main checkout, including uncommitted configuration changes; its commands run inside the task worktree. Shika does not copy the main checkout's tracked edits into the task.
 
-All fields are optional. `setup-worktree` is an ordered array of nonempty shell-command strings. `copy-files` is an array of literal relative file paths. `timeout-seconds` defaults to 600 and must be between 1 and 3600. The timeout covers copying and all commands together, after a setup slot is available; it excludes the base fetch, checkout creation, and queue wait. Unknown fields are errors. Configuration is limited to 64 KiB, 64 commands, and 128 unique copied files.
+All fields are optional. `setup-worktree` is an ordered array of nonempty shell-command strings. `copy-files` is an array of literal relative file paths. `clone-dependencies` is a boolean, false when missing, and is never written while false. `timeout-seconds` defaults to 600 and must be between 1 and 3600. The timeout covers copying, cloning, and all commands together, after a setup slot is available; it excludes the base fetch, checkout creation, and queue wait. Unknown fields are errors. Configuration is limited to 64 KiB, 64 commands, and 128 unique copied files.
 
 The configuration file and its `.shika` directory must not be symlinks. Invalid or unreadable configuration blocks New instead of silently skipping setup.
 
@@ -148,7 +152,7 @@ Keep these three concepts separate. Treating "reviewed" as "approved", or an uns
 
 | State | Location | Meaning |
 | --- | --- | --- |
-| Executable configuration | `<main checkout>/.shika/worktrees.json` | Only source of copy paths, ordered commands, and timeout; can be shared through Git. Absence means no preparation; `{}` means an explicit empty configuration, not absence. |
+| Executable configuration | `<main checkout>/.shika/worktrees.json` | Only source of copy paths, the dependency clone switch, ordered commands, and timeout; can be shared through Git. Absence means no preparation; `{}` means an explicit empty configuration, not absence. |
 | Execution consent | This project's `approvedPreparation` in app-data `projects.json` | Exact parsed configuration the author approved locally. Defaults are normalized; array order and command/path strings still matter. Not a script digest, package-manager pin, or sandbox. |
 | Onboarding preference | This project's `worktreeSetupReviewed` in app-data `projects.json` | A setup decision was made. Missing/false is pending unless prior approval exists. True alone authorizes nothing. |
 | Unsaved draft | `PreparationDraft` and the in-memory `Editor` | Proposed or edited values plus the expected existing parsed config; discardable without repository writes. |
@@ -184,7 +188,7 @@ The draft loader rereads config. If a config appeared between the initial missin
 
 ## Approval
 
-Adding a project never runs its setup. The first New with configuration shows the selected files, exact commands, timeout, and a warning that commands run with your permissions. Enter approves and starts; Escape cancels without allocating a worktree.
+Adding a project never runs its setup. The first New with configuration shows the selected files, the dependency clone when it is on, exact commands, timeout, and a warning that commands run with your permissions. Enter approves and starts; Escape cancels without allocating a worktree.
 
 Approval is saved locally with that project in `projects.json`, not in the repository. A change to the parsed configuration requires approval again. Formatting-only changes do not. Shika rechecks configuration before allocation and before starting the CLI, and does not launch on an unexpected change.
 
@@ -196,7 +200,31 @@ Listed files must be ignored by Git in **both** the main checkout and the new ta
 
 Paths are literal, not globs. Absolute paths, traversal, leading `./`, control characters, `.git`, and `.worktrees` components are rejected. Parent directories are created as needed. Rooted file operations do not follow symlinks and never overwrite an existing destination. Each task receives independent file contents, not a symlink or hardlink to the source; permission bits are preserved.
 
-Do not copy `node_modules`, virtual environments, or build directories. Install what is needed with an explicit command in the new worktree. Separate task directories prevent accidental shared-file writes; they do not isolate ports, databases, services, global caches, or credentials. Scripts must account for those resources themselves.
+`copy-files` never copies directories: no virtual environments or build directories. Install what is needed with an explicit command in the new worktree. `node_modules` has the one exception, the opt-in copy-on-write clone below, and the install still runs after it. Separate task directories prevent accidental shared-file writes; they do not isolate ports, databases, services, global caches, or credentials. Scripts must account for those resources themselves.
+
+## Clone node_modules
+
+With `"clone-dependencies": true` (the **Clone node_modules** switch under Dependencies in the setup editor), Shika clones the main checkout's `node_modules` folders into the new task after copying files and before the commands. On APFS a clone shares data blocks until either side writes, so it takes about a second and almost no disk, and writes in the task never reach the main checkout. The setup commands still run the install, which has little left to do when everything matches. It is a head start, not a replacement for the install.
+
+Shika clones a folder only when all of these hold, and otherwise skips it and lets the install run as usual:
+
+- Every tracked `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `yarn.lock`, `bun.lock`, and `bun.lockb` in the task (`git ls-files`, any depth, never under `node_modules`) is byte-identical to the main checkout's copy. An uncommitted edit to one of them in the main checkout skips every folder, since its install no longer matches the task's base.
+- The task has a tracked `package.json` in that directory: the root, or a workspace package. The main checkout has a real `node_modules` directory there, reached without following a link.
+- The task's folder does not exist yet and Git ignores it there (`git check-ignore` with a trailing slash, one call for every folder).
+- The task is on the same volume, and the volume can clone (`EXDEV` or `ENOTSUP` otherwise; the first such failure stops the rest).
+- No link inside the clone leads into the main checkout outside the task. Each link is judged by its text, resolved against its place in the task, and, when its target exists, by its real path. pnpm's and npm's relative links resolve inside the task and stay; an absolute link into the main checkout, or a relative one that climbs out of the task into it, keeps that whole clone out of the task, since an agent could write through it. Links outside the repository point to the same place from either checkout and stay.
+
+At most 256 folders are cloned, root first, then by depth. Before the link check, `node_modules/.cache` and `node_modules/.vite` are removed from the clone, because tools keep absolute paths there. The setup output says which folders were cloned and why any were not.
+
+Each folder is one `fclonefileat` call on a descriptor opened without following links. Apple's man page discourages directory clones in favor of `copyfile(3)`; measured on 2026-11-19 (Apple Silicon, macOS 26, a 76,000-entry `node_modules`), the directory clone took about 1.1 seconds, a per-file walk of `clonefileat` about 7 seconds, and `copyfile(3)` with `COPYFILE_CLONE | COPYFILE_RECURSIVE` about 10 seconds, all producing identical trees. The call is atomic, so a failure leaves nothing behind. It cannot be interrupted, so cancellation and the timeout are checked between folders and during the link walk.
+
+Each clone lands first in `shika-clone/` inside the task's own Git admin folder (`git rev-parse --absolute-git-dir`, which must be under `.git/worktrees/`), gets its caches removed and its links checked there, judged at the place it will take in the task, and then moves in with `renameatx_np(RENAME_EXCL)`, which never replaces even an empty folder. An unchecked clone therefore never sits in the task: Quit does not wait for the setup thread, and a crash or Quit during the link walk leaves the clone in the admin folder, where no agent works and `git worktree remove` deletes it with the tree. Staging is removed when cloning finishes.
+
+A clone failure, including permission errors, only skips that folder; the commands still run. Another volume or a volume without clones stops the remaining folders. Cancellation and the timeout stop preparation as they do for copying.
+
+`npm ci` deletes `node_modules` before installing, so it throws the clone away; the editor warns when both are on. Use a package manager whose locked install keeps an existing `node_modules`, or turn the clone off. Shika does not rewrite the command: `npm install` can change `package-lock.json`.
+
+Cloned dependencies are ignored files. They do not make a task dirty for Close, and guarded failed-launch cleanup may delete them like any partial install.
 
 ## Commands
 
@@ -244,10 +272,11 @@ Use symbols rather than line numbers, which drift. The core stays UI-free; the e
 | --- | --- | --- |
 | `crates/shika-core/src/preparation.rs` | `PreparationConfig`, `load`, `validate_path` | Strict JSON schema, defaults/limits, rooted config loading, and literal-path validation |
 | Same module | `directory`, `relative_file`, `copy_file` | Descriptor-relative copying, regular-file checks, independent destination creation, and permissions |
+| `crates/shika-core/src/preparation/clone.rs` | `dependencies`, `package_files`, `identical`, `Staging`, `place`, `clone_into`, `links_stay_out_of`, `Roots`, `Cloned` | Opt-in `node_modules` clone: package-file equality, ignore check, one `fclonefileat` per folder into staging in the task's Git admin folder, cache removal, link check, `RENAME_EXCL` move into the task; every problem but cancellation and timeout is a reported skip |
 | `crates/shika-core/src/preparation/suggest.rs` | `draft`, `ignored`, `worktree_include`, `suggest_installer`, `suggest_pods`, `names_cocoapods`; `Core::project_preparation_draft` | Settings/first-New bounded metadata suggestions; existing config wins; no persistence/approval/execution |
 | Same module | `validate_edit`, `save`, `load_at` | Schema/source validation outside the operation lock, explicit save/disable, stale-config checks, rooted temporary write plus atomic replacement; no execution/approval |
 | `crates/shika-core/src/lib.rs` | `save_project_preparation`, `save_and_approve_project_preparation`, `preparation_onboarding_pending`, `skip_preparation_onboarding` | UI-free explicit edits, combined save/consent, and local per-project onboarding preference; no task/command allocation |
-| `crates/shika/src/worktree_setup.rs` | `Editor`, `EntryPoint`, `open_worktree_setup`, `show_preparation_onboarding`, `customize_preparation`, `worktree_setup_key`, `worktree_setup_view`, `save_worktree_setup` | Shared native editor, compact first-New review, caller-specific cancel/save, focus traversal, async IO, retained errors |
+| `crates/shika/src/worktree_setup/mod.rs`, `view.rs` | `Editor`, `toggle_clone_dependencies`, `clone_discarded`, `EntryPoint`, `open_worktree_setup`, `show_preparation_onboarding`, `customize_preparation`, `worktree_setup_key`, `worktree_setup_view`, `save_worktree_setup` | Shared native editor, compact first-New review, caller-specific cancel/save, focus traversal, async IO, retained errors |
 | `crates/shika/src/settings/mod.rs` | `SettingsSection::Projects`; `settings/view.rs`: `settings_panel`; `overlay.rs`: `Overlay::WorktreeSetup`, `cancel_overlay`; `worktree_setup.rs`: `on_projects_key`, `finish_worktree_setup` | Settings project rows, keyboard entry, nested return to Projects without consuming Settings's original focus return |
 | `crates/shika-core/src/preparation.rs` | `PreparationControl`, `PreparationLimiter`, `PreparationSlot` | Cancellation/preservation flags, registered process group, and two-slot RAII limit |
 | Same module | `prepare`, `run_command`, `drain`, `child_exited`, `check_deadline` | Copy-then-command order, shared deadline, bounded pipe reads, exit observation, group stop/reap |
@@ -267,7 +296,7 @@ Execution consent is `Project::approved_preparation`, serialized as `approvedPre
 
 ### Editor lifecycle and save boundaries
 
-For UI work, read `worktree_setup.rs` before expanding `main.rs`. `Overlay::WorktreeSetup` boxes the shared `Editor`, keeping the large editor state out of every overlay variant. Native `NameInput` fields provide editing, clipboard, selection, and composition; do not replace them with terminal input or a second text-entry implementation.
+For UI work, read `worktree_setup/` (state and keys in `mod.rs`, rendering in `view.rs`) before expanding `main.rs`. `Overlay::WorktreeSetup` boxes the shared `Editor`, keeping the large editor state out of every overlay variant. Native `NameInput` fields provide editing, clipboard, selection, and composition; do not replace them with terminal input or a second text-entry implementation.
 
 `EntryPoint` carries the caller, not just a visual mode:
 
@@ -315,7 +344,8 @@ New / Retry
   -> background Core launch:
        fetch base, best effort
        [operation lock] recheck config; allocate draft; journal; register pending
-       [no operation lock] wait for slot; copy files; run commands; release slot
+       [no operation lock] wait for slot; copy files; clone node_modules if on;
+                           run commands; release slot
        [operation lock] recheck cancel/project/config/branch; start PTY; insert session
        unregister pending; on error evaluate guarded cleanup
   -> bind host; find card by shared-state identity
@@ -388,6 +418,7 @@ Start with the setup terminal output, the main checkout's config, and the **isol
 | No setup, or unexpected approval | Confirm `.shika/worktrees.json` is in the registered project's checkout, not only the task. Check schema and `approvedPreparation` parsed equality. Missing config means no setup; `{}` is still an opt-in config. |
 | Approval keeps returning | Check command whitespace/order, explicit versus default timeout, concurrent config edits, and `approve_preparation`'s reread. JSON formatting alone should not invalidate it. |
 | Copy fails although the source is ignored | Check the task's actual base and its ignore rules; source-only ignore changes are insufficient. Run the two read-only Git checks below. Check regular-file status, symlink parents, duplicate paths, and destination existence. |
+| `node_modules` was not cloned | Read the "Did not clone node_modules" line in the setup output. Compare the named package file between the main checkout and the task's base, check `git check-ignore -v -- <folder>/` in the task, the volume (`df` on both paths), and links under the main checkout's folder (`find node_modules -type l -lname '/*'`). A `npm ci` command deletes the clone right after it is made. |
 | Script missing, or setup runs an older version | Commands run from the task's base, not main-checkout tracked edits. Commit the script to the intended base; do not fix this by copying arbitrary tracked files. |
 | Binary missing from a Finder launch | Inspect `path_env`, CLI discovery, and the captured login-shell PATH. `/bin/sh` is not an interactive login shell; exports in one command do not persist to another. |
 | Card stuck waiting for a slot | Inspect active runners and slot drops; the two-slot limit is not a worktree/card limit. Waiting does not consume the setup deadline. |
@@ -510,7 +541,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Preparation fixtures now allocate roots atomically and exclusively; earlier timestamp-only roots could collide in parallel. Keep the standard parallel workspace run in PR validation. A serial rerun can diagnose unrelated concurrency failures, but cannot establish their resolution.
 
-`crates/shika-core/src/preparation_tests.rs` and `preparation_suggestion_tests.rs`, which shares its `Fixture`, use disposable repositories, isolated data, and a fake CLI; they do not call a model. Runner/copier/limiter unit tests also live in `preparation.rs`. The app host tests distinguish setup input suppression from startup reply handling. Useful regression anchors:
+`crates/shika-core/src/preparation_tests.rs`, `preparation_suggestion_tests.rs`, and `preparation_clone_tests.rs`, which share its `Fixture`, use disposable repositories, isolated data, and a fake CLI; they do not call a model. Runner/copier/limiter unit tests also live in `preparation.rs`. The app host tests distinguish setup input suppression from startup reply handling. Useful regression anchors:
 
 | Concern | Existing tests to extend |
 | --- | --- |
@@ -521,6 +552,7 @@ Preparation fixtures now allocate roots atomically and exclusively; earlier time
 | First-New onboarding | `preparation_onboarding_preview_leaves_repo_and_local_preferences_unchanged`, `preparation_onboarding_offers_review_only_when_something_is_suggested`, `first_new_reviews_setup_only_when_something_is_suggested` (app), `preparation_onboarding_skip_is_per_project_persistent_and_not_consent`, `preparation_onboarding_skip_refuses_a_configuration_added_since_preview`, `preparation_onboarding_save_and_approve_starts_only_at_normal_launch`, `preparation_onboarding_save_and_approve_rejects_invalid_or_stale_drafts`, `preparation_onboarding_approval_write_failure_never_runs_saved_commands` |
 | Setup editor persistence/safety | `setup_editor_creates_configuration_without_running_or_approving_it`, `setup_editor_empty_template_and_formatting_edits_do_not_infer_setup_or_consent`, `setup_editor_refuses_stale_invalid_and_unsafe_saves`, `setup_editor_never_follows_config_or_copy_source_links` |
 | Preference migration and editor focus | `legacy_projects_offer_setup_unless_already_approved`, `reviewed_setup_survives_reopen_without_granting_execution_consent`, `compact_onboarding_focus_matches_empty_and_suggested_summary_rows`, `customized_onboarding_adds_skip_in_the_existing_footer`, `long_setups_keep_focus_targets_ordered_and_repair_after_row_removal` |
+| Dependency clone | `matching_packages_clone_node_modules_before_setup_without_caches`, `changed_package_files_skip_the_clone_and_setup_still_runs`, `missing_or_unignored_node_modules_are_never_cloned`, `links_into_the_main_checkout_keep_that_clone_out_of_the_task`, `a_failed_clone_falls_back_to_setup_and_keeps_a_symlinked_source_out`, `clone_dependencies_takes_part_in_consent_only_when_on`, `setup_suggestions_clone_only_for_installs_that_keep_node_modules` (all in `preparation_clone_tests.rs`); `links_are_judged_by_where_they_land_not_how_they_are_spelled`, `an_existing_target_is_never_replaced_or_merged` (in `preparation/clone.rs`) |
 | Rollback versus preservation | `failed_command_stops_sequence_never_launches_agent_and_cleans_untouched_tree`, `failure_preserves_tracked_edits_untracked_files_and_commits_in_leftovers`, `a_completed_launch_abandoned_by_its_ui_retains_the_journaled_worktree` |
 | Cancellation/process ownership | `cancellation_kills_setup_descendants_and_removes_clean_pending_worktree`, `background_descendants_are_stopped_before_the_agent_starts`, `shutdown_preserves_pending_worktree_and_stops_its_setup` |
 | Concurrency | `two_setup_slots_bound_concurrency_and_waiting_is_cancellable`, `slow_setup_does_not_hold_operation_lock_or_block_another_session` |
@@ -538,7 +570,7 @@ Before extending the feature:
 3. Keep long work outside core/UI global locks. Preserve hidden-pane draining, startup sizing, identity-based completion, and input-phase separation.
 4. Add failure/race tests with temporary repositories and a fake CLI before adding native acceptance claims. Use the fixture for UI checks, never normal app data.
 5. Treat schema changes as consent changes: add backward-compatible defaults only deliberately, keep unknown-field rejection, and update parsing/approval tests. The approval record contains the parsed config, not a versioned script digest. Consider whether deserializing a new field's default into old approval records would silently authorize new behavior; specify migration/reconsent rather than assuming equality is sufficient.
-6. Globs/directories, daemon support, persistent setup logs, pooling, and compiler caches need separate design decisions. Do not quietly broaden trust or ownership boundaries as an optimization.
+6. Globs/directories in `copy-files`, other dependency folders than `node_modules`, daemon support, persistent setup logs, pooling, and compiler caches need separate design decisions. Do not quietly broaden trust or ownership boundaries as an optimization.
 7. Extending suggestions requires bounded, root-scoped metadata rules, fixed inspectable commands, conflict/unsafe-metadata tests, and no implicit execution. Supporting another manager or monorepo layout must not supplement existing config, scan secret contents, invoke a manager during detection, or turn skip into a permission grant.
 8. Editing/onboarding changes must preserve caller-specific focus/cancel behavior, expected parsed snapshots, distinct reviewed/approved fields, and the no-allocation-on-save/consent-failure boundary. Test existing/empty configs and legacy records as well as the happy path.
 9. Update this guide, the short [AGENTS.md](../AGENTS.md) handoff, and relevant acceptance checks together. For UI changes, read [design/DESIGN.md](../design/DESIGN.md) and [keyboard flow](keyboard-flow.md). Keep intended behavior separate from verified GUI results.

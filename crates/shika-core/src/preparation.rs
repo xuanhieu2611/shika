@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::worktree::{GIT_REDIRECTS, git_cmd};
 
+mod clone;
 mod suggest;
 pub(crate) use suggest::draft;
 
@@ -38,6 +39,14 @@ pub struct PreparationConfig {
     pub copy_files: Vec<String>,
     #[serde(default = "default_timeout", rename = "timeout-seconds")]
     pub timeout_seconds: u64,
+    /// Clone the main checkout's `node_modules` copy-on-write before the
+    /// commands. Missing means off, so approvals from before it still match.
+    #[serde(
+        default,
+        rename = "clone-dependencies",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub clone_dependencies: bool,
 }
 
 /// Unsaved Settings/first-New draft. Suggestions never become launch setup
@@ -373,6 +382,21 @@ pub(crate) fn prepare(
             )));
         }
         copy_file(&source, &destination, Path::new(path), control, deadline)?;
+    }
+    if config.clone_dependencies {
+        check_deadline(control, deadline)?;
+        report(PreparationEvent::Stage("Cloning node_modules".into()));
+        let cloned = clone::dependencies(
+            &source,
+            &destination,
+            repo,
+            worktree,
+            git,
+            path_env,
+            control,
+            deadline,
+        )?;
+        report(PreparationEvent::Output(cloned.summary().into_bytes()));
     }
     for (i, command) in config.commands.iter().enumerate() {
         check_deadline(control, deadline)?;

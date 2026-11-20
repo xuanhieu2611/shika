@@ -70,6 +70,7 @@ impl Fixture {
             commands: commands.iter().map(|s| s.to_string()).collect(),
             copy_files: copies.iter().map(|s| s.to_string()).collect(),
             timeout_seconds: timeout,
+            clone_dependencies: false,
         };
         fs::create_dir_all(self.repo.join(".shika")).unwrap();
         fs::write(
@@ -487,6 +488,7 @@ fn setup_editor_creates_configuration_without_running_or_approving_it() {
         copy_files: vec![".env.local".into()],
         commands: vec!["touch ran.generated".into()],
         timeout_seconds: 600,
+        clone_dependencies: false,
     };
     f.core
         .save_project_preparation(&f.project.id, None, Some(&config))
@@ -545,6 +547,7 @@ fn setup_editor_empty_template_and_formatting_edits_do_not_infer_setup_or_consen
         commands: vec![],
         copy_files: vec![],
         timeout_seconds: 600,
+        clone_dependencies: false,
     };
     f.core
         .save_project_preparation(&f.project.id, None, Some(&empty))
@@ -669,6 +672,7 @@ fn setup_editor_never_follows_config_or_copy_source_links() {
         copy_files: vec![],
         commands: vec![],
         timeout_seconds: 600,
+        clone_dependencies: false,
     };
     let outside = f.root.join("outside");
     fs::create_dir(&outside).unwrap();
