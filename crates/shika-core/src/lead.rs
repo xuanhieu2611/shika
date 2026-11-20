@@ -179,8 +179,9 @@ impl Core {
     /// A chat Lead: the logical Lead has no PTY, and a structured child
     /// speaks the CLI's chat protocol. Same worktree, guide, conversation
     /// choice and control environment as [`Core::start_lead`]. A fresh
-    /// conversation's id is preallocated by Shika (Claude Code), or reported
-    /// by the handshake (Codex) and saved by [`Core::confirm_lead_chat`]; see
+    /// conversation's id is preallocated by Shika (Claude Code, Pi), or
+    /// reported by the handshake (Codex); either is saved by
+    /// [`Core::confirm_lead_chat`] once the CLI keeps the conversation. See
     /// `Identity`. Any CLI with a chat protocol in Core starts here
     /// ([`Error::UnknownCli`] otherwise), including one the app does not offer
     /// yet: the app routes a Lead here only when
@@ -824,7 +825,7 @@ pub(crate) enum Identity {
 /// needs a chat protocol, `lead_transport::chat_cli`) or a terminal one.
 pub(crate) fn identity(preset: &str, chat: bool) -> Option<Identity> {
     match (preset, chat) {
-        ("claude", _) | ("pi", false) => Some(Identity::Preallocated),
+        ("claude" | "pi", _) => Some(Identity::Preallocated),
         ("codex", _) => Some(Identity::Reported),
         ("cursor", false) => Some(Identity::Created),
         _ => None,
@@ -996,8 +997,8 @@ mod tests {
 
     #[test]
     fn only_accepted_chat_clis_are_shipped_and_each_has_a_protocol() {
-        // Codex passed its acceptance on 2026-11-20; Pi and Cursor have no
-        // chat protocol yet and stay terminal Leads.
+        // Codex passed its acceptance on 2026-11-20. Pi has a chat protocol
+        // but no acceptance yet, and Cursor none: both stay terminal Leads.
         for cli in ["claude", "codex"] {
             assert!(crate::lead_chat_supported(cli), "{cli}");
         }
@@ -1021,6 +1022,7 @@ mod tests {
         }
         assert_eq!(identity("claude", true), Some(Identity::Preallocated));
         assert_eq!(identity("codex", true), Some(Identity::Reported));
+        assert_eq!(identity("pi", true), Some(Identity::Preallocated));
         assert_eq!(identity("pi", false), Some(Identity::Preallocated));
         assert_eq!(identity("cursor", false), Some(Identity::Created));
         assert_eq!(identity("codex", false), Some(Identity::Reported));

@@ -394,7 +394,7 @@ fn chat_entry_refuses_a_cli_without_a_chat_protocol() {
         .add_project(&scratch.repo("chat-refusal-demo"))
         .unwrap()
         .project;
-    for cli in ["pi", "cursor", "terminal"] {
+    for cli in ["cursor", "terminal"] {
         assert_eq!(
             core.start_chat_lead(&project.id, cli, lead_launch(&scratch))
                 .map(|start| start.session.id),

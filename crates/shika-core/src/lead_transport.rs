@@ -1,13 +1,14 @@
 //! The Lead chat transport: one long-lived structured child per Lead, never
 //! terminal bytes. `protocol::LeadProtocol` is the per-CLI wire format
-//! (`claude.rs`, `codex.rs`); the actor and everything here are shared. All
-//! IO runs on the actor.
+//! (`claude.rs`, `codex.rs`, `pi.rs`); the actor and everything here are
+//! shared. All IO runs on the actor.
 mod actor;
 mod claude;
 mod codex;
 // Shared by the Codex app-server and ACP adapters; some of it is ACP's alone.
 #[cfg_attr(not(test), allow(dead_code))]
 mod jsonrpc;
+mod pi;
 mod protocol;
 
 use std::path::PathBuf;
@@ -107,7 +108,6 @@ enum Parsed {
     /// (`LeadProtocol::write_accepts` is false).
     Accepted,
     /// The send was accepted and starts no turn; it settles with no bubble.
-    #[cfg_attr(not(test), allow(dead_code))]
     Handled,
     /// The conversation now holds `ChatLaunch::instructions`, for a CLI that
     /// keeps them from its creation (Codex): created with them, or sent them
@@ -128,7 +128,9 @@ enum Parsed {
 /// accept. Whether the app offers a chat Lead for one is
 /// [`lead_chat_supported`].
 pub(crate) fn chat_cli(preset: &str) -> Option<&'static str> {
-    ["claude", "codex"].into_iter().find(|cli| *cli == preset)
+    ["claude", "codex", "pi"]
+        .into_iter()
+        .find(|cli| *cli == preset)
 }
 
 /// The CLIs shipped as chat Leads: the app runs a Lead on one of these in
@@ -143,8 +145,8 @@ pub fn lead_chat_supported(cli: &str) -> bool {
 
 /// The error for a CLI that answered with another conversation.
 pub(crate) fn other_conversation(cli: &str) -> &'static str {
-    protocol::for_cli(cli)
-        .map(|protocol| protocol.strings().other_conversation)
+    protocol::strings_for(cli)
+        .map(|strings| strings.other_conversation)
         .unwrap_or("The Lead returned a different conversation")
 }
 

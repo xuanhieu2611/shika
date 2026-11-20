@@ -23,7 +23,8 @@ static STRINGS: Strings = Strings {
 
 /// `id X`, `confirm`, `reply X`, `ack`, `handled`, `instructed`,
 /// `lingering`, `fatal`, `final X` and `final` map to the matching `Parsed`;
-/// anything else is ignored. `idle` makes the next interrupt `Idle`.
+/// anything else is ignored. `idle` makes the next interrupt `Idle`. A line
+/// past `MAX_FRAME` that starts with `skip` may be dropped unread.
 struct LineProtocol {
     write_accepts: bool,
     idle: bool,
@@ -65,6 +66,9 @@ impl LeadProtocol for LineProtocol {
     }
     fn shutdown(&self) -> Shutdown {
         Shutdown::CloseStdin
+    }
+    fn oversized_skippable(&self) -> fn(&[u8]) -> bool {
+        |prefix| prefix.starts_with(b"skip")
     }
     fn parse(&mut self, line: &[u8]) -> Parsed {
         let line = std::str::from_utf8(line).unwrap().trim_end();
@@ -535,4 +539,30 @@ fn stop_closes_stdin_and_the_cli_exits_on_its_own() {
     transport.stop();
     assert!(now.elapsed() < Duration::from_secs(2), "no kill deadline");
     assert_eq!(fixture.log(), "hello\nsend hi\neof\n");
+}
+
+#[test]
+fn an_oversized_line_the_protocol_never_reads_is_dropped_and_any_other_fails() {
+    // 9 MB, past `MAX_FRAME`, then the turn's end on the next line.
+    let fixture = Fixture::new(
+        " 'send big') printf skip; head -c 9000000 /dev/zero | tr '\\0' x; echo; echo 'final After';;\n 'send bad') printf keep; head -c 9000000 /dev/zero | tr '\\0' x; echo; echo 'final Never';;",
+    );
+    let transport = fixture.start("thread-1", true);
+    transport
+        .send("big".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    let events = until(&transport, ready);
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::Error(_))));
+    transport
+        .send("bad".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    let events = until(&transport, |e| matches!(e, ChatEvent::Exit));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ChatEvent::Error(error) if error == STRINGS.unreadable))
+    );
+    let rows = fixture.rows();
+    assert!(rows.contains(&(1, "lead After".into())), "{rows:?}");
+    assert!(!rows.iter().any(|(_, row)| row.contains("Never")));
 }

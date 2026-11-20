@@ -91,6 +91,7 @@ impl Process {
         thread::spawn(move || {
             let _ = std::io::copy(&mut stderr, &mut std::io::sink());
         });
+        let skippable = protocol.oversized_skippable();
         thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
@@ -102,6 +103,13 @@ impl Process {
                     Ok(0) => break,
                     Ok(_) if line.len() as u64 <= MAX_FRAME && line.ends_with(b"\n") => {
                         if input.send(CommandIn::Line(generation, line)).is_err() {
+                            break;
+                        }
+                    }
+                    // A record the protocol never reads: drop the rest of
+                    // the line, which is all the protocol would have done.
+                    Ok(_) if !line.ends_with(b"\n") && skippable(&line) => {
+                        if !matches!(reader.skip_until(b'\n'), Ok(n) if n > 0) {
                             break;
                         }
                     }

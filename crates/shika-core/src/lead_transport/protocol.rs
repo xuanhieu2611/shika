@@ -93,6 +93,12 @@ pub(super) trait LeadProtocol: Send {
     fn stop_signal(&self) -> i32 {
         libc::SIGINT
     }
+    /// Which lines longer than `MAX_FRAME` the reader may drop unread
+    /// instead of failing the stream, judged by their first bytes: records
+    /// the protocol never reads. Runs on the reader thread.
+    fn oversized_skippable(&self) -> fn(&[u8]) -> bool {
+        |_| false
+    }
     /// Decodes one complete line of the CLI's stdout.
     fn parse(&mut self, line: &[u8]) -> Parsed;
     /// Called after every line and about every 25ms while a process runs, so
@@ -104,11 +110,24 @@ pub(super) trait LeadProtocol: Send {
     }
 }
 
-/// The protocol for a chat-capable preset id.
+/// The protocol for a chat-capable preset id. None for any other, or when
+/// Pi's extension file cannot be written.
 pub(super) fn for_cli(cli: &str) -> Option<Box<dyn LeadProtocol>> {
     match cli {
         "claude" => Some(Box::new(super::claude::ClaudeStream::new(String::new()))),
         "codex" => Some(Box::new(super::codex::CodexAppServer::new())),
+        "pi" => Some(Box::new(super::pi::PiRpc::installed()?)),
         _ => None,
     }
+}
+
+/// A chat preset's messages, without starting its protocol.
+pub(super) fn strings_for(cli: &str) -> Option<&'static Strings> {
+    let protocol: Box<dyn LeadProtocol> = match cli {
+        "claude" => Box::new(super::claude::ClaudeStream::new(String::new())),
+        "codex" => Box::new(super::codex::CodexAppServer::new()),
+        "pi" => Box::new(super::pi::PiRpc::new()),
+        _ => return None,
+    };
+    Some(protocol.strings())
 }
