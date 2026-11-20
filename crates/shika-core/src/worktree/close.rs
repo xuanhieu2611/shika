@@ -8,9 +8,12 @@ use super::base::compare_base;
 use super::git::{git_cmd, read_only_git};
 use crate::error::{Error, Result, first_line};
 
+/// Whether the tree has uncommitted changes, untracked files included.
+/// `--untracked-files=normal` overrides a `status.showUntrackedFiles=no` in
+/// the author's config, which would call a tree of untracked files clean.
 pub fn is_dirty(git: &Path, path_env: &str, worktree: &Path) -> Result<bool> {
     let output = git_cmd(git, path_env, worktree)
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=normal"])
         .output()
         .map_err(|_| Error::GitStatus(None))?;
     if !output.status.success() {

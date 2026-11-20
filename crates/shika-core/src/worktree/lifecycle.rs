@@ -46,6 +46,8 @@ pub fn create_draft(
 }
 
 /// Remove only the directory, preserving an already pushed local branch.
+/// Without `force`, git's own clean check sees untracked files even when the
+/// author's config sets `status.showUntrackedFiles=no`.
 pub fn remove_worktree(
     git: &Path,
     path_env: &str,
@@ -54,7 +56,12 @@ pub fn remove_worktree(
     force: bool,
 ) -> Result<()> {
     let mut cmd = git_cmd(git, path_env, repo);
-    cmd.args(["worktree", "remove"]);
+    cmd.args([
+        "-c",
+        "status.showUntrackedFiles=normal",
+        "worktree",
+        "remove",
+    ]);
     if force {
         cmd.arg("--force");
     }

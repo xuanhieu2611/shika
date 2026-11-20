@@ -40,6 +40,24 @@ fn safe_close_refuses_work_and_an_empty_task_deletes_its_branch() {
 }
 
 #[test]
+fn close_asks_about_untracked_files_the_config_hides() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    git(&repo, &["config", "status.showUntrackedFiles", "no"]);
+    let core = core_with_fake_cli(&scratch);
+    let project = core.add_project(&repo).unwrap().project;
+    let session = create_fake_session(&core, &project.id);
+    fs::write(session.worktree.join("wip.txt"), "wip\n").unwrap();
+
+    assert!(core.session_git_state(&session.id, false).unwrap().dirty);
+    assert_eq!(
+        core.session_close(&session.id, false),
+        Err(Error::WorktreeHasChanges(None))
+    );
+    assert!(session.worktree.join("wip.txt").exists());
+}
+
+#[test]
 fn manual_push_keeps_card_then_safe_close_keeps_pushed_branch() {
     let scratch = Scratch::new();
     let repo = scratch.repo("demo");

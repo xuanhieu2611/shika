@@ -87,7 +87,7 @@ The following rules apply to worktree tasks; [checkout sessions](#diff-and-close
 
 The diff stat, Close's checks, and Create PR's default target use the task's `baseRef`. If it no longer resolves, or there is none (the HEAD fallback), they use the default branch: `origin/HEAD`, `main`, `master`, then the main checkout's HEAD, refusing when that checkout is on the task branch.
 
-- **Dirty** means `git status --porcelain` is not empty.
+- **Dirty** means `git status --porcelain --untracked-files=normal` is not empty. The flag overrides a `status.showUntrackedFiles=no` in the author's Git config, which would otherwise call a tree of untracked files clean. The non-forced `git worktree remove` runs with `-c status.showUntrackedFiles=normal` for the same reason, so Git's own refusal sees them too.
 - **Unpushed** means the branch has commits that are not on its upstream. A branch with no upstream is unpushed when it has commits that are in neither the base nor any remote-tracking branch.
 
 Git reads for the diff stat use `GIT_OPTIONAL_LOCKS=0` and take no core lock.

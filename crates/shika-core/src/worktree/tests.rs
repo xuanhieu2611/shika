@@ -582,6 +582,27 @@ fn a_dirty_worktree_is_kept_until_removal_is_forced() {
     assert!(String::from_utf8_lossy(&branches.stdout).trim().is_empty());
 }
 
+#[test]
+fn untracked_files_count_when_the_config_hides_them() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    git_ok(&repo, &["config", "status.showUntrackedFiles", "no"]);
+    let draft = create_draft(&git(), "", &repo, "one", "HEAD").unwrap();
+    fs::write(draft.path.join("note.txt"), "wip\n").unwrap();
+    assert!(
+        porcelain(&draft.path).trim().is_empty(),
+        "the fixture config should hide the untracked file"
+    );
+
+    assert!(is_dirty(&git(), "", &draft.path).unwrap());
+    let refused = remove_worktree(&git(), "", &repo, &draft.path, false);
+    assert!(
+        matches!(refused, Err(Error::WorktreeHasChanges(_))),
+        "{refused:?}"
+    );
+    assert!(draft.path.join("note.txt").exists());
+}
+
 fn run(dir: &Path, args: &[&str]) {
     let output = Command::new("git")
         .arg("-C")
