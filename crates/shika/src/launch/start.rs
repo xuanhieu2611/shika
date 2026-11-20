@@ -585,8 +585,7 @@ impl Shika {
             let project = self.cards[index].project.clone();
             if let Some(chat) = self.leads.chats.get(&project) {
                 chat.update(cx, |chat, cx| {
-                    chat.live = true;
-                    chat.busy = false;
+                    chat.went_live();
                     cx.notify();
                 });
             }
@@ -703,11 +702,13 @@ mod tests {
             focus: false,
         });
         let task = LaunchOwner::of(&Launch::Task { prompt: None });
-        assert!(lead.chat("claude"));
-        assert!(restart.chat("claude"));
-        assert!(!task.chat("claude"));
-        // Codex has a Core protocol but stays a terminal Lead until accepted.
-        for cli in ["codex", "pi", "cursor", "terminal"] {
+        for cli in ["claude", "codex"] {
+            assert!(lead.chat(cli), "{cli}");
+            assert!(restart.chat(cli), "{cli}");
+            assert!(!task.chat(cli), "{cli}");
+        }
+        // Pi and Cursor CLI stay terminal Leads until their acceptance.
+        for cli in ["pi", "cursor", "terminal"] {
             assert!(!lead.chat(cli), "{cli}");
         }
     }

@@ -319,3 +319,178 @@ fn a_codex_chat_lead_quits_with_its_app_server() {
     let page = core.lead_chat_page(&project.id, None).unwrap();
     assert_eq!(page.last().unwrap().content.text(), Some("Reply stopped"));
 }
+
+/// A Codex Lead saved by a terminal-era build resumes its thread in chat.
+/// Its visible history starts empty: nothing is imported, no prompt or
+/// notice is sent, and the only thing Codex receives before the author's
+/// first message is one developer message with the current guide and
+/// memory, since the thread has no record of getting them.
+#[test]
+fn a_saved_terminal_codex_lead_resumes_its_thread_in_chat_with_empty_history() {
+    let scratch = Scratch::new();
+    let mut core = core_with_switch_clis(&scratch);
+    core.cli_home = Some(CliHome::at(scratch.path.join("home")));
+    write_exec(&scratch.path, "codex", &codex_script(&scratch));
+    let project = core
+        .add_project(&scratch.repo("codex-terminal-era-demo"))
+        .unwrap()
+        .project;
+    core.remember(&project.id, "Keep this note").unwrap();
+    // What a terminal Codex Lead left: its thread's rollout and the record.
+    let sessions = scratch.path.join("home/.codex/sessions/2026/11/19");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(
+        sessions.join(format!("rollout-2026-11-19T00-00-00-{THREAD}.jsonl")),
+        "{}\n",
+    )
+    .unwrap();
+    core.projects
+        .set_lead(
+            &project.id,
+            Some(SavedLead {
+                cli: "codex".into(),
+                session_id: Some(THREAD.into()),
+                reported_workers: Vec::new(),
+                chat_history: None,
+            }),
+        )
+        .unwrap();
+
+    let start = core
+        .start_chat_lead(&project.id, "codex", lead_launch(&scratch))
+        .unwrap();
+    let lead = start.session.id.clone();
+    assert_eq!(start.session.pty, None);
+    assert_eq!(start.conversation, LeadConversation::Resumed);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while calls(&scratch, "thread/inject_items").is_empty() {
+        assert!(Instant::now() < deadline, "no instruction injection");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let resumed = calls(&scratch, "thread/resume");
+    assert_eq!(resumed.len(), 1);
+    assert!(resumed[0].contains(THREAD), "{}", resumed[0]);
+    assert!(!resumed[0].contains("developerInstructions"));
+    assert!(calls(&scratch, "thread/start").is_empty());
+    let injected = calls(&scratch, "thread/inject_items");
+    assert_eq!(injected.len(), 1);
+    assert!(injected[0].contains(r#""role":"developer""#));
+    assert!(injected[0].contains("Keep this note"), "{}", injected[0]);
+    // No prompt, import or recap: no turn, and nothing visible.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(calls(&scratch, "turn/start").is_empty());
+    let events = core.lead_chat_events(&lead);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, ChatEvent::Record(_) | ChatEvent::Started)),
+        "{events:?}"
+    );
+    assert!(core.lead_chat_page(&project.id, None).unwrap().is_empty());
+    let saved = core.saved_lead(&project.id).unwrap().unwrap();
+    assert_eq!(saved.session_id.as_deref(), Some(THREAD));
+    assert!(saved.chat_history.is_some());
+
+    // The author's first message continues the same thread.
+    send(&core, &lead, "Hello");
+    collect(&core, &lead, ready);
+    let turns = calls(&scratch, "turn/start");
+    assert_eq!(turns.len(), 1);
+    assert!(turns[0].contains(THREAD), "{}", turns[0]);
+    assert_eq!(
+        core.lead_chat_page(&project.id, None)
+            .unwrap()
+            .iter()
+            .filter_map(|r| r.content.text())
+            .collect::<Vec<_>>(),
+        ["Hello", "Final reply"]
+    );
+    core.stop_lead(&lead).unwrap();
+
+    // The injection is remembered: the next resume sends nothing extra.
+    let start = core
+        .start_chat_lead(&project.id, "codex", lead_launch(&scratch))
+        .unwrap();
+    send(&core, &start.session.id, "Hello again");
+    collect(&core, &start.session.id, ready);
+    assert_eq!(calls(&scratch, "thread/inject_items").len(), 1);
+    core.stop_lead(&start.session.id).unwrap();
+}
+
+/// Stop generating that ended the process leaves nothing to stop: quitting
+/// afterwards adds no second "Reply stopped".
+#[test]
+fn quitting_after_a_stop_that_ended_the_process_adds_no_row() {
+    let scratch = Scratch::new();
+    let mut core = core_with_switch_clis(&scratch);
+    core.cli_home = Some(CliHome::at(scratch.path.join("home")));
+    write_exec(&scratch.path, "codex", &codex_script(&scratch));
+    let project = core
+        .add_project(&scratch.repo("codex-quit-after-stop-demo"))
+        .unwrap()
+        .project;
+    let start = core
+        .start_chat_lead(&project.id, "codex", lead_launch(&scratch))
+        .unwrap();
+    send(&core, &start.session.id, "please-run");
+    collect(&core, &start.session.id, |e| {
+        matches!(e, ChatEvent::Accepted)
+    });
+    core.lead_chat_interrupt(&start.session.id);
+    collect(&core, &start.session.id, ready);
+    core.stop_lead_chats();
+    let texts = core
+        .lead_chat_page(&project.id, None)
+        .unwrap()
+        .iter()
+        .filter_map(|r| r.content.text().map(str::to_string))
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["please-run", "Reply stopped"]);
+}
+
+/// The app starts chat Leads from threads that block SIGINT and SIGTERM, and
+/// a spawned child keeps its parent's mask. Codex then ignored the SIGTERM
+/// that stops a command left running, so Stop generating waited for SIGKILL
+/// and the command outlived it. The child must start with no signal blocked.
+#[test]
+fn a_chat_cli_does_not_inherit_the_callers_blocked_signals() {
+    let scratch = Scratch::new();
+    let mut core = core_with_switch_clis(&scratch);
+    core.cli_home = Some(CliHome::at(scratch.path.join("home")));
+    write_exec(&scratch.path, "codex", &codex_script(&scratch));
+    let project = core
+        .add_project(&scratch.repo("codex-signal-demo"))
+        .unwrap()
+        .project;
+    let elapsed = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                // SAFETY: changes only this thread's mask.
+                unsafe {
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    libc::sigaddset(&mut set, libc::SIGINT);
+                    libc::sigaddset(&mut set, libc::SIGTERM);
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+                }
+                let start = core
+                    .start_chat_lead(&project.id, "codex", lead_launch(&scratch))
+                    .unwrap();
+                let lead = start.session.id;
+                send(&core, &lead, "please-run");
+                collect(&core, &lead, |e| matches!(e, ChatEvent::Accepted));
+                let now = Instant::now();
+                core.lead_chat_interrupt(&lead);
+                collect(&core, &lead, ready);
+                let elapsed = now.elapsed();
+                core.stop_lead(&lead).unwrap();
+                elapsed
+            })
+            .join()
+            .unwrap()
+    });
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "SIGTERM was blocked; only the kill deadline stopped it ({elapsed:?})"
+    );
+}

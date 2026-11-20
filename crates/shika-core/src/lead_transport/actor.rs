@@ -56,6 +56,13 @@ impl Process {
         for (k, v) in &launch.env {
             cmd.env(k, v);
         }
+        // Spawning keeps the caller's signal mask, and the app's threads
+        // block SIGINT and SIGTERM: inherited, it made a chat CLI deaf to
+        // every stop signal but SIGKILL. Start it as a worker PTY starts.
+        // SAFETY: only async-signal-safe calls between fork and exec.
+        unsafe {
+            cmd.pre_exec(reset_signals);
+        }
         let mut child = cmd.spawn().map_err(|_| strings.start_failed.to_string())?;
         let mut stdin = child.stdin.take().expect("piped stdin");
         let flags = unsafe { libc::fcntl(stdin.as_raw_fd(), libc::F_GETFL) };
@@ -136,6 +143,35 @@ impl Drop for Process {
             let _ = self.child.wait();
         }
     }
+}
+
+/// Default dispositions and an empty signal mask for the child, as
+/// `portable-pty` gives worker PTYs.
+fn reset_signals() -> std::io::Result<()> {
+    for signal in [
+        libc::SIGCHLD,
+        libc::SIGHUP,
+        libc::SIGINT,
+        libc::SIGQUIT,
+        libc::SIGTERM,
+        libc::SIGALRM,
+    ] {
+        // SAFETY: a zeroed `sigaction` with SIG_DFL is a valid argument.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = libc::SIG_DFL;
+            libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+    }
+    // SAFETY: an empty set from `sigemptyset` unblocks every signal.
+    unsafe {
+        let mut empty: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut empty);
+        if libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// Nonblocking pipe IO lets Stop interrupt a child that stopped reading stdin.
@@ -298,7 +334,11 @@ impl Actor {
             return;
         }
         if self.child.is_none() {
-            self.settle(Some("Reply stopped"));
+            // A process already gone left nothing to stop but the turn, if
+            // any: quitting after Stop generating must not add a row.
+            if self.turn.is_some() {
+                self.settle(Some("Reply stopped"));
+            }
             return;
         }
         let interrupt = self.protocol.interrupt();
@@ -393,7 +433,7 @@ impl Actor {
     /// the usual slow-stop deadline kills it if it lingers.
     fn close_input(&mut self) {
         let Some(child) = &mut self.child else {
-            if self.stopping.is_none() {
+            if self.stopping.is_none() && self.turn.is_some() {
                 self.settle(Some("Reply stopped"));
             }
             return;

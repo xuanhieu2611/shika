@@ -752,6 +752,34 @@ Remaining native acceptance checks (leave unchecked until performed):
 - [ ] A turn the CLI starts itself (2026-10-17 fix): a Lead that runs `shika wait` in the background and settles, then replies when the wait returns, shows that reply as a Lead bubble with no author bubble, goes Working then Ready, posts one notification, and keeps it after relaunch. Covered by core tests and a recorded fixture only.
 - [ ] Native Forget deletes Shika chat and saved conversation binding while memory remains; project removal removes its chat; non-Claude Leads and all workers remain unchanged real terminals.
 
+## Codex Lead chat (2026-11-20)
+
+Implementation evidence: installed codex-cli 0.162.1 `codex app-server` was recorded with a disposable `CODEX_HOME` and repository against a local synthetic Responses server (`crates/shika-core/tests/fixtures/codex-0.162.1-*`). Decoder tests replay every recording frame by frame; core integration tests drive a fake `codex` through the real actor (`tests::lead_chat_codex`). `cargo test --workspace` passed except the known machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis`; strict workspace Clippy and `cargo fmt --check` passed.
+
+Native acceptance run, 2026-11-20: a debug bundle opened with `open -n target/debug/Shika.app --args --data-dir <disposable>`, a disposable repository with a local bare remote, the author's real Codex login (small runs, Decision 6), synthetic keys only after confirming Shika's own window was frontmost, state read from the disposable data directory, the thread's rollout read only, and screenshots. Normal app data was not used. It found three defects, fixed before the gate opened and rechecked in the same run: chat CLIs inherited the app's blocked SIGINT and SIGTERM, so Stop generating mid-tool waited for SIGKILL and left the command running (orphaned `sleep`); quitting after such a stop added a second "Reply stopped" row; and toasts were never drawn over a chat, so the refused-resume toast did not show.
+
+- [x] Fresh Lead from the resting row with Cmd+L, no picker; a message whose reply followed a real `exec_command` tool showed only the `final_answer` text; the commentary ("I'll read calc.py ...") was in the rollout and nowhere in `history.sqlite`.
+- [x] Native question (`request_user_input`): the dialog showed header, question and two options with descriptions; `2` and Enter answered `{"preferred_color": {"answers": ["Blue"]}}` and the Lead replied with it; Escape cancelled and Codex received `{"answers": {}}`; the card showed Asking with "Waiting for your decision" meanwhile.
+- [x] Stop generating during `sleep` in a foreground tool: "Reply stopped", app-server and `sleep` gone at once (after the signal fix), the worker's own `codex` PTY kept running; the next delivery resumed the thread in a new process.
+- [x] Stop Lead (`⌘⇧W`, Yes): no `codex app-server` left, the worker became the author's task, the resting row kept the history. Quit and relaunch kept the history; Cmd+L resumed the same thread id and the Lead recalled a codeword from the first turn.
+- [x] `shika remember` changed memory; the next resume sent one `thread/inject_items` developer message with the note before any turn, and the fingerprint in `metadata` changed. A resume with unchanged instructions sent none.
+- [x] Doorbell: the Lead started a `codex` worker with `shika new` and ended its turn; when the worker settled, the chat showed "Reply with OK is ready to check", the `[shika] Workers changed` line went as a `shika_event` turn, and the Lead ran `shika wait`. Seen twice.
+- [x] Refused resume, missing: a planted thread id whose rollout existed when the Lead was chosen and was removed as app-server started (a disposable `CODEX_HOME` via `open --env`) was refused with `-32600 "no rollout found"`; Shika started fresh once with "Could not resume the Lead's conversation. Started a new one." drawn over the chat, and "A new Lead conversation started" in the history. The turn that followed failed visibly with "Codex could not complete the reply. ..." because that home had no login.
+- [x] Refused resume, kept: the same planted id with its unreadable rollout left in place was refused; the Lead rested with "The Lead's CLI exited right after resuming. Select it to try again, or Forget it to start a new conversation." over the chat.
+- [x] Forget (`⌘⇧W`, `f`, Yes): `leads/<project>/chat/` deleted, `memory.json` kept with its note, `projects.json` has no `lead`.
+- [x] Shika Dark and Shika Light (set in the disposable `settings.json`): author and Lead bubbles, event rows, time separators, composer and the Leads card legible in screenshots of both; the question and Stop dialogs were seen in Dark, the Forget dialog and toasts in Light.
+- [x] Restart summary: after a quit with a worker running, the relaunched Lead got the `[shika] Shika restarted ...` line as a Shika turn with the "Shika restarted. Worker worktrees were kept." row, and replied in chat.
+- [x] No `codex app-server`, worker `codex` or tool process after each quit (`pgrep`), including quit with a live Lead, after Stop generating, and after Stop Lead.
+- [ ] Authenticated compaction without an intermediate-text leak; a long Lead lifetime with many resumes.
+- [ ] Stop generating during thinking and during a blocking `shika wait` (only a foreground `sleep` was stopped); a stop before Codex names the turn (SIGTERM path).
+- [ ] Question with several questions, free text (`isOther`), arrival beneath another overlay, and an `isSecret` request staying blocked.
+- [ ] Hidden chat drains while a worker terminal is selected; worker reports and late updates, doorbell batching and the draft quiet gate, disconnected waits, report accounting.
+- [ ] Lead-requested worker Close and PR through a Codex chat Lead.
+- [ ] Usage dashboard counting the Lead's thread (the source was registered by thread id; totals were not read); subscription limits from the Lead's rollouts.
+- [ ] Every catalog theme, frost modes, Reduce transparency/motion; 960x600, column hidden or resized, long prose and huge code; keyboard-only and screen reader paths; IME; long paged history, as in the Claude checklist above.
+- [ ] A turn Codex starts itself (only goals, which are disabled; covered by a recorded fixture and core tests only).
+- [ ] Forced crash and unknown delivery recovery with a Codex child.
+
 ## Pi session naming (2026-10-24)
 
 Automated: bundled extension factory tests cover title validation, preservation of existing names across calls/reload, and unchanged lifecycle reporting; title reader and bounded delayed-title watch tests pass. Installed Pi's real extension loader successfully loads the bundled tool. Strict workspace Clippy and formatting pass. Workspace tests pass with `path_env::tests::finder_launch_path_resolves_installed_clis` skipped: the unfiltered run fails that environment-sensitive test because Claude resolves to `/opt/homebrew/bin/claude`.

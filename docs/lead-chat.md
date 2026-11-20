@@ -1,8 +1,8 @@
 # Lead chat
 
-A Claude Code Lead is a native chat instead of a terminal. The author's messages sit on the right, one final response per turn sits on the left, and a composer sits below. Everything else about the Lead is unchanged: the same installed CLI and login, the same fixed worktree, the same instructions, the same `shika` command, workers, doorbell, resume, Stop and Forget.
+A Claude Code or Codex Lead is a native chat instead of a terminal. The author's messages sit on the right, one final response per turn sits on the left, and a composer sits below. Everything else about the Lead is unchanged: the same installed CLI and login, the same fixed worktree, the same instructions, the same `shika` command, workers, doorbell, resume, Stop and Forget.
 
-Status: implemented for Claude Code on 2026-10-16 (commits `c1f03a0` and `63f98f7`, designed in `0785b3c` and `a100820`). Codex, Cursor CLI and Pi Leads keep their terminals; their adapters are planned in [Extending to other CLIs](#extending-to-other-clis). Native acceptance beyond an isolated smoke run is still open in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#claude-code-lead-chat-2026-10-16).
+Status: implemented for Claude Code on 2026-10-16 (commits `c1f03a0` and `63f98f7`, designed in `0785b3c` and `a100820`) and for Codex on 2026-11-20 (protocol boundary `12d79b1`, adapter `5561489`, shared routing `6bed0a3`, then its acceptance). Cursor CLI and Pi Leads keep their terminals; their adapters are planned in [Extending to other CLIs](#extending-to-other-clis). Native acceptance records: [Claude Code](../MANUAL_CHECKS.md#claude-code-lead-chat-2026-10-16) (an isolated smoke run, much still open) and [Codex](../MANUAL_CHECKS.md#codex-lead-chat-2026-11-20).
 
 Start here when contributing to this feature. This guide records the decisions and explains how the code works and how to debug and extend it. The Lead itself (lifecycle, worktree, resume, memory, workers) is specified in [lead-agent.md](lead-agent.md); the `shika` command and doorbell in [shika-cli.md](shika-cli.md); the visual contract in [DESIGN.md](../design/DESIGN.md#lead-chat) (its SVG light/dark plates are outdated; the text is the contract).
 
@@ -10,18 +10,18 @@ Start here when contributing to this feature. This guide records the decisions a
 
 - **New to the team:** read the [overview](#two-minute-overview), [evolution](#how-the-feature-evolved), and [decisions](#why-this-design), then [one turn end to end](#one-turn-end-to-end) and the [code map](#code-map).
 - **Debugging:** start with [debugging by symptom](#debugging-by-symptom). A reply the CLI wrote but the chat never showed: read [turns the CLI starts itself](#turns-the-cli-starts-itself). Reproduce with [isolated data and a fake CLI](#isolated-reproduction), never normal app data or a personal repository.
-- **Adding a CLI:** read [extending to other CLIs](#extending-to-other-clis) and the [guardrails](#contributor-guardrails) first. The current transport is Claude-specific in more places than the module name suggests.
+- **Adding a CLI:** read [extending to other CLIs](#extending-to-other-clis) and the [guardrails](#contributor-guardrails) first, then [Codex](#codex) as the worked example of a second protocol behind `LeadProtocol`.
 - **Queued messages:** read [Queued messages](#queued-messages) before touching Enter, the composer's Send/Stop action, the doorbell gate, or any path that drops a chat.
 - **Changing visuals:** read [DESIGN.md](../design/DESIGN.md#lead-chat) and the [approved design values](#approved-design-values). Every chat color comes from the active theme.
 
 ## Two-minute overview
 
 - **Before:** every Lead was a CLI in a PTY, drawn by the terminal view. The author read thinking, tool calls, tool output and narration in the CLI's own UI. The doorbell was a bracketed paste plus a delayed Enter.
-- **Now:** a Claude Code Lead runs as one long-lived `claude -p` child speaking bidirectional stream JSON over pipes. It has no PTY (`Session::pty` is `None`). Shika shows only the author's text and each turn's final response, rendered as light markdown.
+- **Now:** a chat Lead runs as one long-lived structured child over pipes: `claude -p` speaking bidirectional stream JSON, or `codex app-server` speaking JSON-RPC ([Codex](#codex)). It has no PTY (`Session::pty` is `None`). Shika shows only the author's text and each turn's final response, rendered as light markdown. Cursor CLI and Pi Leads are still terminals.
 - **Hidden:** thinking, tool calls, tool output, subagent text and every intermediate assistant message. They are dropped before anything is written to history.
 - **History:** Shika keeps a visible transcript for the Lead's lifetime in `leads/<project-id>/chat/history.sqlite`. Stop and quit keep it, Forget deletes it, memory notes survive. It is never replayed into the CLI.
 - **Unchanged:** the Lead guide and prompts, the worktree, the four-worker limit, ownership checks, the doorbell's gates and accounting, the author-confirmed Close dialog (`shika pr` publishes without a dialog since protocol 6), resume and the fresh-start fallback, Seen and notifications. Workers keep real terminals.
-- **Start reading code:** `Core::start_chat_lead` (`crates/shika-core/src/lead.rs`), `ChatTransport` and `ClaudeStream::parse` (`lead_transport.rs`), `ChatStore` (`lead_chat_store.rs`), then `Shika::drain_lead_chats` (`crates/shika/src/lead_chat/glue.rs`).
+- **Start reading code:** `Core::start_chat_lead` (`crates/shika-core/src/lead.rs`), `ChatTransport` (`lead_transport.rs`), the `LeadProtocol` trait (`lead_transport/protocol.rs`) and its two implementations, `ClaudeStream` (`claude.rs`) and `CodexAppServer` (`codex.rs`), the `Actor` that drives them (`actor.rs`), `ChatStore` (`lead_chat_store.rs`), then `Shika::drain_lead_chats` (`crates/shika/src/lead_chat/glue.rs`). One gate, `shika_core::lead_chat_supported`, decides which CLIs the app runs as chat Leads.
 
 ## How the feature evolved
 
@@ -30,7 +30,10 @@ Start here when contributing to this feature. This guide records the decisions a
 | Terminal Lead | The Lead was an ordinary CLI terminal in its fixed worktree, steered by the author and by `[shika]` lines pasted into its PTY. Shika stored no transcript. | A manager conversation is mostly reading results. In a terminal the author scrolls past thinking, tool calls, command output and narration to find the answer, and the doorbell looks like author input. |
 | Chat proposal (`0785b3c`) | A design for a native chat over each CLI's structured mode, with per-CLI transports, final-only rendering, and a persistence comparison. | Several product clauses (no transcript, no chat client) conflicted, and history lifetime, migration, and theming needed the author's decision. |
 | Author decisions (`a100820`) | UI-only change; final response only; Shika-owned lifetime history; Forget deletes it; memory survives; existing saved Leads resume in chat with empty history; all colors from the theme; approved geometry. | Claude Code had the strongest evidence (realtime streaming input and a native question channel), so it went first. |
-| Claude Code chat (`c1f03a0`, `63f98f7`) | Pipe supervisor, final-response filter, SQLite history, native question dialog, chat view, composer and markdown renderer. Fixtures recorded from the installed CLI against a local synthetic server. Product clauses in AGENTS.md and CONTRIBUTING.md narrowed to this exception. | Other CLIs need their own transport evidence before they switch; until then they keep terminals. |
+| Claude Code chat (`c1f03a0`, `63f98f7`) | Pipe supervisor, final-response filter, SQLite history, native question dialog, chat view, composer and markdown renderer. Fixtures recorded from the installed CLI against a local synthetic server. Product clauses in AGENTS.md and CONTRIBUTING.md narrowed to this exception. | Other CLIs need their own transport evidence before they switch; until then they keep terminals. The per-turn plans for Codex and Cursor CLI would also have given each a second process model. |
+| Research and evidence (2026-11-20, `895e46a`) | T3 Code and Orca, two MIT multi-agent apps, both run Codex as `codex app-server`, Pi as `pi --mode rpc`, and Cursor CLI over ACP (Orca). Fixtures recorded from Codex 0.162.1, Pi 1.4.0 and Cursor CLI 2026.11.19 replaced the per-turn plans with one long-lived structured child per Lead for every CLI. The author answered nine decisions (see [Why this design](#why-this-design)). | The actor knew only Claude's wire. |
+| Protocol boundary (`12d79b1`) and shared gate (`6bed0a3`) | `LeadProtocol` holds what differs per CLI (arguments, env, handshake, send, answer, interrupt, shutdown, decoding, strings); the actor, fencing, store and events stay shared. A JSON-RPC 2.0 helper. `start_chat_lead(project, cli, launch)` with three identity sources, and `lead_chat_supported` as the one app gate. Claude behavior and history byte-identical. | A second protocol had to prove the boundary. |
+| Codex chat (`5561489`, acceptance 2026-11-20) | `codex app-server` adapter: final-only filter on `phase`, native `request_user_input` questions, `turn/interrupt` with a restart when a command keeps running, instructions injected on resume when they changed, usage registered by thread id. The native acceptance run found that chat CLIs inherited the app's blocked SIGINT and SIGTERM, a stray "Reply stopped" row at quit, and toasts hidden behind the chat; all three were fixed for every chat CLI before Codex joined the gate. | Pi, then Cursor CLI, each behind its own acceptance. |
 
 ## Why this design
 
@@ -46,7 +49,11 @@ Each decision below is the author's. Do not relitigate them in a change; a chang
 
 **Every color derives from the active theme.** The chat sits where the terminal sits and must work in every catalog theme, light and dark, solid and frosted. Geometry was approved; colors were not, so there are no chat hex values. `LeadChat::render` reads `Chrome` fields and applies `appearance::legible` at 4.5:1 against the real surfaces. See [DESIGN.md](../design/DESIGN.md#lead-chat).
 
-**Claude Code first.** Its installed help advertises `--input-format stream-json` (realtime streaming input), so one process can hold the conversation across turns, and its stdio permission channel preserves native `AskUserQuestion` questions in print mode. Codex and Cursor only offer one prompt per process; Pi needs RPC work. Shipping one well-evidenced adapter beats four guessed ones. The gate is per CLI: a preset switches to chat only after its adapter has fixtures and passes the same checks.
+**Claude Code first, then one CLI at a time.** Claude's installed help advertises `--input-format stream-json` (realtime streaming input), so one process can hold the conversation across turns, and its stdio permission channel preserves native `AskUserQuestion` questions in print mode. Shipping one well-evidenced adapter beats four guessed ones. The gate is per CLI (`lead_chat_supported`): a preset switches to chat only in the commit that records its adapter's fixtures and native acceptance; until then it keeps its terminal Lead. The author's order is Codex, then Pi, then Cursor CLI.
+
+**One long-lived structured child per Lead, for every CLI; no SDK.** Research on 2026-11-20 into T3 Code (pingdotgg/t3code) and Orca (stablyai/orca), both MIT, found the structured modes this guide had missed: both run Codex as `codex app-server` (JSON-RPC over stdio) and Pi as `pi --mode rpc`; Orca runs Cursor CLI as `cursor-agent acp` (Agent Client Protocol), T3 Code embeds `@cursor/sdk`. Their agent SDKs are TypeScript or Python wrappers over the same pipes, so Shika, pure Rust, writes each protocol from the CLI's own schema and docs and copies no code. One child per Lead keeps the Claude actor's process model, so the actor, fencing and store are shared. Both apps also tell their coordinator to end its turn instead of polling, which is the doorbell rule; T3's MCP tool injection needed workarounds (Codex code mode yields after about 30 seconds, Pi has a 60 second MCP timeout), so Shika keeps its `shika` command.
+
+**The author's decisions for the other CLIs (2026-11-20).** Accept Codex's `[experimental]` app-server with per-version fixtures and a visible "This Codex version could not be read". On resume Codex ignores new developer instructions, so send the current guide and memory as one `thread/inject_items` developer message, only when they changed. Stop generating sends `turn/interrupt`, and SIGTERMs app-server when a command is still running, resuming on the next send. Native questions need `--enable default_mode_request_user_input`; cancel answers `{"answers":{}}`. Goals are off (`--disable goals`), so Lead turns come only from the author and the doorbell. Shika never approves a permission request for the Lead: Cursor CLI launches `agent --force --trust --sandbox disabled acp` (ACP ignores `--yolo`), and a request that still arrives is blocked, never answered. Cursor's instructions go in a temporary always-applied `.cursor/rules` file at `session/new`; a terminal-era Cursor chat cannot be loaded over ACP, so it starts fresh with the refused-resume toast; memory changed since the session was created reaches a reopened Cursor Lead as one `[shika]` memory line. Pi gets a Lead-only question tool in Shika's own extension. Real accounts may be used to record fixtures, in disposable repositories and data, sanitized; a synthetic server stays first choice.
 
 **Shika's own markdown renderer, not Zed's.** Zed's markdown, editor, terminal and terminal-view crates are GPL-3.0 and Shika is MIT. The renderer in `lead_chat/markdown.rs` is deliberately small: bold, italic, inline code, fenced code, bullet and check lists, one indent level, headings as bold paragraphs, and validated `http`, `https` and `mailto` links. No HTML, images, remote content, terminal escapes, syntax highlighting, or executable controls. The composer and the selectable bubble text (`chat_input.rs`) follow the pinned GPUI input example's `EntityInputHandler` contract.
 
@@ -55,9 +62,9 @@ Each decision below is the author's. Do not relitigate them in a change; a chang
 | CLI | Installed version checked | Help checked | Process model |
 | --- | --- | --- | --- |
 | Claude Code (implemented) | 2.1.302 | `claude --help` | One long-lived child, bidirectional stream JSON |
-| Codex (planned) | codex-cli 0.162.1 | `codex exec --help`, `codex exec resume --help` | One child per turn, resume the exact thread |
-| Cursor CLI (planned) | 2026.10.14-941492e | `agent --help`, `agent create-chat --help` | One child per turn, resume the exact chat |
-| Pi (planned) | 1.1.0 | `pi --help` | One long-lived RPC child |
+| Codex (implemented) | codex-cli 0.162.1 | `codex app-server --help`, `codex features list`, `generate-json-schema` | One long-lived `codex app-server` child, JSON-RPC 2.0 |
+| Pi (planned) | 1.4.0 | `pi --help`, the package's `docs/rpc*.md` | One long-lived `pi --mode rpc` child, JSONL |
+| Cursor CLI (planned) | 2026.11.19-f005e9d | `agent --help`, `agent acp --help` | One long-lived `agent acp` child, ACP 1 |
 
 Help verifies flag spelling and advertised modes only, not record schemas or multi-turn behavior. That is why each adapter also needs recorded fixtures.
 
@@ -82,16 +89,18 @@ GPUI main thread                         Core (shika-core)
                                            "lead-chat" actor thread: owns ChatStore + child
                                              stdout reader thread -> frames (sync_channel(8))
                                              stderr drain thread -> sink
-                                           claude -p ... (own process group)
+                                           claude -p ... or codex app-server ... (own process group)
 ```
 
+This section describes the shared machinery and Claude's protocol; [Codex](#codex) covers what differs for Codex.
+
 - **One actor per live Lead.** `ChatTransport::start` opens the store, recovers an unfinished turn, binds the context, spawns the child, and starts the `lead-chat` thread. All store writes and all pipe IO happen on that thread. The UI only sends commands and drains events, so a Lead off screen still has its pipes drained.
-- **The child.** `Process::spawn` runs the resolved `claude` binary in the Lead worktree with its own process group (`process_group(0)`), `PATH` with the control `bin` directory first, `PWD`, `SHIKA_SOCKET` and `SHIKA_TOKEN`. It removes the git redirect variables, the worker report variables (`pty::CONTROL_VARS`, so a Lead never inherits a report credential), and `CLAUDE_CODE_CHILD_SESSION` and `CLAUDECODE`, so a Shika started from inside Claude Code still gets a persisted Lead conversation. stdin is set nonblocking. The first write is the initialize control request.
+- **The child.** `Process::spawn` runs the resolved CLI in the Lead worktree with its own process group (`process_group(0)`), `PATH` with the control `bin` directory first, `PWD`, `SHIKA_SOCKET` and `SHIKA_TOKEN`. It removes the git redirect variables, the worker report variables (`pty::CONTROL_VARS`, so a Lead never inherits a report credential), and the protocol's own (`LeadProtocol::env_remove`; for Claude `CLAUDE_CODE_CHILD_SESSION` and `CLAUDECODE`, so a Shika started from inside Claude Code still gets a persisted Lead conversation). Before exec it resets SIGINT, SIGTERM and the other job signals to their defaults and empties the signal mask (`reset_signals`, what `portable-pty` does for workers): Rust's spawn keeps the caller's mask, and the app's threads block SIGINT and SIGTERM, so until 2026-11-20 every chat CLI ignored both and only SIGKILL stopped it. stdin is set nonblocking. The first write is the protocol's handshake (`LeadProtocol::handshake`; Claude's initialize control request).
 - **Arguments** (`ChatLaunch::args`): `-p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --append-system-prompt <guide plus memory> --permission-prompts host --permission-prompt-tool stdio`, then `--session-id <uuid>` for a fresh conversation or `--resume <uuid>`. All are built as an argument array; nothing passes through a shell.
 - **Framing.** The reader reads newline-terminated frames up to 8 MiB. A longer or unterminated frame is a `BadFrame`. The frame channel holds eight frames, so a flood blocks the reader, not memory. Every frame and EOF carries the process generation; frames from an older child are ignored.
-- **Initialization.** If the `shika-initialize` control response does not arrive within 10 seconds, the turn fails with "This Claude Code version could not be read" and the child is stopped.
-- **Usage.** `start_chat_lead` registers the Lead worktree as a Claude usage source when usage collection runs, and the actor pokes it on every event, so Lead tokens reach the Usage dashboard the same way PTY output does for workers. See [token-usage.md](token-usage.md).
-- **Quit.** `cx.on_app_quit` calls `Core::stop_lead_chats`, which stops and joins every actor (SIGINT, SIGKILL after 2 seconds). GPUI may keep window state alive until exit, so RAII alone is not enough. Stop Lead goes through `Core::hang_up`, which removes and stops the transport. `ChatTransport` and `Process` also stop and reap on drop.
+- **Initialization.** If the handshake (Claude's `shika-initialize` control response) does not finish within 10 seconds, the turn fails with the protocol's unreadable message ("This Claude Code version could not be read", "This Codex version could not be read") and the child is stopped.
+- **Usage.** `start_chat_lead` registers the Lead as a usage source when usage collection runs, and the actor pokes it on every event, so Lead tokens reach the Usage dashboard the same way PTY output does for workers: Claude by its worktree, Codex by thread id once the handshake reports it (see [Codex](#codex)). See [token-usage.md](token-usage.md).
+- **Quit.** `cx.on_app_quit` calls `Core::stop_lead_chats`, which stops and joins every actor the protocol's way (`LeadProtocol::shutdown`): Claude gets SIGINT, Codex has its stdin closed; a CLI still running 2 seconds later gets its stop signal, and SIGKILL 2 seconds after that. GPUI may keep window state alive until exit, so RAII alone is not enough. Stop Lead goes through `Core::hang_up`, which removes and stops the transport. `ChatTransport` and `Process` also stop and reap on drop.
 
 ### One turn end to end
 
@@ -159,16 +168,17 @@ Escape in the chat (outside IME and overlays) or the Stop button sends `ChatActi
 4. The turn settles with the event "Reply stopped" and `Settled`; no partial text is shown or saved. The child is dropped and the actor stays.
 5. The next Send spawns a fresh child with `--resume` on the same confirmed id.
 
-Shell tools the Lead was running, including a blocking `shika wait` client, normally inherit that process group and stop too (a tool that starts its own group escapes the signal and is reaped by nothing in Shika); the socket disconnect releases the doorbell gate as for any abandoned wait. Workers are separate PTYs owned by Shika and keep running (asserted by `claude_chat_has_no_pty_confirms_identity_and_keeps_history_until_forget`). Stop generating is not Stop Lead: `⌘⇧W` and the header button still open the existing Stop/Forget confirmation.
+Codex stops differently: see [Codex](#codex). With Claude, shell tools the Lead was running, including a blocking `shika wait` client, normally inherit that process group and stop too (a tool that starts its own group escapes the signal and is reaped by nothing in Shika); the socket disconnect releases the doorbell gate as for any abandoned wait. Workers are separate PTYs owned by Shika and keep running (asserted by `claude_chat_has_no_pty_confirms_identity_and_keeps_history_until_forget`). Stop generating is not Stop Lead: `⌘⇧W` and the header button still open the existing Stop/Forget confirmation.
 
 ### Failures and exits
 
 | Situation | What the code does |
 | --- | --- |
 | Write fails or times out | Event "Delivery unknown. Work may already have started. Send again only when you are ready to retry.", the child is stopped, and the author's text is offered through Retry message. Nothing is resent automatically. |
-| Provider error result | Event "Claude Code could not complete the reply. Check its sign-in and connection, then retry." The child is stopped; the next Send resumes. Retry message is offered. |
-| Unreadable stream, oversized frame, or no initialize response in 10 seconds | Event "This Claude Code version could not be read" (with the version when known). The transport exits and the Lead rests. |
-| Different session id | Event "Claude Code returned a different conversation". The transport exits; the saved id is never overwritten. |
+| Provider error result | Event "Claude Code could not complete the reply. Check its sign-in and connection, then retry." (Codex: "Codex could not complete the reply. ..."). The child is stopped; the next Send resumes. Retry message is offered. |
+| Unreadable stream, oversized frame, or no handshake in 10 seconds | Event "This Claude Code version could not be read" or "This Codex version could not be read" (with the version when known). The transport exits and the Lead rests. |
+| Different session id | Event "Claude Code returned a different conversation" (or "Codex returned a different conversation"). The transport exits; the saved id is never overwritten. |
+| Codex refuses `thread/resume` | Event "Codex could not resume this conversation"; the transport exits, so the 5 second refused-resume rule below applies. |
 | Child exits during a turn without a result | Event "The reply ended before it was complete", then exit handling below. |
 | Child exits while idle | Event "The Lead stopped unexpectedly". |
 | Any unexpected exit | `ChatEvent::Exit`; the actor ends. The app marks the host exited. Within 5 seconds of a resumed launch it is a [resume refusal](#conversation-identity-resume-and-the-fresh-start-fallback); otherwise the Lead rests with the toast "The Lead stopped unexpectedly. Select it to resume." and the chat shows "Lead is not running" with Resume. |
@@ -179,11 +189,11 @@ Errors are muted event rows or a line above the composer, never fake assistant b
 
 ### Conversation identity, resume and the fresh-start fallback
 
-- **Choosing.** `start_lead_inner` keeps today's `choose_conversation`: resume when the saved record names Claude, has a valid id, and `CliHome::session_exists` finds `<claude config>/projects/*/<id>.jsonl` (`CLAUDE_CONFIG_DIR` is honored); otherwise fresh with a new UUID.
-- **Provisional id.** For a fresh chat Lead, `projects.json` saves `sessionId: null` at start. The id is committed only when `system/init` confirms it, via `confirm_lead_chat` (live Lead, Claude preset, transport present, saved CLI is Claude, no different id saved). A Lead stopped before its first message therefore has no id and starts fresh next time.
+- **Choosing.** `start_lead_inner` keeps today's `choose_conversation`: resume when the saved record names the same CLI, has a valid id, and `CliHome::session_exists` finds it (Claude: `<claude config>/projects/*/<id>.jsonl`, `CLAUDE_CONFIG_DIR` honored; Codex: an unarchived `threads` row or a rollout file, `CODEX_HOME` honored); otherwise fresh. A fresh Claude Lead gets a new UUID from Shika; a fresh Codex Lead gets none, and its handshake reports one (`lead::Identity`).
+- **Provisional id.** For a fresh chat Lead, `projects.json` saves `sessionId: null` at start. The id is committed only when the CLI confirms it at the Lead's first turn (Claude's `system/init`, Codex's first `turn/started`), via `confirm_lead_chat` (live Lead, a chat CLI, transport present, saved CLI is the same, no different id saved). A Lead stopped before its first message therefore has no id and starts fresh next time.
 - **Resume.** A resumed start passes `--resume <id>` immediately. After an interrupt, a respawn on the next Send also uses `--resume` and emits `Resuming`, which resets `LeadRun::resumed_at`.
-- **Refusal.** If the transport exits within `model::RESUME_GRACE` (5 seconds) of a resumed launch, `lead_upkeep` asks `saved_lead_session_exists` off thread. Known missing: clear the id, start fresh once, toast "Could not resume the Lead's conversation. Started a new one." Exists or unknown: keep the id, rest, toast "The Lead's CLI exited right after resuming. Select it to try again, or Forget it to start a new conversation." This is the terminal Lead's logic, unchanged.
-- **Migration.** A saved terminal Claude Lead keeps its CLI and id and resumes in chat. Its visible history starts empty; nothing is imported, recapped, or submitted to populate the view.
+- **Refusal.** If the transport exits within `model::RESUME_GRACE` (5 seconds) of a resumed launch, `lead_upkeep` asks `saved_lead_session_exists` off thread. Known missing: clear the id, start fresh once, toast "Could not resume the Lead's conversation. Started a new one." Exists or unknown: keep the id, rest, toast "The Lead's CLI exited right after resuming. Select it to try again, or Forget it to start a new conversation." This is the terminal Lead's logic, unchanged. The toast is drawn over the chat as over a terminal (before 2026-11-20 it was drawn only on the terminal side, so a chat Lead's toasts never showed), and going live again clears the old process's "The Lead stopped unexpectedly" line (`LeadChat::went_live`).
+- **Migration.** A saved terminal Lead (Claude Code or Codex) keeps its CLI and id and resumes in chat. Its visible history starts empty; nothing is imported, recapped, or submitted to populate the view. A Codex thread that never received instructions through chat gets them once as a developer message (see [Codex](#codex)); that is model context, not a visible turn.
 - **CLI change.** If the author picks another CLI, `SavedLead::chat_history` is carried over, so a later Claude Lead reopens the same lifetime history. History is never sent to the other CLI.
 
 ### History storage
@@ -228,7 +238,7 @@ The ledger, batching, and gates are the ones in [shika-cli.md](shika-cli.md#the-
 
 ### The view
 
-`LeadChat` is one GPUI entity per project, created by `ensure_lead_chat` for every project whose saved Lead is Claude, so a resting Lead shows its history and drafts and scroll position survive card switches in memory. `chat_side` replaces the terminal side for a selected live or resting Claude Lead, with the header (antler mark tile, "{project} Lead", the worker summary on a live Lead, Stop Lead `⌘⇧W` or Resume `↵`). The list is a GPUI `list` with bottom alignment and tail follow; rows are time separators (first row, a 5 minute gap, or a new local day, formatted with libc `strftime`), event rows, and one row per markdown block, so a very tall reply builds only visible rows. Prose blocks over 4096 bytes are split for layout without truncating text. Bubble text is a read-only `ChatInput` per visible block, cached by `(record id, block)`. "New messages" appears when not at the bottom, floating over the list's bottom edge so it never resizes the list. Scrolling is described in [Scrolling](#scrolling). Ctrl+Q returns to the cards. Exact geometry, keys and focus rules are in [DESIGN.md](../design/DESIGN.md#lead-chat).
+`LeadChat` is one GPUI entity per project, created by `ensure_lead_chat` for every project whose saved Lead runs on a chat CLI (`lead_chat_supported`), so a resting Lead shows its history and drafts and scroll position survive card switches in memory. `chat_side` replaces the terminal side for a selected live or resting chat Lead, and the toast is drawn over it, with the header (antler mark tile, "{project} Lead", the worker summary on a live Lead, Stop Lead `⌘⇧W` or Resume `↵`). The list is a GPUI `list` with bottom alignment and tail follow; rows are time separators (first row, a 5 minute gap, or a new local day, formatted with libc `strftime`), event rows, and one row per markdown block, so a very tall reply builds only visible rows. Prose blocks over 4096 bytes are split for layout without truncating text. Bubble text is a read-only `ChatInput` per visible block, cached by `(record id, block)`. "New messages" appears when not at the bottom, floating over the list's bottom edge so it never resizes the list. Scrolling is described in [Scrolling](#scrolling). Ctrl+Q returns to the cards. Exact geometry, keys and focus rules are in [DESIGN.md](../design/DESIGN.md#lead-chat).
 
 A live Lead with no visible history shows the antler mark, "What should we work on?" and the composer as one centered group with no dock; after the first send the composer docks at the bottom, without animation. The composer has no border (focus is the caret) and a 32px round action: send arrow (sunken and inert when the draft is empty, primary with text) or stop square while Working or Asking. Enter in the composer queues while the Lead is Working; the stop square still stops.
 
@@ -257,7 +267,7 @@ The previous version of this file was the approved design. Where the implementat
 - An unexpected exit both writes an event row and rests the Lead with the toast "The Lead stopped unexpectedly. Select it to resume."
 - Questions are limited to 4 questions of at most 4 options; anything else is treated as an unsupported interaction.
 - Unsaved history rows after a write failure are buffered in memory only; they are lost if the app quits before Retry save succeeds.
-- Chat is selected by preset id (`claude`) with no setting; there is no way to keep a Claude Lead in a terminal.
+- Chat is selected by preset id (`lead_chat_supported`: `claude`, `codex`) with no setting; there is no way to keep a Claude Code or Codex Lead in a terminal.
 
 ## Queued messages
 
@@ -337,7 +347,7 @@ Reproduce with the tests below, or in the native app with disposable data per [i
 - Keep the doorbell behind the queue. Any new sender that submits to a chat Lead must check `chat_quiet`.
 - A new way to drop a chat (a new close path) must either call `restore_queued` or add `warning(queued_lead_messages(...))` to its dialog.
 - Do not make the composer inert while Working; the author must always be able to type. Colors come from `Chrome`.
-- Other CLIs: Codex, Cursor CLI and Pi Leads are terminals today and have no queue; the terminal keeps its own typing rules. A new chat adapter inherits the queue unchanged because it sits above the transport.
+- Other CLIs: Cursor CLI and Pi Leads are terminals today and have no queue; the terminal keeps its own typing rules. A chat adapter inherits the queue unchanged because it sits above the transport, as Codex did.
 
 ### Tests
 
@@ -355,11 +365,12 @@ The Quit, Forget and Remove project sentences come from the tested `warning` and
 
 | File | Responsibility |
 | --- | --- |
-| `crates/shika-core/src/lead_transport.rs` (new), `lead_transport/protocol.rs`, `lead_transport/claude.rs`, `lead_transport/jsonrpc.rs`, `lead_transport/actor.rs` | `ChatTransport` (public handle), `ChatLaunch`, `Parsed`, `ChatEvent`, `ChatStatus`, `ChatQuestion*`; in `protocol.rs`, the `LeadProtocol` trait (arguments, env, handshake, send, answer, interrupt, shutdown, decoding, strings); in `claude.rs`, `ClaudeStream` (decoder and final-response filter) and its arguments; in `jsonrpc.rs`, a JSON-RPC 2.0 helper not wired yet; in `actor.rs`, `Actor` (turn state, persistence, process lifecycle), `Process` (spawn, env, nonblocking stdin, reader threads, signals, reap), and `write_frame`. Unit tests over the fixtures. |
+| `crates/shika-core/src/lead_transport.rs` (new), `lead_transport/protocol.rs`, `lead_transport/claude.rs`, `lead_transport/codex.rs`, `lead_transport/jsonrpc.rs`, `lead_transport/actor.rs` | `ChatTransport` (public handle), `ChatLaunch`, `Parsed`, `ChatEvent`, `ChatStatus`, `ChatQuestion*`, `chat_cli` (CLIs with a protocol in Core) and `lead_chat_supported` (the shipped gate, `SHIPPED`); in `protocol.rs`, the `LeadProtocol` trait (arguments, env, handshake, send, answer, interrupt, shutdown, stop signal, decoding, strings) and `for_cli`; in `claude.rs`, `ClaudeStream` (decoder and final-response filter) and its arguments; in `codex.rs`, `CodexAppServer` (handshake, thread open and instruction injection, final-response filter, questions, interrupt); in `jsonrpc.rs`, `Rpc` (request ids, pending requests with deadlines, response correlation, server requests); in `actor.rs`, `Actor` (turn state, persistence, process lifecycle), `Process` (spawn with `reset_signals`, env, nonblocking stdin, reader threads, signals, reap), and `write_frame`. Unit tests over the fixtures (`claude_tests.rs`, `codex_tests.rs`, `jsonrpc_tests.rs`, `actor_tests.rs`). |
 | `crates/shika-core/src/lead_chat.rs` (new) | The `Core` boundary: `lead_chat_send`, `lead_chat_events`, `lead_chat_interrupt`, `lead_chat_answer`, `lead_chat_retry_save`, `lead_chat_page`, `confirm_lead_chat` (operations lock, live identity), `stop_lead_chats`. |
 | `crates/shika-core/src/lead_chat_store.rs` (new) | `ChatStore`: open with path and version checks, `bind`, `append_batch`, `page`, `recover`, index rebuild; `delete` for Forget; `ChatContent`, `ChatOrigin`, `ChatRecord`. |
 | `crates/shika-core/src/lead.rs` | `start_chat_lead(project, cli, launch)` and the shared `start_lead_inner` (same worktree, conversation choice, guide plus memory, control env), with `Identity` naming where a fresh id comes from (preallocated, reported by the handshake, created by the CLI); chat saves no provisional id and carries `chat_history`; Forget deletes chat. |
-| `crates/shika-core/src/lib.rs` | `Core::chats` map; `hang_up` stops the transport; `Session::pty` became optional; re-exports; core integration tests with a fake `claude` (in `src/tests/lead_chat.rs`). `remove_project` now deletes memory (and chat) after hanging up sessions. |
+| `crates/shika-core/src/lib.rs` | `Core::chats` map; `hang_up` stops the transport; `Session::pty` became optional; re-exports; core integration tests with a fake `claude` (in `src/tests/lead_chat.rs`) and a fake `codex` (`src/tests/lead_chat_codex.rs`). `remove_project` now deletes memory (and chat) after hanging up sessions. |
+| `crates/shika-core/src/lead_chat_store.rs`, `usage/collector/` | `instructed` and `set_instructed`: the fingerprint of the instructions a Codex thread last received. Codex usage targets with `threads` roots (`usage::CodexThreads`). |
 | `crates/shika-core/src/projects.rs`, `session.rs`, `error.rs` | `SavedLead::chat_history` (`chatHistory`); `Session::pty: Option<PtyId>` (`None` only for a chat Lead; Switch agent refuses it); `Error::LeadChat`. |
 | `crates/shika-core/tests/fixtures/` (new) | Three installed-CLI recordings, one hand-written stream, and their provenance README. |
 | `crates/shika/src/lead_chat/` (new) | `LeadChat` (`mod.rs`) and its view (`view.rs`, `rows.rs`, paging and scroll anchor in `history.rs`, `selection.rs`, composer wiring in `composer.rs`, steps and worker summary in `progress.rs`, banners) and the `Shika` glue: `ensure_lead_chat`, `submit_lead_chat`, `drain_lead_chats` (events to status, notifications, questions, identity confirmation, resume and exit handling) in `glue.rs`, `selected_chat`, `chat_side` in `side.rs`. |
@@ -370,7 +381,7 @@ The Quit, Forget and Remove project sentences come from the tested `warning` and
 | `crates/shika/src/text_edit.rs` | The editing core shared with `name_input.rs`: text, selection, and AppKit's standard key bindings (word, line, paragraph and document moves, Shift extension, deletes, the kill buffer, emacs keys). The composer keys are in [DESIGN.md](../design/DESIGN.md#lead-chat). |
 | `crates/shika/src/control/doorbell.rs` | `ChatDelivery`, `chat_delivery_finished`, chat-aware `lead_gate`, chat delivery in `ring_doorbells` and the restart summary, `Gate::waiting`. |
 | `crates/shika/src/activity/` | `Activity::advance_chat` and its test. |
-| `crates/shika/src/card.rs`, `overlay.rs`, `main.rs`, `startup.rs`, `lead.rs`, `launch/mod.rs`, `focus.rs`, `tick.rs`, `tabs.rs` | `Card::chat`, `Card::chat_delivery` (`card.rs`); `Overlay::LeadQuestion` (`overlay.rs`); `Shika::leads` (`main.rs`); `Leads::chats`, `Leads::questions`, `LeadRun::unexpected_exit` (`lead.rs`); launch routing to `start_chat_lead` through `shika_core::lead_chat_supported` (`launch/start.rs`); focus (`focus.rs`) and Seen for chat (`tick.rs`); skipping chat cards in terminal sampling (`tick.rs`); tabs disabled (`tabs.rs`); quit hook (`startup.rs`). |
+| `crates/shika/src/card.rs`, `overlay.rs`, `main.rs`, `startup.rs`, `lead.rs`, `launch/mod.rs`, `focus.rs`, `tick.rs`, `tabs.rs` | `Card::chat`, `Card::chat_delivery` (`card.rs`); `Overlay::LeadQuestion` (`overlay.rs`); `Shika::leads` (`main.rs`); `Leads::chats`, `Leads::questions`, `LeadRun::unexpected_exit` (`lead.rs`); launch routing to `start_chat_lead` through `shika_core::lead_chat_supported` and `LeadChat::went_live` (`launch/start.rs`); the toast over the chat (`terminal_side/mod.rs`); focus (`focus.rs`) and Seen for chat (`tick.rs`); skipping chat cards in terminal sampling (`tick.rs`); tabs disabled (`tabs.rs`); quit hook (`startup.rs`). |
 | `crates/shika/src/model.rs`, `appearance/chrome.rs`, `Cargo.toml` | Forget dialog fact about chat history; `PartialEq` on `Chrome` for cheap theme change checks; `libc` for local time formatting. |
 | Docs | This guide; pointers in AGENTS.md, CONTRIBUTING.md, lead-agent.md, shika-cli.md, agent-activity.md, `crates/shika-core/README.md`; DESIGN.md Lead chat section and plates; MANUAL_CHECKS.md. The Lead guide is unchanged. |
 
@@ -382,7 +393,7 @@ The Quit, Forget and Remove project sentences come from the tested `warning` and
 
 ### Debugging by symptom
 
-Inspect the **isolated** data directory: `projects.json` (`lead.cli`, `lead.sessionId`, `lead.chatHistory`) and the chat database. Read it with the app quit, or read-only:
+Inspect the **isolated** data directory: `projects.json` (`lead.cli`, `lead.sessionId`, `lead.chatHistory`) and the chat database. Read it with the app quit, or read-only. Codex-specific symptoms are in [Codex](#codex).
 
 ```sh
 db="$fixture/data/leads/<project-id>/chat/history.sqlite"
@@ -405,7 +416,10 @@ sqlite3 -readonly "$db" "SELECT * FROM visible_entries ORDER BY id DESC LIMIT 20
 | Status sticks at Asking | A question queued under another overlay (`leads.questions`), an open `LeadDialog`, or an unsupported interaction. Status sticks at Working: see "A reply never appears". |
 | Doorbell never rings a chat Lead | `lead_gate`: composer draft, typing within 3 seconds, `saving`, `busy`, `save_failed`, an open wait, or `live` false. Rows appear only when delivery starts. |
 | Workers stopped after Stop generating | They should not; workers are separate PTY process groups. Check whether the Lead started a process outside Shika that a worker relied on. |
-| A chat child outlives the app | The quit hook (`stop_lead_chats`) did not run, for example after a crash. Find it with `pgrep -fl 'claude -p'` in the Lead worktree and stop it. |
+| A chat child outlives the app | The quit hook (`stop_lead_chats`) did not run, for example after a crash. Find it with `pgrep -fl 'claude -p'` or `pgrep -fl 'codex app-server'` and stop it. |
+| Stop generating or quit waits 2 seconds, then the CLI dies by SIGKILL | The child ignored its stop signal. Its signal mask must be empty: `Process::spawn` resets it, because app threads block SIGINT and SIGTERM and a spawned child keeps the caller's mask. `ps` does not show a thread's blocked signals reliably; test with a fake CLI started from a thread that blocks them, as `a_chat_cli_does_not_inherit_the_callers_blocked_signals` does. |
+| "Reply stopped" appears twice, the second with no turn | Fixed 2026-11-20: a quit or interrupt after the process was already gone settled a turn that did not exist. `quitting_after_a_stop_that_ended_the_process_adds_no_row`. |
+| A toast the code posts never shows over the chat | `terminal_side` draws it over `chat_side` too; check that path, not `chat_side` alone. |
 
 ### Isolated reproduction
 
@@ -444,7 +458,8 @@ Add the printed repo, then Cmd+L and choose Claude Code. That run uses the insta
 - `claude-2.1.302-local.jsonl` (two turns with a tool) and `claude-2.1.302-question-local.jsonl` (a correlated `AskUserQuestion`) were recorded on 2026-10-16 from installed Claude Code 2.1.302 with the [chat arguments](#processes-and-threads), a disposable repository and `CLAUDE_CONFIG_DIR`, a fake local-only API key, and an HTTP server on loopback returning synthetic Messages responses. No provider request or paid usage occurred. They test the real CLI envelope, not model behavior.
 - `claude-2.1.302-background-local.jsonl` was recorded on 2026-10-17 the same way: one sent message whose turn starts a Bash command with `run_in_background` and settles, then the turn the CLI starts itself when that command finishes (task notification records, `system/init`, narration, a foreground tool, the final text, `result`). The loopback server answered `<task-notification>` requests like any other.
 - `claude-chat.jsonl` is hand-written from the documented format: thinking, subagent text, a partial `stream_event`, a duplicate record, and an aggregate `result` containing commentary.
-- Tests read fixtures with `include_str!`; they never spawn a real Claude or read provider files.
+- `codex-0.162.1-*-local.jsonl` and the schema subset are described in [Codex](#codex) and the fixtures README.
+- Tests read fixtures with `include_str!`; they never spawn a real CLI or read provider files.
 
 To re-record after a CLI upgrade:
 
@@ -463,6 +478,10 @@ To re-record after a CLI upgrade:
 | `tests::lead_chat::claude_chat_has_no_pty_...` | No PTY, provisional then confirmed id, final-only history, interrupt and continue, Stop keeping history and workers, Forget deleting chat and keeping memory. |
 | `tests::lead_chat::a_turn_the_claude_cli_starts_itself_...` | A fake CLI's own turn after a settled one: `Started` then Working, final-only Lead bubble, rows `Accepted`, `Lead`, `Settled` with no author bubble, and the next send numbered after it. The decoder side is `installed_cli_background_fixture_...`. |
 | `tests::lead_chat::chat_interrupt_cancels_a_blocked_pipe_write_...` | A write blocked on a full pipe is interruptible, and quit reaps within 4 seconds. |
+| `lead_transport::codex::tests::*` | Every Codex fixture replayed through `CodexAppServer`, each written frame checked against the recorded one: final-only with and without `phase`, retried errors and failed turns, interrupts with and without a running command, questions and cancel, blocked requests, a turn Codex starts itself, subagent threads dropped, resume with unchanged and changed instructions, refused and different resumes, launch arguments, garbage and oversized records, and stops at every turn state. |
+| `lead_transport::jsonrpc::tests::*`, `lead_transport::actor::tests::*` | Request ids, deadlines and correlation; the actor's soft and hard stops, `Lingering`, `Accepted` from a response, deferred sends and `Instructed`. |
+| `tests::lead_chat_codex::*` | A fake `codex` on a scratch PATH: no PTY, the thread confirmed at its first turn, final-only history, interrupt with and without a running command (SIGTERM, then resume in a new process), instructions injected only when memory changed, a saved terminal-era thread resumed with empty history and one injection, Stop keeping workers, Forget keeping memory, quit with a turn running, no stray row after a stop that ended the process, and a child started from a thread that blocks SIGINT and SIGTERM still stopping at once. |
+| `lead_chat::queue_tests::going_live_again_clears_the_exit_line_but_not_a_save_failure` | The old process's exit line goes when a start makes the Lead live; a save failure stays. |
 | `activity::tests::chat_status_uses_explicit_results_and_retains_the_turn_clock` | Turn clock across Asking, one notification per turn. |
 | `activity::tests::a_chat_turn_the_cli_starts_itself_needs_the_submission_mark` | Why `Started` is a submission: without it a new turn keeps the old clock and never notifies. |
 | `lead_chat::markdown` tests | Bash fences as code, HTML as text, unsafe links refused, long prose split without losing style ranges. |
@@ -471,15 +490,16 @@ Passing tests are not native acceptance. Record GUI results in MANUAL_CHECKS.md.
 
 ## Extending to other CLIs
 
-### Where Claude is hard-wired today
+### Where each CLI is wired
 
-Adding a CLI is not just a new decoder. These places assume Claude:
+Until 2026-11-20 the transport assumed Claude in many places (the decoder, arguments, the initialize write, `store.bind("claude", ...)`, error strings). After the protocol boundary and the Codex adapter, a new CLI touches only these:
 
-- `lead_transport.rs` and `lead_transport/actor.rs`: `ClaudeStream`, `ChatLaunch::args`, the initialize write in `Process::spawn`, `store.bind("claude", ...)`, Claude-specific error strings, and the exit rule that treats every unstopped child exit as `Exit` (wrong for one-child-per-turn CLIs).
-- `lead.rs`: generalized. `start_chat_lead(project, cli, launch)` takes any CLI with a chat protocol (`lead_transport::chat_cli`), and `Identity` says where a fresh id comes from. The app offers a chat Lead only for `shika_core::lead_chat_supported`, which lists Claude Code alone until another CLI passes its acceptance.
-- `lead_chat.rs` (core): generalized. `confirm_lead_chat` accepts any `chat_cli` whose saved CLI matches the live Lead's.
-- App: generalized. Launch routing (`LaunchOwner::chat`), the saved Leads' chats in `Render`, `selected_chat`, and the Leads card's reply line all ask `shika_core::lead_chat_supported`.
-- `LeadRun::discovery` (Codex id polling) runs only for a terminal Codex Lead; the terminal resume grace assumes PTY exits.
+- `lead_transport/<cli>.rs`: a `LeadProtocol` implementation (arguments, env to remove, handshake, send, answer, interrupt, shutdown and stop signal, decoding, strings), registered in `protocol::for_cli`.
+- `lead_transport.rs`: `chat_cli` lists the CLIs with a protocol in Core; `lead_chat_supported` (`SHIPPED`) lists those the app runs as chat Leads. A CLI joins `SHIPPED` only in the commit that records its acceptance.
+- `lead.rs`: `identity(preset, chat)` says where a fresh id comes from (`Preallocated`, `Reported` by the handshake, or `Created` by a CLI command). `start_chat_lead` and `confirm_lead_chat` accept any `chat_cli`.
+- `cli_title.rs`: `CliHome::session_exists` for the refused-resume check.
+- Usage: a source for the Lead's conversation if the CLI's own discovery cannot find it (Codex registers its thread id).
+- The app needs no change: launch routing (`LaunchOwner::chat`), the saved Leads' chats in `Render`, `selected_chat`, the Leads card's reply line and `LeadRun::discovery` all follow `lead_chat_supported`.
 
 ### Steps for any adapter
 
@@ -488,33 +508,88 @@ Adding a CLI is not just a new decoder. These places assume Claude:
 3. **Introduce an adapter boundary.** Split the decoder, arguments, process model (long-lived or per turn), initialization, interrupt method and identity source behind one type, and keep `Actor`'s persistence, fencing and event vocabulary shared. Keep the store's `bind(cli, conversation)` honest.
 4. **Identity.** Decide where the id comes from (preallocated, allocated by a helper command, or reported on the first turn) and commit it only through a generation-checked `confirm_lead_chat` for that preset.
 5. **Status and exits.** Map only explicit lifecycle events. For per-turn CLIs, a clean exit after a terminal event is a normal Ready and must not emit `Exit`, `Resuming`, or trip the 5 second resume grace; a clean exit without one is "The reply ended before it was complete".
-6. **Switch the preset.** Update launch routing, `confirm_lead_chat`, `ensure_lead_chat` and `selected_chat`, and disable Codex id polling for a chat Lead.
+6. **Switch the preset.** Add it to `SHIPPED` in `lead_chat_supported` once its native acceptance passes, with the tests that list shipped CLIs.
 7. **Docs and checks.** Update AGENTS.md (launch table and Lead flags), this guide, lead-agent.md, CONTRIBUTING.md's product clause, DESIGN.md if visible, and add a MANUAL_CHECKS.md section. Leave items unchecked until performed.
 
-### Codex (planned)
+### Codex
 
-- Fresh: `codex exec --json --dangerously-bypass-approvals-and-sandbox -c <instructions> -c <trust> -`. Resume: `codex exec resume --json --dangerously-bypass-approvals-and-sandbox -c <instructions> -c <trust> <id> -`. Write one prompt to stdin and close it; set the cwd to the Lead worktree.
-- Instructions: TOML-encoded `developer_instructions=<guide plus memory>` on every exec, plus today's per-process `projects={"<worktree>"={trust_level="trusted"}}`. Reverify `developer_instructions` in exec mode specifically; the existing evidence is interactive.
-- Identity: `thread_id` from `thread.started`, saved with the live Lead check and required to match on resume. No newest-thread scan and no 2 second polling.
-- Final response: buffer `agent_message` items by item id; on `turn.completed` publish only the last completed message after the last tool call (or a verified final phase). Intermediate commentary is also `agent_message`. `turn.failed` or `error` fails the turn.
-- Trap: the current fresh path returns `Error::UnknownCli` because Codex has no preallocated id.
+Implemented 2026-11-20 against codex-cli 0.162.1 (`crates/shika-core/src/lead_transport/codex.rs`, `CodexAppServer`). Everything not named here (the store, fencing, queue, doorbell, view, status mapping) is shared with Claude.
 
-### Cursor CLI (planned)
+**Process model.** One `codex app-server` child per live Lead, JSON-RPC 2.0 over stdio, one JSON object per LF-terminated line; server frames carry no `"jsonrpc"` field. It survives turns and Stop generating unless a command was still running (see Interrupt). The subcommand is labelled `[experimental]`; the author accepted that with per-version fixtures and a visible "This Codex version could not be read" (Decision 5).
 
-- Every turn: `agent -p --output-format stream-json --yolo --trust --sandbox disabled --resume <id> <prompt>`. No keep-alive process; help offers no stream input.
-- Fresh: run `agent create-chat` in the Lead worktree and save the id. If allocation fails, keep today's fallback: launch without an id and bind the reported id to this fresh live Lead only.
-- Instructions: there is no system prompt flag. Keep the existing bootstrap as a separate first Shika-origin turn for a fresh Lead only, with no author bubble; never on resume or later turns.
-- Final response: buffer complete top-level assistant messages; publish the last one after the last tool call on a successful `result`. Cursor's `result` text can concatenate intermediate messages and must never be shown.
-- Trap: `CliHome::session_exists` returns unknown for Cursor, so a refused resume always rests with the retry-or-Forget toast.
+**Launch** (`LeadProtocol::args`, checked with `codex app-server --help` and `codex features list`): `codex app-server --enable default_mode_request_user_input --disable goals -c projects={"<worktree>"={trust_level="trusted"}}`, in the Lead worktree with the shared Lead env. The trust value is built by `agents::codex_trust_override`, the same encoder workers use.
+
+**Handshake.** `initialize {clientInfo: {name: "shika", version}}`; its response's `userAgent` gives the version shown in errors. Then the `initialized` notification and, in the same write, the thread call:
+
+- Fresh: `thread/start {cwd, developerInstructions: <guide plus memory>, approvalPolicy: "never", sandbox: "danger-full-access"}`.
+- Resume: `thread/resume {threadId, cwd, approvalPolicy, sandbox, excludeTurns: true}`. `excludeTurns` keeps the whole history out of the response and under `MAX_FRAME`. No `developerInstructions`: Codex ignores them on resume (Step 1 evidence; `codex resume -c developer_instructions=...` in a terminal behaves the same, so a resumed terminal Codex Lead never got later memory notes).
+
+Each request, `turn/start` and `thread/inject_items` included, has a 10 second deadline (`jsonrpc::Rpc`); a missed one fails the turn with "This Codex version could not be read". A send that arrives before the thread is open waits in the protocol (`Turn::Deferred`) and goes out once it is.
+
+**Instructions on resume.** After `thread/resume`, if the guide plus memory differ from what this thread last received, Shika sends one `thread/inject_items {threadId, items: [{type: "message", role: "developer", content: [{type: "input_text", text}]}]}` before any turn. It reaches the model and persists into later sessions. What was delivered is an md5 fingerprint of `[cli, conversation, instructions]` in the chat store's `metadata` table (key `instructions`, never the text), written on `Parsed::Instructed`: at `thread/start`, or when the injection is answered. A thread saved by a terminal-era build has no fingerprint, so its first chat resume injects once; it is model context, never a visible row (`a_saved_terminal_codex_lead_resumes_its_thread_in_chat_with_empty_history`).
+
+**Identity.** `thread/start` returns the thread id (a UUIDv7) at once; that is `Parsed::Identity`, which binds the history. A thread with no turn has no rollout and `thread/resume` refuses it, so the id is only confirmed (`Parsed::Confirmed`, then `confirm_lead_chat` saves `lead.sessionId`) at the Lead thread's first `turn/started`, as Claude's is at its first `system/init`. `thread/resume` must report the same id, otherwise "Codex returned a different conversation". A refused resume (`-32600 "no rollout found for thread id <id>"`, or `"invalid session id"`) is fatal ("Codex could not resume this conversation"), so the 5 second refused-resume rule applies. No index scan and no 2 second polling: `LeadRun::discovery` is off for every chat Lead, and `discover_lead_session` returns the saved id.
+
+**Turns.** Send is `turn/start {threadId, input: [{type: "text", text}]}`; its response (with the turn id) is `Accepted`, not the pipe write (`write_accepts` is false). Notifications whose `threadId` is not the Lead's are dropped: subagent threads stream on the same connection. A `turn/started` while no turn of ours runs is a turn Codex started itself (`Parsed::Started`); goals are its only source and they are disabled, but it is still decoded.
+
+**Final-response filter**, released only by `turn/completed`:
+
+- `item/completed` with `type: "agentMessage"`: `phase: "final_answer"` messages are collected in order; any other message (`commentary`, `partial_answer`, or no phase, which Codex sends when the model did not) replaces the fallback candidate.
+- Any other item type except `userMessage`, `reasoning`, `plan`, `hookPrompt` and `contextCompaction` (commands, file changes, MCP and tool calls, subagent calls, unknown types) clears the fallback: text before a tool is commentary. `commandExecution` items are also tracked from `item/started` to `item/completed`.
+- `status: "completed"`: publish the `final_answer` messages joined by a blank line, else the fallback, else nothing. `failed`, or `completed` after an `error` notification with `willRetry: false`, fails the turn with "Codex could not complete the reply. Check its sign-in and connection, then retry." `interrupted` settles with no bubble. Anything else is unreadable.
+- Ignored: deltas, reasoning, plans, diffs, token usage, rate limits, MCP startup, `warning`, `thread/status/changed`, and `turn/completed`'s `items`, which is only a summary.
+- `error` with `willRetry: true` is a reconnect notice ("Reconnecting... 2/5"), not a failure.
+
+**Questions.** `item/tool/requestUserInput` for the Lead's thread and running turn becomes the native dialog when it has 1 to 4 questions with distinct ids and texts, at most 4 options each, and no `isSecret`; otherwise it is blocked like any unsupported interaction. Questions are single-choice with free text (`isOther`). The answer is the JSON-RPC result `{"answers": {"<question id>": {"answers": ["<label or text>"]}}}`; Cancel answers `{"answers": {}}`, which is all Codex documents (Decision 9). `serverRequest/resolved` closes the dialog. The request arrives with `isBlocking: false`, yet the turn waits for the answer. Default mode only offers the tool with `--enable default_mode_request_user_input` (an under-development feature; app-server sends a `warning` about it at every thread open); without it the model is told the tool is unavailable. Every other server request, approvals and MCP elicitation included, is blocked and never answered; with `approvalPolicy: "never"` and `danger-full-access` none was seen.
+
+**Interrupt.** Stop generating writes `turn/interrupt {threadId, turnId}` and waits for `turn/completed` with `interrupted` (it comes at once). Codex leaves the running command alive ("Any running unified exec processes may still be running" is what it tells the model), and a Lead's blocking `shika wait` would outlive the stop. So when a `commandExecution` item is still running at that `turn/completed`, the protocol returns `Parsed::Lingering` and the actor sends SIGTERM to the group at once: Codex exits and kills its tools, and the next send resumes the thread in a new process (`Resuming`). With nothing running the process is kept. A soft stop still running after 2 seconds gets SIGTERM, then SIGKILL 2 seconds later. A send not yet written settles at once; one written but not yet named by Codex is signalled. Workers are untouched either way.
+
+**Shutdown.** Quit and Stop Lead close stdin; Codex exits in milliseconds, also mid-tool, and kills its tools. The stop signal is SIGTERM: each tool runs in its own process group, so SIGKILL to the app-server's group orphans them.
+
+**Usage.** App-server threads are indexed with `source = 'vscode'` (the originator is the `clientInfo` name), which the cwd-based usage discovery skips. So the actor registers the thread id as a usage root (`usage::CodexThreads`, `Target::Codex::threads`) once the handshake reports it; the thread's rollout and spawned children are then read like any Codex task. Subscription limits keep reading the same rollouts. A resumed terminal-era thread stays `cli`.
+
+**Traps.**
+
+- *Inherited signal mask.* Codex spawned from an app thread inherited SIGINT and SIGTERM blocked and ignored both, so the Lingering SIGTERM did nothing, SIGKILL came 2 seconds later, and the command was orphaned (found in the 2026-11-20 native acceptance; a `python3` or `cargo test` parent never shows it). `Process::spawn` now resets signals; `a_chat_cli_does_not_inherit_the_callers_blocked_signals` keeps it.
+- *Trust.* Without the per-process trust override, `thread/start` with `danger-full-access` writes `[projects."<path>"] trust_level = "trusted"` into the author's `$CODEX_HOME/config.toml` (the main repository root for a linked worktree). Keep the `-c`.
+- *Goals.* Codex offers `create_goal` by default and continues goals in turns it starts itself; `--disable goals` keeps Lead turns to the author and the doorbell.
+- *Subagents.* Their threads share the connection; filter by `threadId` before anything else.
+- *Retries.* `error` with `willRetry: true` precedes a successful retry; never fail on it.
+- *Usage discovery.* `source = 'vscode'`, see Usage.
+- *Code mode.* With a real account the model runs shell through code mode (`exec` calling `exec_command`); the app-server still reports a `commandExecution` item, so the filter and Lingering rule hold.
+
+**Fixtures.** `crates/shika-core/tests/fixtures/codex-0.162.1-*-local.jsonl` (normal turns with and without `phase`, failure with retries, interrupt mid-tool, question, a background goal turn, resume of an app-server and of a TUI-created thread, subagents) and `codex-0.162.1-app-server-schema.json` (the subset of `generate-json-schema` Shika reads), recorded on 2026-11-20 against a loopback synthetic Responses server with a disposable `CODEX_HOME` and no real account. Provenance and the sanitizing rules are in the fixtures README. `codex_tests.rs` replays each recording and checks every frame Shika writes against the recorded client frame.
+
+**Debugging by symptom.** Reproduce in a disposable data directory (see [isolated reproduction](#isolated-reproduction)) and find the process with `pgrep -fl 'codex app-server'`.
+
+| Symptom | Inspect first |
+| --- | --- |
+| "This Codex version could not be read" | A request unanswered for 10 seconds or a line that is not JSON-RPC. Compare `codex --version` and `codex app-server --help` with the fixtures, run `codex app-server generate-json-schema`, and record a new fixture. |
+| Stop generating leaves a command running, or takes 2 seconds | Whether the app-server got SIGTERM and exited at once. If it lingers, check the child's signal mask is empty (`reset_signals`); a SIGKILL leaves tool processes, each in its own group, reparented to launchd. |
+| Every resume injects the instructions again | `metadata` key `instructions` in `history.sqlite`: it must hold `["codex", <thread id>, <md5>]` for the current thread. A guide or memory change injects once by design. |
+| A memory note never reaches a resumed Lead | No `thread/inject_items` was sent: the fingerprint matched. Read the thread's rollout (`$CODEX_HOME/sessions/.../rollout-*-<id>.jsonl`, read only) for the developer message. |
+| Lead tokens missing from Usage | `usage-sources/*.json` should have a Codex target with the thread id under `threads`. |
+| The Lead answers a question in prose instead of the dialog | The launch lacks `--enable default_mode_request_user_input`, or the feature was renamed: check `codex features list`. |
+| `config.toml` gained a trust entry for the Lead worktree | The trust override was missing from the launch. |
+| A reply appears that the author did not ask for | A `turn/started` with no `turn/start` from Shika: a goal, or a new Codex feature that starts turns. Check `--disable goals` and `codex features list`. |
 
 ### Pi (planned)
 
-- Launch: `pi --mode rpc --approve --append-system-prompt <instructions> --session-id <uuid>`. Before the first prompt, RPC `get_state` with a unique request id must report the same `data.sessionId`.
-- Turns: one RPC `prompt` per turn; wait for its correlated acceptance and then session events. No steering or follow-up queues. A handled prompt that starts no run must still settle.
-- Final response: buffer `message_end` records; publish the last completed text after the last tool call when `agent_settled` reports completion without abort or error. `agent_end` can precede automatic recovery and is not final; command acceptance is not completion.
-- Interrupt: RPC `abort`, wait for settlement, keep the process; fall back to terminating the group.
-- Questions: map Pi extension UI dialogs with verified schemas to the existing question dialog; notifications and status widgets are not blocking.
-- Trap: `--session-id` creates a missing id, so it is not evidence of a successful resume; keep today's existence check. Use the installed package's `docs/rpc.md` and related docs, not guessed verbs, and write the protocol in Rust, not Pi's TypeScript SDK.
+Next in the author's order. The plan (`plan.md` Step 4 while it is open) and the Step 1 evidence note replace the earlier sketch:
+
+- One long-lived `pi --mode rpc --approve --append-system-prompt <instructions> --session-id <uuid>` child, LF-framed JSON. `get_state` must report the same `data.sessionId`; `--session-id` creates a missing id, so keep the existence check.
+- One `prompt` per turn: `started` is acceptance, `handled` settles with no bubble, `success: false` is a refusal. Never send `streamingBehavior`.
+- Only `agent_settled` is final (retries, compaction and overflow recovery follow `agent_end`); the final is the latest assistant `message_end` with `stopReason: "stop"` after the last tool.
+- `abort` keeps the process, after cancelling every open extension dialog. Questions come from a Lead-only question tool in Shika's own extension (Decision 8). Drop `pi-activity.ts` for the chat Lead.
+
+### Cursor CLI (planned)
+
+Last in the author's order:
+
+- One long-lived `agent --force --trust --sandbox disabled acp` child (ACP 1); ACP ignores `--yolo`, and a `session/request_permission` that still arrives is blocked, never answered (Decisions 1 and 7).
+- `session/new` gives the id; instructions go in a temporary always-applied `.cursor/rules/shika-lead.mdc` written for `session/new` only (Decision 3), and memory changed since the session was created goes as one `[shika]` memory line on the next resume.
+- `session/load` replays history as updates, which must be swallowed. A terminal-era chat id cannot be loaded, so it starts fresh with the refused-resume toast (Decision 2).
+- The final is the `agent_message_chunk` text after the last `tool_call`/`tool_call_update`, released by the `session/prompt` response with `stopReason: end_turn`.
 
 ### Contributor guardrails
 
@@ -530,6 +605,7 @@ These must not change without the author's decision:
 - Stop generating stops only the Lead's own process group, never worker PTYs.
 - History stays local, private, unlimited, and separate from memory. Schema changes bump `user_version` additively; never overwrite or reset a store that fails to open.
 - Every chat color comes from `Chrome`. No hex values in chat views.
+- A chat CLI starts with default signal dispositions and an empty mask (`reset_signals`), as worker PTYs do. Its stop signal must reach it; never rely on the SIGKILL deadline.
 - Never copy Zed's GPL markdown, editor, terminal or terminal-view code.
 - Workers, closed tasks and non-chat Leads get no transcript.
 
@@ -570,7 +646,8 @@ Approved after the 2026-10-17 prototype review:
 
 - Unit and integration tests listed above, hermetic.
 - Installed-CLI fixtures recorded against a local synthetic server, without authenticated requests.
-- One isolated native smoke run recorded in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#claude-code-lead-chat-2026-10-16): final-only rendering after a real Bash tool, markdown, a native question, Stop and relaunch keeping history, a further send on the same conversation, Shika Light and Dark.
-- Still open: authenticated recall and compaction, every theme and translucency mode, all worker and dialog paths, keyboard and screen reader, IME, long histories, crash and write-failure recovery. Do not claim these from tests.
+- Claude Code: one isolated native smoke run recorded in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#claude-code-lead-chat-2026-10-16): final-only rendering after a real Bash tool, markdown, a native question, Stop and relaunch keeping history, a further send on the same conversation, Shika Light and Dark.
+- Codex: an isolated native acceptance run with the author's real Codex login on 2026-11-20, recorded in [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#codex-lead-chat-2026-11-20): final-only reply after a real tool, a native question answered and cancelled, Stop generating mid-tool with a worker kept, Stop Lead and relaunch with recall, the refused-resume fallback and toast, Forget keeping memory, the doorbell through chat, Shika Light and Dark, no child after quit.
+- Still open for both: compaction, every theme and translucency mode, all worker and dialog paths, keyboard and screen reader, IME, long histories, crash and write-failure recovery. Do not claim these from tests.
 
 Structured stream formats are documented but not a stable public API. Keep per-version fixtures, tolerate unknown optional fields, and fail visibly when lifecycle or identity evidence is missing. Attachments, voice input and reactions are possible follow-ups outside this design.
