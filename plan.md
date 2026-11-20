@@ -12,7 +12,7 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 | --- | --- | --- | --- |
 | 1 | Close deletes untracked files (done) | Small | `worktree/close.rs`, `worktree/lifecycle.rs` |
 | 2 | Refresh the index after creating a worktree (done) | Small | `worktree/lifecycle.rs` |
-| 3 | Fix the Claude trust note | Docs only | `docs/tasks-and-worktrees.md`, `AGENTS.md` |
+| 3 | Fix the Claude trust note (done) | Docs only | `docs/tasks-and-worktrees.md`, `AGENTS.md` |
 | 4 | Skip the first-New dialog when nothing is suggested | Small | `launch/mod.rs` |
 | 5 | More setup suggestions | Medium | `preparation.rs` |
 | 6 | Opt-in `node_modules` cloning | Large | `preparation.rs`, new clone module, setup editor |
@@ -60,9 +60,9 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 **Finding.** Claude Code stores folder trust under the main repo's path, even inside a linked worktree: it resolves the worktree's `.git` file back to the main checkout. Tested 2026-11-19 with Claude Code 2.1.311: a detached worktree of a repo already trusted in Claude Code, placed outside the repo, went straight to the prompt with no trust dialog. The dialog appears only for a repo never trusted in Claude Code, probably once per repo (not verified).
 
 **Steps**
-- [ ] `docs/tasks-and-worktrees.md`, "First-run folder trust": update the Claude Code row and add the trusted-repo result. Keep the 2026-10-09 brand-new-repo result.
-- [ ] `AGENTS.md`: replace "still appears once per new worktree" with the new finding.
-- [ ] Optional: confirm the once-per-repo part with a throwaway repo, without touching normal Claude config.
+- [x] `docs/tasks-and-worktrees.md`, "First-run folder trust": update the Claude Code row and add the trusted-repo result. Keep the 2026-10-09 brand-new-repo result.
+- [x] `AGENTS.md`: replace "still appears once per new worktree" with the new finding.
+- [ ] Optional: confirm the once-per-repo part with a throwaway repo, without touching normal Claude config. Not done: trusting a throwaway repo writes to the normal Claude config, and an isolated `CLAUDE_CONFIG_DIR` has no login, so the docs keep "probably once per repository (not verified)".
 
 ---
 
