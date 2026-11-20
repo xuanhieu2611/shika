@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::worktree::{GIT_REDIRECTS, git_cmd};
 
+mod suggest;
+pub(crate) use suggest::draft;
+
 pub const CONFIG_PATH: &str = ".shika/worktrees.json";
 const CONFIG_LIMIT: u64 = 64 * 1024;
 const POLL: Duration = Duration::from_millis(20);
@@ -207,155 +210,6 @@ fn load_at(root: &File, path: &Path) -> Result<Option<PreparationConfig>> {
         .map_err(|e| failed(format!("Invalid {CONFIG_PATH}: {e}")))?;
     config.validate()?;
     Ok(Some(config))
-}
-
-/// Read-only and bounded for Settings or eligible first-New review. Existing
-/// configuration wins; detection never saves, approves, or starts preparation.
-/// Fixed commands, never repository scripts; ignored dotenv contents are not read.
-pub(crate) fn draft(repo: &Path, git: &Path, path_env: &str) -> Result<PreparationDraft> {
-    if let Some(existing) = load(repo)? {
-        return Ok(PreparationDraft {
-            config: existing.clone(),
-            existing: Some(existing),
-            note: "Saved configuration. Disable setup removes this file for future agents.".into(),
-        });
-    }
-    let root = directory(repo).map_err(io_failure)?;
-    let mut config = PreparationConfig {
-        commands: vec![],
-        copy_files: vec![],
-        timeout_seconds: default_timeout(),
-    };
-    for name in [".env", ".env.local"] {
-        if matches!(optional_regular(&root, name), Ok(Some(_)))
-            && git_cmd(git, path_env, repo)
-                .env("GIT_OPTIONAL_LOCKS", "0")
-                .args(["check-ignore", "--quiet", "--", name])
-                .output()
-                .map_err(io_failure)?
-                .status
-                .success()
-        {
-            config.copy_files.push(name.into());
-        }
-    }
-    let (command, installer_note) = suggest_installer(&root);
-    if let Some(command) = command {
-        config.commands.push(command.into());
-    }
-    let found = !config.copy_files.is_empty() || !config.commands.is_empty();
-    let mut note = if found {
-        "Suggested from this checkout, not saved. Review before saving.".to_string()
-    } else {
-        "Not configured. No safe defaults found; add what this project needs.".to_string()
-    };
-    if let Some(detail) = installer_note {
-        note.push(' ');
-        note.push_str(detail);
-    }
-    Ok(PreparationDraft {
-        existing: None,
-        config,
-        note,
-    })
-}
-
-fn optional_regular(root: &File, name: &str) -> io::Result<Option<File>> {
-    let file = match relative_file(root, Path::new(name), libc::O_RDONLY, 0) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
-    }
-    Ok(Some(file))
-}
-
-fn suggest_installer(root: &File) -> (Option<&'static str>, Option<&'static str>) {
-    let unsafe_metadata = (
-        None,
-        Some("Package metadata could not be read safely. Add setup commands manually."),
-    );
-    let Some(file) = (match optional_regular(root, "package.json") {
-        Ok(file) => file,
-        Err(_) => return unsafe_metadata,
-    }) else {
-        return (None, None);
-    };
-    let mut bytes = Vec::new();
-    if file.take(CONFIG_LIMIT + 1).read_to_end(&mut bytes).is_err()
-        || bytes.len() as u64 > CONFIG_LIMIT
-    {
-        return unsafe_metadata;
-    }
-    let package = match serde_json::from_slice::<serde_json::Value>(&bytes) {
-        Ok(package) if package.is_object() => package,
-        _ => return unsafe_metadata,
-    };
-    let mut locks = std::collections::HashSet::new();
-    for (name, manager) in [
-        ("package-lock.json", "npm"),
-        ("npm-shrinkwrap.json", "npm"),
-        ("pnpm-lock.yaml", "pnpm"),
-        ("yarn.lock", "yarn"),
-        ("bun.lock", "bun"),
-        ("bun.lockb", "bun"),
-    ] {
-        match optional_regular(root, name) {
-            Ok(Some(_)) => {
-                locks.insert(manager);
-            }
-            Ok(None) => {}
-            Err(_) => return unsafe_metadata,
-        }
-    }
-    let ambiguous = (
-        None,
-        Some("Package-manager metadata conflicts. Add setup commands manually."),
-    );
-    if locks.len() > 1 {
-        return ambiguous;
-    }
-    let locked = locks.iter().copied().next();
-    let declared = match package.get("packageManager") {
-        Some(value) => match value
-            .as_str()
-            .map(|name| name.split('@').next().unwrap_or(""))
-        {
-            Some("npm") => Some("npm"),
-            Some("pnpm") => Some("pnpm"),
-            _ => {
-                return (
-                    None,
-                    Some("This package manager has no suggested installer. Add commands manually."),
-                );
-            }
-        },
-        None => None,
-    };
-    if declared.is_some() && locked.is_some() && declared != locked {
-        return ambiguous;
-    }
-    match (declared.or(locked), locked.is_some()) {
-        (Some("npm"), true) => (Some("npm ci"), None),
-        (Some("pnpm"), true) => (Some("pnpm install --frozen-lockfile"), None),
-        (Some("npm"), false) => (
-            Some("npm install"),
-            Some("No lockfile found. Installation may create one."),
-        ),
-        (Some("pnpm"), false) => (
-            Some("pnpm install"),
-            Some("No lockfile found. Installation may create one."),
-        ),
-        _ => (
-            None,
-            Some("No npm or pnpm installer detected. Add setup commands manually."),
-        ),
-    }
 }
 
 /// Validate an explicit edit outside the operation lock. Checks metadata and

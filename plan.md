@@ -14,7 +14,7 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 | 2 | Refresh the index after creating a worktree (done) | Small | `worktree/lifecycle.rs` |
 | 3 | Fix the Claude trust note (done) | Docs only | `docs/tasks-and-worktrees.md`, `AGENTS.md` |
 | 4 | Skip the first-New dialog when nothing is suggested (done) | Small | `launch/mod.rs` |
-| 5 | More setup suggestions | Medium | `preparation.rs` |
+| 5 | More setup suggestions (done) | Medium | `preparation.rs` |
 | 6 | Opt-in `node_modules` cloning | Large | `preparation.rs`, new clone module, setup editor |
 | 7 | Prompt field in the New picker | Large | `launch/picker.rs`, launch path |
 
@@ -89,18 +89,21 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 **Today** only npm and pnpm get an install suggestion, plus root `.env` / `.env.local` (`crates/shika-core/src/preparation.rs`, around lines 220 and 290). Yarn and bun lockfiles are detected but get "no suggested installer".
 
 **Steps**
-- [ ] **yarn:** Yarn 2 or later (`.yarnrc.yml`, or `packageManager` `yarn@2+`) suggests `yarn install --immutable`. Yarn 1 suggests `yarn install --frozen-lockfile`.
-- [ ] **bun:** `bun install --frozen-lockfile`.
-- [ ] Accept `packageManager` values `yarn@…` and `bun@…`, which currently return "no suggested installer".
-- [ ] **CocoaPods:** `Podfile` at the root suggests `pod install`; `ios/Podfile` suggests `cd ios && pod install`. If a root `Gemfile` names `cocoapods`, use `bundle exec pod install`. Order it after the JS install, because React Native pods read `node_modules`.
-- [ ] **`.worktreeinclude`:** read a root `.worktreeinclude` and suggest its entries as copy-files. Decide first:
+- [x] **yarn:** Yarn 2 or later (`.yarnrc.yml`, or `packageManager` `yarn@2+`) suggests `yarn install --immutable`. Yarn 1 suggests `yarn install --frozen-lockfile`. A `packageManager` version wins over `.yarnrc.yml`; `yarn@1` with a `.yarnrc.yml` is a conflict. `.yarnrc.yml` alone never chooses Yarn.
+- [x] **bun:** `bun install --frozen-lockfile`, for `bun.lock` or `bun.lockb`.
+- [x] Accept `packageManager` values `yarn@…` and `bun@…`, which currently return "no suggested installer". With no lock they suggest the plain `yarn install` / `bun install` and the "may create one" note, as npm and pnpm do. A Yarn version that is not a number is unsupported.
+- [x] **CocoaPods:** `Podfile` at the root suggests `pod install`; `ios/Podfile` suggests `cd ios && pod install`. If a root `Gemfile` names `cocoapods`, use `bundle exec pod install`. Order it after the JS install, because React Native pods read `node_modules`. Podfiles in both places suggest no pod command, with a note. No `bundle install`: gems normally live outside the worktree.
+- [x] **`.worktreeinclude`:** read a root `.worktreeinclude` and suggest its entries as copy-files. Decided v1, literal paths only: each line is a root path, and globs, negations, and directories get a note. One `git check-ignore --stdin` call checks all candidates.
   - v1 accepts literal file paths only, each through the existing copy-files validation (ignored, regular file, no symlink). Globs are reported as unsupported. This keeps the "no recursive scans" rule.
   - Globs would need `git ls-files --others --ignored --exclude-from=.worktreeinclude`, which walks the tree. Leave that for later, with a file-count cap.
-- [ ] Keep every read bounded and root-only, as today. A monorepo app in `apps/mobile` is not detected; that stays manual.
+- [x] Keep every read bounded and root-only, as today. A monorepo app in `apps/mobile` is not detected; that stays manual.
 
 **Docs:** `docs/worktree-preparation.md` (Suggested defaults). In `AGENTS.md`, replace "fixed npm/pnpm installers".
 
 **Tests:** one fixture per case (Yarn 1, Yarn 2+, bun, conflicting lockfiles, root and `ios/` Podfile, Gemfile with cocoapods, `.worktreeinclude` with a literal path, a glob, and a tracked file).
+- [x] Core, in the new `preparation_suggestion_tests.rs`: `setup_suggestions_use_unambiguous_yarn_and_bun_metadata`, `setup_suggestions_add_cocoapods_after_the_javascript_install`, `setup_suggestions_copy_only_literal_ignored_worktreeinclude_files`, and new conflict cases in `setup_suggestions_skip_conflicts_unsupported_managers_and_unknown_toolchains`. Detection moved to `preparation/suggest.rs`.
+- [x] Docs: `docs/worktree-preparation.md`, `AGENTS.md`, `docs/using-shika.md`, `design/DESIGN.md`, `crates/shika-core/README.md`.
+- [ ] Manual: a React Native style repo's review and real installs, listed in `MANUAL_CHECKS.md` under first-New onboarding.
 
 ---
 

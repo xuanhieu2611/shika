@@ -70,6 +70,8 @@ mod memory;
 mod path_env;
 mod preparation;
 #[cfg(test)]
+mod preparation_suggestion_tests;
+#[cfg(test)]
 mod preparation_tests;
 mod projects;
 mod pty;
