@@ -1,5 +1,5 @@
 //! Author questions use the native dialog shell, with correlated answers sent
-//! back to Claude. Neither question payloads nor tool replies enter history.
+//! back to the Lead's CLI. Neither question payloads nor tool replies enter history.
 use crate::{Chrome, Overlay, Selection, Shika, name_input::NameInput};
 use gpui::{
     AppContext, Context, Entity, Focusable, InteractiveElement, KeyDownEvent, ParentElement,

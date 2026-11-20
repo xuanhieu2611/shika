@@ -123,17 +123,22 @@ enum Parsed {
     Fatal(&'static str),
 }
 
-/// The preset ids with a chat protocol, as the transport's own `&'static`
-/// names. Core's routing only; whether the app offers a chat Lead for one is
-/// a separate gate.
+/// The preset ids with a chat protocol in Core, as the transport's own
+/// `&'static` names: what `Core::start_chat_lead` and `confirm_lead_chat`
+/// accept. Whether the app offers a chat Lead for one is
+/// [`lead_chat_supported`].
 pub(crate) fn chat_cli(preset: &str) -> Option<&'static str> {
     ["claude", "codex"].into_iter().find(|cli| *cli == preset)
 }
 
-/// Whether a fresh conversation's id comes from the CLI's handshake (Codex
-/// `thread/start`) rather than one Shika chose before the launch.
-pub(crate) fn reports_identity(cli: &str) -> bool {
-    cli == "codex"
+/// The CLIs shipped as chat Leads: the app runs a Lead on one of these in
+/// the chat, and every other Lead in a terminal. Each has a chat protocol
+/// (`chat_cli`) and passed its acceptance (`docs/lead-chat.md`); a CLI joins
+/// this list in the commit that records that acceptance, which is the one
+/// switch the app needs.
+pub fn lead_chat_supported(cli: &str) -> bool {
+    const SHIPPED: [&str; 1] = ["claude"];
+    SHIPPED.contains(&cli) && chat_cli(cli).is_some()
 }
 
 /// The error for a CLI that answered with another conversation.

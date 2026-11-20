@@ -1,4 +1,4 @@
-//! The chat side panel that replaces the terminal for a Claude Lead:
+//! The chat side panel that replaces the terminal for a chat Lead:
 //! its header and the chat view.
 use super::{ANTLERS_ICON, LeadChat, WorkerSummary};
 use crate::{Chrome, Selection, Shika, Status, appearance};
@@ -19,7 +19,7 @@ impl Shika {
                     .iter()
                     .find(|p| p.id == *project)
                     .and_then(|p| p.lead.as_ref())
-                    .is_some_and(|lead| lead.cli == "claude") =>
+                    .is_some_and(|lead| shika_core::lead_chat_supported(&lead.cli)) =>
             {
                 project
             }

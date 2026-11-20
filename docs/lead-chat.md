@@ -21,7 +21,7 @@ Start here when contributing to this feature. This guide records the decisions a
 - **Hidden:** thinking, tool calls, tool output, subagent text and every intermediate assistant message. They are dropped before anything is written to history.
 - **History:** Shika keeps a visible transcript for the Lead's lifetime in `leads/<project-id>/chat/history.sqlite`. Stop and quit keep it, Forget deletes it, memory notes survive. It is never replayed into the CLI.
 - **Unchanged:** the Lead guide and prompts, the worktree, the four-worker limit, ownership checks, the doorbell's gates and accounting, the author-confirmed Close dialog (`shika pr` publishes without a dialog since protocol 6), resume and the fresh-start fallback, Seen and notifications. Workers keep real terminals.
-- **Start reading code:** `Core::start_claude_lead` (`crates/shika-core/src/lead.rs`), `ChatTransport` and `ClaudeStream::parse` (`lead_transport.rs`), `ChatStore` (`lead_chat_store.rs`), then `Shika::drain_lead_chats` (`crates/shika/src/lead_chat/glue.rs`).
+- **Start reading code:** `Core::start_chat_lead` (`crates/shika-core/src/lead.rs`), `ChatTransport` and `ClaudeStream::parse` (`lead_transport.rs`), `ChatStore` (`lead_chat_store.rs`), then `Shika::drain_lead_chats` (`crates/shika/src/lead_chat/glue.rs`).
 
 ## How the feature evolved
 
@@ -90,7 +90,7 @@ GPUI main thread                         Core (shika-core)
 - **Arguments** (`ChatLaunch::args`): `-p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --append-system-prompt <guide plus memory> --permission-prompts host --permission-prompt-tool stdio`, then `--session-id <uuid>` for a fresh conversation or `--resume <uuid>`. All are built as an argument array; nothing passes through a shell.
 - **Framing.** The reader reads newline-terminated frames up to 8 MiB. A longer or unterminated frame is a `BadFrame`. The frame channel holds eight frames, so a flood blocks the reader, not memory. Every frame and EOF carries the process generation; frames from an older child are ignored.
 - **Initialization.** If the `shika-initialize` control response does not arrive within 10 seconds, the turn fails with "This Claude Code version could not be read" and the child is stopped.
-- **Usage.** `start_claude_lead` registers the Lead worktree as a Claude usage source when usage collection runs, and the actor pokes it on every event, so Lead tokens reach the Usage dashboard the same way PTY output does for workers. See [token-usage.md](token-usage.md).
+- **Usage.** `start_chat_lead` registers the Lead worktree as a Claude usage source when usage collection runs, and the actor pokes it on every event, so Lead tokens reach the Usage dashboard the same way PTY output does for workers. See [token-usage.md](token-usage.md).
 - **Quit.** `cx.on_app_quit` calls `Core::stop_lead_chats`, which stops and joins every actor (SIGINT, SIGKILL after 2 seconds). GPUI may keep window state alive until exit, so RAII alone is not enough. Stop Lead goes through `Core::hang_up`, which removes and stops the transport. `ChatTransport` and `Process` also stop and reap on drop.
 
 ### One turn end to end
@@ -358,7 +358,7 @@ The Quit, Forget and Remove project sentences come from the tested `warning` and
 | `crates/shika-core/src/lead_transport.rs` (new), `lead_transport/protocol.rs`, `lead_transport/claude.rs`, `lead_transport/jsonrpc.rs`, `lead_transport/actor.rs` | `ChatTransport` (public handle), `ChatLaunch`, `Parsed`, `ChatEvent`, `ChatStatus`, `ChatQuestion*`; in `protocol.rs`, the `LeadProtocol` trait (arguments, env, handshake, send, answer, interrupt, shutdown, decoding, strings); in `claude.rs`, `ClaudeStream` (decoder and final-response filter) and its arguments; in `jsonrpc.rs`, a JSON-RPC 2.0 helper not wired yet; in `actor.rs`, `Actor` (turn state, persistence, process lifecycle), `Process` (spawn, env, nonblocking stdin, reader threads, signals, reap), and `write_frame`. Unit tests over the fixtures. |
 | `crates/shika-core/src/lead_chat.rs` (new) | The `Core` boundary: `lead_chat_send`, `lead_chat_events`, `lead_chat_interrupt`, `lead_chat_answer`, `lead_chat_retry_save`, `lead_chat_page`, `confirm_lead_chat` (operations lock, live identity), `stop_lead_chats`. |
 | `crates/shika-core/src/lead_chat_store.rs` (new) | `ChatStore`: open with path and version checks, `bind`, `append_batch`, `page`, `recover`, index rebuild; `delete` for Forget; `ChatContent`, `ChatOrigin`, `ChatRecord`. |
-| `crates/shika-core/src/lead.rs` | `start_claude_lead` and the shared `start_lead_inner` (same worktree, conversation choice, guide plus memory, control env); chat saves no provisional id and carries `chat_history`; Forget deletes chat. |
+| `crates/shika-core/src/lead.rs` | `start_chat_lead(project, cli, launch)` and the shared `start_lead_inner` (same worktree, conversation choice, guide plus memory, control env), with `Identity` naming where a fresh id comes from (preallocated, reported by the handshake, created by the CLI); chat saves no provisional id and carries `chat_history`; Forget deletes chat. |
 | `crates/shika-core/src/lib.rs` | `Core::chats` map; `hang_up` stops the transport; `Session::pty` became optional; re-exports; core integration tests with a fake `claude` (in `src/tests/lead_chat.rs`). `remove_project` now deletes memory (and chat) after hanging up sessions. |
 | `crates/shika-core/src/projects.rs`, `session.rs`, `error.rs` | `SavedLead::chat_history` (`chatHistory`); `Session::pty: Option<PtyId>` (`None` only for a chat Lead; Switch agent refuses it); `Error::LeadChat`. |
 | `crates/shika-core/tests/fixtures/` (new) | Three installed-CLI recordings, one hand-written stream, and their provenance README. |
@@ -370,14 +370,14 @@ The Quit, Forget and Remove project sentences come from the tested `warning` and
 | `crates/shika/src/text_edit.rs` | The editing core shared with `name_input.rs`: text, selection, and AppKit's standard key bindings (word, line, paragraph and document moves, Shift extension, deletes, the kill buffer, emacs keys). The composer keys are in [DESIGN.md](../design/DESIGN.md#lead-chat). |
 | `crates/shika/src/control/doorbell.rs` | `ChatDelivery`, `chat_delivery_finished`, chat-aware `lead_gate`, chat delivery in `ring_doorbells` and the restart summary, `Gate::waiting`. |
 | `crates/shika/src/activity/` | `Activity::advance_chat` and its test. |
-| `crates/shika/src/card.rs`, `overlay.rs`, `main.rs`, `startup.rs`, `lead.rs`, `launch/mod.rs`, `focus.rs`, `tick.rs`, `tabs.rs` | `Card::chat`, `Card::chat_delivery` (`card.rs`); `Overlay::LeadQuestion` (`overlay.rs`); `Shika::leads` (`main.rs`); `Leads::chats`, `Leads::questions`, `LeadRun::unexpected_exit` (`lead.rs`); launch routing to `start_claude_lead` (`launch/mod.rs`); focus (`focus.rs`) and Seen for chat (`tick.rs`); skipping chat cards in terminal sampling (`tick.rs`); tabs disabled (`tabs.rs`); quit hook (`startup.rs`). |
+| `crates/shika/src/card.rs`, `overlay.rs`, `main.rs`, `startup.rs`, `lead.rs`, `launch/mod.rs`, `focus.rs`, `tick.rs`, `tabs.rs` | `Card::chat`, `Card::chat_delivery` (`card.rs`); `Overlay::LeadQuestion` (`overlay.rs`); `Shika::leads` (`main.rs`); `Leads::chats`, `Leads::questions`, `LeadRun::unexpected_exit` (`lead.rs`); launch routing to `start_chat_lead` through `shika_core::lead_chat_supported` (`launch/start.rs`); focus (`focus.rs`) and Seen for chat (`tick.rs`); skipping chat cards in terminal sampling (`tick.rs`); tabs disabled (`tabs.rs`); quit hook (`startup.rs`). |
 | `crates/shika/src/model.rs`, `appearance/chrome.rs`, `Cargo.toml` | Forget dialog fact about chat history; `PartialEq` on `Chrome` for cheap theme change checks; `libc` for local time formatting. |
 | Docs | This guide; pointers in AGENTS.md, CONTRIBUTING.md, lead-agent.md, shika-cli.md, agent-activity.md, `crates/shika-core/README.md`; DESIGN.md Lead chat section and plates; MANUAL_CHECKS.md. The Lead guide is unchanged. |
 
 ### Ownership rules
 
 - Core owns processes, pipes, cancellation, history and saved ids. The app owns messages on screen, focus, status, dialogs and notifications.
-- Only the actor thread touches the child and the store. Blocking Core calls (`start_claude_lead`, `confirm_lead_chat`, `lead_chat_page`, `stop_lead_chats`) run off the UI thread, except the quit hook.
+- Only the actor thread touches the child and the store. Blocking Core calls (`start_chat_lead`, `confirm_lead_chat`, `lead_chat_page`, `stop_lead_chats`) run off the UI thread, except the quit hook.
 - Every event that changes saved state is fenced: frames by process generation, sends by cancel epoch, id commits by live session plus the operations lock. A stopped or replaced Lead cannot save an id or append to another lifetime.
 
 ### Debugging by symptom
@@ -476,10 +476,10 @@ Passing tests are not native acceptance. Record GUI results in MANUAL_CHECKS.md.
 Adding a CLI is not just a new decoder. These places assume Claude:
 
 - `lead_transport.rs` and `lead_transport/actor.rs`: `ClaudeStream`, `ChatLaunch::args`, the initialize write in `Process::spawn`, `store.bind("claude", ...)`, Claude-specific error strings, and the exit rule that treats every unstopped child exit as `Exit` (wrong for one-child-per-turn CLIs).
-- `lead.rs`: `start_claude_lead` passes `"claude"`; `start_lead_inner` requires a preallocated id for chat and returns `Error::UnknownCli` without one.
-- `lead_chat.rs` (core): `confirm_lead_chat` requires `preset_id == "claude"` and `saved.cli == "claude"`.
-- App: launch routing (`chat = lead.is_some() && preset.id == "claude"` in `launch/mod.rs`), `ensure_lead_chat` in `Render`, and `selected_chat` (`lead.cli == "claude"`).
-- `LeadRun::discovery` (Codex id polling) and the terminal resume grace assume PTY exits.
+- `lead.rs`: generalized. `start_chat_lead(project, cli, launch)` takes any CLI with a chat protocol (`lead_transport::chat_cli`), and `Identity` says where a fresh id comes from. The app offers a chat Lead only for `shika_core::lead_chat_supported`, which lists Claude Code alone until another CLI passes its acceptance.
+- `lead_chat.rs` (core): generalized. `confirm_lead_chat` accepts any `chat_cli` whose saved CLI matches the live Lead's.
+- App: generalized. Launch routing (`LaunchOwner::chat`), the saved Leads' chats in `Render`, `selected_chat`, and the Leads card's reply line all ask `shika_core::lead_chat_supported`.
+- `LeadRun::discovery` (Codex id polling) runs only for a terminal Codex Lead; the terminal resume grace assumes PTY exits.
 
 ### Steps for any adapter
 

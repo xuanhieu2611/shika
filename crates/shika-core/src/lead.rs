@@ -4,8 +4,9 @@
 //! `<repo>/.worktrees/shika-lead`, and a saved record in `projects.json`
 //! (`lead`: the CLI preset and the CLI's own conversation id). The next
 //! [`Core::start_lead`] moves that worktree to the latest base when it is clean
-//! and resumes the conversation when the CLI still has it. Claude Code chat
-//! additionally keeps final-only visible history in Shika; it is never replayed.
+//! and resumes the conversation when the CLI still has it. A chat Lead
+//! ([`Core::start_chat_lead`]) additionally keeps final-only visible history
+//! in Shika; it is never replayed.
 //!
 //! The Lead instructions travel in the CLI's system prompt on every start
 //! (`agents::lead_flags`), so a resumed Lead reads the current text, and the
@@ -175,16 +176,16 @@ impl Core {
         self.start_lead_inner(project_id, preset_id, size, sink, launch, false)
     }
 
-    /// Claude Code chat: the logical Lead has no PTY. Same worktree, guide,
-    /// conversation choice and control environment as a terminal Lead.
-    pub fn start_claude_lead(&self, project_id: &str, launch: LeadLaunch) -> Result<LeadStart> {
-        self.start_chat_lead(project_id, "claude", launch)
-    }
-
-    /// A chat Lead for any CLI with a chat protocol (`lead_transport::chat_cli`).
-    /// The app starts only Claude Code chat Leads until each other CLI's
-    /// acceptance (plan Step 6); Codex is reached from Core tests.
-    pub(crate) fn start_chat_lead(
+    /// A chat Lead: the logical Lead has no PTY, and a structured child
+    /// speaks the CLI's chat protocol. Same worktree, guide, conversation
+    /// choice and control environment as [`Core::start_lead`]. A fresh
+    /// conversation's id is preallocated by Shika (Claude Code), or reported
+    /// by the handshake (Codex) and saved by [`Core::confirm_lead_chat`]; see
+    /// `Identity`. Any CLI with a chat protocol in Core starts here
+    /// ([`Error::UnknownCli`] otherwise), including one the app does not offer
+    /// yet: the app routes a Lead here only when
+    /// [`crate::lead_chat_supported`] says so. Blocking, like `start_lead`.
+    pub fn start_chat_lead(
         &self,
         project_id: &str,
         preset_id: &str,
@@ -225,7 +226,7 @@ impl Core {
         let project = self.projects.get(project_id)?;
         self.freshen_base(&project);
         // A process for Cursor, so before the lock like the fetch above.
-        let (conversation, how) = self.choose_conversation(&project, &preset, &program);
+        let (conversation, how) = self.choose_conversation(&project, &preset, &program, chat);
 
         let _guard = self.operations.lock().unwrap_or_else(|e| e.into_inner());
         let project = self.projects.get(project_id)?;
@@ -331,7 +332,7 @@ impl Core {
         }
     }
 
-    /// Spawns the Lead's CLI, or its chat transport for a Claude chat Lead,
+    /// Spawns the Lead's CLI, or its chat transport for a chat Lead,
     /// saves its record, and registers the session. Returns the session and
     /// whether Cursor's bootstrap prompt was passed. A failed save stops what
     /// was spawned.
@@ -403,8 +404,7 @@ impl Core {
 
     /// Starts the chat transport on the chosen conversation, with the same
     /// control environment a terminal Lead gets. A fresh conversation's id is
-    /// the one Shika chose (Claude Code), or the one the handshake reports
-    /// (Codex), so it is empty here.
+    /// the one Shika chose, or empty here when the handshake reports it.
     fn start_lead_chat(
         &self,
         plan: &LeadPlan,
@@ -414,9 +414,10 @@ impl Core {
         let cli = crate::lead_transport::chat_cli(&plan.preset.id).ok_or(Error::UnknownCli)?;
         let conversation_id = match plan.conversation {
             Conversation::Fresh { id: Some(id) } | Conversation::Resume { id } => id.clone(),
-            Conversation::Fresh { id: None } if crate::lead_transport::reports_identity(cli) => {
+            Conversation::Fresh { id: None } if identity(cli, true) == Some(Identity::Reported) => {
                 String::new()
             }
+            // A preallocation or creation that failed.
             Conversation::Fresh { id: None } => return Err(Error::UnknownCli),
         };
         let usage = self.cli_home.as_ref().zip(self.usage.get());
@@ -746,11 +747,12 @@ impl Core {
         project: &Project,
         preset: &CliPreset,
         program: &Path,
+        chat: bool,
     ) -> (Conversation, LeadConversation) {
         let fresh = |reason| {
             (
                 Conversation::Fresh {
-                    id: self.new_conversation_id(preset, program, &project.path),
+                    id: self.new_conversation_id(preset, chat, program, &project.path),
                 },
                 LeadConversation::Fresh(reason),
             )
@@ -786,20 +788,46 @@ impl Core {
         }
     }
 
-    /// The id a fresh conversation is started with: one Shika generates for
-    /// Claude Code and Pi, one from `agent create-chat` for Cursor, none for
-    /// Codex, whose id is found after launch.
+    /// The id a fresh conversation is started with, by its [`Identity`]:
+    /// one Shika generates, one from `agent create-chat`, or none when the
+    /// CLI reports it after the launch.
     fn new_conversation_id(
         &self,
         preset: &CliPreset,
+        chat: bool,
         program: &Path,
         repo: &Path,
     ) -> Option<String> {
-        match preset.id.as_str() {
-            "claude" | "pi" => Some(new_uuid()),
-            "cursor" => create_chat(program, self.path_env().path(), repo),
-            _ => None,
+        match identity(&preset.id, chat)? {
+            Identity::Preallocated => Some(new_uuid()),
+            Identity::Created => create_chat(program, self.path_env().path(), repo),
+            Identity::Reported => None,
         }
+    }
+}
+
+/// Where a fresh Lead conversation's id comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Identity {
+    /// Shika generates it and passes it at launch (Claude Code, Pi).
+    Preallocated,
+    /// The CLI reports it once running: a chat handshake (Codex
+    /// `thread/start`), or a terminal Codex's index after its first message
+    /// ([`Core::discover_lead_session`]).
+    Reported,
+    /// A CLI command creates it before the launch (Cursor's
+    /// `agent create-chat`).
+    Created,
+}
+
+/// How a fresh Lead on `preset` gets its id, as a chat Lead (`chat`, which
+/// needs a chat protocol, `lead_transport::chat_cli`) or a terminal one.
+pub(crate) fn identity(preset: &str, chat: bool) -> Option<Identity> {
+    match (preset, chat) {
+        ("claude", _) | ("pi", false) => Some(Identity::Preallocated),
+        ("codex", _) => Some(Identity::Reported),
+        ("cursor", false) => Some(Identity::Created),
+        _ => None,
     }
 }
 
@@ -963,7 +991,40 @@ fn lead_session(plan: &LeadPlan, pty: Option<PtyId>, started: SystemTime) -> Ses
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lead_transport::chat_cli;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn only_accepted_chat_clis_are_shipped_and_each_has_a_protocol() {
+        assert!(crate::lead_chat_supported("claude"));
+        // Codex has a protocol in Core but stays a terminal Lead until its
+        // acceptance; Pi and Cursor have none yet.
+        assert_eq!(chat_cli("codex"), Some("codex"));
+        for cli in ["codex", "pi", "cursor", "terminal", "kiro", ""] {
+            assert!(!crate::lead_chat_supported(cli), "{cli}");
+        }
+        for cli in crate::control::CLI_IDS {
+            assert!(!crate::lead_chat_supported(cli) || chat_cli(cli).is_some());
+        }
+    }
+
+    #[test]
+    fn every_chat_protocol_has_an_identity_source() {
+        for cli in crate::control::CLI_IDS {
+            assert_eq!(
+                chat_cli(cli).is_some(),
+                identity(cli, true).is_some(),
+                "{cli}"
+            );
+            assert!(identity(cli, false).is_some(), "{cli}");
+        }
+        assert_eq!(identity("claude", true), Some(Identity::Preallocated));
+        assert_eq!(identity("codex", true), Some(Identity::Reported));
+        assert_eq!(identity("pi", false), Some(Identity::Preallocated));
+        assert_eq!(identity("cursor", false), Some(Identity::Created));
+        assert_eq!(identity("codex", false), Some(Identity::Reported));
+        assert_eq!(identity("kiro", false), None);
+    }
 
     /// A directory reserved with `create_dir`, never adopted, removed on drop.
     struct Dir(PathBuf);

@@ -13,7 +13,7 @@ fn chat_interrupt_cancels_a_blocked_pipe_write_and_quit_reaps_the_child() {
         .unwrap()
         .project;
     let start = core
-        .start_claude_lead(&project.id, lead_launch(&scratch))
+        .start_chat_lead(&project.id, "claude", lead_launch(&scratch))
         .unwrap();
     core.lead_chat_send(
         &start.session.id,
@@ -89,7 +89,7 @@ done
         .project;
     core.remember(&project.id, "Keep this note").unwrap();
     let start = core
-        .start_claude_lead(&project.id, lead_launch(&scratch))
+        .start_chat_lead(&project.id, "claude", lead_launch(&scratch))
         .unwrap();
     assert_eq!(start.session.pty, None);
     assert_eq!(
@@ -251,7 +251,7 @@ done
         .unwrap()
         .project;
     let start = core
-        .start_claude_lead(&project.id, lead_launch(&scratch))
+        .start_chat_lead(&project.id, "claude", lead_launch(&scratch))
         .unwrap();
     let collect = |readies: usize| {
         let deadline = Instant::now() + Duration::from_secs(7);
@@ -382,4 +382,27 @@ done
         [(3, "Next"), (3, "Next reply")]
     );
     core.stop_lead(&start.session.id).unwrap();
+}
+
+/// The public chat entry takes only a CLI with a chat protocol in Core; any
+/// other is refused before a worktree, record or process exists.
+#[test]
+fn chat_entry_refuses_a_cli_without_a_chat_protocol() {
+    let scratch = Scratch::new();
+    let core = core_with_switch_clis(&scratch);
+    let project = core
+        .add_project(&scratch.repo("chat-refusal-demo"))
+        .unwrap()
+        .project;
+    for cli in ["pi", "cursor", "terminal"] {
+        assert_eq!(
+            core.start_chat_lead(&project.id, cli, lead_launch(&scratch))
+                .map(|start| start.session.id),
+            Err(Error::UnknownCli),
+            "{cli}"
+        );
+    }
+    assert_eq!(core.saved_lead(&project.id).unwrap(), None);
+    assert!(core.sessions().is_empty());
+    assert!(!worktree::lead_worktree_path(&project.path).exists());
 }

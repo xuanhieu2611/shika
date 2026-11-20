@@ -30,6 +30,12 @@ impl LaunchOwner {
             worker_token,
         }
     }
+
+    /// A Lead whose CLI ships as a chat Lead runs in the chat; every other
+    /// Lead, and every task, gets a terminal.
+    fn chat(&self, preset: &str) -> bool {
+        self.lead.is_some() && shika_core::lead_chat_supported(preset)
+    }
 }
 
 /// What the background thread needs to start the session in core.
@@ -66,7 +72,7 @@ impl SessionStart {
         } = self;
         let result = match launch {
             Launch::Lead(launch) | Launch::LeadRestart { launch, .. } => (if chat {
-                core.start_claude_lead(&project, launch)
+                core.start_chat_lead(&project, &preset.id, launch)
             } else {
                 core.start_lead(&project, &preset.id, size, sink, launch)
             })
@@ -334,7 +340,7 @@ impl Shika {
             self.busy = holds_busy;
         }
         let shell_only = preset.id == "terminal";
-        let chat = owner.lead.is_some() && preset.id == "claude";
+        let chat = owner.chat(&preset.id);
         if chat {
             self.ensure_lead_chat(&project, window, cx)
                 .update(cx, |chat, cx| {
@@ -569,7 +575,8 @@ impl Shika {
     ) {
         mark_host_started(&done.state, &done.finished, &done.lead_start);
         if let Some(start) = lock(&done.lead_start).take() {
-            self.cards[index].lead_run = Some(LeadRun::new(&start, Instant::now()));
+            let chat = self.cards[index].chat;
+            self.cards[index].lead_run = Some(LeadRun::new(&start, chat, Instant::now()));
             // The saved Lead is on disk now; a stop leaves
             // its resting row.
             self.reload_projects();
@@ -671,5 +678,37 @@ impl Shika {
             self.cards[index].discard = true;
         }
         self.message(error.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lead_launch() -> shika_core::LeadLaunch {
+        shika_core::LeadLaunch {
+            socket: "/tmp/shika.sock".into(),
+            token: "token".into(),
+            bin_dir: "/tmp/bin".into(),
+            instructions: "Lead".into(),
+            cursor_bootstrap: None,
+        }
+    }
+
+    #[test]
+    fn only_a_lead_on_a_shipped_chat_cli_launches_in_the_chat() {
+        let lead = LaunchOwner::of(&Launch::Lead(lead_launch()));
+        let restart = LaunchOwner::of(&Launch::LeadRestart {
+            launch: lead_launch(),
+            focus: false,
+        });
+        let task = LaunchOwner::of(&Launch::Task { prompt: None });
+        assert!(lead.chat("claude"));
+        assert!(restart.chat("claude"));
+        assert!(!task.chat("claude"));
+        // Codex has a Core protocol but stays a terminal Lead until accepted.
+        for cli in ["codex", "pi", "cursor", "terminal"] {
+            assert!(!lead.chat(cli), "{cli}");
+        }
     }
 }

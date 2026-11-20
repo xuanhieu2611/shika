@@ -99,7 +99,7 @@ pub use error::{Error, Result};
 pub use lead::{FreshReason, LeadConversation, LeadLaunch, LeadLoss, LeadStart, LostWorker};
 pub use lead_chat_store::{ChatContent, ChatOrigin, ChatRecord};
 pub use lead_transport::{
-    ChatEvent, ChatQuestion, ChatQuestionItem, ChatQuestionOption, ChatStatus,
+    ChatEvent, ChatQuestion, ChatQuestionItem, ChatQuestionOption, ChatStatus, lead_chat_supported,
 };
 pub use limits::{
     QuotaSnapshot, QuotaStatus, QuotaWindow, SubscriptionQuota, run_quota_statusline,
