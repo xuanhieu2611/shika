@@ -125,7 +125,7 @@ fn an_empty_prompt_starts_as_before_and_terminal_ignores_the_field() {
 }
 
 #[test]
-fn the_prompt_field_types_letters_and_keeps_numbers_and_space_only_while_empty() {
+fn the_prompt_field_types_letters_and_keeps_number_selection_and_space_only_while_empty() {
     for key in ["enter", "escape", "tab", "up", "down"] {
         assert!(picker_takes_from_prompt(key, true), "{key}");
         assert!(picker_takes_from_prompt(key, false), "{key}");
@@ -179,4 +179,36 @@ fn a_new_prompt_is_the_first_submission_and_names_the_task() {
         assert!(!host.launch_turn);
         assert_eq!(host.title, None);
     }
+}
+
+#[test]
+fn a_written_prompt_closes_terminal_and_moves_the_selection_to_the_first_agent() {
+    let choices = PickerMode::Task.choices(vec![preset("claude"), preset("codex")]);
+    let terminal = 2;
+    assert!(choice_open(&choices, terminal, false));
+    assert!(!choice_open(&choices, terminal, true));
+    assert!(!choice_open(&choices, 3, false), "past the end");
+    assert_eq!(settle_choice(&choices, terminal, true), 0);
+    assert_eq!(settle_choice(&choices, terminal, false), terminal);
+    assert_eq!(settle_choice(&choices, 1, true), 1);
+}
+
+#[test]
+fn arrows_skip_a_closed_terminal_and_wrap() {
+    let choices = PickerMode::Task.choices(vec![preset("claude"), preset("codex")]);
+    assert_eq!(step_choice(&choices, 1, true, false), 2);
+    assert_eq!(step_choice(&choices, 1, true, true), 0);
+    assert_eq!(step_choice(&choices, 0, false, false), 2);
+    assert_eq!(step_choice(&choices, 0, false, true), 1);
+    let lead = PickerMode::Lead.choices(vec![preset("claude"), preset("codex")]);
+    assert_eq!(step_choice(&lead, 1, true, false), 0);
+}
+
+#[test]
+fn terminal_stays_open_when_it_is_the_only_choice() {
+    let choices = PickerMode::Task.choices(vec![]);
+    assert!(choice_open(&choices, 0, true));
+    assert_eq!(settle_choice(&choices, 0, true), 0);
+    assert_eq!(step_choice(&choices, 0, true, true), 0);
+    assert_eq!(step_choice(&[], 0, true, false), 0);
 }

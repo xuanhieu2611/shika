@@ -17,6 +17,22 @@ Unit tests cover the trimmed prompt, Terminal ignoring it, the key split, the se
 - [ ] First-New setup review: Cancel returns to the same picker and text; Start without setup and Save, approve and start pass the prompt. Retry after a failed setup reuses it. A failed start without setup refills the next picker.
 - [ ] IME composition in the field, light theme, glass, and a long prompt that scrolls.
 
+## New picker: select, then start, 2026-11-19
+
+After the author tried the prompt field: a number key started the agent before the prompt was written. Checked in a debug bundle opened with `open -n` and an isolated `--data-dir`, on a disposable repository, with synthetic keys after confirming Shika was frontmost:
+
+- [x] The field is two lines tall with `⇧↵` new line in its corner; the header shows `tab` project; the footer has Create worktree, Cancel `esc`, and the primary "Start Claude Code" `↵`.
+- [x] Typing a prompt dims Terminal (its number cap and name) to "Clear the prompt to choose"; the agent rows stay as they are.
+- [x] With the field empty, `3` selects Cursor CLI and the button reads "Start Cursor CLI"; nothing starts.
+- [x] `5` selects Terminal (placeholder "Type a prompt to start an agent instead.", button "Start Terminal"); typing then moves the selection to Claude Code and closes Terminal.
+
+Unit tests cover the Terminal rule and arrow skipping (`launch::tests`). Not yet run natively:
+
+- [ ] A single click on a row selects it and keeps typing in the field; a double click starts it; a click on the closed Terminal does nothing; the Start button starts the selected row.
+- [ ] Clearing the field makes Terminal available again without selecting it; Up/Down skip Terminal while the field has text.
+- [ ] Lead picker (no saved Lead): number keys select, Enter or Start starts; the base-branch fact sits left of the buttons.
+- [ ] Light theme and glass.
+
 ## New worktree index refresh, 2026-11-19
 
 Measured with git 2.50.1 on a synthetic 50,000-file repo (396 MB), reading with `GIT_OPTIONAL_LOCKS=0` as the diff stat does: `git diff --numstat HEAD` took 0.13 to 0.34s in an unrefreshed new worktree on every read, and 0.09s after the refresh. The refresh with its wait took about 0.85s (0.16s refresh, about 0.5s wait). Unit tests cover the refreshed index and a failing refresh (`worktree::tests`, `tests::sessions`). Not yet run natively:
