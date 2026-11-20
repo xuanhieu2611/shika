@@ -1,6 +1,6 @@
 # Agent activity and elapsed turns
 
-Chat Leads (Claude Code and Codex) use the structured chat reducer `Activity::advance_chat`, with explicit lifecycle results from each CLI's protocol events and native/control blockers, without screen sampling, quiet fallback or idle debounce. They retain the same turn clock, Seen rule and notification budget. Workers and the terminal Leads (Cursor CLI, Pi) retain the terminal rules below. See [Lead chat](lead-chat.md).
+Chat Leads (Claude Code, Codex and Pi) use the structured chat reducer `Activity::advance_chat`, with explicit lifecycle results from each CLI's protocol events and native/control blockers, without screen sampling, quiet fallback or idle debounce. They retain the same turn clock, Seen rule and notification budget. Workers and terminal Leads (Cursor CLI) retain the terminal rules below; a chat Pi Lead loads no `pi-activity.ts` extension, since Pi's RPC events give its status. See [Lead chat](lead-chat.md).
 
 This guide explains the timer-reset bug, the replacement state model, and how to debug or extend it. Read it before changing agent status, timers, notifications, input capture, or activity-based Close checks.
 

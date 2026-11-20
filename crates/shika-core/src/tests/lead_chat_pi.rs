@@ -2,8 +2,10 @@ use super::*;
 
 /// A `pi --mode rpc` stand-in on a scratch PATH: logs its arguments and every
 /// line it reads to `<scratch>/pi.log`, answers `get_state` with the
-/// `--session-id` it was given, and writes that session's file under the
-/// scratch home when a prompt's user message arrives, as Pi does. A plain
+/// `--session-id` it was given and the messages its session file holds, and
+/// writes that file under the scratch home when a prompt's user message
+/// arrives, as Pi does. A file with no message line counts none, as Pi
+/// ignores one it cannot read. A plain
 /// prompt runs narration, a tool, a cut stream that is retried, and the
 /// final reply; `/handled` is taken by an extension command; `please-ask`
 /// opens Shika's question dialog; `please-wait` waits for `abort`.
@@ -29,7 +31,8 @@ assistant() {{
 started() {{
  printf '{{"id":"%s","type":"response","command":"prompt","success":true,"data":{{"disposition":"started"}}}}\n' "$1"
  echo '{{"type":"agent_start"}}'
- mkdir -p "$folder" && : > "$folder/2026-11-20T00-00-00-000Z_$sid.jsonl"
+ file="$folder/2026-11-20T00-00-00-000Z_$sid.jsonl"
+ mkdir -p "$folder" && [ -s "$file" ] || echo '{{"type":"message"}}' > "$file"
  echo '{{"type":"message_end","message":{{"role":"user","content":[{{"type":"text","text":"x"}}]}}}}'
 }}
 settle() {{
@@ -41,7 +44,8 @@ while IFS= read -r line; do
  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
  case "$line" in
  *'"type":"get_state"'*)
-  printf '{{"id":"%s","type":"response","command":"get_state","success":true,"data":{{"sessionId":"%s","messageCount":0}}}}\n' "$id" "$sid";;
+  count=$(cat "$folder"/*_"$sid".jsonl 2>/dev/null | grep -c '"type":"message"')
+  printf '{{"id":"%s","type":"response","command":"get_state","success":true,"data":{{"sessionId":"%s","messageCount":%s}}}}\n' "$id" "$sid" "$count";;
  *'"type":"abort"'*)
   settle true
   printf '{{"id":"%s","type":"response","command":"abort","success":true}}\n' "$id";;
@@ -388,7 +392,7 @@ fn a_saved_terminal_pi_lead_resumes_its_session_in_chat_with_empty_history() {
     fs::create_dir_all(&folder).unwrap();
     fs::write(
         folder.join(format!("2026-11-19T00-00-00-000Z_{SAVED}.jsonl")),
-        "{}\n",
+        "{\"type\":\"message\"}\n",
     )
     .unwrap();
     core.projects
@@ -428,4 +432,63 @@ fn a_saved_terminal_pi_lead_resumes_its_session_in_chat_with_empty_history() {
     collect(&core, &lead, ready);
     assert_eq!(texts(&core, &project.id), ["Hello", "Final reply"]);
     core.stop_lead(&lead).unwrap();
+}
+
+/// Pi starts an empty session under a saved id whose file it cannot read,
+/// with no error and no exit. The chat refuses that resume instead of
+/// talking to a Lead that lost its context, so the app's refused-resume
+/// rule applies: the file is still there, so the id is kept.
+#[test]
+fn a_resume_pi_brings_back_empty_is_refused_and_keeps_the_saved_id() {
+    let scratch = Scratch::new();
+    let core = pi_core(&scratch);
+    let project = core
+        .add_project(&scratch.repo("pi-refused-demo"))
+        .unwrap()
+        .project;
+    const SAVED: &str = "5c0ffee0-0000-4000-8000-0000000000a2";
+    let cwd = worktree::lead_worktree_path(&project.path);
+    let folder = scratch.path.join("home/.pi/agent/sessions").join(format!(
+        "--{}--",
+        cwd.to_string_lossy()
+            .trim_start_matches('/')
+            .replace(['/', ':'], "-")
+    ));
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(
+        folder.join(format!("2026-11-19T00-00-00-000Z_{SAVED}.jsonl")),
+        "not a session\n",
+    )
+    .unwrap();
+    core.projects
+        .set_lead(
+            &project.id,
+            Some(SavedLead {
+                cli: "pi".into(),
+                session_id: Some(SAVED.into()),
+                reported_workers: Vec::new(),
+                chat_history: None,
+            }),
+        )
+        .unwrap();
+
+    let start = core
+        .start_chat_lead(&project.id, "pi", lead_launch(&scratch))
+        .unwrap();
+    assert_eq!(start.conversation, LeadConversation::Resumed);
+    let events = collect(&core, &start.session.id, |e| matches!(e, ChatEvent::Exit));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ChatEvent::Error(text) if text == "Pi could not resume this conversation")),
+        "{events:?}"
+    );
+    assert!(calls(&scratch, "prompt").is_empty());
+    assert_eq!(
+        core.saved_lead_session_exists(&project.id).unwrap(),
+        Some(true)
+    );
+    let saved = core.saved_lead(&project.id).unwrap().unwrap();
+    assert_eq!(saved.session_id.as_deref(), Some(SAVED));
+    core.stop_lead(&start.session.id).unwrap();
 }

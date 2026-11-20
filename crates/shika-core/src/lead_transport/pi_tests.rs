@@ -485,6 +485,46 @@ fn a_resume_and_a_missing_id_report_the_session_shika_passed() {
     assert!(!pi.ready());
 }
 
+/// Pi answers a saved id it cannot load with an empty session under that
+/// id, so a resume is refused by its empty history, never by an exit.
+#[test]
+fn a_resume_that_comes_back_empty_is_refused() {
+    let resumed = |conversation| ChatLaunch {
+        resumed: true,
+        ..launch(conversation)
+    };
+    let missing = include_str!("../../tests/fixtures/pi-1.4.0-resume-missing-local.jsonl");
+    let mut pi = PiRpc::new();
+    pi.handshake(&resumed(MISSING));
+    pi.send("early");
+    let response = missing.lines().nth(1).unwrap().as_bytes();
+    assert_eq!(pi.parse(response), Parsed::Fatal(NOT_RESUMED));
+    assert!(!pi.ready());
+    assert_eq!(pi.poll(Instant::now()), Parsed::Ignore, "nothing is sent");
+
+    let found = include_str!("../../tests/fixtures/pi-1.4.0-resume-local.jsonl");
+    let mut pi = PiRpc::new();
+    pi.handshake(&resumed(SESSION));
+    assert_eq!(
+        pi.parse(found.lines().nth(1).unwrap().as_bytes()),
+        Parsed::Ignore
+    );
+    assert!(pi.ready());
+    // A fresh Lead's empty session is expected, and so is a Pi that does
+    // not report a count.
+    let mut pi = PiRpc::new();
+    pi.handshake(&launch(MISSING));
+    assert_eq!(pi.parse(response), Parsed::Ignore);
+    let mut pi = PiRpc::new();
+    pi.handshake(&resumed(SESSION));
+    let uncounted = line(
+        json!({"id": STATE, "type": "response", "command": "get_state",
+        "success": true, "data": {"sessionId": SESSION}}),
+    );
+    assert_eq!(pi.parse(&uncounted), Parsed::Ignore);
+    assert!(pi.ready());
+}
+
 /// A fresh decoder past the handshake.
 fn ready_pi() -> PiRpc {
     let mut pi = PiRpc::new();

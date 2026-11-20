@@ -702,13 +702,13 @@ mod tests {
             focus: false,
         });
         let task = LaunchOwner::of(&Launch::Task { prompt: None });
-        for cli in ["claude", "codex"] {
+        for cli in ["claude", "codex", "pi"] {
             assert!(lead.chat(cli), "{cli}");
             assert!(restart.chat(cli), "{cli}");
             assert!(!task.chat(cli), "{cli}");
         }
-        // Pi and Cursor CLI stay terminal Leads until their acceptance.
-        for cli in ["pi", "cursor", "terminal"] {
+        // Cursor CLI stays a terminal Lead until its acceptance.
+        for cli in ["cursor", "terminal"] {
             assert!(!lead.chat(cli), "{cli}");
         }
     }

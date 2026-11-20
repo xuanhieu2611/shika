@@ -19,6 +19,10 @@ pub(super) const REPLY_FAILED: &str =
     "Pi could not complete the reply. Check its model, sign-in and connection, then retry.";
 pub(super) const BUSY: &str = "Pi was busy and did not take the message. Send it again.";
 pub(super) const CUT_OFF: &str = "Pi stopped the reply at the model's output limit.";
+/// Pi never refuses a `--session-id` it cannot find or read: it starts an
+/// empty session under that id instead. Shika saves an id only once Pi wrote
+/// its session file, so a resume that comes back empty did not load it.
+pub(super) const NOT_RESUMED: &str = "Pi could not resume this conversation";
 static STRINGS: Strings = Strings {
     unreadable: BAD_STREAM,
     other_conversation: "Pi returned a different conversation",
@@ -82,6 +86,8 @@ struct Dialog {
 pub(super) struct PiRpc {
     extension: Option<Extension>,
     expected: String,
+    /// This process was started to continue a saved session.
+    resumed: bool,
     ready: bool,
     prompts: u64,
     aborts: u64,
@@ -110,6 +116,7 @@ impl PiRpc {
         Self {
             extension: None,
             expected: String::new(),
+            resumed: false,
             ready: false,
             prompts: 0,
             aborts: 0,
@@ -162,8 +169,8 @@ impl PiRpc {
         }
     }
     /// The handshake: Pi must hold the session Shika passed with
-    /// `--session-id`. It creates a missing one silently, so this proves
-    /// identity, not a resume.
+    /// `--session-id`. It creates a missing or unreadable one silently, so
+    /// the id proves identity only; a resume must also bring messages back.
     fn state(&mut self, v: &Value) -> Parsed {
         if self.ready {
             return Parsed::Ignore;
@@ -173,6 +180,9 @@ impl PiRpc {
         }
         match v["data"]["sessionId"].as_str() {
             Some(id) if id == self.expected => {
+                if self.resumed && v["data"]["messageCount"].as_u64() == Some(0) {
+                    return Parsed::Fatal(NOT_RESUMED);
+                }
                 self.ready = true;
                 if let Turn::Deferred(text) = &self.turn {
                     let text = text.clone();
@@ -558,6 +568,7 @@ impl LeadProtocol for PiRpc {
         *self = Self {
             extension,
             expected: launch.conversation.clone(),
+            resumed: launch.resumed,
             ..Self::new()
         };
         frame(json!({"id": STATE, "type": "get_state"}))
