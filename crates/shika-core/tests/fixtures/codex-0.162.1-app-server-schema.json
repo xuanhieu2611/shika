@@ -1,0 +1,1260 @@
+{
+ "about": "Subset of `codex app-server generate-json-schema --out <dir>` from codex-cli 0.162.1 (2026-11-20), non-experimental. Only the records and fields Shika sends or reads; the full bundle is about 4.4 MB and is regenerated on demand. Each entry is the named schema file with unrelated properties and definitions removed.",
+ "version": "0.162.1",
+ "methods": {
+  "clientRequests": [
+   "initialize",
+   "thread/start",
+   "thread/resume",
+   "thread/fork",
+   "thread/archive",
+   "thread/delete",
+   "thread/unsubscribe",
+   "thread/name/set",
+   "thread/goal/set",
+   "thread/goal/get",
+   "thread/goal/clear",
+   "thread/metadata/update",
+   "thread/attachment/add",
+   "thread/attachment/list",
+   "thread/attachmentOwner/list",
+   "thread/attachment/remove",
+   "thread/section/move",
+   "thread/unarchive",
+   "thread/compact/start",
+   "thread/shellCommand",
+   "thread/approveGuardianDeniedAction",
+   "thread/revert",
+   "thread/list",
+   "threadSection/list",
+   "threadSection/create",
+   "threadSection/update",
+   "threadSection/delete",
+   "thread/loaded/list",
+   "thread/read",
+   "thread/turns/list",
+   "thread/items/list",
+   "thread/inject_items",
+   "skills/list",
+   "skills/extraRoots/set",
+   "hooks/list",
+   "marketplace/add",
+   "marketplace/remove",
+   "marketplace/upgrade",
+   "plugin/list",
+   "plugin/installed",
+   "plugin/reconcile",
+   "plugin/read",
+   "plugin/skill/read",
+   "plugin/share/save",
+   "plugin/share/updateTargets",
+   "plugin/share/list",
+   "plugin/share/checkout",
+   "plugin/share/delete",
+   "app/read",
+   "app/list",
+   "app/installed",
+   "fs/readFile",
+   "fs/writeFile",
+   "fs/createDirectory",
+   "fs/getMetadata",
+   "fs/readDirectory",
+   "fs/remove",
+   "fs/copy",
+   "fs/watch",
+   "fs/unwatch",
+   "skills/config/write",
+   "plugin/install",
+   "plugin/uninstall",
+   "turn/start",
+   "turn/steer",
+   "turn/interrupt",
+   "review/start",
+   "model/list",
+   "account/gatewayOAuth/read",
+   "account/gatewayOAuth/login",
+   "account/gatewayOAuth/cancel",
+   "modelProvider/capabilities/read",
+   "experimentalFeature/list",
+   "permissionProfile/list",
+   "experimentalFeature/enablement/set",
+   "mcpServer/oauth/login",
+   "config/mcpServer/reload",
+   "mcpServerStatus/list",
+   "mcpServer/resource/read",
+   "mcpServer/tool/call",
+   "windowsSandbox/setupStart",
+   "windowsSandbox/readiness",
+   "account/login/start",
+   "account/login/cancel",
+   "account/logout",
+   "account/rateLimits/read",
+   "account/rateLimitResetCredit/consume",
+   "account/usage/read",
+   "account/workspaceMessages/read",
+   "account/sendAddCreditsNudgeEmail",
+   "feedback/upload",
+   "command/exec",
+   "command/exec/write",
+   "command/exec/terminate",
+   "command/exec/resize",
+   "config/read",
+   "externalAgentConfig/detect",
+   "externalAgentConfig/import",
+   "externalAgentConfig/import/recordHistory",
+   "externalAgentConfig/import/readHistories",
+   "config/value/write",
+   "config/batchWrite",
+   "configRequirements/read",
+   "account/read",
+   "fuzzyFileSearch"
+  ],
+  "clientNotifications": [
+   "initialized"
+  ],
+  "serverRequests": [
+   "item/commandExecution/requestApproval",
+   "item/fileChange/requestApproval",
+   "item/tool/requestUserInput",
+   "mcpServer/elicitation/request",
+   "item/permissions/requestApproval",
+   "item/tool/call",
+   "account/chatgptAuthTokens/refresh",
+   "attestation/generate",
+   "applyPatchApproval",
+   "execCommandApproval"
+  ],
+  "serverNotifications": [
+   "error",
+   "thread/started",
+   "thread/status/changed",
+   "thread/archived",
+   "thread/deleted",
+   "thread/unarchived",
+   "thread/closed",
+   "thread/reverted",
+   "skills/changed",
+   "thread/name/updated",
+   "thread/attachment/updated",
+   "thread/goal/updated",
+   "thread/prediction/updated",
+   "thread/goal/cleared",
+   "thread/queue/changed",
+   "project/changed",
+   "thread/project/updated",
+   "thread/environment/connected",
+   "thread/environment/disconnected",
+   "thread/settings/updated",
+   "thread/tokenUsage/updated",
+   "turn/started",
+   "hook/started",
+   "turn/completed",
+   "hook/completed",
+   "turn/diff/updated",
+   "turn/plan/updated",
+   "item/started",
+   "item/autoApprovalReview/started",
+   "item/autoApprovalReview/completed",
+   "autoApprovalReview/strictReviewRequired",
+   "item/completed",
+   "item/agentMessage/delta",
+   "item/plan/delta",
+   "command/exec/outputDelta",
+   "process/outputDelta",
+   "process/exited",
+   "item/commandExecution/outputDelta",
+   "item/commandExecution/terminalInteraction",
+   "item/fileChange/outputDelta",
+   "item/fileChange/patchUpdated",
+   "serverRequest/resolved",
+   "item/mcpToolCall/progress",
+   "mcpServer/oauthLogin/completed",
+   "mcpServer/startupStatus/updated",
+   "mcpServer/event/stream/notification",
+   "account/updated",
+   "account/gatewayOAuth/changed",
+   "account/rateLimits/updated",
+   "app/list/updated",
+   "remoteControl/status/changed",
+   "externalAgentConfig/import/progress",
+   "externalAgentConfig/import/completed",
+   "fs/changed",
+   "item/reasoning/summaryTextDelta",
+   "item/reasoning/summaryPartAdded",
+   "item/reasoning/textDelta",
+   "thread/compacted",
+   "model/rerouted",
+   "model/verification",
+   "modelProvider/authRecoveryStarted",
+   "modelProvider/authRecoveryCompleted",
+   "turn/moderationMetadata",
+   "model/safetyBuffering/updated",
+   "warning",
+   "guardianWarning",
+   "deprecationNotice",
+   "configWarning",
+   "fuzzyFileSearch/sessionUpdated",
+   "fuzzyFileSearch/sessionCompleted",
+   "thread/realtime/started",
+   "thread/realtime/itemAdded",
+   "thread/realtime/item/started",
+   "thread/realtime/item/transcript/delta",
+   "thread/realtime/item/completed",
+   "thread/realtime/transcript/delta",
+   "thread/realtime/transcript/done",
+   "thread/realtime/outputAudio/delta",
+   "thread/realtime/sdp",
+   "thread/realtime/error",
+   "thread/realtime/closed",
+   "windows/worldWritableWarning",
+   "windowsSandbox/setupCompleted",
+   "account/login/completed"
+  ]
+ },
+ "schemas": {
+  "v1/InitializeParams": {
+   "required": [
+    "clientInfo"
+   ],
+   "properties": {
+    "capabilities": {
+     "anyOf": [
+      {
+       "$ref": "#/definitions/InitializeCapabilities"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "clientInfo": {
+     "$ref": "#/definitions/ClientInfo"
+    }
+   }
+  },
+  "v1/InitializeParams#ClientInfo": {
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "title": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "version": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "version"
+   ],
+   "type": "object"
+  },
+  "v1/InitializeResponse": {
+   "required": [
+    "codexHome",
+    "platformFamily",
+    "platformOs",
+    "userAgent"
+   ],
+   "properties": {
+    "codexHome": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/AbsolutePathBuf"
+      }
+     ],
+     "description": "Absolute path to the server's $CODEX_HOME directory."
+    },
+    "platformFamily": {
+     "description": "Platform family for the running app-server target, for example `\"unix\"` or `\"windows\"`.",
+     "type": "string"
+    },
+    "platformOs": {
+     "description": "Operating system for the running app-server target, for example `\"macos\"`, `\"linux\"`, or `\"windows\"`.",
+     "type": "string"
+    },
+    "userAgent": {
+     "type": "string"
+    }
+   }
+  },
+  "v2/ThreadStartParams": {
+   "required": [],
+   "properties": {
+    "approvalPolicy": {
+     "anyOf": [
+      {
+       "$ref": "#/definitions/AskForApproval"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "config": {
+     "additionalProperties": true,
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "cwd": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "developerInstructions": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "ephemeral": {
+     "type": [
+      "boolean",
+      "null"
+     ]
+    },
+    "sandbox": {
+     "anyOf": [
+      {
+       "$ref": "#/definitions/SandboxMode"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   }
+  },
+  "v2/ThreadResumeParams": {
+   "required": [
+    "threadId"
+   ],
+   "properties": {
+    "approvalPolicy": {
+     "anyOf": [
+      {
+       "$ref": "#/definitions/AskForApproval"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "config": {
+     "additionalProperties": true,
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "cwd": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "developerInstructions": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "excludeTurns": {
+     "description": "When true, return only thread metadata and live-resume state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after resuming. Full-history hydration is deprecated for paginated threads; use this with `thread/turns/list` and `thread/items/list` instead.",
+     "type": "boolean"
+    },
+    "sandbox": {
+     "anyOf": [
+      {
+       "$ref": "#/definitions/SandboxMode"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "threadId": {
+     "type": "string"
+    }
+   }
+  },
+  "v2/ThreadStartResponse": {
+   "required": [
+    "approvalPolicy",
+    "approvalsReviewer",
+    "cwd",
+    "model",
+    "modelProvider",
+    "sandbox",
+    "thread"
+   ],
+   "properties": {
+    "approvalPolicy": {
+     "$ref": "#/definitions/AskForApproval"
+    },
+    "cwd": {
+     "$ref": "#/definitions/AbsolutePathBuf"
+    },
+    "instructionSources": {
+     "default": [],
+     "description": "Environment-native paths to instruction source files currently loaded for this thread.",
+     "items": {
+      "$ref": "#/definitions/LegacyAppPathString"
+     },
+     "type": "array"
+    },
+    "sandbox": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/SandboxPolicy"
+      }
+     ],
+     "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
+    },
+    "thread": {
+     "$ref": "#/definitions/Thread"
+    }
+   }
+  },
+  "v2/TurnStartParams": {
+   "required": [
+    "input",
+    "threadId"
+   ],
+   "properties": {
+    "input": {
+     "items": {
+      "$ref": "#/definitions/UserInput"
+     },
+     "type": "array"
+    },
+    "threadId": {
+     "type": "string"
+    }
+   }
+  },
+  "v2/TurnStartResponse": {
+   "required": [
+    "turn"
+   ],
+   "properties": {
+    "turn": {
+     "$ref": "#/definitions/Turn"
+    }
+   }
+  },
+  "v2/TurnInterruptParams": {
+   "required": [
+    "threadId",
+    "turnId"
+   ],
+   "properties": {
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   }
+  },
+  "v2/TurnStartedNotification": {
+   "required": [
+    "threadId",
+    "turn"
+   ],
+   "properties": {
+    "threadId": {
+     "type": "string"
+    },
+    "turn": {
+     "$ref": "#/definitions/Turn"
+    }
+   }
+  },
+  "v2/TurnCompletedNotification": {
+   "required": [
+    "threadId",
+    "turn"
+   ],
+   "properties": {
+    "threadId": {
+     "type": "string"
+    },
+    "turn": {
+     "$ref": "#/definitions/Turn"
+    }
+   }
+  },
+  "v2/ItemCompletedNotification": {
+   "required": [
+    "completedAtMs",
+    "item",
+    "threadId",
+    "turnId"
+   ],
+   "properties": {
+    "completedAtMs": {
+     "description": "Unix timestamp (in milliseconds) when this item lifecycle completed.",
+     "format": "int64",
+     "type": "integer"
+    },
+    "item": {
+     "$ref": "#/definitions/ThreadItem"
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   }
+  },
+  "v2/ErrorNotification": {
+   "required": [
+    "error",
+    "threadId",
+    "turnId",
+    "willRetry"
+   ],
+   "properties": {
+    "error": {
+     "$ref": "#/definitions/TurnError"
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    },
+    "willRetry": {
+     "type": "boolean"
+    }
+   }
+  },
+  "v2/ServerRequestResolvedNotification": {
+   "required": [
+    "requestId",
+    "threadId"
+   ],
+   "properties": {
+    "requestId": {
+     "$ref": "#/definitions/RequestId"
+    },
+    "threadId": {
+     "type": "string"
+    }
+   }
+  },
+  "v2/ThreadInjectItemsParams": {
+   "required": [
+    "items",
+    "threadId"
+   ],
+   "properties": {
+    "items": {
+     "description": "Raw Responses API items to append to the thread's model-visible history.",
+     "items": true,
+     "type": "array"
+    },
+    "threadId": {
+     "type": "string"
+    }
+   }
+  },
+  "ToolRequestUserInputParams": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "ToolRequestUserInputOption": {
+     "description": "EXPERIMENTAL. Defines a single selectable option for request_user_input.",
+     "properties": {
+      "description": {
+       "type": "string"
+      },
+      "label": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "description",
+      "label"
+     ],
+     "type": "object"
+    },
+    "ToolRequestUserInputQuestion": {
+     "description": "EXPERIMENTAL. Represents one request_user_input question and its required options.",
+     "properties": {
+      "header": {
+       "type": "string"
+      },
+      "id": {
+       "type": "string"
+      },
+      "isOther": {
+       "default": false,
+       "type": "boolean"
+      },
+      "isSecret": {
+       "default": false,
+       "type": "boolean"
+      },
+      "options": {
+       "items": {
+        "$ref": "#/definitions/ToolRequestUserInputOption"
+       },
+       "type": [
+        "array",
+        "null"
+       ]
+      },
+      "question": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "header",
+      "id",
+      "question"
+     ],
+     "type": "object"
+    }
+   },
+   "description": "EXPERIMENTAL. Params sent with a request_user_input event.",
+   "properties": {
+    "autoResolutionMs": {
+     "default": null,
+     "description": "@deprecated Use `isBlocking` to decide whether the request should block.",
+     "format": "uint64",
+     "minimum": 0.0,
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "isBlocking": {
+     "type": "boolean"
+    },
+    "itemId": {
+     "type": "string"
+    },
+    "questions": {
+     "items": {
+      "$ref": "#/definitions/ToolRequestUserInputQuestion"
+     },
+     "type": "array"
+    },
+    "threadId": {
+     "type": "string"
+    },
+    "turnId": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "isBlocking",
+    "itemId",
+    "questions",
+    "threadId",
+    "turnId"
+   ],
+   "title": "ToolRequestUserInputParams",
+   "type": "object"
+  },
+  "ToolRequestUserInputResponse": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "definitions": {
+    "ToolRequestUserInputAnswer": {
+     "description": "EXPERIMENTAL. Captures a user's answer to a request_user_input question.",
+     "properties": {
+      "answers": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "required": [
+      "answers"
+     ],
+     "type": "object"
+    }
+   },
+   "description": "EXPERIMENTAL. Response payload mapping question ids to answers.",
+   "properties": {
+    "answers": {
+     "additionalProperties": {
+      "$ref": "#/definitions/ToolRequestUserInputAnswer"
+     },
+     "type": "object"
+    }
+   },
+   "required": [
+    "answers"
+   ],
+   "title": "ToolRequestUserInputResponse",
+   "type": "object"
+  }
+ },
+ "definitions": {
+  "Thread": {
+   "required": [
+    "cliVersion",
+    "createdAt",
+    "cwd",
+    "ephemeral",
+    "id",
+    "modelProvider",
+    "preview",
+    "projectId",
+    "sessionId",
+    "source",
+    "status",
+    "turns",
+    "updatedAt"
+   ],
+   "properties": {
+    "cliVersion": {
+     "description": "Version of the CLI that created the thread.",
+     "type": "string"
+    },
+    "cwd": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/AbsolutePathBuf"
+      }
+     ],
+     "description": "Working directory captured for the thread."
+    },
+    "id": {
+     "description": "Identifier for this thread. Codex-generated thread IDs are UUIDv7.",
+     "type": "string"
+    },
+    "path": {
+     "description": "[UNSTABLE] Path to the thread on disk.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "sessionId": {
+     "description": "Session id shared by threads that belong to the same session tree.",
+     "type": "string"
+    },
+    "source": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/SessionSource"
+      }
+     ],
+     "description": "Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.)."
+    },
+    "status": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/ThreadStatus"
+      }
+     ],
+     "description": "Current runtime status for the thread."
+    },
+    "turns": {
+     "description": "Only populated on `thread/resume`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
+     "items": {
+      "$ref": "#/definitions/Turn"
+     },
+     "type": "array"
+    }
+   }
+  },
+  "Turn": {
+   "properties": {
+    "completedAt": {
+     "description": "Unix timestamp (in seconds) when the turn completed.",
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "durationMs": {
+     "description": "Duration between turn start and completion in milliseconds, if known.",
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "error": {
+     "anyOf": [
+      {
+       "$ref": "#/definitions/TurnError"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Error associated with a failed or interrupted turn."
+    },
+    "id": {
+     "description": "Identifier for this turn. Codex-generated turn IDs are UUIDv7.",
+     "type": "string"
+    },
+    "items": {
+     "description": "Thread items currently included in this turn payload.",
+     "items": {
+      "$ref": "#/definitions/ThreadItem"
+     },
+     "type": "array"
+    },
+    "itemsView": {
+     "allOf": [
+      {
+       "$ref": "#/definitions/TurnItemsView"
+      }
+     ],
+     "default": "full",
+     "description": "Describes how much of `items` has been loaded for this turn."
+    },
+    "rootTurnId": {
+     "description": "ID of the first turn in the chain of work that led to this turn. Pass this as `rootTurnId` when starting work on behalf of this turn. May be null in older history or a `review/start` response.",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "startedAt": {
+     "description": "Unix timestamp (in seconds) when the turn started.",
+     "format": "int64",
+     "type": [
+      "integer",
+      "null"
+     ]
+    },
+    "status": {
+     "$ref": "#/definitions/TurnStatus"
+    }
+   },
+   "required": [
+    "id",
+    "items",
+    "status"
+   ],
+   "type": "object"
+  },
+  "TurnStatus": {
+   "enum": [
+    "completed",
+    "interrupted",
+    "failed",
+    "inProgress"
+   ],
+   "type": "string"
+  },
+  "TurnError": {
+   "properties": {
+    "additionalDetails": {
+     "default": null,
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "codexErrorInfo": {
+     "anyOf": [
+      {
+       "$ref": "#/definitions/CodexErrorInfo"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "message": {
+     "type": "string"
+    },
+    "misalignment": {
+     "anyOf": [
+      {
+       "$ref": "#/definitions/MisalignmentErrorDetails"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional public explanation and continuation instruction for a misalignment block."
+    }
+   },
+   "required": [
+    "message"
+   ],
+   "type": "object"
+  },
+  "MessagePhase": {
+   "description": "Classifies assistant text as commentary, a partial answer, or a terminal answer.\n\nProviders do not emit this consistently, so callers must treat `None` as \"phase unknown\" and keep compatibility behavior for legacy models.",
+   "oneOf": [
+    {
+     "description": "Mid-turn assistant text (for example preamble/progress narration).\n\nAdditional tool calls or assistant output may follow before turn completion.",
+     "enum": [
+      "commentary"
+     ],
+     "type": "string"
+    },
+    {
+     "description": "Stable answer text that may be followed by more assistant output or tools.",
+     "enum": [
+      "partial_answer"
+     ],
+     "type": "string"
+    },
+    {
+     "description": "The assistant's declared terminal answer text for the current turn.",
+     "enum": [
+      "final_answer"
+     ],
+     "type": "string"
+    }
+   ]
+  },
+  "ThreadItem (agentMessage in full, other variants by required fields)": {
+   "userMessage": {
+    "required": [
+     "content",
+     "id",
+     "type"
+    ]
+   },
+   "hookPrompt": {
+    "required": [
+     "fragments",
+     "id",
+     "type"
+    ]
+   },
+   "agentMessage": {
+    "properties": {
+     "delivery": {
+      "anyOf": [
+       {
+        "$ref": "#/definitions/AgentMessageDelivery"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "id": {
+      "type": "string"
+     },
+     "memoryCitation": {
+      "anyOf": [
+       {
+        "$ref": "#/definitions/MemoryCitation"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "phase": {
+      "anyOf": [
+       {
+        "$ref": "#/definitions/MessagePhase"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null
+     },
+     "questions": {
+      "default": null,
+      "items": {
+       "$ref": "#/definitions/AsyncUserInputQuestion"
+      },
+      "type": [
+       "array",
+       "null"
+      ]
+     },
+     "text": {
+      "type": "string"
+     },
+     "type": {
+      "enum": [
+       "agentMessage"
+      ],
+      "title": "AgentMessageThreadItemType",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "text",
+     "type"
+    ],
+    "title": "AgentMessageThreadItem",
+    "type": "object"
+   },
+   "functionCallOutput": {
+    "required": [
+     "id",
+     "name",
+     "output",
+     "type"
+    ]
+   },
+   "plan": {
+    "required": [
+     "id",
+     "text",
+     "type"
+    ]
+   },
+   "reasoning": {
+    "required": [
+     "id",
+     "type"
+    ]
+   },
+   "commandExecution": {
+    "required": [
+     "command",
+     "commandActions",
+     "cwd",
+     "id",
+     "status",
+     "type"
+    ]
+   },
+   "fileChange": {
+    "required": [
+     "changes",
+     "id",
+     "status",
+     "type"
+    ]
+   },
+   "mcpToolCall": {
+    "required": [
+     "arguments",
+     "id",
+     "server",
+     "status",
+     "tool",
+     "type"
+    ]
+   },
+   "dynamicToolCall": {
+    "required": [
+     "arguments",
+     "id",
+     "status",
+     "tool",
+     "type"
+    ]
+   },
+   "collabAgentToolCall": {
+    "required": [
+     "agentsStates",
+     "id",
+     "receiverThreadIds",
+     "senderThreadId",
+     "status",
+     "tool",
+     "type"
+    ]
+   },
+   "subAgentActivity": {
+    "required": [
+     "agentPath",
+     "agentThreadId",
+     "id",
+     "kind",
+     "type"
+    ]
+   },
+   "webSearch": {
+    "required": [
+     "id",
+     "query",
+     "type"
+    ]
+   },
+   "imageView": {
+    "required": [
+     "id",
+     "path",
+     "type"
+    ]
+   },
+   "sleep": {
+    "required": [
+     "durationMs",
+     "id",
+     "type"
+    ]
+   },
+   "imageGeneration": {
+    "required": [
+     "id",
+     "result",
+     "status",
+     "type"
+    ]
+   },
+   "enteredReviewMode": {
+    "required": [
+     "id",
+     "review",
+     "type"
+    ]
+   },
+   "exitedReviewMode": {
+    "required": [
+     "id",
+     "review",
+     "type"
+    ]
+   },
+   "contextCompaction": {
+    "required": [
+     "id",
+     "type"
+    ]
+   }
+  },
+  "AskForApproval": {
+   "oneOf": [
+    {
+     "enum": [
+      "untrusted",
+      "on-request",
+      "never"
+     ],
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "granular": {
+       "properties": {
+        "mcp_elicitations": {
+         "type": "boolean"
+        },
+        "request_permissions": {
+         "default": false,
+         "type": "boolean"
+        },
+        "rules": {
+         "type": "boolean"
+        },
+        "sandbox_approval": {
+         "type": "boolean"
+        },
+        "skill_approval": {
+         "default": false,
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "mcp_elicitations",
+        "rules",
+        "sandbox_approval"
+       ],
+       "type": "object"
+      }
+     },
+     "required": [
+      "granular"
+     ],
+     "title": "GranularAskForApproval",
+     "type": "object"
+    }
+   ]
+  },
+  "SandboxMode": {
+   "enum": [
+    "read-only",
+    "workspace-write",
+    "danger-full-access"
+   ],
+   "type": "string"
+  },
+  "SessionSource": {
+   "oneOf": [
+    {
+     "enum": [
+      "cli",
+      "vscode",
+      "exec",
+      "appServer",
+      "unknown"
+     ],
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "custom": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "custom"
+     ],
+     "title": "CustomSessionSource",
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "subAgent": {
+       "$ref": "#/definitions/SubAgentSource"
+      }
+     },
+     "required": [
+      "subAgent"
+     ],
+     "title": "SubAgentSessionSource",
+     "type": "object"
+    }
+   ]
+  },
+  "UserInput (text variant)": {
+   "properties": {
+    "text": {
+     "type": "string"
+    },
+    "text_elements": {
+     "default": [],
+     "description": "UI-defined spans within `text` used to render or persist special elements.",
+     "items": {
+      "$ref": "#/definitions/TextElement"
+     },
+     "type": "array"
+    },
+    "type": {
+     "enum": [
+      "text"
+     ],
+     "title": "TextUserInputType",
+     "type": "string"
+    }
+   },
+   "required": [
+    "text",
+    "type"
+   ],
+   "title": "TextUserInput",
+   "type": "object"
+  }
+ }
+}
