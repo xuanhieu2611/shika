@@ -27,7 +27,14 @@ Before allocation, author New may offer [first-use setup review](worktree-prepar
 
    `--no-track` is required. Starting from `origin/dev` would otherwise make `origin/dev` the upstream, so a fresh card would look pushed and a plain `git push` would target `dev`.
 3. Journal ownership before optional approved [copy/setup](worktree-preparation.md#launch-lifecycle-and-lock-boundaries). If preparation is configured, it must finish successfully before the CLI starts; without configuration, no setup is inferred.
-4. Start the CLI in that folder with the login-shell `PATH`, `PWD` set to the worktree, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, and `GIT_OBJECT_DIRECTORY` removed. The launch arguments are in [AGENTS.md](../AGENTS.md#clis-and-launch-arguments).
+4. Refresh the new index once, outside the operations lock, before that copy/setup and the CLI:
+
+   ```sh
+   git -C <worktree> update-index -q --refresh --force-write-index
+   ```
+
+   A checkout stamps most files in the second it writes the index, and git re-reads every file stamped in the index's own second or later ("racily clean") on each status and diff. The diff stat and Changes read with `GIT_OPTIONAL_LOCKS=0`, so they never rewrite the index themselves. If the refresh lands in the checkout's second and the index has at least 10,000 entries, Shika waits that second out and refreshes once more; a smaller index skips the wait, because its racy reads cost less than up to a second on every New. Measured 2026-11-19 on a synthetic 50,000-file repo: a racy diff read took 0.13 to 0.34s, a refreshed one 0.09s, and the refresh with its wait about 0.85s. The refresh is best effort: a failure never fails the task. `--force-write-index` covers older git (such as 2.30), which skips the write when racy entries check out clean.
+5. Start the CLI in that folder, with the New picker's optional prompt as its last argument (empty passes none; see [keyboard-flow.md](keyboard-flow.md#the-new-prompt)), the login-shell `PATH`, `PWD` set to the worktree, and `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_PREFIX`, `GIT_COMMON_DIR`, and `GIT_OBJECT_DIRECTORY` removed. The launch arguments are in [AGENTS.md](../AGENTS.md#clis-and-launch-arguments).
 
 Shika creates the worktree. Never pass a CLI's own worktree flag, such as Cursor's or Codex's `--worktree`.
 
@@ -40,7 +47,9 @@ A fresh worktree is a folder the CLI has never seen, so some CLIs stop on a trus
 | Codex | 0.161.0 | "Folder access ... Trust this folder?" (trust would apply to the repository root) | `-c 'projects={"<worktree>"={trust_level="trusted"}}'`: the dialog does not appear, with a plain path, and with spaces, dots, quotes and backslashes in the path. |
 | Cursor CLI | 2026.10.01 | none | `--trust` is already passed |
 | Pi | 1.1.0 | none (a fresh repository has no project resources to approve) | `--approve` is already passed |
-| Claude Code | 2.1.296 | "Is this a project you created or one you trust?" | none. `--help` documents no interactive trust flag; only `-p` skips it. Shika passes nothing, and the dialog stays. |
+| Claude Code | 2.1.296 | "Is this a project you created or one you trust?" in a repository never trusted in Claude Code; none once the repository is trusted (see below) | none. `--help` documents no interactive trust flag; only `-p` skips it. Shika passes nothing. |
+
+Claude Code notes. Claude Code stores folder trust under the main repository's path, even inside a linked worktree: it follows the worktree's `.git` file back to the main checkout. Checked 2026-11-19 with Claude Code 2.1.311: a detached worktree of a repository already trusted in Claude Code, placed outside that repository, went straight to the prompt with no trust dialog. So the dialog above, from the 2026-10-09 run in a brand-new repository, appears only while the repository itself has never been trusted, probably once per repository (not verified). Where the worktree lives does not affect it.
 
 Codex notes. The override is a per-process config layer, so `~/.codex/config.toml` is never written (checked before and after every run). The dotted form `-c 'projects."<path>".trust_level="trusted"'` is silently ignored by 0.161.0; the inline table is required. Trusting the worktree path alone is enough, so the repository root is not trusted. The path is resolved with `canonicalize` first because Codex compares it with its working directory, and it is escaped as a TOML basic string. The arguments are built by `agents::launch_flags` for every Codex launch: author tasks, checkout sessions, Lead workers, and the Lead. For a checkout session the override names the repository root instead of a worktree. The prompt stays the last argument. Recheck the dialog and `--help` before changing this, because the `-c` key shape is not a documented contract.
 
@@ -56,7 +65,7 @@ Decided 2026-10-26: Shika stays worktree-first. A checkout session is a quiet ut
 - Targeting follows Cmd+N: clicked project header, else selected card's project, else first project; with no projects, Add project opens. Tab changes projects, keeping the switch state. Off shows "Runs in your project folder on {branch}" above the footer; on keeps the base in the switch tooltip. Escape restores the opening focus. No preference is saved. The selected row stays when switching, including Terminal. Off still lists Terminal, which starts a login shell in that folder and no agent. Lead has no switch and no Terminal row. With no agents, Task and Checkout still offer Terminal; only an empty Lead list opens Settings.
 - **One per project**, enforced in core. If one already exists, the action selects it and focuses its shown terminal, including when Tab moved the picker to that project before confirmation.
 - An agent CLI starts with no prompt in the repository root, Waiting until the author types. It gets the usual launch flags and environment: login-shell `PATH`, `PWD` set to the root, and the same `GIT_*` removals as worktree tasks. Codex's per-process trust override names that root and writes no global config. Terminal starts the login shell there instead, with no agent flags, activity, or usage source. Its card title is `Terminal <id>` until a manual rename.
-- Checkout launch performs no base fetch, worktree allocation, preparation, setup onboarding, or journal entry. Opening the picker in worktree mode may already have started its best-effort base fetch; switching off does not wait for it. Shika creates or renames no branch. An agent checkout is still named from the first prompt and the CLI title, and manual rename still works. A Terminal checkout is not named by shell commands.
+- Checkout launch performs no base fetch, worktree allocation, preparation, setup onboarding, or journal entry. Opening the picker in worktree mode may already have started its best-effort base fetch; switching off does not wait for it. Shika creates or renames no branch. An agent checkout is still named from the first prompt and the CLI title, and manual rename still works. The New prompt works here too: it is the CLI's last argument and names only the card. A Terminal checkout is not named by shell commands.
 - The card stays first in its project group. Line two shows the CLI mark, a checkout icon with tooltip "Runs in your checkout, no worktree", and the checked-out branch (short commit when detached). The terminal header shows the repository path and branch, read-only. Branch reads run off-thread on selection and Ready, not on a poll or every redraw.
 - Status, notifications, elapsed timer, shell tabs, Switch agent, rename, diff stat, and Changes work as on ordinary cards. Shells and a switched CLI stay in the checkout. Create PR is unavailable: no button, and the shortcut/menu cannot publish it. The author's own git workflow applies.
 
@@ -87,7 +96,7 @@ The following rules apply to worktree tasks; [checkout sessions](#diff-and-close
 
 The diff stat, Close's checks, and Create PR's default target use the task's `baseRef`. If it no longer resolves, or there is none (the HEAD fallback), they use the default branch: `origin/HEAD`, `main`, `master`, then the main checkout's HEAD, refusing when that checkout is on the task branch.
 
-- **Dirty** means `git status --porcelain` is not empty.
+- **Dirty** means `git status --porcelain --untracked-files=normal` is not empty. The flag overrides a `status.showUntrackedFiles=no` in the author's Git config, which would otherwise call a tree of untracked files clean. The non-forced `git worktree remove` runs with `-c status.showUntrackedFiles=normal` for the same reason, so Git's own refusal sees them too.
 - **Unpushed** means the branch has commits that are not on its upstream. A branch with no upstream is unpushed when it has commits that are in neither the base nor any remote-tracking branch.
 
 Git reads for the diff stat use `GIT_OPTIONAL_LOCKS=0` and take no core lock.

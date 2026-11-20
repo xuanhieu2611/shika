@@ -158,6 +158,41 @@ fn a_session_runs_in_its_worktree_and_close_removes_it() {
 }
 
 #[test]
+fn a_failed_index_refresh_still_starts_the_task() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    let failing = scratch.path.join("git-no-refresh");
+    fs::write(
+        &failing,
+        "#!/bin/sh\nfor arg; do [ \"$arg\" = update-index ] && exit 1; done\nexec git \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&failing, fs::Permissions::from_mode(0o755)).unwrap();
+    let cli = fake_cli(&scratch.path);
+    let env = PathEnv::from_lookup(
+        "/usr/bin:/bin".into(),
+        None,
+        &[("claude", Some(cli)), ("git", Some(failing))],
+    );
+    let core = Core::open_with(scratch.path.join("data"), env).unwrap();
+    let added = core.add_project(&repo).unwrap();
+
+    let (sink, rx) = channel_sink();
+    let session = core
+        .create_session(
+            &added.project.id,
+            "claude",
+            PtySize::new(30, 90),
+            sink,
+            LaunchOptions::default(),
+        )
+        .unwrap();
+    assert!(session.worktree.join(".git").exists());
+    let got = collect_until(&rx, "cwd:", Duration::from_secs(5));
+    assert!(got.contains("args:--dangerously-skip-permissions"), "{got}");
+}
+
+#[test]
 fn a_missing_cli_or_project_creates_nothing() {
     let scratch = Scratch::new();
     let repo = scratch.repo("demo");
@@ -230,4 +265,68 @@ fn removing_a_project_hangs_up_its_sessions_and_keeps_the_worktree() {
     assert_eq!(core.worktree_journal().unwrap().len(), 1);
     let (_, exit) = collect_to_exit(&rx, Duration::from_secs(5));
     assert!(exit.is_some(), "the agent was not hung up");
+}
+
+#[test]
+fn an_author_prompt_is_each_clis_last_argument_and_names_nothing_in_core() {
+    let scratch = Scratch::new();
+    let core = core_with_switch_clis(&scratch);
+    let project = core.add_project(&scratch.repo("demo")).unwrap().project;
+    for preset in ["claude", "codex", "cursor", "pi"] {
+        let (sink, rx) = channel_sink();
+        let session = core
+            .create_session(
+                &project.id,
+                preset,
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions {
+                    prompt: Some("Fix the login bug".into()),
+                    ..LaunchOptions::default()
+                },
+            )
+            .unwrap();
+        let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+        let args = report_args(&report);
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("Fix the login bug"),
+            "{preset}: {args:?}"
+        );
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "Fix the login bug")
+                .count(),
+            1,
+            "{preset}: {args:?}"
+        );
+        // The caller names the task from the prompt, as for a typed line.
+        assert_eq!(session.branch, format!("shika-draft-{}", session.id));
+        assert!(session.title.starts_with("New "), "{}", session.title);
+        assert!(session.started_by.is_none());
+        assert!(
+            report.lines().any(|line| line.trim() == "sock:"),
+            "an author task gets no control socket: {report}"
+        );
+    }
+
+    // A checkout agent takes the prompt the same way.
+    let (sink, rx) = channel_sink();
+    let checkout = core
+        .create_checkout_session(
+            &project.id,
+            "claude",
+            Some("Review the diff\nthen summarize"),
+            PtySize::new(30, 90),
+            sink,
+        )
+        .unwrap();
+    let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+    assert_eq!(report_args(&report)[0], "--dangerously-skip-permissions");
+    assert!(
+        report.contains("last:Review the diff\r\nthen summarize"),
+        "{report}"
+    );
+    assert_eq!(checkout.title, "New Claude Code");
+    assert!(!checkout.named());
 }

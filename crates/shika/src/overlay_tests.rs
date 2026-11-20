@@ -18,6 +18,8 @@ fn modal_scrim_preserves_appearance_previews_and_pointer_menus() {
             project: "demo".into(),
             index: 0,
             mode: PickerMode::Task,
+            prompt: None,
+            error: None,
         })
         .dims_background()
     );

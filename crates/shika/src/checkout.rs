@@ -108,27 +108,25 @@ impl Shika {
             return;
         }
         self.refresh_checkout_head(project.clone(), cx);
-        self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Picker(PickerDialog {
-            project,
-            index: 0,
-            mode: PickerMode::Checkout,
-        }));
-        window.focus(&self.focus, cx);
-        cx.notify();
+        self.show_picker(project, PickerMode::Checkout, window, cx);
     }
 
     pub(super) fn start_checkout(
         &mut self,
         project: String,
         preset: CliPreset,
+        prompt: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // Tab may have moved the picker to a project that already has one.
+        // Its prompt waits for the next New.
         if self.show_checkout(&project, window, cx) {
             self.overlay = None;
             self.overlay_return_focus = None;
+            if prompt.is_some() {
+                self.unsent_prompt = prompt;
+            }
             return;
         }
         self.begin_launch(
@@ -136,7 +134,7 @@ impl Shika {
             preset,
             false,
             None,
-            Launch::Checkout,
+            Launch::Checkout { prompt },
             None,
             window,
             cx,

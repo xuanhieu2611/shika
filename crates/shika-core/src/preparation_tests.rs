@@ -6,15 +6,15 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-struct Fixture {
-    root: PathBuf,
-    repo: PathBuf,
-    core: Arc<Core>,
-    project: Project,
+pub(crate) struct Fixture {
+    pub(crate) root: PathBuf,
+    pub(crate) repo: PathBuf,
+    pub(crate) core: Arc<Core>,
+    pub(crate) project: Project,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = loop {
             let root = std::env::temp_dir().join(format!(
@@ -60,11 +60,17 @@ impl Fixture {
         }
     }
 
-    fn config(&self, commands: &[&str], copies: &[&str], timeout: u64) -> PreparationConfig {
+    pub(crate) fn config(
+        &self,
+        commands: &[&str],
+        copies: &[&str],
+        timeout: u64,
+    ) -> PreparationConfig {
         let config = PreparationConfig {
             commands: commands.iter().map(|s| s.to_string()).collect(),
             copy_files: copies.iter().map(|s| s.to_string()).collect(),
             timeout_seconds: timeout,
+            clone_dependencies: false,
         };
         fs::create_dir_all(self.repo.join(".shika")).unwrap();
         fs::write(
@@ -81,7 +87,7 @@ impl Fixture {
             .unwrap();
     }
 
-    fn launch(&self) -> Result<Session> {
+    pub(crate) fn launch(&self) -> Result<Session> {
         self.core.create_session(
             &self.project.id,
             "claude",
@@ -198,7 +204,7 @@ impl Drop for Fixture {
     }
 }
 
-fn git(repo: &Path, args: &[&str]) -> String {
+pub(crate) fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -237,6 +243,41 @@ fn preparation_onboarding_preview_leaves_repo_and_local_preferences_unchanged() 
     assert!(!f.repo.join(".worktrees").exists());
     assert!(f.core.sessions().is_empty());
     assert!(f.core.worktree_journal().unwrap().is_empty());
+}
+
+#[test]
+fn preparation_onboarding_offers_review_only_when_something_is_suggested() {
+    let f = Fixture::new();
+    let before = fs::read(f.root.join("data/projects.json")).unwrap();
+    let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+    assert!(draft.existing.is_none());
+    assert!(!draft.suggests_setup());
+    // Nothing to review starts like no config and records no decision.
+    let session = f.launch().unwrap();
+    assert!(session.worktree.exists());
+    assert_eq!(fs::read(f.root.join("data/projects.json")).unwrap(), before);
+    assert!(
+        f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    assert!(!f.repo.join(".shika").exists());
+    // A later ignored dotenv still gets the review.
+    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
+    assert!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .suggests_setup()
+    );
+    // A saved config, even one with entries, is never a suggestion.
+    f.config(&["true"], &[".env.local"], 600);
+    assert!(
+        !f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .suggests_setup()
+    );
 }
 
 #[test]
@@ -436,258 +477,6 @@ fn preparation_onboarding_approval_write_failure_never_runs_saved_commands() {
 }
 
 #[test]
-fn setup_suggestions_are_unsaved_and_never_used_by_new() {
-    let f = Fixture::new();
-    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
-    fs::write(
-        f.repo.join("package.json"),
-        r#"{"packageManager":"npm@10.8.0","scripts":{"preinstall":"touch ran.generated"}}"#,
-    )
-    .unwrap();
-    fs::write(f.repo.join("package-lock.json"), "{}").unwrap();
-    let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
-    assert!(draft.existing.is_none());
-    assert_eq!(draft.config.copy_files, [".env.local"]);
-    assert_eq!(draft.config.commands, ["npm ci"]);
-    assert_eq!(draft.config.timeout_seconds, 600);
-    assert!(draft.note.contains("not saved"));
-    assert!(!f.repo.join(".shika").exists());
-    assert!(!f.repo.join("ran.generated").exists());
-    assert!(
-        !f.core
-            .preparation_approved(&f.project.id, &draft.config)
-            .unwrap()
-    );
-    // Detection is a preview, not implicit core setup. Author-facing New offers
-    // onboarding; programmatic launches never infer or save preparation.
-    let session = f.launch().unwrap();
-    assert!(!session.worktree.join(".env.local").exists());
-    assert!(!f.repo.join(".shika").exists());
-    f.core
-        .save_project_preparation(&f.project.id, None, Some(&draft.config))
-        .unwrap();
-    assert_eq!(f.launch(), Err(Error::PreparationNeedsApproval));
-}
-
-#[test]
-fn setup_suggestions_preserve_existing_configuration_even_when_empty() {
-    let f = Fixture::new();
-    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
-    fs::write(
-        f.repo.join("package.json"),
-        r#"{"packageManager":"pnpm@10.0.0"}"#,
-    )
-    .unwrap();
-    let saved = f.config(&[], &[], 42);
-    let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
-    assert_eq!(draft.existing, Some(saved.clone()));
-    assert_eq!(draft.config, saved);
-    // Existing config also avoids reading unsafe package metadata entirely.
-    fs::remove_file(f.repo.join("package.json")).unwrap();
-    symlink("missing", f.repo.join("package.json")).unwrap();
-    assert!(
-        f.core
-            .project_preparation_draft(&f.project.id)
-            .unwrap()
-            .existing
-            .is_some()
-    );
-}
-
-#[test]
-fn setup_suggestions_only_include_root_regular_ignored_dotenv_files() {
-    let f = Fixture::new();
-    fs::write(f.repo.join(".env"), "not ignored").unwrap();
-    fs::write(f.repo.join(".env.local"), "ignored").unwrap();
-    fs::write(f.repo.join(".env.production"), "not suggested").unwrap();
-    let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
-    assert_eq!(draft.config.copy_files, [".env.local"]);
-    fs::write(
-        f.repo.join(".gitignore"),
-        ".env\n.env.local\n.env.production\n*.generated\n",
-    )
-    .unwrap();
-    assert_eq!(
-        f.core
-            .project_preparation_draft(&f.project.id)
-            .unwrap()
-            .config
-            .copy_files,
-        [".env", ".env.local"]
-    );
-    git(&f.repo, &["add", "-f", ".env.local"]);
-    assert_eq!(
-        f.core
-            .project_preparation_draft(&f.project.id)
-            .unwrap()
-            .config
-            .copy_files,
-        [".env"]
-    );
-    fs::remove_file(f.repo.join(".env")).unwrap();
-    symlink("tracked.txt", f.repo.join(".env")).unwrap();
-    assert!(
-        f.core
-            .project_preparation_draft(&f.project.id)
-            .unwrap()
-            .config
-            .copy_files
-            .is_empty()
-    );
-    fs::remove_file(f.repo.join(".env")).unwrap();
-    fs::create_dir(f.repo.join(".env")).unwrap();
-    assert!(
-        f.core
-            .project_preparation_draft(&f.project.id)
-            .unwrap()
-            .config
-            .copy_files
-            .is_empty()
-    );
-    assert!(!f.repo.join(".shika").exists());
-}
-
-#[test]
-fn setup_suggestions_use_unambiguous_npm_and_pnpm_metadata() {
-    let f = Fixture::new();
-    for (package, locks, command) in [
-        ("{}", vec!["package-lock.json"], "npm ci"),
-        ("{}", vec!["npm-shrinkwrap.json"], "npm ci"),
-        (
-            r#"{"packageManager":"npm@10.8.0"}"#,
-            vec!["npm-shrinkwrap.json", "package-lock.json"],
-            "npm ci",
-        ),
-        (
-            "{}",
-            vec!["pnpm-lock.yaml"],
-            "pnpm install --frozen-lockfile",
-        ),
-        (
-            r#"{"packageManager":"pnpm@10.0.0+sha512.example"}"#,
-            vec!["pnpm-lock.yaml"],
-            "pnpm install --frozen-lockfile",
-        ),
-        (r#"{"packageManager":"npm@10.8.0"}"#, vec![], "npm install"),
-        (
-            r#"{"packageManager":"pnpm@10.0.0"}"#,
-            vec![],
-            "pnpm install",
-        ),
-    ] {
-        fs::write(f.repo.join("package.json"), package).unwrap();
-        for lock in &locks {
-            fs::write(f.repo.join(lock), "fixture lock").unwrap();
-        }
-        let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
-        assert_eq!(draft.config.commands, [command], "{package}: {locks:?}");
-        if locks.is_empty() {
-            assert!(draft.note.contains("may create one"));
-        }
-        for lock in locks {
-            fs::remove_file(f.repo.join(lock)).unwrap();
-        }
-    }
-    assert!(!f.repo.join(".shika").exists());
-}
-
-#[test]
-fn setup_suggestions_skip_conflicts_unsupported_managers_and_unknown_toolchains() {
-    let f = Fixture::new();
-    fs::write(f.repo.join("Cargo.toml"), "[package]\nname = 'fixture'\n").unwrap();
-    assert!(
-        f.core
-            .project_preparation_draft(&f.project.id)
-            .unwrap()
-            .config
-            .commands
-            .is_empty()
-    );
-    for (package, locks) in [
-        ("{}", vec![]),
-        ("{}", vec!["package-lock.json", "pnpm-lock.yaml"]),
-        ("{}", vec!["package-lock.json", "yarn.lock"]),
-        (
-            r#"{"packageManager":"pnpm@10.0.0"}"#,
-            vec!["package-lock.json"],
-        ),
-        (r#"{"packageManager":"npm@10.8.0"}"#, vec!["pnpm-lock.yaml"]),
-        (
-            r#"{"packageManager":"yarn@4.0.0"}"#,
-            vec!["package-lock.json"],
-        ),
-        (r#"{"packageManager":"npm; touch ran.generated"}"#, vec![]),
-        (r#"{"packageManager":42}"#, vec!["package-lock.json"]),
-        ("{}", vec!["bun.lock"]),
-        ("{}", vec!["bun.lockb"]),
-    ] {
-        fs::write(f.repo.join("package.json"), package).unwrap();
-        for lock in &locks {
-            fs::write(f.repo.join(lock), "fixture").unwrap();
-        }
-        let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
-        assert!(draft.config.commands.is_empty(), "{package}: {locks:?}");
-        assert!(draft.note.contains("manually"));
-        for lock in locks {
-            fs::remove_file(f.repo.join(lock)).unwrap();
-        }
-    }
-    assert!(!f.repo.join("ran.generated").exists());
-}
-
-#[test]
-fn setup_suggestions_skip_invalid_unbounded_and_symlinked_package_metadata() {
-    let f = Fixture::new();
-    fs::write(f.repo.join("package-lock.json"), "{}").unwrap();
-    for package in ["{", "[]", &" ".repeat(65537)] {
-        fs::write(f.repo.join("package.json"), package).unwrap();
-        let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
-        assert!(draft.config.commands.is_empty());
-        assert!(draft.note.contains("safely"));
-    }
-    fs::remove_file(f.repo.join("package.json")).unwrap();
-    let outside = f.root.join("outside.json");
-    fs::write(&outside, r#"{"packageManager":"npm@10.8.0"}"#).unwrap();
-    symlink(&outside, f.repo.join("package.json")).unwrap();
-    assert!(
-        f.core
-            .project_preparation_draft(&f.project.id)
-            .unwrap()
-            .config
-            .commands
-            .is_empty()
-    );
-    fs::remove_file(f.repo.join("package.json")).unwrap();
-    fs::create_dir(f.repo.join("package.json")).unwrap();
-    assert!(
-        f.core
-            .project_preparation_draft(&f.project.id)
-            .unwrap()
-            .config
-            .commands
-            .is_empty()
-    );
-    fs::remove_dir(f.repo.join("package.json")).unwrap();
-    fs::write(
-        f.repo.join("package.json"),
-        r#"{"packageManager":"npm@10.8.0"}"#,
-    )
-    .unwrap();
-    fs::remove_file(f.repo.join("package-lock.json")).unwrap();
-    symlink(&outside, f.repo.join("package-lock.json")).unwrap();
-    // Unsafe lock metadata must not degrade into an unfrozen installer.
-    assert!(
-        f.core
-            .project_preparation_draft(&f.project.id)
-            .unwrap()
-            .config
-            .commands
-            .is_empty()
-    );
-    assert!(!f.repo.join(".shika").exists());
-}
-
-#[test]
 fn setup_editor_creates_configuration_without_running_or_approving_it() {
     let f = Fixture::new();
     assert!(!f.repo.join(".shika").exists());
@@ -699,6 +488,7 @@ fn setup_editor_creates_configuration_without_running_or_approving_it() {
         copy_files: vec![".env.local".into()],
         commands: vec!["touch ran.generated".into()],
         timeout_seconds: 600,
+        clone_dependencies: false,
     };
     f.core
         .save_project_preparation(&f.project.id, None, Some(&config))
@@ -757,6 +547,7 @@ fn setup_editor_empty_template_and_formatting_edits_do_not_infer_setup_or_consen
         commands: vec![],
         copy_files: vec![],
         timeout_seconds: 600,
+        clone_dependencies: false,
     };
     f.core
         .save_project_preparation(&f.project.id, None, Some(&empty))
@@ -881,6 +672,7 @@ fn setup_editor_never_follows_config_or_copy_source_links() {
         copy_files: vec![],
         commands: vec![],
         timeout_seconds: 600,
+        clone_dependencies: false,
     };
     let outside = f.root.join("outside");
     fs::create_dir(&outside).unwrap();

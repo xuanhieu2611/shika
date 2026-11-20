@@ -2,6 +2,43 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Prompt field in the New picker, 2026-11-19
+
+Checked in a debug bundle opened with `open -n` and an isolated `--data-dir`, on a disposable repository with no setup config, using synthetic keys after confirming Shika was frontmost:
+
+- [x] Cmd+N opens New with the prompt field focused (focus border, caret, placeholder) above the rows, and the footer reads `↵ start`, `⇧↵ new line`, `esc cancel` beside Create worktree.
+- [x] Typing `j`, `k`, and a digit after text goes into the field; Shift+Enter adds a second line and the field grows; Down moves the selected row to Terminal, which dims the text and keeps it.
+- [x] Up back to Claude Code and Enter: the card was named from the prompt's first line at once, the branch renamed to `reply-with-just-the-word-ok-joke-free`, and Claude Code received the prompt (it stopped on its first-run trust check for the never-trusted repository, so the card showed Asking).
+
+Unit tests cover the trimmed prompt, Terminal ignoring it, the key split, the seeded first submission for tasks and checkouts (`launch::tests`), and the prompt as each CLI's last argument in core (`tests::sessions`, `tests::checkout`). Not yet run natively:
+
+- [ ] With configured setup: type a prompt, start, walk away; the CLI starts with the prompt after setup, the card turns Working, then Ready with one notification.
+- [ ] Checkout mode (Cmd+Shift+N) with a prompt; empty prompt still starts Waiting; number keys and Space on an empty field; a prompt starting with `-` shows the refusal under the field and starts nothing.
+- [ ] First-New setup review: Cancel returns to the same picker and text; Start without setup and Save, approve and start pass the prompt. Retry after a failed setup reuses it. A failed start without setup refills the next picker.
+- [ ] IME composition in the field, light theme, glass, and a long prompt that scrolls.
+
+## New picker: select, then start, 2026-11-19
+
+After the author tried the prompt field: a number key started the agent before the prompt was written. Checked in a debug bundle opened with `open -n` and an isolated `--data-dir`, on a disposable repository, with synthetic keys after confirming Shika was frontmost:
+
+- [x] The field is two lines tall with `⇧↵` new line in its corner; the header shows `tab` project; the footer has Create worktree, Cancel `esc`, and the primary "Start Claude Code" `↵`.
+- [x] Typing a prompt dims Terminal (its number cap and name) to "Clear the prompt to choose"; the agent rows stay as they are.
+- [x] With the field empty, `3` selects Cursor CLI and the button reads "Start Cursor CLI"; nothing starts.
+- [x] `5` selects Terminal (placeholder "Type a prompt to start an agent instead.", button "Start Terminal"); typing then moves the selection to Claude Code and closes Terminal.
+
+Unit tests cover the Terminal rule and arrow skipping (`launch::tests`). Not yet run natively:
+
+- [ ] A single click on a row selects it and keeps typing in the field; a double click starts it; a click on the closed Terminal does nothing; the Start button starts the selected row.
+- [ ] Clearing the field makes Terminal available again without selecting it; Up/Down skip Terminal while the field has text.
+- [ ] Lead picker (no saved Lead): number keys select, Enter or Start starts; the base-branch fact sits left of the buttons.
+- [ ] Light theme and glass.
+
+## New worktree index refresh, 2026-11-19
+
+Measured with git 2.50.1 on a synthetic 50,000-file repo (396 MB), reading with `GIT_OPTIONAL_LOCKS=0` as the diff stat does: `git diff --numstat HEAD` took 0.13 to 0.34s in an unrefreshed new worktree on every read, and 0.09s after the refresh. The refresh with its wait took about 0.85s (0.16s refresh, about 0.5s wait). Unit tests cover the refreshed index and a failing refresh (`worktree::tests`, `tests::sessions`). Not yet run natively:
+
+- [ ] In a built app on a large real repository, time the first diff stat and the first Changes read of a new task against a build without the refresh, and the time from New to the CLI prompt with and without it.
+
 ## Lead chat queued messages, 2026-11-12
 
 Unit and GPUI tests cover the routing, order, refusal, restore and doorbell gate (`lead_chat::queue`, `lead_chat::queue_tests`, `control::tests`). Not yet run natively with an isolated `--data-dir`:
@@ -471,7 +508,7 @@ Validation after the Settings/suggestions follow-up: parallel workspace tests pa
 - AUTOMATED: New configuration/template saves do not run commands, create tasks, or grant consent. Changed commands still require approval; disable restores no-config launches without touching live tasks or other `.shika` files. Existing parsed-config consent survives formatting-only edits. Stale/invalid/oversized configs, invalid/duplicate/missing/tracked copy paths, and config/source symlinks are refused; failed saves preserve existing contents. Editor focus-row arithmetic covers empty/populated/error states, the 128-file/64-command limits, and removal shifts.
 - PRIOR EDITOR STARTUP ONLY (before the Settings/suggestions move): A unique scratch bundle, with its data directory hard-coded to a disposable fixture and the editor opened through the real async load path, started without creating `.shika`. The temporary startup hook was removed afterwards. Evidence fixture: `/private/tmp/shika-setup-editor-WRh0st/` (machine-local). No agent or command was launched.
 - BLOCKED: This harness has neither macOS Accessibility permission (`osascript is not allowed assistive access`) nor Screen Recording permission (`CGPreflightScreenCaptureAccess` false). No synthetic keystrokes were sent and no screenshots were obtained. Startup is not evidence of rendered or interactive acceptance.
-- AUTOMATED SUGGESTIONS: Missing configuration stays unsaved/unapproved and is never used by New. Existing configuration (even empty) wins. Only root regular ignored `.env` / `.env.local` files are suggested; tracked, symlinked, directory, and production-specific files are skipped. npm/pnpm metadata cases cover frozen installs, explicit lock-less installs, both npm lock types, mismatches, competing/unsupported managers, unknown toolchains, malformed/oversized/nonregular/symlinked metadata, and no dependency/script execution. Settings section wrapping and editor focus-row mapping are covered by app tests, not native interaction.
+- AUTOMATED SUGGESTIONS: Missing configuration stays unsaved/unapproved and is never used by New. Existing configuration (even empty) wins. Only root regular ignored `.env` / `.env.local` files are suggested; tracked, symlinked, directory, and production-specific files are skipped. npm/pnpm metadata cases cover frozen installs, explicit lock-less installs, both npm lock types, mismatches, competing/unsupported managers, unknown toolchains, malformed/oversized/nonregular/symlinked metadata, and no dependency/script execution. AUTOMATED (2026-11-19): Yarn 1 and 2+ (by `packageManager` version or `.yarnrc.yml`), Bun (both lock types), `yarn@1` with `.yarnrc.yml`, a non-numeric Yarn version, a symlinked `.yarnrc.yml`, root and `ios/` Podfiles with and without a Gemfile naming cocoapods, both Podfiles, symlinked Podfile/Gemfile/`ios`, and `.worktreeinclude` literal, duplicate, glob, negation, directory, `..`, `.git`, tracked, nonignored, missing, and symlinked entries, plus a symlinked `.worktreeinclude`; the suggested copy list passes Save validation. Settings section wrapping and editor focus-row mapping are covered by app tests, not native interaction.
 - [ ] Verify Settings Projects lists multiple/empty projects and name/path targeting; no header/Agent-menu setup control remains. Save/cancel/disable returns to the same Projects row; Done restores original terminal/card focus and selection. Opening/cancelling a suggested draft leaves no folder/file or approval.
 - [ ] Add/remove paths and ordered commands, paste Unicode/spaces, edit timeout, navigate every field/button with Tab and Shift+Tab, and verify long/minimum-size setups scroll the focused row into view. Check IME Enter/Escape/composition and Save/Cancel by mouse.
 - [ ] Save a copy-only setup and a setup-command configuration, exercise New approval and independent copies, then Cmd+T and run a dev server manually. Reject tracked/missing/symlink paths and invalid timeout without losing the editor.
@@ -488,10 +525,24 @@ Validation: parallel workspace tests passed 487 tests (172 app, 248 core, 67 ter
 - AUTOMATED: Combined save/consent stores the exact config without executing or allocating; normal launch copies files and runs setup before CLI startup, and repeats preparation in independent fresh worktrees. Changed config still needs consent, and Disable does not cause a renewed onboarding prompt. Invalid/stale drafts grant no consent. A simulated local approval write failure leaves a saved but unapproved config and starts no command/worktree/session.
 - AUTOMATED: Legacy project records deserialize safely; prior approvals suppress redundant onboarding. Compact/customized focus-row arithmetic covers empty/suggested/error states and maximum row counts. These do not establish native focus dispatch or rendered scrolling.
 - RESOLVED TEST-HARNESS ISSUE: The earlier PID/timestamp fixture collision reproduced during the initial onboarding parallel test run. Fixtures now reserve roots exclusively with `create_dir`, PID/timestamp/counter, and collision retries instead of adopting existing directories. Full parallel validation and repeated onboarding runs passed after the fix; no serial-only acceptance claim.
-- [ ] First New shows this project's paths/commands/timeout/trust warning before allocation. Review two projects with different env files and npm/pnpm defaults; approval/skip in one must not affect the other. Saved config (including empty) goes straight to ordinary approval, not detection.
-- [ ] Default focus is save/start with suggestions and skip without them. Test fresh versus held/repeated Enter, Tab/Shift+Tab, Customize, native clipboard/IME, mouse actions, errors, long root paths, wrapping footer, minimum window size, and light/dark/derived/glass themes.
+- [ ] First New shows this project's paths/commands/timeout/trust warning before allocation. Review two projects with different env files and installer defaults; approval/skip in one must not affect the other. Saved config (including empty) goes straight to ordinary approval, not detection.
+- [ ] Default focus is save/start.
+- [ ] A disposable React Native style repo (`package.json`, `yarn.lock`, `ios/Podfile`, a root Gemfile naming cocoapods, and an ignored file listed in `.worktreeinclude`) shows that file, `yarn install --frozen-lockfile`, then `cd ios && bundle exec pod install` in the review, and Save, approve and start runs both installs before the CLI starts. Repeat with a Yarn 2+ project (`--immutable`) and a Bun project.
+- [ ] A project with nothing to suggest (no ignored root `.env` / `.env.local`, no package-manager, Podfile, or `.worktreeinclude` metadata) starts New with no review, writes no `.shika/worktrees.json` or `worktreeSetupReviewed`, and shows the review on a later New after an ignored `.env.local` appears. AUTOMATED (2026-11-19): `preparation_onboarding_offers_review_only_when_something_is_suggested` and `first_new_reviews_setup_only_when_something_is_suggested`; the native flow is unchecked. Test fresh versus held/repeated Enter, Tab/Shift+Tab, Customize, native clipboard/IME, mouse actions, errors, long root paths, wrapping footer, minimum window size, and light/dark/derived/glass themes.
 - [ ] Cancel returns to the same CLI picker/project/index without recording a decision or changing card selection; picker cancel restores the original terminal/cards. Save/start and skip launch the selected CLI. Reopen isolated data to confirm no repeat notice; Settings can configure a skipped project later.
 - [ ] Change config externally after preview, including during save/approval. No stale overwrite or unintended command executes. Complete the real-install, Cmd+T dev-server, localhost link, and all-provider checks recorded above before claiming native acceptance.
+
+### Opt-in node_modules clone
+
+`"clone-dependencies": true` clones the main checkout's `node_modules` folders into a new task copy-on-write, after copy-files and before setup commands (plan item 6, 2026-11-19). No normal app data or personal repository was used as a task; the syscall measurements below only read an existing `node_modules` and cloned it into the session scratch directory.
+
+- MEASURED (syscall only, not in-app): on Apple Silicon with macOS 26, a 76,000-entry `node_modules` cloned to an identical tree (`diff -rq`) in 1.1s with one directory `clonefile`, 7.1 to 7.5s with a per-file `clonefileat` walk, and 10.0s with `copyfile(3)` `COPYFILE_CLONE | COPYFILE_RECURSIVE`; a 41,000-entry folder took 0.8s with the directory clone. `fclonefileat` from an `O_NOFOLLOW` directory descriptor clones a whole tree. `COPYFILE_CLONE_FORCE | COPYFILE_RECURSIVE` returned `EINVAL`.
+- AUTOMATED: `preparation_clone_tests.rs` covers the clone before setup commands (root and workspace folders, relative links kept, `.cache` and `.vite` dropped, copy-on-write independence, a clean `git status`), each skip (a changed root or workspace `package.json` or lockfile, no main-checkout `node_modules`, an unignored workspace folder), links into the main checkout (absolute and climbing relative) removing only that clone, links outside the repository kept, an unreadable folder falling back to setup, a symlinked source never followed, consent with and without the key, and suggestions only for pnpm/Yarn/Bun locked installs. Unit tests cover link resolution, an existing target, and the setup output text. Focus-row arithmetic covers the new Dependencies rows.
+- PASS: Workspace tests (315 app, 453 core with one existing ignored, 67 terminal), formatting, and strict workspace/all-targets Clippy. The existing machine-specific `path_env::tests::finder_launch_path_resolves_installed_clis` assertion (Claude resolves to `/opt/homebrew/bin/claude`) fails here as on the previous commit and was skipped. No app bundle was opened.
+- [ ] Time a disposable React Native style repo (pnpm or Yarn, `ios/Podfile`) from New to CLI start with the clone off and on, with a real install in setup. Record both.
+- [ ] A task on another volume than the main checkout (a project on an external APFS or non-APFS disk with `.worktrees/` there, versus a symlinked `.worktrees`) reports the skip and installs normally.
+- [ ] Settings > Projects > Worktree setup… shows Dependencies and the Clone node_modules switch; Tab reaches it between Add command and the timeout, Enter, Space, and a click toggle it, and the `npm ci` warning appears and disappears as commands change. First-New review shows the clone fact between the copy and run lists, and the approval dialog lists it. Check light, dark, derived themes, glass, and the minimum window.
+- [ ] Cancel and Quit during a clone of a large `node_modules`: Cancel removes the untouched tree, Quit keeps the journaled tree, and a clone still being checked stays in the task's Git admin folder (`shika-clone/`), never in the task.
 
 ### Setup contributor documentation follow-up
 

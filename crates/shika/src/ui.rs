@@ -188,6 +188,28 @@ pub(super) fn secondary_button(
         .hover(move |style| style.bg(hover))
 }
 
+/// The neutral on/off track of a switch: 28 by 17, an 11px thumb inset 2px,
+/// ink-1 when on and sunken with an ink-3 border when off. No animation.
+pub(super) fn switch_track(on: bool, chrome: &Chrome) -> gpui::Div {
+    div()
+        .flex_none()
+        .w(px(28.))
+        .h(px(17.))
+        .rounded_full()
+        .bg(if on { chrome.ink_1 } else { chrome.sunken })
+        .border_1()
+        .border_color(if on { chrome.ink_1 } else { chrome.ink_3 })
+        .flex()
+        .items_center()
+        .px(px(2.))
+        .when(on, |track| track.justify_end())
+        .child(div().size(px(11.)).rounded_full().bg(if on {
+            chrome.overlay
+        } else {
+            chrome.ink_3
+        }))
+}
+
 /// A list row in the picker, Settings, and the leftovers list.
 pub(super) fn list_row(selected: bool, chrome: &Chrome) -> gpui::Div {
     div()

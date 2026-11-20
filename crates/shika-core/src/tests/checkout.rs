@@ -36,7 +36,7 @@ fn git_log(log: &Path) -> String {
 fn start_checkout(core: &Core, project_id: &str, preset: &str) -> (Session, String) {
     let (sink, rx) = channel_sink();
     let session = core
-        .create_checkout_session(project_id, preset, PtySize::new(30, 90), sink)
+        .create_checkout_session(project_id, preset, None, PtySize::new(30, 90), sink)
         .unwrap();
     let report = collect_until(&rx, "end-report", Duration::from_secs(5));
     (session, report)
@@ -121,7 +121,7 @@ fn a_project_has_at_most_one_checkout_session() {
     let (first, _) = start_checkout(&core, &project.id, "claude");
     let (sink, _rx) = channel_sink();
     assert_eq!(
-        core.create_checkout_session(&project.id, "codex", PtySize::default(), sink),
+        core.create_checkout_session(&project.id, "codex", None, PtySize::default(), sink),
         Err(Error::CheckoutExists)
     );
     assert_eq!(core.sessions(), std::slice::from_ref(&first));
@@ -140,12 +140,12 @@ fn a_project_has_at_most_one_checkout_session() {
     // A refused start creates nothing.
     let (sink, _rx) = channel_sink();
     assert_eq!(
-        core.create_checkout_session(&project.id, "kiro", PtySize::default(), sink),
+        core.create_checkout_session(&project.id, "kiro", None, PtySize::default(), sink),
         Err(Error::UnknownCli)
     );
     let (sink, _rx) = channel_sink();
     assert_eq!(
-        core.create_checkout_session("missing", "claude", PtySize::default(), sink),
+        core.create_checkout_session("missing", "claude", None, PtySize::default(), sink),
         Err(Error::UnknownProject)
     );
     // `elsewhere`, `task`, and `again`.
@@ -161,7 +161,7 @@ fn a_folder_that_is_not_its_own_checkout_starts_nothing() {
     fs::rename(repo.join(".git"), repo.join("moved.git")).unwrap();
     let (sink, _rx) = channel_sink();
     assert!(matches!(
-        core.create_checkout_session(&project.id, "claude", PtySize::default(), sink),
+        core.create_checkout_session(&project.id, "claude", None, PtySize::default(), sink),
         Err(Error::GitStatus(_))
     ));
     assert!(core.sessions().is_empty());
@@ -504,7 +504,7 @@ fn a_checkout_terminal_uses_the_projects_single_checkout_slot() {
     let project = core.add_project(&scratch.repo("demo")).unwrap().project;
     let (sink, _rx) = channel_sink();
     assert_eq!(
-        core.create_checkout_session(&project.id, "terminal", PtySize::default(), sink),
+        core.create_checkout_session(&project.id, "terminal", None, PtySize::default(), sink),
         Err(Error::UnknownCli)
     );
     assert!(core.sessions().is_empty());
@@ -515,7 +515,7 @@ fn a_checkout_terminal_uses_the_projects_single_checkout_slot() {
         .unwrap();
     let (sink, _rx) = channel_sink();
     assert_eq!(
-        core.create_checkout_session(&project.id, "claude", PtySize::default(), sink),
+        core.create_checkout_session(&project.id, "claude", None, PtySize::default(), sink),
         Err(Error::CheckoutExists)
     );
     let (sink, _rx) = channel_sink();
@@ -576,4 +576,45 @@ fn switching_a_checkout_terminal_keeps_the_shell_in_the_checkout() {
     for pty in [session.pty.unwrap(), switched.pty.unwrap()] {
         assert_eq!(core.write(pty, b"x"), Err(Error::UnknownPty));
     }
+}
+
+#[test]
+fn a_prompt_the_cli_would_misread_starts_no_checkout_and_runs_no_git() {
+    let scratch = Scratch::new();
+    let repo = scratch.repo("demo");
+    let (core, log) = core_with_logged_git(&scratch);
+    let project = core.add_project(&repo).unwrap().project;
+    let before = git_log(&log);
+    for bad in ["", "  \n", "--help", "-p fix", "a\0b"] {
+        let (sink, _rx) = channel_sink();
+        assert!(
+            matches!(
+                core.create_checkout_session(
+                    &project.id,
+                    "claude",
+                    Some(bad),
+                    PtySize::default(),
+                    sink
+                ),
+                Err(Error::InvalidPrompt(_))
+            ),
+            "{bad:?}"
+        );
+    }
+    assert!(core.sessions().is_empty());
+    assert_eq!(git_log(&log), before);
+    let (sink, rx) = channel_sink();
+    core.create_checkout_session(
+        &project.id,
+        "claude",
+        Some("Fix it"),
+        PtySize::new(30, 90),
+        sink,
+    )
+    .unwrap();
+    let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+    assert_eq!(
+        report_args(&report),
+        ["--dangerously-skip-permissions", "Fix it"]
+    );
 }

@@ -2,6 +2,12 @@
 //! Reuses the native single-line input; no watcher, runner, or secret preview.
 use super::*;
 
+mod view;
+
+/// The approval and first-New fact for `clone-dependencies`.
+pub(crate) const CLONE_FACT: &str =
+    "Clone node_modules from the main checkout, copy-on-write, when package files match.";
+
 pub(super) struct Entry {
     input: Entity<name_input::NameInput>,
     remove: FocusHandle,
@@ -9,9 +15,12 @@ pub(super) struct Entry {
 #[derive(Clone)]
 enum EntryPoint {
     Settings(usize),
+    /// First New: the picker to return to on Cancel, and its prompt for
+    /// the CLI once the author continues.
     New {
         preset: CliPreset,
-        picker_index: usize,
+        picker: Box<crate::PickerDialog>,
+        prompt: Option<String>,
     },
 }
 pub(super) struct Editor {
@@ -24,6 +33,8 @@ pub(super) struct Editor {
     expected: Option<PreparationConfig>,
     files: Vec<Entry>,
     commands: Vec<Entry>,
+    clone_dependencies: bool,
+    clone_toggle: FocusHandle,
     timeout: Entity<name_input::NameInput>,
     add_file: FocusHandle,
     add_command: FocusHandle,
@@ -54,7 +65,9 @@ fn focus_rows(
         rows.push(row); // Add
         row += 1;
     }
-    row += 1; // timeout label
+    row += 2; // Dependencies heading and help
+    rows.push(row); // Clone node_modules switch
+    row += 2; // and the timeout label
     rows.push(row);
     row += 1 + usize::from(error);
     if configured {
@@ -67,17 +80,20 @@ fn focus_rows(
     } // Start without setup
     rows
 }
-/// Compact preview: four facts, optional file/command headings and values,
-/// timeout, optional error, Customize, then the three footer controls.
-fn compact_focus_rows(files: usize, commands: usize, error: bool) -> Vec<usize> {
+/// Compact preview: four facts, optional file heading and values, the clone
+/// fact, optional command heading and values, timeout, optional error,
+/// Customize, then the three footer controls.
+fn compact_focus_rows(files: usize, clone: bool, commands: usize, error: bool) -> Vec<usize> {
     let mut row = 4;
-    if files + commands == 0 {
+    if files + commands == 0 && !clone {
         row += 1;
     }
-    for count in [files, commands] {
-        if count > 0 {
-            row += 1 + count;
-        }
+    if files > 0 {
+        row += 1 + files;
+    }
+    row += usize::from(clone);
+    if commands > 0 {
+        row += 1 + commands;
     }
     row += 1 + usize::from(error);
     vec![row, row + 1, row + 1, row + 1]
@@ -112,6 +128,8 @@ impl Editor {
                 .into_iter()
                 .map(|v| entry(v, chrome, cx))
                 .collect(),
+            clone_dependencies: draft.config.clone_dependencies,
+            clone_toggle: cx.focus_handle(),
             timeout: cx.new(|cx| {
                 name_input::NameInput::new(draft.config.timeout_seconds.to_string(), chrome, cx)
             }),
@@ -131,7 +149,16 @@ impl Editor {
         self.onboarding() && !self.customized
     }
     fn has_setup(&self) -> bool {
-        !self.files.is_empty() || !self.commands.is_empty()
+        !self.files.is_empty() || !self.commands.is_empty() || self.clone_dependencies
+    }
+    /// `npm ci` deletes node_modules before installing, so it throws the
+    /// clone away. Only warned about, since the command is the author's.
+    fn clone_discarded(&self, cx: &App) -> bool {
+        self.clone_dependencies
+            && self.commands.iter().any(|entry| {
+                let words: Vec<&str> = entry.input.read(cx).value().split_whitespace().collect();
+                words.windows(2).any(|pair| pair == ["npm", "ci"])
+            })
     }
     fn initial_focus(&self, cx: &App) -> FocusHandle {
         if self.onboarding() {
@@ -146,7 +173,12 @@ impl Editor {
     }
     fn rows(&self) -> Vec<usize> {
         if self.compact() {
-            compact_focus_rows(self.files.len(), self.commands.len(), self.error.is_some())
+            compact_focus_rows(
+                self.files.len(),
+                self.clone_dependencies,
+                self.commands.len(),
+                self.error.is_some(),
+            )
         } else {
             focus_rows(
                 self.files.len(),
@@ -160,9 +192,14 @@ impl Editor {
     fn show_error(&mut self, error: String) {
         self.error = Some(error);
         let row = if self.compact() {
-            compact_focus_rows(self.files.len(), self.commands.len(), false)[0]
+            compact_focus_rows(
+                self.files.len(),
+                self.clone_dependencies,
+                self.commands.len(),
+                false,
+            )[0]
         } else {
-            12 + self.files.len() + self.commands.len()
+            15 + self.files.len() + self.commands.len()
         };
         self.scroll.scroll_to_item(row);
     }
@@ -199,7 +236,11 @@ impl Editor {
         for entry in &self.commands {
             handles.extend([entry.input.focus_handle(cx), entry.remove.clone()]);
         }
-        handles.extend([self.add_command.clone(), self.timeout.focus_handle(cx)]);
+        handles.extend([
+            self.add_command.clone(),
+            self.clone_toggle.clone(),
+            self.timeout.focus_handle(cx),
+        ]);
         if self.expected.is_some() {
             handles.push(self.disable.clone());
         }
@@ -229,6 +270,7 @@ impl Editor {
                 .map(|e| e.input.read(cx).value().to_string())
                 .collect(),
             timeout_seconds,
+            clone_dependencies: self.clone_dependencies,
         })
     }
 }
@@ -237,138 +279,6 @@ fn entry(value: String, chrome: Chrome, cx: &mut Context<Shika>) -> Entry {
         input: cx.new(|cx| name_input::NameInput::new(value, chrome, cx)),
         remove: cx.focus_handle(),
     }
-}
-/// The top of the setup dialog: the title, what setup does, where the
-/// config lives, and the editor's note.
-fn setup_intro(
-    editor: &Editor,
-    name: &str,
-    config_path: String,
-    chrome: &Chrome,
-    max_h: Pixels,
-) -> gpui::Stateful<gpui::Div> {
-    let panel = dialog(chrome, max_h)
-        .track_scroll(&editor.scroll)
-        .child(dialog_title(div()).child(if editor.onboarding() { format!("Set up worktrees for {name}?") } else { format!("Worktree setup for {name}") }))
-        .child(dialog_text(chrome).child(if editor.onboarding() {
-            "Setup is optional. Commands run with your permissions before each agent starts. Approve only a repository you trust, including its scripts."
-        } else {
-            "Applies to new agents. Saving does not run setup; New asks for approval when configuration changes."
-        }))
-        .child(dialog_text(chrome).font_family(MONO).child(config_path));
-    panel.child(dialog_text(chrome).child(editor.note.clone()))
-}
-/// The full editor's two lists, Files to copy then Setup commands: a label,
-/// help, one row per entry, and an Add button.
-fn setup_lists(
-    mut panel: gpui::Stateful<gpui::Div>,
-    editor: &Editor,
-    chrome: &Chrome,
-    window: &Window,
-    cx: &mut Context<Shika>,
-) -> gpui::Stateful<gpui::Div> {
-    for (command, list, label, help, add_focus) in [
-        (
-            false,
-            &editor.files,
-            "Files to copy",
-            "Literal paths from the main checkout, such as .env.local. Must be ignored on the task's base too. Contents are never shown.",
-            &editor.add_file,
-        ),
-        (
-            true,
-            &editor.commands,
-            "Setup commands",
-            "Run in order before the agent starts. Trusted commands, not a sandbox. Use unattended commands, not a dev server.",
-            &editor.add_command,
-        ),
-    ] {
-        panel = panel
-            .child(dialog_title(div()).child(label))
-            .child(dialog_text(chrome).child(help));
-        for (index, entry) in list.iter().enumerate() {
-            panel = panel.child(setup_entry_row(command, index, entry, chrome, window, cx));
-        }
-        panel = panel.child(add_entry_button(command, add_focus, chrome, window, cx));
-    }
-    panel
-}
-/// One file or command: its input and a Remove button.
-fn setup_entry_row(
-    command: bool,
-    index: usize,
-    entry: &Entry,
-    chrome: &Chrome,
-    window: &Window,
-    cx: &mut Context<Shika>,
-) -> gpui::Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .child(div().flex_1().min_w_0().child(entry.input.clone()))
-        .child(
-            secondary_button(
-                (
-                    if command {
-                        "remove-command"
-                    } else {
-                        "remove-copy"
-                    },
-                    index,
-                ),
-                chrome,
-            )
-            .track_focus(&entry.remove)
-            .when(entry.remove.is_focused(window), |d| {
-                d.border_color(chrome.focus)
-            })
-            .px(px(8.))
-            .py(px(4.))
-            .child("Remove")
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.remove_setup_entry(command, index, window, cx)
-            })),
-        )
-}
-/// Add file path or Add command, under its list.
-fn add_entry_button(
-    command: bool,
-    add_focus: &FocusHandle,
-    chrome: &Chrome,
-    window: &Window,
-    cx: &mut Context<Shika>,
-) -> gpui::Stateful<gpui::Div> {
-    secondary_button(if command { "add-command" } else { "add-copy" }, chrome)
-        .track_focus(add_focus)
-        .when(add_focus.is_focused(window), |d| {
-            d.border_color(chrome.focus)
-        })
-        .px(px(12.))
-        .py(px(6.))
-        .child(if command {
-            "Add command"
-        } else {
-            "Add file path"
-        })
-        .on_click(cx.listener(move |this, _, window, cx| this.add_setup_entry(command, window, cx)))
-}
-/// Disable setup, shown when the project already has a configuration.
-fn disable_setup_button(
-    editor: &Editor,
-    chrome: &Chrome,
-    window: &Window,
-    cx: &mut Context<Shika>,
-) -> gpui::Stateful<gpui::Div> {
-    secondary_button("disable-setup", chrome)
-        .track_focus(&editor.disable)
-        .when(editor.disable.is_focused(window), |d| {
-            d.border_color(chrome.focus)
-        })
-        .px(px(12.))
-        .py(px(6.))
-        .child("Disable setup")
-        .on_click(cx.listener(|this, _, window, cx| this.save_worktree_setup(true, window, cx)))
 }
 impl Shika {
     pub(super) fn open_worktree_setup(
@@ -426,19 +336,27 @@ impl Shika {
         &mut self,
         project: String,
         preset: CliPreset,
+        prompt: Option<String>,
         draft: shika_core::PreparationDraft,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let picker_index = match &self.overlay {
-            Some(Overlay::Picker(picker)) => picker.index,
-            _ => 0,
+        let picker = match &self.overlay {
+            Some(Overlay::Picker(picker)) => Box::new(picker.clone()),
+            _ => Box::new(crate::PickerDialog {
+                project: project.clone(),
+                index: 0,
+                mode: crate::PickerMode::Task,
+                prompt: None,
+                error: None,
+            }),
         };
         let editor = Editor::new(
             project,
             EntryPoint::New {
                 preset,
-                picker_index,
+                picker,
+                prompt,
             },
             draft,
             self.chrome(window),
@@ -468,13 +386,13 @@ impl Shika {
         let Some(Overlay::WorktreeSetup(editor)) = &self.overlay else {
             return;
         };
-        let EntryPoint::New { preset, .. } = &editor.entry_point else {
+        let EntryPoint::New { preset, prompt, .. } = &editor.entry_point else {
             return;
         };
         if editor.composing(cx) {
             return;
         }
-        let (project, preset) = (editor.project.clone(), preset.clone());
+        let (project, preset, prompt) = (editor.project.clone(), preset.clone(), prompt.clone());
         let core = self.core.clone();
         let lookup = project.clone();
         self.busy = true;
@@ -486,7 +404,7 @@ impl Shika {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok(()) => this.request_launch(project, preset, None, window, cx),
+                    Ok(()) => this.request_launch(project, preset, None, prompt, window, cx),
                     Err(e) => {
                         if let Some(Overlay::WorktreeSetup(editor)) = &mut this.overlay {
                             editor.show_error(e.to_string());
@@ -508,12 +426,17 @@ impl Shika {
             return;
         };
         match &editor.entry_point {
-            EntryPoint::New { picker_index, .. } => {
-                self.overlay = Some(Overlay::Picker(crate::PickerDialog {
-                    project: editor.project.clone(),
-                    index: *picker_index,
-                    mode: crate::PickerMode::Task,
-                }));
+            EntryPoint::New { picker, .. } => {
+                let picker = (**picker).clone();
+                // Back in the field, with the prompt as the author left it.
+                if let Some(prompt) = &picker.prompt {
+                    window.focus(&prompt.focus_handle(cx), cx);
+                } else {
+                    window.focus(&self.focus, cx);
+                }
+                self.overlay = Some(Overlay::Picker(picker));
+                cx.notify();
+                return;
             }
             EntryPoint::Settings(settings_row) => {
                 let row = self
@@ -550,6 +473,18 @@ impl Shika {
             "escape" => self.cancel_overlay(window, cx),
             _ => {}
         }
+    }
+    fn toggle_clone_dependencies(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(Overlay::WorktreeSetup(editor)) = &mut self.overlay else {
+            return;
+        };
+        editor.clone_dependencies = !editor.clone_dependencies;
+        editor.error = None;
+        window.focus(&editor.clone_toggle, cx);
+        cx.notify();
     }
     fn add_setup_entry(&mut self, command: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
@@ -665,12 +600,12 @@ impl Shika {
                 this.busy = false;
                 match result {
                     Ok(()) => match entry_point {
-                        EntryPoint::New { preset, .. } => this.begin_launch(
+                        EntryPoint::New { preset, prompt, .. } => this.begin_launch(
                             project,
                             preset,
                             true,
                             None,
-                            Launch::Task,
+                            Launch::Task { prompt },
                             None,
                             window,
                             cx,
@@ -746,6 +681,8 @@ impl Shika {
                     self.add_setup_entry(false, window, cx);
                 } else if editor.add_command.is_focused(window) {
                     self.add_setup_entry(true, window, cx);
+                } else if editor.clone_toggle.is_focused(window) {
+                    self.toggle_clone_dependencies(window, cx);
                 } else if editor.disable.is_focused(window) {
                     self.save_worktree_setup(true, window, cx);
                 } else if editor.cancel.is_focused(window) {
@@ -766,159 +703,12 @@ impl Shika {
                     self.save_worktree_setup(false, window, cx);
                 }
             }
+            "space" if editor.clone_toggle.is_focused(window) => {
+                self.toggle_clone_dependencies(window, cx)
+            }
             _ => return,
         }
         cx.stop_propagation();
-    }
-    pub(super) fn worktree_setup_view(
-        &self,
-        editor: &Editor,
-        chrome: &Chrome,
-        max_h: Pixels,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let project = self.projects.iter().find(|p| p.id == editor.project);
-        let name = project.map(|p| p.name.as_str()).unwrap_or("");
-        let config_path = project
-            .map(|p| model::tilde(&p.path.join(".shika/worktrees.json"), home_dir().as_deref()))
-            .unwrap_or_else(|| ".shika/worktrees.json".into());
-        for input in editor.inputs() {
-            input.update(cx, |input, _| input.set_chrome(*chrome));
-        }
-        let panel = setup_intro(editor, name, config_path, chrome, max_h);
-        if editor.compact() {
-            return self.compact_setup_preview(panel, editor, chrome, window, cx);
-        }
-        let mut panel = setup_lists(panel, editor, chrome, window, cx);
-        panel = panel
-            .child(dialog_text(chrome).child("Timeout in seconds (1 to 3600)"))
-            .child(editor.timeout.clone());
-        if let Some(error) = &editor.error {
-            panel = panel.child(dialog_text(chrome).child(error.clone()));
-        }
-        if editor.expected.is_some() {
-            panel = panel.child(disable_setup_button(editor, chrome, window, cx));
-        }
-        panel.child(self.worktree_setup_buttons(editor, chrome, window, cx))
-    }
-    /// The compact onboarding preview: the suggested files and commands as
-    /// text, the timeout, Customize setup…, and the footer.
-    fn compact_setup_preview(
-        &self,
-        mut panel: gpui::Stateful<gpui::Div>,
-        editor: &Editor,
-        chrome: &Chrome,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        if !editor.has_setup() {
-            panel = panel.child(dialog_text(chrome).child("No files or commands selected."));
-        }
-        for (list, heading) in [
-            (&editor.files, "Copy before each agent"),
-            (&editor.commands, "Run before each agent"),
-        ] {
-            if !list.is_empty() {
-                panel = panel.child(dialog_title(div()).child(heading));
-                for entry in list {
-                    panel = panel.child(
-                        dialog_text(chrome)
-                            .font_family(MONO)
-                            .child(entry.input.read(cx).value().to_string()),
-                    );
-                }
-            }
-        }
-        panel = panel.child(dialog_text(chrome).child(format!(
-            "Timeout: {} seconds",
-            editor.timeout.read(cx).value()
-        )));
-        if let Some(error) = &editor.error {
-            panel = panel.child(dialog_text(chrome).child(error.clone()));
-        }
-        panel
-            .child(
-                secondary_button("customize-setup", chrome)
-                    .track_focus(&editor.customize)
-                    .when(editor.customize.is_focused(window), |d| {
-                        d.border_color(chrome.focus)
-                    })
-                    .px(px(12.))
-                    .py(px(6.))
-                    .child("Customize setup…")
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.customize_preparation(window, cx)),
-                    ),
-            )
-            .child(self.worktree_setup_buttons(editor, chrome, window, cx))
-    }
-    fn worktree_setup_buttons(
-        &self,
-        editor: &Editor,
-        chrome: &Chrome,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let primary_save = !editor.onboarding() || editor.has_setup();
-        let mut footer = dialog_buttons().flex_wrap().child(
-            self.cancel_button("Cancel", chrome, cx)
-                .track_focus(&editor.cancel)
-                .when(editor.cancel.is_focused(window), |d| {
-                    d.border_color(chrome.focus)
-                }),
-        );
-        if editor.onboarding() {
-            let skip = if primary_save {
-                secondary_button("skip-setup", chrome)
-                    .px(px(12.))
-                    .py(px(6.))
-                    .child("Start without setup")
-                    .when(editor.skip.is_focused(window), |d| {
-                        d.border_color(chrome.focus)
-                    })
-            } else {
-                primary_button("skip-setup", "Start without setup", "↵", chrome)
-                    .border_1()
-                    .border_color(if editor.skip.is_focused(window) {
-                        chrome.primary_fg
-                    } else {
-                        chrome.primary_bg
-                    })
-            };
-            footer = footer.child(skip.track_focus(&editor.skip).on_click(
-                cx.listener(|this, _, window, cx| this.skip_preparation_onboarding(window, cx)),
-            ));
-        }
-        let label = if self.busy && editor.onboarding() {
-            "Working..."
-        } else if self.busy {
-            "Saving..."
-        } else if editor.onboarding() {
-            "Save, approve and start"
-        } else {
-            "Save setup"
-        };
-        let save = if primary_save {
-            primary_button("save-setup", label, "↵", chrome)
-                .border_1()
-                .border_color(if editor.save.is_focused(window) {
-                    chrome.primary_fg
-                } else {
-                    chrome.primary_bg
-                })
-        } else {
-            secondary_button("save-setup", chrome)
-                .px(px(12.))
-                .py(px(6.))
-                .child(label)
-                .when(editor.save.is_focused(window), |d| {
-                    d.border_color(chrome.focus)
-                })
-        };
-        footer.child(save.track_focus(&editor.save).on_click(
-            cx.listener(|this, _, window, cx| this.save_worktree_setup(false, window, cx)),
-        ))
     }
 }
 
@@ -930,31 +720,34 @@ mod tests {
     fn keyboard_focus_maps_to_dialog_rows_in_empty_and_configured_editors() {
         assert_eq!(
             focus_rows(0, 0, false, false, false),
-            vec![6, 9, 11, 12, 12]
+            vec![6, 9, 12, 14, 15, 15]
         );
         assert_eq!(
             focus_rows(1, 1, true, false, false),
-            vec![6, 6, 7, 10, 10, 11, 13, 14, 15, 15]
+            vec![6, 6, 7, 10, 10, 11, 14, 16, 17, 18, 18]
         );
         assert_eq!(
             focus_rows(1, 1, true, true, false),
-            vec![6, 6, 7, 10, 10, 11, 13, 15, 16, 16]
+            vec![6, 6, 7, 10, 10, 11, 14, 16, 18, 19, 19]
         );
     }
 
     #[test]
     fn compact_onboarding_focus_matches_empty_and_suggested_summary_rows() {
-        assert_eq!(compact_focus_rows(0, 0, false), [6, 7, 7, 7]);
-        assert_eq!(compact_focus_rows(0, 0, true), [7, 8, 8, 8]);
-        assert_eq!(compact_focus_rows(2, 1, false), [10, 11, 11, 11]);
-        assert_eq!(compact_focus_rows(2, 0, false), [8, 9, 9, 9]);
-        assert_eq!(compact_focus_rows(0, 1, false), [7, 8, 8, 8]);
+        assert_eq!(compact_focus_rows(0, false, 0, false), [6, 7, 7, 7]);
+        assert_eq!(compact_focus_rows(0, false, 0, true), [7, 8, 8, 8]);
+        assert_eq!(compact_focus_rows(2, false, 1, false), [10, 11, 11, 11]);
+        assert_eq!(compact_focus_rows(2, false, 0, false), [8, 9, 9, 9]);
+        assert_eq!(compact_focus_rows(0, false, 1, false), [7, 8, 8, 8]);
+        // The clone fact replaces "No files or commands selected." when alone.
+        assert_eq!(compact_focus_rows(0, true, 0, false), [6, 7, 7, 7]);
+        assert_eq!(compact_focus_rows(2, true, 1, false), [11, 12, 12, 12]);
     }
     #[test]
     fn customized_onboarding_adds_skip_in_the_existing_footer() {
         for (files, commands, error) in [(0, 0, false), (2, 1, true), (128, 64, false)] {
             let rows = focus_rows(files, commands, false, error, true);
-            assert_eq!(rows.len(), 2 * (files + commands) + 6);
+            assert_eq!(rows.len(), 2 * (files + commands) + 7);
             assert!(rows.windows(2).all(|pair| pair[0] <= pair[1]));
             assert_eq!(&rows[rows.len() - 3..], &[rows[rows.len() - 1]; 3]);
         }
@@ -962,7 +755,7 @@ mod tests {
     #[test]
     fn long_setups_keep_focus_targets_ordered_and_repair_after_row_removal() {
         let rows = focus_rows(128, 64, true, true, false);
-        assert_eq!(rows.len(), 2 * (128 + 64) + 6);
+        assert_eq!(rows.len(), 2 * (128 + 64) + 7);
         assert!(rows.windows(2).all(|pair| pair[0] <= pair[1]));
         // Removing a file shifts all command/timeout/footer rows back by one.
         let before = focus_rows(2, 1, true, false, false);

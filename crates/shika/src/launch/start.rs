@@ -22,7 +22,7 @@ impl LaunchOwner {
             Launch::Lead(env) | Launch::LeadRestart { launch: env, .. } => {
                 (None, Some(control::LeadState::new(env.token.clone())))
             }
-            Launch::Task | Launch::Checkout | Launch::Recover { .. } => (None, None),
+            Launch::Task { .. } | Launch::Checkout { .. } | Launch::Recover { .. } => (None, None),
         };
         Self {
             started_by,
@@ -78,20 +78,27 @@ impl SessionStart {
             Launch::Recover { path, resume } => {
                 core.reopen_leftover(&path, &preset.id, resume, size, sink)
             }
-            Launch::Checkout if shell_only => core.create_checkout_terminal(&project, size, sink),
-            Launch::Checkout => core.create_checkout_session(&project, &preset.id, size, sink),
+            Launch::Checkout { .. } if shell_only => {
+                core.create_checkout_terminal(&project, size, sink)
+            }
+            Launch::Checkout { prompt } => {
+                core.create_checkout_session(&project, &preset.id, prompt.as_deref(), size, sink)
+            }
             Launch::Worker(options) => core.create_session_with_preparation(
                 &project, &preset.id, size, sink, options, control, report,
             ),
-            Launch::Task if shell_only => {
+            Launch::Task { .. } if shell_only => {
                 core.create_terminal_with_preparation(&project, size, sink, control, report)
             }
-            Launch::Task => core.create_session_with_preparation(
+            Launch::Task { prompt } => core.create_session_with_preparation(
                 &project,
                 &preset.id,
                 size,
                 sink,
-                LaunchOptions::default(),
+                LaunchOptions {
+                    prompt,
+                    ..LaunchOptions::default()
+                },
                 control,
                 report,
             ),
@@ -222,8 +229,8 @@ fn launch_card(
         launch_control: Some(control),
         launch_error: None,
         stage: match launch {
-            Launch::Checkout if preset.id == "terminal" => "Starting terminal...",
-            Launch::Checkout => "Starting agent...",
+            Launch::Checkout { .. } if preset.id == "terminal" => "Starting terminal...",
+            Launch::Checkout { .. } => "Starting agent...",
             _ => "Creating worktree...",
         }
         .into(),
@@ -234,9 +241,9 @@ fn launch_card(
     }
 }
 
-/// The started card's host: preparation is over, and a Worker's or fresh
-/// Cursor Lead's launch prompt is seeded.
-fn mark_host_started(
+/// The started card's host: preparation is over, and the launch prompt of an
+/// author's task or checkout, a Worker, or a fresh Cursor Lead is seeded.
+pub(super) fn mark_host_started(
     state: &Mutex<HostState>,
     finished: &Launch,
     lead_start: &Mutex<Option<shika_core::LeadStart>>,
@@ -247,7 +254,13 @@ fn mark_host_started(
     // submitted now: the turn starts with the CLI.
     let now = Instant::now();
     match finished {
-        Launch::Worker(LaunchOptions {
+        Launch::Task {
+            prompt: Some(prompt),
+        }
+        | Launch::Checkout {
+            prompt: Some(prompt),
+        }
+        | Launch::Worker(LaunchOptions {
             prompt: Some(prompt),
             ..
         }) => host.seed_launch_prompt(prompt, true, now),
@@ -354,7 +367,7 @@ impl Shika {
         if !retried
             && matches!(
                 launch,
-                Launch::Task | Launch::Checkout | Launch::Recover { .. }
+                Launch::Task { .. } | Launch::Checkout { .. } | Launch::Recover { .. }
             )
         {
             model::promote_project(&mut self.promoted_projects, &project);
@@ -648,6 +661,9 @@ impl Shika {
     fn launch_failed(&mut self, index: usize, error: shika_core::Error, done: &LaunchCompletion) {
         control::answer(&done.reply, control::failure_reply(&error));
         if done.author {
+            if let Some(prompt) = done.finished.author_prompt() {
+                self.unsent_prompt = Some(prompt.to_owned());
+            }
             self.remove_card(index);
         } else {
             // Removing a card under an open dialog would

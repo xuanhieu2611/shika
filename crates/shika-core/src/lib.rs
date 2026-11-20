@@ -70,6 +70,10 @@ mod memory;
 mod path_env;
 mod preparation;
 #[cfg(test)]
+mod preparation_clone_tests;
+#[cfg(test)]
+mod preparation_suggestion_tests;
+#[cfg(test)]
 mod preparation_tests;
 mod projects;
 mod pty;
@@ -106,6 +110,7 @@ pub use preparation::{PreparationConfig, PreparationControl, PreparationDraft, P
 pub use projects::{Project, ProjectAdded, SavedLead};
 pub use pty::{PtyEvent, PtyExit, PtyId, PtySink, PtySize};
 pub use publish::{ChecksState, MAX_PR_BODY_CHARS, PrChecks, PublishPreview, PublishedPr};
+pub use session::check_prompt as check_launch_prompt;
 pub use session::{
     DiffStat, LaunchOptions, Session, SessionGitState, SessionKind, WorkerEnv, task_title,
 };
@@ -783,6 +788,10 @@ impl Core {
                 .insert(draft.path.clone(), (project.id.clone(), control.clone()));
             (project, base, draft)
         };
+        // Outside the operations lock: the refresh can wait out a second.
+        if let Ok(git) = self.git() {
+            worktree::refresh_index(&git, env.path(), &draft.path);
+        }
         let prepared = (|| {
             if let Some(config) = &config {
                 report(PreparationEvent::Stage("Waiting for setup slot...".into()));
@@ -936,20 +945,27 @@ impl Core {
     /// has checked out: no worktree, branch, base fetch, preparation, or
     /// journal entry, and nothing in its git is written. The CLI gets the
     /// usual environment and the preset's launch flags (Codex's trust
-    /// override names the repository root) and no prompt, so the session
-    /// waits for the author. It is never a Lead's worker and gets no control
-    /// variables. One per project: [`Error::CheckoutExists`] while the
-    /// project has one, checked under the operations lock, including a
-    /// checkout Terminal from [`Core::create_checkout_terminal`]. A folder
-    /// that is no longer the top of its own git checkout is refused before
-    /// anything runs. Blocking: runs git and spawns a process.
+    /// override names the repository root). `prompt`, the author's from the
+    /// New picker, is its single positional argument after those flags;
+    /// without one the session waits for the author. Core does not name the
+    /// session from it, as for [`LaunchOptions::prompt`]. It is never a
+    /// Lead's worker and gets no control variables. One per project:
+    /// [`Error::CheckoutExists`] while the project has one, checked under the
+    /// operations lock, including a checkout Terminal from
+    /// [`Core::create_checkout_terminal`]. A folder that is no longer the top
+    /// of its own git checkout, or a prompt the CLI would misread, is refused
+    /// before anything runs. Blocking: runs git and spawns a process.
     pub fn create_checkout_session(
         &self,
         project_id: &str,
         preset_id: &str,
+        prompt: Option<&str>,
         size: PtySize,
         sink: impl PtySink,
     ) -> Result<Session> {
+        if let Some(prompt) = prompt {
+            session::check_prompt(prompt)?;
+        }
         let env = self.path_env();
         let preset = agents::presets_from(env)
             .into_iter()
@@ -977,7 +993,7 @@ impl Core {
             None,
             false,
             agents::launch_flags(&preset, &project.path),
-            None,
+            prompt,
             sink,
         )?;
         let session = Session {

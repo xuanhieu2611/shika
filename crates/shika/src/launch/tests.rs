@@ -1,4 +1,4 @@
-//! Tests for the New picker choices and location switch.
+//! Tests for the New picker choices, location switch, and prompt.
 use super::*;
 
 #[test]
@@ -7,6 +7,8 @@ fn switching_location_preserves_the_selected_agent_and_project() {
         project: "project-a".into(),
         index: 1,
         mode: PickerMode::Task,
+        prompt: None,
+        error: None,
     };
     assert!(picker.toggle_worktree());
     assert!(picker.mode == PickerMode::Checkout);
@@ -24,6 +26,8 @@ fn switching_location_keeps_a_selected_terminal() {
             project: "project-a".into(),
             index: agent_count,
             mode: PickerMode::Task,
+            prompt: None,
+            error: None,
         };
         assert!(picker.toggle_worktree());
         assert!(picker.mode == PickerMode::Checkout);
@@ -40,6 +44,8 @@ fn lead_picker_cannot_switch_location() {
         project: "project-a".into(),
         index: 1,
         mode: PickerMode::Lead,
+        prompt: None,
+        error: None,
     };
     assert!(!picker.toggle_worktree());
     assert!(picker.mode == PickerMode::Lead);
@@ -71,4 +77,138 @@ fn terminal_is_a_task_and_checkout_choice_even_without_agents_but_never_a_lead()
         PickerMode::Checkout.choices(vec![agent.clone()]),
         vec![agent, terminal]
     );
+}
+
+#[test]
+fn first_new_reviews_setup_only_when_something_is_suggested() {
+    let draft =
+        |existing: Option<shika_core::PreparationConfig>, copies: &[&str], commands: &[&str]| {
+            shika_core::PreparationDraft {
+                existing,
+                config: shika_core::PreparationConfig {
+                    commands: commands.iter().map(|s| s.to_string()).collect(),
+                    copy_files: copies.iter().map(|s| s.to_string()).collect(),
+                    timeout_seconds: 600,
+                    clone_dependencies: false,
+                },
+                note: String::new(),
+            }
+        };
+    assert!(first_new_review(draft(None, &[], &[])).is_none());
+    assert!(first_new_review(draft(None, &[".env"], &[])).is_some());
+    assert!(first_new_review(draft(None, &[], &["npm ci"])).is_some());
+    let saved = draft(None, &[".env"], &["npm ci"]).config;
+    assert!(first_new_review(draft(Some(saved), &[".env"], &["npm ci"])).is_none());
+}
+
+fn preset(id: &str) -> CliPreset {
+    CliPreset {
+        id: id.into(),
+        name: id.into(),
+        binary: id.into(),
+        path: Some(format!("/test/{id}").into()),
+        args: vec![],
+    }
+}
+
+#[test]
+fn an_empty_prompt_starts_as_before_and_terminal_ignores_the_field() {
+    let claude = preset("claude");
+    assert_eq!(launch_prompt("", &claude), None);
+    assert_eq!(launch_prompt("  \n\t ", &claude), None);
+    assert_eq!(
+        launch_prompt("\n  Fix the login bug\nthen test it  \n", &claude).as_deref(),
+        Some("Fix the login bug\nthen test it")
+    );
+    let terminal = shika_core::terminal_choice();
+    assert_eq!(launch_prompt("Fix the login bug", &terminal), None);
+}
+
+#[test]
+fn the_prompt_field_types_letters_and_keeps_number_selection_and_space_only_while_empty() {
+    for key in ["enter", "escape", "tab", "up", "down"] {
+        assert!(picker_takes_from_prompt(key, true), "{key}");
+        assert!(picker_takes_from_prompt(key, false), "{key}");
+    }
+    for key in ["space", "1", "9"] {
+        assert!(picker_takes_from_prompt(key, true), "{key}");
+        assert!(!picker_takes_from_prompt(key, false), "{key}");
+    }
+    for key in ["j", "k", "0", "a", "backspace", "left"] {
+        assert!(!picker_takes_from_prompt(key, true), "{key}");
+        assert!(!picker_takes_from_prompt(key, false), "{key}");
+    }
+}
+
+#[test]
+fn a_new_prompt_is_the_first_submission_and_names_the_task() {
+    let lead_start = Mutex::new(None);
+    for launch in [
+        Launch::Task {
+            prompt: Some("Fix the   login bug\nsecond line".into()),
+        },
+        Launch::Checkout {
+            prompt: Some("Fix the   login bug\nsecond line".into()),
+        },
+    ] {
+        assert_eq!(
+            launch.author_prompt(),
+            Some("Fix the   login bug\nsecond line")
+        );
+        let state = Mutex::new(HostState {
+            preparing: true,
+            ..HostState::default()
+        });
+        start::mark_host_started(&state, &launch, &lead_start);
+        let host = lock(&state);
+        assert!(!host.preparing);
+        assert_eq!(host.submission, 1);
+        assert!(host.launch_turn);
+        assert!(host.last_submission.is_some());
+        assert_eq!(host.title.as_deref(), Some("Fix the login bug"));
+    }
+    for launch in [
+        Launch::Task { prompt: None },
+        Launch::Checkout { prompt: None },
+    ] {
+        assert_eq!(launch.author_prompt(), None);
+        let state = Mutex::new(HostState::default());
+        start::mark_host_started(&state, &launch, &lead_start);
+        let host = lock(&state);
+        assert_eq!(host.submission, 0, "nothing is typed yet");
+        assert!(!host.launch_turn);
+        assert_eq!(host.title, None);
+    }
+}
+
+#[test]
+fn a_written_prompt_closes_terminal_and_moves_the_selection_to_the_first_agent() {
+    let choices = PickerMode::Task.choices(vec![preset("claude"), preset("codex")]);
+    let terminal = 2;
+    assert!(choice_open(&choices, terminal, false));
+    assert!(!choice_open(&choices, terminal, true));
+    assert!(!choice_open(&choices, 3, false), "past the end");
+    assert_eq!(settle_choice(&choices, terminal, true), 0);
+    assert_eq!(settle_choice(&choices, terminal, false), terminal);
+    assert_eq!(settle_choice(&choices, 1, true), 1);
+}
+
+#[test]
+fn arrows_skip_a_closed_terminal_and_wrap() {
+    let choices = PickerMode::Task.choices(vec![preset("claude"), preset("codex")]);
+    assert_eq!(step_choice(&choices, 1, true, false), 2);
+    assert_eq!(step_choice(&choices, 1, true, true), 0);
+    assert_eq!(step_choice(&choices, 0, false, false), 2);
+    assert_eq!(step_choice(&choices, 0, false, true), 1);
+    let lead = PickerMode::Lead.choices(vec![preset("claude"), preset("codex")]);
+    assert_eq!(step_choice(&lead, 1, true, false), 0);
+}
+
+#[test]
+fn terminal_stays_open_when_it_is_the_only_choice() {
+    let choices = PickerMode::Task.choices(vec![]);
+    assert!(choice_open(&choices, 0, true));
+    assert_eq!(settle_choice(&choices, 0, true), 0);
+    assert_eq!(step_choice(&choices, 0, true, true), 0);
+    assert_eq!(step_choice(&[], 0, true, false), 0);
 }
