@@ -240,6 +240,41 @@ fn preparation_onboarding_preview_leaves_repo_and_local_preferences_unchanged() 
 }
 
 #[test]
+fn preparation_onboarding_offers_review_only_when_something_is_suggested() {
+    let f = Fixture::new();
+    let before = fs::read(f.root.join("data/projects.json")).unwrap();
+    let draft = f.core.project_preparation_draft(&f.project.id).unwrap();
+    assert!(draft.existing.is_none());
+    assert!(!draft.suggests_setup());
+    // Nothing to review starts like no config and records no decision.
+    let session = f.launch().unwrap();
+    assert!(session.worktree.exists());
+    assert_eq!(fs::read(f.root.join("data/projects.json")).unwrap(), before);
+    assert!(
+        f.core
+            .preparation_onboarding_pending(&f.project.id)
+            .unwrap()
+    );
+    assert!(!f.repo.join(".shika").exists());
+    // A later ignored dotenv still gets the review.
+    fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();
+    assert!(
+        f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .suggests_setup()
+    );
+    // A saved config, even one with entries, is never a suggestion.
+    f.config(&["true"], &[".env.local"], 600);
+    assert!(
+        !f.core
+            .project_preparation_draft(&f.project.id)
+            .unwrap()
+            .suggests_setup()
+    );
+}
+
+#[test]
 fn preparation_onboarding_skip_is_per_project_persistent_and_not_consent() {
     let f = Fixture::new();
     fs::write(f.repo.join(".env.local"), "fixture-only").unwrap();

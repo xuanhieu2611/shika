@@ -13,7 +13,7 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 | 1 | Close deletes untracked files (done) | Small | `worktree/close.rs`, `worktree/lifecycle.rs` |
 | 2 | Refresh the index after creating a worktree (done) | Small | `worktree/lifecycle.rs` |
 | 3 | Fix the Claude trust note (done) | Docs only | `docs/tasks-and-worktrees.md`, `AGENTS.md` |
-| 4 | Skip the first-New dialog when nothing is suggested | Small | `launch/mod.rs` |
+| 4 | Skip the first-New dialog when nothing is suggested (done) | Small | `launch/mod.rs` |
 | 5 | More setup suggestions | Medium | `preparation.rs` |
 | 6 | Opt-in `node_modules` cloning | Large | `preparation.rs`, new clone module, setup editor |
 | 7 | Prompt field in the New picker | Large | `launch/picker.rs`, launch path |
@@ -71,13 +71,16 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 **Problem.** The "Set up worktrees for {project}?" dialog appears even when detection found nothing to copy or install (`crates/shika/src/launch/mod.rs:119-126` never checks whether the draft is empty).
 
 **Steps**
-- [ ] Show onboarding only when the draft has at least one copy-file or setup command suggestion.
-- [ ] When the draft is empty, start the task as if there were no config. Do not write `worktreeSetupReviewed`, so a later `.env` or lockfile can still trigger the dialog.
-- [ ] Detection then runs on each New for such a project. It is only a few file checks, but confirm it stays off the UI thread.
+- [x] Show onboarding only when the draft has at least one copy-file or setup command suggestion. `PreparationDraft::suggests_setup`, applied by `first_new_review` in `launch/mod.rs`. An installer note with no command (conflicting lockfiles) does not count; Settings still shows it.
+- [x] When the draft is empty, start the task as if there were no config. Do not write `worktreeSetupReviewed`, so a later `.env` or lockfile can still trigger the dialog.
+- [x] Detection then runs on each New for such a project. It is only a few file checks, but confirm it stays off the UI thread. Confirmed: draft loading runs inside `request_launch`'s `background_executor().spawn`, with the rest of launch preflight.
 
 **Docs:** `docs/worktree-preparation.md` (First New, state table) and the preparation paragraph in `AGENTS.md`.
 
 **Tests:** an empty draft launches with no dialog and no write. A draft with suggestions still shows the dialog.
+- [x] Core: `preparation_onboarding_offers_review_only_when_something_is_suggested` (empty draft, launch, no write, still pending; a later `.env.local` suggests; a saved config never does).
+- [x] App: `first_new_reviews_setup_only_when_something_is_suggested` (routing for empty, file-only, command-only, and saved drafts).
+- [ ] Manual: the native flow, listed in `MANUAL_CHECKS.md` under first-New onboarding.
 
 ---
 

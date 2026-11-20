@@ -29,6 +29,13 @@ impl PickerMode {
     }
 }
 
+/// First New reviews setup only when detection suggested something. An empty
+/// draft starts like no config and records no decision, so a later `.env` or
+/// lockfile still offers the review; detection then reruns on each New.
+fn first_new_review(draft: shika_core::PreparationDraft) -> Option<shika_core::PreparationDraft> {
+    draft.suggests_setup().then_some(draft)
+}
+
 impl Shika {
     pub(super) fn picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
@@ -122,7 +129,7 @@ impl Shika {
                     {
                         let draft = core.project_preparation_draft(&lookup)?;
                         config = draft.existing.clone();
-                        if config.is_none() { Some(draft) } else { None }
+                        first_new_review(draft)
                     } else {
                         None
                     };

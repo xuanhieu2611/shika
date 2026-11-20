@@ -72,3 +72,24 @@ fn terminal_is_a_task_and_checkout_choice_even_without_agents_but_never_a_lead()
         vec![agent, terminal]
     );
 }
+
+#[test]
+fn first_new_reviews_setup_only_when_something_is_suggested() {
+    let draft =
+        |existing: Option<shika_core::PreparationConfig>, copies: &[&str], commands: &[&str]| {
+            shika_core::PreparationDraft {
+                existing,
+                config: shika_core::PreparationConfig {
+                    commands: commands.iter().map(|s| s.to_string()).collect(),
+                    copy_files: copies.iter().map(|s| s.to_string()).collect(),
+                    timeout_seconds: 600,
+                },
+                note: String::new(),
+            }
+        };
+    assert!(first_new_review(draft(None, &[], &[])).is_none());
+    assert!(first_new_review(draft(None, &[".env"], &[])).is_some());
+    assert!(first_new_review(draft(None, &[], &["npm ci"])).is_some());
+    let saved = draft(None, &[".env"], &["npm ci"]).config;
+    assert!(first_new_review(draft(Some(saved), &[".env"], &["npm ci"])).is_none());
+}

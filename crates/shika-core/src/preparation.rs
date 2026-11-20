@@ -46,6 +46,15 @@ pub struct PreparationDraft {
     pub note: String,
 }
 
+impl PreparationDraft {
+    /// Detection found a file to copy or a command to run. First New offers
+    /// review only then; an empty draft is the no-config launch path.
+    pub fn suggests_setup(&self) -> bool {
+        self.existing.is_none()
+            && (!self.config.copy_files.is_empty() || !self.config.commands.is_empty())
+    }
+}
+
 fn default_timeout() -> u64 {
     600
 }
