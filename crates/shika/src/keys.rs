@@ -200,7 +200,7 @@ impl Shika {
 
     /// The overlays that take every keystroke, modifiers included, before
     /// any other handling: a Lead question, worktree setup, Rename, the card
-    /// menu, and Switch agent.
+    /// menu, Switch agent, and the New picker while its prompt has focus.
     fn typing_dialog_key(
         &mut self,
         event: &KeyDownEvent,
@@ -228,7 +228,7 @@ impl Shika {
             self.switch_key(event, window, cx);
             return true;
         }
-        false
+        self.picker_prompt_key(event, window, cx)
     }
 
     /// Ctrl+Q leaves a focused terminal. Escape is typed into the program.

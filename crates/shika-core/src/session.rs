@@ -164,7 +164,10 @@ pub(crate) fn launch_args(mut args: Vec<String>, prompt: Option<&str>) -> Result
     Ok(args)
 }
 
-pub(crate) fn check_prompt(prompt: &str) -> Result<()> {
+/// Whether `prompt` can be a CLI's single positional argument: not empty or
+/// whitespace, not read as a flag, and free of NUL. Every launch prompt is
+/// checked here, so the New picker can refuse one before it closes.
+pub fn check_prompt(prompt: &str) -> Result<()> {
     if prompt.trim().is_empty() {
         return Err(Error::InvalidPrompt("The prompt is empty.".into()));
     }

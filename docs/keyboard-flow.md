@@ -31,11 +31,23 @@ The card-navigation model is still available. A small native shortcut layer now 
 | `Cmd+B` | Hide or show the agent column | Unchanged; with the column hidden, `j`/`k` from cards still change the agent on screen |
 | `Cmd+Option+B` | Open or close the read-only Changes panel | Opening focuses the panel; closing from the panel restores the focus saved when it opened; closing from elsewhere moves no focus |
 | `Cmd+Shift+U` | Open Settings on Usage, or close it (View > Usage) | Settings; Done, Escape, or the shortcut again restores the focus that opened it |
-| `Cmd+N` | Open New with Create worktree on for the current selection's project | Picker; cancel restores previous focus; successful launch focuses the new agent |
+| `Cmd+N` | Open New with Create worktree on for the current selection's project | Picker, with its prompt field focused; cancel restores previous focus; successful launch focuses the new agent |
 | `Cmd+Shift+N` | New Agent in Checkout for the same target project as New | New agent picker with Create worktree off; Space toggles it, Tab changes project, Escape restores previous focus, launch focuses the new agent. An existing checkout card is selected and its shown terminal focused instead |
 | `Cmd+L` | Start the selected project's Lead (Agent > New Lead…), show it when the project already has one, or resume its saved one | Picker in Lead mode only when the project has no saved Lead (same keys as New; Tab changes project). A live Lead is selected and its terminal focused at once. A saved (resting) Lead starts in its saved CLI with no picker, and its new card is selected with the terminal focused; if that CLI is missing or off in Settings, the picker opens instead. See [lead-agent.md](lead-agent.md) |
 
 In the ordinary New agent picker, clicking **Create worktree** or pressing Space toggles between a new isolated worktree and the current project checkout, without launching or moving focus. Cmd+N and `+` default on; Cmd+Shift+N defaults off. The state lasts only for that picker. The selected row stays, including Terminal, which is offered in both modes. New Lead has no location switch.
+
+### The New prompt
+
+Decided 2026-11-19: ordinary New (both locations) has an optional prompt field under its title, focused when the picker opens, so the author can write the prompt, press Enter, and walk away while copy and setup run. New Lead has no field. While the field has focus:
+
+- Letters type, `j` and `k` included. Shift+Enter adds a line; paste keeps newlines.
+- Enter starts the selected row, Escape cancels and restores the opening focus, Tab changes project (the text stays), and Up/Down choose the row.
+- While the field is empty, number keys still start a row and Space still toggles Create worktree, so Cmd+N then `1` works as before. Once it has text, they type.
+- IME composition keeps every key. Command chords (paste, undo, select all) edit the field.
+- A click on a row starts it, with the prompt, as before. If focus ever leaves the field, the picker's old plain keys apply.
+
+`Shika::picker_prompt_key` in `launch/picker.rs` decides this, called from `typing_dialog_key` before any other phase, the same place Switch agent's prompt is routed; `picker_takes_from_prompt` is the key split. The text is trimmed; empty starts the CLI with no argument, exactly as before. With Terminal selected the field dims and its hint reads "A terminal starts without a prompt."; starting Terminal ignores the text, and moving back to an agent keeps it. A prompt the CLI would read as a flag (it starts with `-`) is refused in the picker, in ink-1 dialog text under the field, before anything is created. The prompt survives the first-New setup review (Cancel returns to the same picker and text) and the approval dialog, and Retry after failed setup reuses it. A start that fails with its card gone keeps the prompt in `Shika::unsent_prompt`, and the next New opens with it. The rule that typing during copy and setup is dropped stays: the prompt is passed at spawn, never typed. How it becomes the first submission is in [agent-activity.md](agent-activity.md#launch-prompts-and-turns).
 
 These are the defaults. Settings, Keyboard, can change New agent in checkout, Hide or show changes, Show or hide usage, Go to agent 1 through 9, and Go to tab 1 through 9. A new Command chord replaces the old one. Go to agent N selects the Nth card in the column (Leads section first, then the projects), skipping project headers, and does nothing when that card is not there. Agent rows start with no chord. The other shortcuts in this table stay fixed; `shortcuts::RESERVED` holds Cmd+O and Cmd+Shift+B so Keyboard cannot take them.
 
@@ -155,7 +167,7 @@ App symbols below are in `crates/shika/src/main.rs` unless this map names anothe
 | Navigation order | `column/mod.rs`: `column_layout`; `selection.rs`: `rows`, `adjacent_agent`; `model::ColumnLayout` | Leads section first (each Lead, then its workers), then project-grouped, status-sorted traversal; agent-only navigation skips headers |
 | Focus-preserving navigation | `selection.rs`: `move_agent`; `focus.rs`: `focus_terminal` | Changes selection and, only when needed, focuses the destination task's shown terminal |
 | Overlay restoration | `overlay_return_focus`; `focus.rs`: `restore_overlay_focus` | Stores a `FocusHandle`, restores it once, and falls back to `land_focus` (the shown terminal or chat) when none was saved |
-| Overlay entry/exit | `launch/mod.rs`: `picker`, `picker_for`, `launch`; `settings/mod.rs`: `open_settings`; `base_branch.rs`: `open_base`, `apply_base`; `overlay.rs`: `cancel_overlay`; `switch_agent.rs`: `switch_agent`, `confirm_switch` | Captures focus before opening; restores on dismissal; launch and a confirmed switch intentionally clear restoration |
+| Overlay entry/exit | `launch/mod.rs`: `picker`, `picker_for`, `show_picker`, `launch`; `settings/mod.rs`: `open_settings`; `base_branch.rs`: `open_base`, `apply_base`; `overlay.rs`: `cancel_overlay`; `switch_agent.rs`: `switch_agent`, `confirm_switch` | Captures focus before opening; restores on dismissal; launch and a confirmed switch intentionally clear restoration |
 | Terminal switching | `tabs.rs`: `new_shell`, `select_tab`, `cycle_tab`, `close_tab`; `card.rs`: `Card::active_pane` | Task-local tabs, pinned agent, independent shells, selected-view focus and asynchronous PTY teardown |
 | Shell startup | `host.rs`: `Pane::new`, `bind_host`, `Host::write` | Queues startup input; binds/resizes PTY and drains queued bytes in order |
 | Tab navigation | `model::adjacent_tab`, `model::tab_after_close`, `card.rs`: `Card::tab_scroll` | Wrap navigation, preserve selection on removal, reveal selected tab horizontally |

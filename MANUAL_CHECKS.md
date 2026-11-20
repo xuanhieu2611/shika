@@ -2,6 +2,21 @@
 
 Use a built .app opened with open, an isolated --data-dir, disposable repositories, and local bare remotes. Inspect Shika's own foreground window before synthetic input.
 
+## Prompt field in the New picker, 2026-11-19
+
+Checked in a debug bundle opened with `open -n` and an isolated `--data-dir`, on a disposable repository with no setup config, using synthetic keys after confirming Shika was frontmost:
+
+- [x] Cmd+N opens New with the prompt field focused (focus border, caret, placeholder) above the rows, and the footer reads `↵ start`, `⇧↵ new line`, `esc cancel` beside Create worktree.
+- [x] Typing `j`, `k`, and a digit after text goes into the field; Shift+Enter adds a second line and the field grows; Down moves the selected row to Terminal, which dims the text and keeps it.
+- [x] Up back to Claude Code and Enter: the card was named from the prompt's first line at once, the branch renamed to `reply-with-just-the-word-ok-joke-free`, and Claude Code received the prompt (it stopped on its first-run trust check for the never-trusted repository, so the card showed Asking).
+
+Unit tests cover the trimmed prompt, Terminal ignoring it, the key split, the seeded first submission for tasks and checkouts (`launch::tests`), and the prompt as each CLI's last argument in core (`tests::sessions`, `tests::checkout`). Not yet run natively:
+
+- [ ] With configured setup: type a prompt, start, walk away; the CLI starts with the prompt after setup, the card turns Working, then Ready with one notification.
+- [ ] Checkout mode (Cmd+Shift+N) with a prompt; empty prompt still starts Waiting; number keys and Space on an empty field; a prompt starting with `-` shows the refusal under the field and starts nothing.
+- [ ] First-New setup review: Cancel returns to the same picker and text; Start without setup and Save, approve and start pass the prompt. Retry after a failed setup reuses it. A failed start without setup refills the next picker.
+- [ ] IME composition in the field, light theme, glass, and a long prompt that scrolls.
+
 ## New worktree index refresh, 2026-11-19
 
 Measured with git 2.50.1 on a synthetic 50,000-file repo (396 MB), reading with `GIT_OPTIONAL_LOCKS=0` as the diff stat does: `git diff --numstat HEAD` took 0.13 to 0.34s in an unrefreshed new worktree on every read, and 0.09s after the refresh. The refresh with its wait took about 0.85s (0.16s refresh, about 0.5s wait). Unit tests cover the refreshed index and a failing refresh (`worktree::tests`, `tests::sessions`). Not yet run natively:

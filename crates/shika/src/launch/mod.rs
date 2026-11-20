@@ -36,6 +36,14 @@ fn first_new_review(draft: shika_core::PreparationDraft) -> Option<shika_core::P
     draft.suggests_setup().then_some(draft)
 }
 
+/// The New prompt to pass, trimmed. Empty or whitespace starts the CLI with
+/// no positional argument, as before the field existed. Terminal never
+/// takes one: the text stays in the field and is ignored.
+fn launch_prompt(text: &str, preset: &CliPreset) -> Option<String> {
+    let prompt = text.trim();
+    (!prompt.is_empty() && preset.id != "terminal").then(|| prompt.to_owned())
+}
+
 impl Shika {
     pub(super) fn picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() {
@@ -43,38 +51,74 @@ impl Shika {
         }
         if let Some(project) = self.project_id() {
             self.prefetch_base(project.clone(), cx);
-            self.overlay_return_focus = window.focused(cx);
-            self.overlay = Some(Overlay::Picker(PickerDialog {
-                project,
-                index: 0,
-                mode: PickerMode::Task,
-            }));
-            window.focus(&self.focus, cx);
-            cx.notify();
+            self.show_picker(project, PickerMode::Task, window, cx);
         } else {
             self.add_project(window, cx);
         }
+    }
+
+    /// Opens the picker for `project`. Task and checkout pickers get the
+    /// prompt field, focused, with any prompt whose start failed; New Lead
+    /// has none.
+    pub(super) fn show_picker(
+        &mut self,
+        project: String,
+        mode: PickerMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.overlay_return_focus = window.focused(cx);
+        let prompt = (mode != PickerMode::Lead).then(|| {
+            let text = self.unsent_prompt.take().unwrap_or_default();
+            new_prompt_input(text, self.chrome(window), cx)
+        });
+        match &prompt {
+            Some(prompt) => window.focus(&prompt.focus_handle(cx), cx),
+            None => window.focus(&self.focus, cx),
+        }
+        self.overlay = Some(Overlay::Picker(PickerDialog {
+            project,
+            index: 0,
+            mode,
+            prompt,
+            error: None,
+        }));
+        cx.notify();
     }
 
     pub(super) fn launch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.catalog.is_none() {
             return;
         }
-        let (project, index, mode) = match &self.overlay {
-            Some(Overlay::Picker(PickerDialog {
-                project,
-                index,
-                mode,
-            })) => (project.clone(), *index, *mode),
-            _ => return,
+        let Some(Overlay::Picker(picker)) = &self.overlay else {
+            return;
         };
+        if picker
+            .prompt
+            .as_ref()
+            .is_some_and(|p| p.read(cx).composing())
+        {
+            return;
+        }
+        let (project, index, mode) = (picker.project.clone(), picker.index, picker.mode);
+        let text = picker.prompt_text(cx);
         let Some(preset) = self.new_choices(mode).into_iter().nth(index) else {
             return;
         };
+        let prompt = launch_prompt(&text, &preset);
+        // Refused here, while the author can still fix it, never after the
+        // worktree exists.
+        if let Some(Err(error)) = prompt.as_deref().map(shika_core::check_launch_prompt) {
+            if let Some(Overlay::Picker(picker)) = &mut self.overlay {
+                picker.error = Some(error.to_string());
+            }
+            cx.notify();
+            return;
+        }
         match mode {
             PickerMode::Lead => self.start_lead(project, preset, window, cx),
-            PickerMode::Checkout => self.start_checkout(project, preset, window, cx),
-            PickerMode::Task => self.request_launch(project, preset, None, window, cx),
+            PickerMode::Checkout => self.start_checkout(project, preset, prompt, window, cx),
+            PickerMode::Task => self.request_launch(project, preset, None, prompt, window, cx),
         }
     }
 
@@ -98,11 +142,15 @@ impl Shika {
         self.new_choices(PickerMode::Task)
     }
 
+    /// New for a worktree task: onboarding or approval when setup needs
+    /// it, then the launch. `prompt` is the picker's; a Retry passes none and
+    /// repeats the failed card's own.
     pub(super) fn request_launch(
         &mut self,
         project: String,
         preset: CliPreset,
         retry: Option<Arc<Mutex<HostState>>>,
+        prompt: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -147,7 +195,9 @@ impl Shika {
                         if this.overlay_return_focus.is_none() {
                             this.overlay_return_focus = window.focused(cx);
                         }
-                        this.show_preparation_onboarding(project, preset, draft, window, cx);
+                        this.show_preparation_onboarding(
+                            project, preset, prompt, draft, window, cx,
+                        );
                     }
                     Ok((Some(config), false, None)) => {
                         if this.overlay_return_focus.is_none() {
@@ -158,6 +208,7 @@ impl Shika {
                             preset,
                             config,
                             retry,
+                            prompt,
                         }));
                         window.focus(&this.focus, cx);
                     }
@@ -166,7 +217,7 @@ impl Shika {
                         preset,
                         config.is_some(),
                         retry,
-                        Launch::Task,
+                        Launch::Task { prompt },
                         None,
                         window,
                         cx,
@@ -188,15 +239,17 @@ impl Shika {
             preset,
             config,
             retry,
+            prompt,
         })) = &self.overlay
         else {
             return;
         };
-        let (project, preset, config, retry) = (
+        let (project, preset, config, retry, prompt) = (
             project.clone(),
             preset.clone(),
             config.clone(),
             retry.clone(),
+            prompt.clone(),
         );
         self.busy = true;
         let core = self.core.clone();
@@ -214,7 +267,7 @@ impl Shika {
                         preset,
                         true,
                         retry,
-                        Launch::Task,
+                        Launch::Task { prompt },
                         None,
                         window,
                         cx,
@@ -255,6 +308,7 @@ impl Shika {
             card.project.clone(),
             preset,
             Some(card.agent.state.clone()),
+            None,
             window,
             cx,
         );
@@ -271,14 +325,7 @@ impl Shika {
             return;
         }
         self.prefetch_base(project.clone(), cx);
-        self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Picker(PickerDialog {
-            project,
-            index: 0,
-            mode: PickerMode::Task,
-        }));
-        window.focus(&self.focus, cx);
-        cx.notify();
+        self.show_picker(project, PickerMode::Task, window, cx);
     }
 }
 

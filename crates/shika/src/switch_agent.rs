@@ -305,7 +305,7 @@ impl Shika {
         card.preset = session.preset_name.clone();
         card.launch_preset = session.preset_id.clone();
         if matches!(card.launch, Launch::Recover { .. }) {
-            card.launch = Launch::Task;
+            card.launch = Launch::Task { prompt: None };
         }
         card.usage_exit_seen = false;
         if !card.named {

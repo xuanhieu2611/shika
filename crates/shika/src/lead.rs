@@ -226,14 +226,7 @@ impl Shika {
             return;
         }
         self.prefetch_base(project.clone(), cx);
-        self.overlay_return_focus = window.focused(cx);
-        self.overlay = Some(Overlay::Picker(PickerDialog {
-            project,
-            index: 0,
-            mode: PickerMode::Lead,
-        }));
-        window.focus(&self.focus, cx);
-        cx.notify();
+        self.show_picker(project, PickerMode::Lead, window, cx);
     }
 
     /// Selects the project's live Lead and focuses its terminal. False when

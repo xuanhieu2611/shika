@@ -151,6 +151,9 @@ struct Shika {
     overlay: Option<Overlay>,
     /// Non-workflow overlays return to the surface that opened them.
     overlay_return_focus: Option<FocusHandle>,
+    /// A New prompt whose start failed with its card gone. The next New
+    /// picker opens with it, so a long prompt is not lost to a toast.
+    unsent_prompt: Option<String>,
     /// A project header clicked while a terminal stayed on screen: where
     /// New, Lead, and Base branch aim until the selection next changes. The
     /// selection epoch it was recorded under makes that check, so any change
@@ -283,6 +286,7 @@ impl Shika {
                 Some(Overlay::Leftovers)
             },
             overlay_return_focus: None,
+            unsent_prompt: None,
             project_target: None,
             background,
             backdrop: background::Backdrop::default(),

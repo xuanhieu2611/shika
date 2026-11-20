@@ -73,7 +73,7 @@ impl Shika {
             Overlay::Rename(rename) => self.rename_view(rename, chrome, max_h, cx),
             Overlay::SwitchAgent(_) => self.switch_dialog(chrome, home, max_h, cx),
             Overlay::Publish(publish) => self.publish_view(publish, chrome, max_h, cx),
-            Overlay::Picker(dialog) => self.picker_view(dialog, chrome, home, max_h, cx),
+            Overlay::Picker(dialog) => self.picker_view(dialog, chrome, home, max_h, window, cx),
             Overlay::Preparation(dialog) => self.preparation_view(dialog, chrome, max_h, cx),
             Overlay::CheckoutClose(dialog) => self.checkout_close_view(dialog, chrome, max_h, cx),
             Overlay::Close(dialog) => self.close_view(dialog, chrome, max_h, cx),

@@ -16,7 +16,7 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 | 4 | Skip the first-New dialog when nothing is suggested (done) | Small | `launch/mod.rs` |
 | 5 | More setup suggestions (done) | Medium | `preparation.rs` |
 | 6 | Opt-in `node_modules` cloning (done) | Large | `preparation.rs`, new clone module, setup editor |
-| 7 | Prompt field in the New picker | Large | `launch/picker.rs`, launch path |
+| 7 | Prompt field in the New picker (done) | Large | `launch/picker.rs`, launch path |
 
 ---
 
@@ -146,21 +146,24 @@ Before any item, read what `AGENTS.md` names for that feature. When a change alt
 **Plan.** The picker gets an optional prompt field. A non-empty prompt goes to the CLI as one positional argument after its launch flags, the same path Switch agent and Lead workers already use, so it counts as the first submission (the card shows Working) and names the branch right away. Empty keeps today's behavior.
 
 **Decide first**
-- [ ] **Keys.** The picker uses plain `j`/`k` and number keys, which a text field would take. Proposal: the field has focus when the picker opens, Up/Down choose the agent, Enter launches, Escape cancels, and number keys stop selecting while the field has text. Check against `docs/keyboard-flow.md`.
-- [ ] **Terminal choice:** hide or disable the field, since a shell takes no prompt.
-- [ ] **Checkout mode:** allow a prompt there too, or not.
-- [ ] **Retry after a failed setup:** keep the prompt for Retry.
-- [ ] **Multi-line:** one line, or Shift+Enter for new lines.
+- [x] **Keys.** The picker uses plain `j`/`k` and number keys, which a text field would take. Proposal: the field has focus when the picker opens, Up/Down choose the agent, Enter launches, Escape cancels, and number keys stop selecting while the field has text. Check against `docs/keyboard-flow.md`. As proposed: letters (`j`/`k` included) type, Tab still changes project, and number keys and Space keep their old meaning only while the field is empty.
+- [x] **Terminal choice:** hide or disable the field, since a shell takes no prompt. Dimmed, not hidden, so the dialog does not jump; the text stays for the next agent row and Terminal ignores it.
+- [x] **Checkout mode:** allow a prompt there too, or not. Allowed; it names only the card.
+- [x] **Retry after a failed setup:** keep the prompt for Retry. Kept: it lives in the card's `Launch::Task`. A start that fails with its card gone refills the next picker.
+- [x] **Multi-line:** one line, or Shift+Enter for new lines. Shift+Enter, with the Lead chat's multi-line input.
 
 **Steps**
-- [ ] Field and keys in `crates/shika/src/launch/picker.rs`, following `design/DESIGN.md`.
-- [ ] Carry the prompt through `request_launch`, onboarding, approval, and setup to spawn.
-- [ ] Reuse the launch-prompt submission logic from `docs/agent-activity.md` and `docs/agent-switch.md`.
-- [ ] The rule "typing during setup is dropped" stays: the prompt is passed at spawn, not typed.
+- [x] Field and keys in `crates/shika/src/launch/picker.rs`, following `design/DESIGN.md`.
+- [x] Carry the prompt through `request_launch`, onboarding, approval, and setup to spawn. `Launch::Task` and `Launch::Checkout` carry it; `Core::create_checkout_session` takes it.
+- [x] Reuse the launch-prompt submission logic from `docs/agent-activity.md` and `docs/agent-switch.md`. `mark_host_started` seeds it as it does a worker's.
+- [x] The rule "typing during setup is dropped" stays: the prompt is passed at spawn, not typed.
 
 **Docs:** `docs/keyboard-flow.md`, `docs/agent-activity.md`, `docs/tasks-and-worktrees.md`, and `AGENTS.md` ("Using the app").
 
 **Tests:** prompt passed as the last argument for each CLI, an empty prompt starts as today, branch naming from the prompt, and Terminal ignores the field. Manual: type a prompt, start a task with setup, and walk away.
+- [x] Core: each CLI gets the prompt last, once (`tests::sessions`); a checkout takes it, and a bad one runs no git (`tests::checkout`). App: trimming, Terminal ignoring it, the key split, and the seeded first submission and name for tasks and checkouts (`launch::tests`).
+- [x] Docs: `docs/keyboard-flow.md` (The New prompt), `docs/agent-activity.md`, `docs/tasks-and-worktrees.md`, `design/DESIGN.md`, `AGENTS.md`, `crates/shika-core/README.md`.
+- [ ] Manual: the field, typing, Terminal dimming, and a prompted Claude Code start are checked in `MANUAL_CHECKS.md`; walking away during configured setup, checkout mode, the setup review round trip, and IME are still open there.
 
 ---
 

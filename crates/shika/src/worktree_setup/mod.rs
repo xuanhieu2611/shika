@@ -15,9 +15,12 @@ pub(super) struct Entry {
 #[derive(Clone)]
 enum EntryPoint {
     Settings(usize),
+    /// First New: the picker to return to on Cancel, and its prompt for
+    /// the CLI once the author continues.
     New {
         preset: CliPreset,
-        picker_index: usize,
+        picker: Box<crate::PickerDialog>,
+        prompt: Option<String>,
     },
 }
 pub(super) struct Editor {
@@ -333,19 +336,27 @@ impl Shika {
         &mut self,
         project: String,
         preset: CliPreset,
+        prompt: Option<String>,
         draft: shika_core::PreparationDraft,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let picker_index = match &self.overlay {
-            Some(Overlay::Picker(picker)) => picker.index,
-            _ => 0,
+        let picker = match &self.overlay {
+            Some(Overlay::Picker(picker)) => Box::new(picker.clone()),
+            _ => Box::new(crate::PickerDialog {
+                project: project.clone(),
+                index: 0,
+                mode: crate::PickerMode::Task,
+                prompt: None,
+                error: None,
+            }),
         };
         let editor = Editor::new(
             project,
             EntryPoint::New {
                 preset,
-                picker_index,
+                picker,
+                prompt,
             },
             draft,
             self.chrome(window),
@@ -375,13 +386,13 @@ impl Shika {
         let Some(Overlay::WorktreeSetup(editor)) = &self.overlay else {
             return;
         };
-        let EntryPoint::New { preset, .. } = &editor.entry_point else {
+        let EntryPoint::New { preset, prompt, .. } = &editor.entry_point else {
             return;
         };
         if editor.composing(cx) {
             return;
         }
-        let (project, preset) = (editor.project.clone(), preset.clone());
+        let (project, preset, prompt) = (editor.project.clone(), preset.clone(), prompt.clone());
         let core = self.core.clone();
         let lookup = project.clone();
         self.busy = true;
@@ -393,7 +404,7 @@ impl Shika {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok(()) => this.request_launch(project, preset, None, window, cx),
+                    Ok(()) => this.request_launch(project, preset, None, prompt, window, cx),
                     Err(e) => {
                         if let Some(Overlay::WorktreeSetup(editor)) = &mut this.overlay {
                             editor.show_error(e.to_string());
@@ -415,12 +426,17 @@ impl Shika {
             return;
         };
         match &editor.entry_point {
-            EntryPoint::New { picker_index, .. } => {
-                self.overlay = Some(Overlay::Picker(crate::PickerDialog {
-                    project: editor.project.clone(),
-                    index: *picker_index,
-                    mode: crate::PickerMode::Task,
-                }));
+            EntryPoint::New { picker, .. } => {
+                let picker = (**picker).clone();
+                // Back in the field, with the prompt as the author left it.
+                if let Some(prompt) = &picker.prompt {
+                    window.focus(&prompt.focus_handle(cx), cx);
+                } else {
+                    window.focus(&self.focus, cx);
+                }
+                self.overlay = Some(Overlay::Picker(picker));
+                cx.notify();
+                return;
             }
             EntryPoint::Settings(settings_row) => {
                 let row = self
@@ -584,12 +600,12 @@ impl Shika {
                 this.busy = false;
                 match result {
                     Ok(()) => match entry_point {
-                        EntryPoint::New { preset, .. } => this.begin_launch(
+                        EntryPoint::New { preset, prompt, .. } => this.begin_launch(
                             project,
                             preset,
                             true,
                             None,
-                            Launch::Task,
+                            Launch::Task { prompt },
                             None,
                             window,
                             cx,

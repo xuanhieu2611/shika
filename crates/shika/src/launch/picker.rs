@@ -2,14 +2,51 @@
 //! keys, and views. Launching itself lives in `launch/mod.rs`.
 use super::*;
 
+/// The prompt field's hint while an agent row is selected.
+const PROMPT_HINT: &str = "What should it do? Leave empty to type in the terminal.";
+/// The hint while Terminal is selected: the text stays and is ignored.
+const TERMINAL_PROMPT_HINT: &str = "A terminal starts without a prompt.";
+
 /// The New picker. `index` is a row in `new_choices(mode)` for `project`.
+/// Task and checkout pickers have the optional prompt field; New Lead has
+/// none. `error` is why the last start was refused, such as a prompt the
+/// CLI would read as a flag.
+#[derive(Clone)]
 pub(crate) struct PickerDialog {
     pub(crate) project: String,
     pub(crate) index: usize,
     pub(crate) mode: PickerMode,
+    pub(crate) prompt: Option<Entity<chat_input::ChatInput>>,
+    pub(crate) error: Option<String>,
+}
+
+/// The picker's prompt field: multi-line, Shift+Enter for a new line, with
+/// `text` and the caret at its end.
+pub(super) fn new_prompt_input(
+    text: String,
+    chrome: Chrome,
+    cx: &mut Context<Shika>,
+) -> Entity<chat_input::ChatInput> {
+    cx.new(|cx| {
+        let mut input = chat_input::ChatInput::new(String::new(), chrome, cx);
+        input.label("Prompt".into());
+        input.placeholder(PROMPT_HINT);
+        input.field_id("new-prompt");
+        input.max_height(px(100.));
+        input.set_value(text, cx);
+        input
+    })
 }
 
 impl PickerDialog {
+    /// The prompt field's text, untrimmed. Empty without a field.
+    pub(super) fn prompt_text(&self, cx: &App) -> String {
+        self.prompt
+            .as_ref()
+            .map(|prompt| prompt.read(cx).value().to_owned())
+            .unwrap_or_default()
+    }
+
     /// Changing location never starts a session. Terminal is in both lists,
     /// so the selected row stays. Lead has no switch.
     pub(super) fn toggle_worktree(&mut self) -> bool {
@@ -23,12 +60,14 @@ impl PickerDialog {
 }
 
 /// Approval for a project's worktree setup before New starts `preset`.
-/// `retry` is the failed card's agent state when this is a Retry.
+/// `retry` is the failed card's agent state when this is a Retry. `prompt`
+/// is the picker's, passed to the CLI once setup is approved.
 pub(crate) struct PreparationDialog {
     pub(crate) project: String,
     pub(crate) preset: CliPreset,
     pub(crate) config: PreparationConfig,
     pub(crate) retry: Option<Arc<Mutex<HostState>>>,
+    pub(crate) prompt: Option<String>,
 }
 
 impl Shika {
@@ -49,6 +88,7 @@ impl Shika {
             index,
             project,
             mode,
+            ..
         })) = &mut self.overlay
         {
             let len = offered_len;
@@ -85,6 +125,58 @@ impl Shika {
                 self.prefetch_base(project, cx);
             }
         }
+    }
+
+    /// A keystroke while the picker's prompt field has focus. False when the
+    /// field is absent or unfocused, so the picker takes plain keys as
+    /// before. Letters, `j` and `k` included, type; Shift+Enter adds a line.
+    /// Enter starts, Escape cancels, Tab changes project, and Up/Down choose
+    /// the agent. While the field is empty, number keys still start a row
+    /// and Space still toggles Create worktree. IME composition keeps every
+    /// key.
+    pub(crate) fn picker_prompt_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(Overlay::Picker(PickerDialog {
+            prompt: Some(prompt),
+            ..
+        })) = &self.overlay
+        else {
+            return false;
+        };
+        if !prompt.focus_handle(cx).is_focused(window) {
+            return false;
+        }
+        let (composing, empty) = {
+            let input = prompt.read(cx);
+            (input.composing(), input.value().is_empty())
+        };
+        if composing {
+            return true;
+        }
+        if self.busy {
+            cx.stop_propagation();
+            return true;
+        }
+        let stroke = &event.keystroke;
+        let m = stroke.modifiers;
+        let plain = !m.platform && !m.control && !m.alt && !m.shift;
+        let key = stroke.key.as_str();
+        if plain && picker_takes_from_prompt(key, empty) {
+            self.picker_key(key, window, cx);
+        } else if key != "tab" {
+            // Typed into the field: a refusal no longer describes it.
+            if let Some(Overlay::Picker(picker)) = &mut self.overlay {
+                picker.error = None;
+            }
+            return true;
+        }
+        cx.stop_propagation();
+        cx.notify();
+        true
     }
 
     /// Reuse the existing launch routes, including core's one-checkout guard.
@@ -124,12 +216,15 @@ impl Shika {
         chrome: &Chrome,
         home: Option<&std::path::Path>,
         max_h: Pixels,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let PickerDialog {
             project,
             index,
             mode,
+            prompt,
+            error,
         } = picker;
         let name = self
             .projects
@@ -143,6 +238,19 @@ impl Shika {
             .child(picker_header(*mode, name, chrome));
         let offered = self.new_choices(*mode);
         let offer_settings = self.catalog.is_some() && offered.is_empty();
+        if let Some(prompt) = prompt {
+            let terminal = offered.get(*index).is_some_and(|p| p.id == "terminal");
+            panel = panel.child(picker_prompt_field(prompt, terminal, chrome, window, cx));
+            if let Some(error) = error {
+                panel = panel.child(
+                    div().px(px(10.)).pb(px(6.)).child(
+                        dialog_text(chrome)
+                            .text_color(chrome.ink_1)
+                            .child(error.clone()),
+                    ),
+                );
+            }
+        }
         if self.catalog.is_none() {
             panel = panel.child(
                 list_row(false, chrome)
@@ -185,7 +293,14 @@ impl Shika {
                     .items_center(),
             );
         }
-        panel.child(self.picker_footer(project, *mode, offer_settings, chrome, cx))
+        panel.child(self.picker_footer(
+            project,
+            *mode,
+            offer_settings,
+            prompt.is_some(),
+            chrome,
+            cx,
+        ))
     }
 
     /// The picker's footer: the keys, then where the start lands.
@@ -194,6 +309,7 @@ impl Shika {
         project: &str,
         mode: PickerMode,
         offer_settings: bool,
+        prompt: bool,
         chrome: &Chrome,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
@@ -212,6 +328,9 @@ impl Shika {
                 "↵ settings"
             } else {
                 "↵ start"
+            })
+            .when(prompt && !offer_settings, |footer| {
+                footer.child("⇧↵ new line")
             })
             .child("esc cancel");
         if mode != PickerMode::Lead {
@@ -319,6 +438,55 @@ impl Shika {
                     ),
             )
     }
+}
+
+/// The plain keys the picker keeps while its prompt field has focus.
+pub(super) fn picker_takes_from_prompt(key: &str, empty: bool) -> bool {
+    match key {
+        "enter" | "escape" | "tab" | "up" | "down" => true,
+        "space" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => empty,
+        _ => false,
+    }
+}
+
+/// The optional prompt, under the title. It dims while Terminal is
+/// selected and keeps its text for the next agent row.
+fn picker_prompt_field(
+    prompt: &Entity<chat_input::ChatInput>,
+    terminal: bool,
+    chrome: &Chrome,
+    window: &Window,
+    cx: &mut Context<Shika>,
+) -> gpui::Stateful<gpui::Div> {
+    let mut ink = *chrome;
+    if terminal {
+        ink.ink_1 = chrome.ink_3;
+        ink.ink_3 = chrome.ink_4;
+    }
+    let focused = prompt.focus_handle(cx).is_focused(window);
+    prompt.update(cx, |input, _| {
+        input.set_chrome(ink);
+        input.placeholder(if terminal {
+            TERMINAL_PROMPT_HINT
+        } else {
+            PROMPT_HINT
+        });
+    });
+    div()
+        .id("picker-prompt")
+        .mb(px(6.))
+        .px(px(8.))
+        .py(px(4.))
+        .rounded(px(6.))
+        .bg(chrome.raised)
+        .border_1()
+        .border_color(if focused {
+            chrome.focus
+        } else {
+            chrome.line_control
+        })
+        .cursor_text()
+        .child(prompt.clone())
 }
 
 /// The picker's title row: the mode, the project, and the Tab hint.

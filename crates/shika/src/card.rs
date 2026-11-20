@@ -4,14 +4,20 @@ use super::*;
 /// What a card's launch starts. A retry repeats it.
 #[derive(Clone)]
 pub(crate) enum Launch {
-    /// New from the picker: nothing typed yet.
-    Task,
+    /// New from the picker. `prompt` is the CLI's positional argument and
+    /// the task's first submission; without one nothing is typed yet.
+    Task {
+        prompt: Option<String>,
+    },
     Recover {
         path: PathBuf,
         resume: bool,
     },
     /// An agent in the author's repository root, with no owned git state.
-    Checkout,
+    /// `prompt` works as for `Task`.
+    Checkout {
+        prompt: Option<String>,
+    },
     /// `shika new`: the CLI starts with the Lead's prompt and the card is
     /// not selected, because the author is typing elsewhere.
     Worker(LaunchOptions),
@@ -25,6 +31,16 @@ pub(crate) enum Launch {
         launch: LeadLaunch,
         focus: bool,
     },
+}
+
+impl Launch {
+    /// The prompt the author wrote in the New picker, if any.
+    pub(crate) fn author_prompt(&self) -> Option<&str> {
+        match self {
+            Self::Task { prompt } | Self::Checkout { prompt } => prompt.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) struct Card {
@@ -108,7 +124,7 @@ pub(crate) enum Home {
 
 impl Card {
     pub(crate) fn is_checkout(&self) -> bool {
-        matches!(self.launch, Launch::Checkout)
+        matches!(self.launch, Launch::Checkout { .. })
     }
     pub(crate) fn unseen(&self) -> bool {
         matches!(self.status, Status::Ready | Status::Asking) && self.seen != Some(self.since)

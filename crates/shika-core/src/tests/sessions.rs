@@ -266,3 +266,67 @@ fn removing_a_project_hangs_up_its_sessions_and_keeps_the_worktree() {
     let (_, exit) = collect_to_exit(&rx, Duration::from_secs(5));
     assert!(exit.is_some(), "the agent was not hung up");
 }
+
+#[test]
+fn an_author_prompt_is_each_clis_last_argument_and_names_nothing_in_core() {
+    let scratch = Scratch::new();
+    let core = core_with_switch_clis(&scratch);
+    let project = core.add_project(&scratch.repo("demo")).unwrap().project;
+    for preset in ["claude", "codex", "cursor", "pi"] {
+        let (sink, rx) = channel_sink();
+        let session = core
+            .create_session(
+                &project.id,
+                preset,
+                PtySize::new(30, 90),
+                sink,
+                LaunchOptions {
+                    prompt: Some("Fix the login bug".into()),
+                    ..LaunchOptions::default()
+                },
+            )
+            .unwrap();
+        let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+        let args = report_args(&report);
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("Fix the login bug"),
+            "{preset}: {args:?}"
+        );
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "Fix the login bug")
+                .count(),
+            1,
+            "{preset}: {args:?}"
+        );
+        // The caller names the task from the prompt, as for a typed line.
+        assert_eq!(session.branch, format!("shika-draft-{}", session.id));
+        assert!(session.title.starts_with("New "), "{}", session.title);
+        assert!(session.started_by.is_none());
+        assert!(
+            report.lines().any(|line| line.trim() == "sock:"),
+            "an author task gets no control socket: {report}"
+        );
+    }
+
+    // A checkout agent takes the prompt the same way.
+    let (sink, rx) = channel_sink();
+    let checkout = core
+        .create_checkout_session(
+            &project.id,
+            "claude",
+            Some("Review the diff\nthen summarize"),
+            PtySize::new(30, 90),
+            sink,
+        )
+        .unwrap();
+    let report = collect_until(&rx, "end-report", Duration::from_secs(5));
+    assert_eq!(report_args(&report)[0], "--dangerously-skip-permissions");
+    assert!(
+        report.contains("last:Review the diff\r\nthen summarize"),
+        "{report}"
+    );
+    assert_eq!(checkout.title, "New Claude Code");
+    assert!(!checkout.named());
+}
