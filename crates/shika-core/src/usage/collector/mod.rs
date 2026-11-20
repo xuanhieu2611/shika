@@ -63,17 +63,19 @@ impl Collector {
     /// Called before spawn, on the launch thread. Journal only path metadata
     /// so even a crash before the first Ready/exit can recover persisted usage.
     pub(crate) fn register(&self, home: &CliHome, preset: &str, cwd: &Path) -> Option<Source> {
-        let target = Arc::new(Target::new(home, preset, cwd)?);
-        if persist_target(&self.data_dir, &target).is_err() {
-            self.queue
-                .failures
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(target.id());
+        let target = Target::new(home, preset, cwd)?;
+        Some(register_target(&self.data_dir, &self.queue, target))
+    }
+
+    /// For a chat Codex Lead started in `cwd`, whose thread id is known only
+    /// once its app-server answers. Its threads are indexed as `vscode`, which
+    /// the cwd discovery for terminal agents never reads.
+    pub(crate) fn codex_threads(&self, home: &CliHome, cwd: &Path) -> CodexThreads {
+        CodexThreads {
+            data_dir: self.data_dir.clone(),
+            queue: self.queue.clone(),
+            root: cwd.join(home.codex_root()),
         }
-        let source = self.queue.source(target);
-        source.notify();
-        Some(source)
     }
 
     pub(crate) fn request(&self, home: &CliHome, preset: &str, cwd: &Path) {
@@ -117,6 +119,41 @@ impl Collector {
                 .unwrap_or_else(|e| e.into_inner())
                 .is_empty()
     }
+}
+
+/// Registers Codex threads by id from any thread, after the launch.
+#[derive(Clone)]
+pub(crate) struct CodexThreads {
+    data_dir: PathBuf,
+    queue: Arc<Queue>,
+    root: PathBuf,
+}
+
+impl CodexThreads {
+    /// Journals the thread (and the threads it spawns) as a source, like
+    /// [`Collector::register`] does before a terminal agent spawns.
+    pub(crate) fn register(&self, thread: &str) -> Source {
+        let target = Target::Codex {
+            root: self.root.clone(),
+            cwds: Vec::new(),
+            threads: vec![thread.to_string()],
+        };
+        register_target(&self.data_dir, &self.queue, target)
+    }
+}
+
+fn register_target(data_dir: &Path, queue: &Arc<Queue>, target: Target) -> Source {
+    let target = Arc::new(target);
+    if persist_target(data_dir, &target).is_err() {
+        queue
+            .failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(target.id());
+    }
+    let source = queue.source(target);
+    source.notify();
+    source
 }
 
 impl Drop for Collector {

@@ -1,5 +1,5 @@
 //! The actor's protocol-neutral paths, driven by a line-based test protocol
-//! and a fake `sh` CLI. Claude never takes these paths yet.
+//! and a fake `sh` CLI.
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -21,10 +21,12 @@ static STRINGS: Strings = Strings {
     restart_failed: "Could not start Test. Try sending again.",
 };
 
-/// `id X`, `reply X`, `ack`, `handled`, `final X` and `final` map to the
-/// matching `Parsed`; anything else is ignored.
+/// `id X`, `confirm`, `reply X`, `ack`, `handled`, `instructed`,
+/// `lingering`, `fatal`, `final X` and `final` map to the matching `Parsed`;
+/// anything else is ignored. `idle` makes the next interrupt `Idle`.
 struct LineProtocol {
     write_accepts: bool,
+    idle: bool,
 }
 impl LeadProtocol for LineProtocol {
     fn cli(&self) -> &'static str {
@@ -52,7 +54,14 @@ impl LeadProtocol for LineProtocol {
         format!("answer {request_id}\n").into_bytes()
     }
     fn interrupt(&mut self) -> Interrupt {
-        Interrupt::Frame(b"interrupt\n".to_vec())
+        if std::mem::take(&mut self.idle) {
+            Interrupt::Idle
+        } else {
+            Interrupt::Frame(b"interrupt\n".to_vec())
+        }
+    }
+    fn stop_signal(&self) -> i32 {
+        libc::SIGTERM
     }
     fn shutdown(&self) -> Shutdown {
         Shutdown::CloseStdin
@@ -62,6 +71,14 @@ impl LeadProtocol for LineProtocol {
         let (word, rest) = line.split_once(' ').unwrap_or((line, ""));
         match word {
             "id" => Parsed::Identity(rest.into()),
+            "confirm" => Parsed::Confirmed,
+            "instructed" => Parsed::Instructed,
+            "lingering" => Parsed::Lingering,
+            "fatal" => Parsed::Fatal("Test refused the conversation"),
+            "idle" => {
+                self.idle = true;
+                Parsed::Ignore
+            }
             "reply" => Parsed::Reply(format!("{rest}\n").into_bytes()),
             "ack" => Parsed::Accepted,
             "handled" => Parsed::Handled,
@@ -116,18 +133,23 @@ impl Fixture {
             ChatLaunch {
                 cli: "test",
                 usage: None,
+                usage_threads: None,
                 program: self.root.join("cli"),
                 cwd: self.root.clone(),
                 path: std::env::var("PATH").unwrap_or_default(),
                 env: Vec::new(),
-                instructions: String::new(),
+                instructions: "guide".into(),
                 conversation: conversation.into(),
                 resumed: !conversation.is_empty(),
+                instructed: false,
                 history: None,
                 data: self.root.join("data"),
                 project: "actor-test".into(),
             },
-            Box::new(LineProtocol { write_accepts }),
+            Box::new(LineProtocol {
+                write_accepts,
+                idle: false,
+            }),
         )
         .unwrap()
     }
@@ -198,17 +220,157 @@ fn wait_for(path: &Path, text: &str) {
 }
 
 #[test]
-fn a_reported_identity_binds_the_history_and_confirms_it() {
-    let fixture = Fixture::new(" hello) echo 'id thread-1';;");
+fn a_reported_identity_binds_the_history_and_a_later_turn_confirms_it() {
+    let fixture =
+        Fixture::new(" hello) echo 'id thread-1';;\n 'send hi') echo confirm; echo 'final Hi';;");
     let transport = fixture.start("", true);
-    let events = until(&transport, |e| matches!(e, ChatEvent::Confirmed(_)));
+    wait_for(&fixture.root.join("log"), "hello");
+    std::thread::sleep(Duration::from_millis(200));
+    // Bound, not saved: the CLI may not keep a conversation with no turn.
+    assert!(
+        !transport
+            .drain()
+            .iter()
+            .any(|e| matches!(e, ChatEvent::Confirmed(_)))
+    );
+    transport
+        .send("hi".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    let events = until(&transport, ready);
     assert!(
         events
             .iter()
             .any(|e| matches!(e, ChatEvent::Confirmed(id) if id == "thread-1"))
     );
     transport.stop();
-    assert_eq!(fixture.rows(), [(0, "context test thread-1".into())]);
+    assert_eq!(fixture.rows()[0], (0, "context test thread-1".into()));
+}
+
+#[test]
+fn delivered_instructions_are_recorded_for_the_bound_conversation() {
+    let fixture = Fixture::new(" hello) echo 'id thread-1'; echo instructed;;");
+    let transport = fixture.start("", true);
+    wait_for(&fixture.root.join("log"), "hello");
+    let deadline = Instant::now() + Duration::from_secs(7);
+    let store =
+        || crate::lead_chat_store::ChatStore::open(&fixture.root.join("data"), "actor-test");
+    while !store().unwrap().instructed("test", "thread-1", "guide") {
+        assert!(Instant::now() < deadline, "instructions never recorded");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    transport.stop();
+    assert!(
+        !store()
+            .unwrap()
+            .instructed("test", "thread-1", "guide plus a note")
+    );
+}
+
+#[test]
+fn a_fatal_failure_ends_the_transport_with_its_message() {
+    let fixture = Fixture::new(" hello) echo fatal;;");
+    let transport = fixture.start("thread-1", true);
+    let events = until(&transport, |e| matches!(e, ChatEvent::Exit));
+    assert!(
+        events.iter().any(
+            |e| matches!(e, ChatEvent::Error(text) if text == "Test refused the conversation")
+        )
+    );
+    transport.stop();
+    assert_eq!(
+        fixture.rows(),
+        [
+            (0, "context test thread-1".into()),
+            (0, "event Test refused the conversation".into())
+        ]
+    );
+}
+
+#[test]
+fn an_idle_interrupt_settles_at_once_and_keeps_the_process() {
+    let fixture =
+        Fixture::new(" 'send wait') echo ack; echo idle;;\n 'send again') echo 'final Again';;");
+    let transport = fixture.start("thread-1", false);
+    transport
+        .send("wait".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    until(&transport, |e| matches!(e, ChatEvent::Accepted));
+    std::thread::sleep(Duration::from_millis(100));
+    transport.interrupt();
+    until(&transport, ready);
+    transport
+        .send("again".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    until(&transport, ready);
+    transport.stop();
+    // No interrupt frame was written and no second process started.
+    assert_eq!(fixture.log(), "hello\nsend wait\nsend again\neof\n");
+    assert!(
+        fixture
+            .rows()
+            .contains(&(1, "event Reply stopped".to_string()))
+    );
+}
+
+#[test]
+fn a_stop_that_leaves_a_tool_running_ends_the_process_and_the_next_send_resumes() {
+    let fixture = Fixture::new(
+        " 'send long') echo ack;;\n interrupt) echo lingering;;\n 'send again') echo 'final Again';;",
+    );
+    let transport = fixture.start("thread-1", false);
+    transport
+        .send("long".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    until(&transport, |e| matches!(e, ChatEvent::Accepted));
+    let now = Instant::now();
+    transport.interrupt();
+    let events = until(&transport, ready);
+    // The stop signal (SIGTERM here), not the 2 second kill deadline.
+    assert!(now.elapsed() < Duration::from_secs(2), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::Exit)));
+    transport
+        .send("again".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    let events = until(&transport, ready);
+    assert!(events.iter().any(|e| matches!(e, ChatEvent::Resuming)));
+    transport.stop();
+    // The first process ended without reading EOF; a second one handshook.
+    assert_eq!(
+        fixture.log(),
+        "hello\nsend long\ninterrupt\nhello\nsend again\neof\n"
+    );
+    assert!(
+        fixture
+            .rows()
+            .contains(&(1, "event Reply stopped".to_string()))
+    );
+}
+
+#[test]
+fn a_soft_stop_the_cli_ignores_gets_the_stop_signal_then_the_process_restarts() {
+    let fixture = Fixture::new(" 'send long') echo ack;;\n 'send again') echo 'final Again';;");
+    let transport = fixture.start("thread-1", false);
+    transport
+        .send("long".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    until(&transport, |e| matches!(e, ChatEvent::Accepted));
+    let now = Instant::now();
+    transport.interrupt();
+    until(&transport, ready);
+    let waited = now.elapsed();
+    assert!(
+        waited >= Duration::from_secs(2) && waited < Duration::from_secs(4),
+        "{waited:?}"
+    );
+    transport
+        .send("again".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    until(&transport, ready);
+    transport.stop();
+    assert_eq!(
+        fixture.log(),
+        "hello\nsend long\ninterrupt\nhello\nsend again\neof\n"
+    );
 }
 
 #[test]

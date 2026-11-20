@@ -214,7 +214,7 @@ pub(crate) fn valid_conversation_id(id: &str) -> bool {
 /// `projects={"<path>"={trust_level="trusted"}}`, the path as a TOML basic
 /// string. Codex compares the key with its working directory as the OS
 /// reports it, so a symlinked path is resolved first.
-fn codex_trust_override(worktree: &Path) -> String {
+pub(crate) fn codex_trust_override(worktree: &Path) -> String {
     let path = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
     format!(
         "projects={{{}={{trust_level=\"trusted\"}}}}",

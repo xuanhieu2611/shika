@@ -74,8 +74,13 @@ pub(super) fn input_files(
         Target::Claude { directories } => {
             pending |= claude_files(directories, &mut files);
         }
-        Target::Codex { root, cwds } => {
-            let discovered = codex_files(store, &source, root, cwds, &mut files, &mut pending);
+        Target::Codex {
+            root,
+            cwds,
+            threads,
+        } => {
+            let roots = Roots { cwds, threads };
+            let discovered = codex_files(store, &source, root, &roots, &mut files, &mut pending);
             pending |= discovered.is_err();
         }
     }
@@ -134,7 +139,7 @@ fn codex_files(
     store: &Connection,
     source: &str,
     root: &Path,
-    cwds: &[PathBuf],
+    roots: &Roots,
     files: &mut BTreeMap<PathBuf, InputFile>,
     pending: &mut bool,
 ) -> rusqlite::Result<()> {
@@ -182,14 +187,21 @@ fn codex_files(
         return Ok(());
     };
     store.execute("INSERT OR IGNORE INTO indexes VALUES (?1)", [&source])?;
-    codex_index_threads(&db, cwds, files, pending)
+    codex_index_threads(&db, roots, files, pending)
 }
 
-/// The threads started in one of `cwds` and, when the index records spawn
-/// edges, the threads they spawned, read from the Codex index at `db`.
+/// The root threads a Codex target owns: CLI threads started in one of
+/// `cwds`, and `threads` by id.
+struct Roots<'a> {
+    cwds: &'a [PathBuf],
+    threads: &'a [String],
+}
+
+/// The root threads and, when the index records spawn edges, the threads
+/// they spawned, read from the Codex index at `db`.
 fn codex_index_threads(
     db: &Path,
-    cwds: &[PathBuf],
+    roots: &Roots,
     files: &mut BTreeMap<PathBuf, InputFile>,
     pending: &mut bool,
 ) -> rusqlite::Result<()> {
@@ -209,20 +221,34 @@ fn codex_index_threads(
     let start = Instant::now();
     conn.progress_handler(1000, Some(move || start.elapsed() > BUSY));
     let edges: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_spawn_edges')", [], |r| r.get(0))?;
-    let sql = if edges {
-        "WITH RECURSIVE owned(id) AS (
-                   SELECT id FROM threads WHERE cwd=?1 AND source='cli'
+    let roots = roots
+        .cwds
+        .iter()
+        .map(|cwd| {
+            (
+                "cwd=?1 AND source='cli'",
+                cwd.to_string_lossy().into_owned(),
+            )
+        })
+        .chain(roots.threads.iter().map(|id| ("id=?1", id.clone())));
+    if !edges {
+        // A matching cwd alone does not establish child ownership.
+        // Keep valid root totals, but surface the discovery gap.
+        *pending = true;
+    }
+    for (root, key) in roots {
+        let sql = if edges {
+            format!(
+                "WITH RECURSIVE owned(id) AS (
+                   SELECT id FROM threads WHERE {root}
                    UNION SELECT child_thread_id FROM thread_spawn_edges JOIN owned ON parent_thread_id=owned.id
                  ) SELECT threads.id,rollout_path FROM threads JOIN owned ON threads.id=owned.id"
-    } else {
-        // A matching cwd alone does not establish child ownership.
-        // Keep valid CLI-root totals, but surface the discovery gap.
-        *pending = true;
-        "SELECT id,rollout_path FROM threads WHERE cwd=?1 AND source='cli'"
-    };
-    for cwd in cwds {
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map([cwd.to_string_lossy().as_ref()], |r| {
+            )
+        } else {
+            format!("SELECT id,rollout_path FROM threads WHERE {root}")
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([key], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 PathBuf::from(r.get::<_, String>(1)?),

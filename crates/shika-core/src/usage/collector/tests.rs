@@ -538,6 +538,7 @@ fn codex_fixture(scratch: &Scratch) -> (Target, PathBuf, PathBuf, PathBuf) {
         Target::Codex {
             root,
             cwds: vec![scratch.cwd()],
+            threads: Vec::new(),
         },
         parent,
         child,
@@ -558,6 +559,66 @@ fn codex_counts_parent_and_descendants_not_inherited_context_or_unrelated_thread
     append(&child, &codex("c2", "child", 3));
     drain(&mut conn, &target);
     assert_eq!(scratch.shown().codex, 30);
+}
+
+#[test]
+fn a_codex_thread_root_counts_its_vscode_thread_and_children_by_id() {
+    let scratch = Scratch::new();
+    let (cwd_target, _, _, _) = codex_fixture(&scratch);
+    let Target::Codex { root, .. } = cwd_target else {
+        unreachable!()
+    };
+    // A chat Lead's app-server thread is `vscode`, which cwd discovery skips.
+    let by_cwd = Target::Codex {
+        root: root.clone(),
+        cwds: vec![scratch.cwd()],
+        threads: Vec::new(),
+    };
+    let by_id = Target::Codex {
+        root,
+        cwds: Vec::new(),
+        threads: vec!["other".into()],
+    };
+    assert_ne!(by_cwd.id(), by_id.id());
+    let mut conn = open_store(&scratch.data()).unwrap();
+    drain(&mut conn, &by_id);
+    assert_eq!(scratch.shown().codex, 900);
+    // The cwd target counts the CLI parent and its child, never `other` twice.
+    drain(&mut conn, &by_cwd);
+    drain(&mut conn, &by_id);
+    assert_eq!(scratch.shown().codex, 927);
+}
+
+#[test]
+fn codex_thread_roots_survive_the_registration_file_and_keep_older_ids() {
+    let scratch = Scratch::new();
+    let home = scratch.home();
+    let cwd = scratch.cwd();
+    let Target::Codex { root, cwds, .. } = Target::new(&home, "codex", &cwd).unwrap() else {
+        unreachable!()
+    };
+    let plain = Target::Codex {
+        root: root.clone(),
+        cwds: cwds.clone(),
+        threads: Vec::new(),
+    };
+    assert_eq!(plain.id(), Target::new(&home, "codex", &cwd).unwrap().id());
+    let json = serde_json::to_string(&plain).unwrap();
+    assert!(!json.contains("threads"), "{json}");
+    let threaded = Target::Codex {
+        root,
+        cwds,
+        threads: vec!["t1".into()],
+    };
+    persist_target(&scratch.data(), &threaded).unwrap();
+    let saved = read_target(
+        &scratch
+            .data()
+            .join("usage-sources")
+            .join(format!("{}.json", threaded.id())),
+    )
+    .unwrap();
+    assert_eq!(saved.id(), threaded.id());
 }
 
 #[test]
@@ -1173,6 +1234,7 @@ fn absent_codex_home_is_initially_quiet_but_existing_storage_needs_an_index() {
     let target = Target::Codex {
         root: root.clone(),
         cwds: vec![scratch.cwd()],
+        threads: Vec::new(),
     };
     let mut conn = open_store(&scratch.data()).unwrap();
     assert!(
@@ -1336,6 +1398,7 @@ fn compressed_backlog_pins_four_readers_until_they_finish() {
         targets.push(Target::Codex {
             root,
             cwds: vec![PathBuf::from("/cwd")],
+            threads: Vec::new(),
         });
     }
     let mut conn = open_store(&scratch.data()).unwrap();
@@ -1420,12 +1483,16 @@ fn a_symlinked_codex_home_reads_regular_index_and_rollout_files() {
     use std::os::unix::fs::symlink;
     let scratch = Scratch::new();
     let (target, _, _, _) = codex_fixture(&scratch);
-    let Target::Codex { root, cwds } = target else {
+    let Target::Codex { root, cwds, .. } = target else {
         unreachable!()
     };
     let linked = scratch.0.join("linked-codex-home");
     symlink(root, &linked).unwrap();
-    let target = Target::Codex { root: linked, cwds };
+    let target = Target::Codex {
+        root: linked,
+        cwds,
+        threads: Vec::new(),
+    };
     let mut conn = open_store(&scratch.data()).unwrap();
     drain(&mut conn, &target);
     assert_eq!(scratch.shown().codex, 27);

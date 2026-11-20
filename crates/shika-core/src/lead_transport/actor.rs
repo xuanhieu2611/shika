@@ -193,6 +193,8 @@ pub(super) struct Actor {
     /// The stop in progress is an `Interrupt::Frame`: the process stays, and
     /// its lines are still read until the turn ends.
     pub(super) soft_stop: bool,
+    /// The stop in progress sent `LeadProtocol::stop_signal`; SIGKILL is next.
+    pub(super) signalled: bool,
     /// The turn's frame was written; the CLI has not acknowledged it yet.
     pub(super) unacknowledged: bool,
     pub(super) exiting: bool,
@@ -283,21 +285,32 @@ impl Actor {
             self.emit(ChatEvent::Status(ChatStatus::Ready));
         }
     }
+    /// Stop generating. After a failure that ends the transport, the process
+    /// goes too.
     fn interrupt(&mut self) {
-        self.stop_turn(false);
+        self.stop_turn(self.failed);
     }
-    /// Stops the turn the protocol's way, or with SIGINT to the group when
-    /// `hard` or the frame cannot be written. A hard stop also ends a soft
-    /// stop in progress.
+    /// Stops the turn the protocol's way, or with the protocol's stop signal
+    /// to the group when `hard` or the frame cannot be written. A hard stop
+    /// also ends a soft stop in progress, with a new kill deadline.
     fn stop_turn(&mut self, hard: bool) {
         if self.stopping.is_some() && !(hard && self.soft_stop) {
             return;
         }
-        let Some(child) = &mut self.child else {
+        if self.child.is_none() {
             self.settle(Some("Reply stopped"));
             return;
-        };
-        let soft = match self.protocol.interrupt() {
+        }
+        let interrupt = self.protocol.interrupt();
+        if !hard && matches!(interrupt, Interrupt::Idle) {
+            if self.turn.is_some() {
+                self.settle(Some("Reply stopped"));
+            }
+            return;
+        }
+        let signal = self.protocol.stop_signal();
+        let child = self.child.as_mut().expect("child checked above");
+        let soft = match interrupt {
             Interrupt::Frame(bytes) if !hard => {
                 let epoch = self.cancel.load(Ordering::Acquire);
                 child.write(&bytes, &self.cancel, epoch).is_ok()
@@ -305,12 +318,16 @@ impl Actor {
             _ => false,
         };
         if !soft {
-            child.signal(libc::SIGINT);
+            child.signal(signal);
+            self.signalled = true;
         }
+        let escalated = self.soft_stop && !soft;
         self.soft_stop = soft;
         if self.stopping.is_none() {
             self.stopping = Some(Instant::now());
             self.emit(ChatEvent::Stopping);
+        } else if escalated {
+            self.stopping = Some(Instant::now());
         }
     }
     /// A soft stop ended with the turn: settle it as stopped and keep the
@@ -383,6 +400,7 @@ impl Actor {
         };
         child.stdin = None;
         self.soft_stop = false;
+        self.signalled = false;
         if self.stopping.is_none() {
             self.stopping = Some(Instant::now());
             self.emit(ChatEvent::Stopping);
@@ -404,11 +422,18 @@ impl Actor {
             self.interrupt();
         }
     }
-    /// Lets the protocol expire requests while no line arrives.
+    /// Lets the protocol expire requests while no line arrives, and act on
+    /// the results it queued from the last line.
     fn poll_protocol(&mut self) {
-        if self.child.is_some() && (self.stopping.is_none() || self.soft_stop) {
-            let parsed = self.protocol.poll(Instant::now());
-            self.act(parsed);
+        // Bounded, so a protocol bug cannot hold the actor.
+        for _ in 0..16 {
+            if self.child.is_none() || !(self.stopping.is_none() || self.soft_stop) {
+                return;
+            }
+            match self.protocol.poll(Instant::now()) {
+                Parsed::Ignore => return,
+                parsed => self.act(parsed),
+            }
         }
     }
     /// One command from the handle or one frame from the CLI's reader.
@@ -588,6 +613,7 @@ impl Actor {
             // settles the stop.
             match parsed {
                 Parsed::Final(_) | Parsed::Handled => return self.finish_soft_stop(),
+                Parsed::Lingering => return self.stop_turn(true),
                 Parsed::Started | Parsed::Question(_) | Parsed::Blocked | Parsed::Cancelled(_) => {
                     return;
                 }
@@ -609,6 +635,12 @@ impl Actor {
                 self.acknowledge();
                 self.complete(text, None);
             }
+            // A turn the CLI stopped itself; nothing of ours waits on its tool.
+            Parsed::Lingering => {
+                self.acknowledge();
+                self.complete(None, None);
+            }
+            Parsed::Instructed => self.instructed(),
             Parsed::Blocked => {
                 self.emit(ChatEvent::Status(ChatStatus::Asking));
                 self.emit(ChatEvent::Error(UNSUPPORTED.into()));
@@ -623,7 +655,8 @@ impl Actor {
             Parsed::Cancelled(id) => {
                 self.emit(ChatEvent::QuestionCancelled(id));
             }
-            Parsed::Failed(error) => self.fail_turn(error),
+            Parsed::Failed(error) => self.fail_turn(error, false),
+            Parsed::Fatal(error) => self.fail_turn(error, true),
             Parsed::Ignore => {}
         }
     }
@@ -634,7 +667,9 @@ impl Actor {
         self.emit(ChatEvent::Confirmed(self.launch.conversation.clone()));
     }
     /// The id a CLI reported. The first one binds the history to it; any
-    /// other id fails like an unexpected conversation.
+    /// other id fails like an unexpected conversation. It is not confirmed
+    /// (saved) yet: the protocol sends `Confirmed` once the CLI keeps the
+    /// conversation, which Codex does only from its first turn.
     fn identity(&mut self, id: String) {
         if self.launch.conversation.is_empty() {
             match self.store.bind(self.protocol.cli(), &id) {
@@ -653,10 +688,30 @@ impl Actor {
             }
             self.launch.conversation = id;
         } else if self.launch.conversation != id {
-            self.fail_turn(self.protocol.strings().other_conversation);
+            self.fail_turn(self.protocol.strings().other_conversation, false);
             return;
         }
-        self.confirm();
+        if self.launch.usage.is_none()
+            && let Some(threads) = &self.launch.usage_threads
+        {
+            self.launch.usage = Some(threads.register(&self.launch.conversation));
+        }
+    }
+    /// Records that the conversation holds this launch's instructions. A
+    /// failed write only means the next resume sends them again.
+    fn instructed(&mut self) {
+        if !self.launch.conversation.is_empty()
+            && self
+                .store
+                .set_instructed(
+                    self.protocol.cli(),
+                    &self.launch.conversation,
+                    &self.launch.instructions,
+                )
+                .is_ok()
+        {
+            self.launch.instructed = true;
+        }
     }
     /// Writes a frame the protocol owes the CLI without the author. A failed
     /// write ends the turn like a reply cut short; a Stop already moving the
@@ -688,9 +743,11 @@ impl Actor {
         self.emit(ChatEvent::Status(ChatStatus::Working));
     }
     /// A decoding or reply failure settles the turn and interrupts the CLI.
-    fn fail_turn(&mut self, error: &'static str) {
+    /// A `fatal` one, an unreadable stream or another conversation also ends
+    /// the transport.
+    fn fail_turn(&mut self, error: &'static str, fatal: bool) {
         let strings = self.protocol.strings();
-        self.failed = error == strings.unreadable || error == strings.other_conversation;
+        self.failed = fatal || error == strings.unreadable || error == strings.other_conversation;
         let display = if error == strings.unreadable {
             self.child
                 .as_ref()
@@ -704,14 +761,27 @@ impl Actor {
         self.emit(ChatEvent::Error(display));
         self.interrupt();
     }
-    /// An interrupted CLI that has not exited after 2 seconds is killed.
+    /// A CLI still running 2 seconds into a stop gets the protocol's stop
+    /// signal if the stop was gentler (a frame, or closed stdin), and SIGKILL
+    /// 2 seconds after that signal.
     fn kill_slow_stop(&mut self) {
-        if self
+        if !self
             .stopping
             .is_some_and(|at| at.elapsed() >= Duration::from_secs(2))
-            && let Some(child) = &mut self.child
         {
+            return;
+        }
+        let signal = self.protocol.stop_signal();
+        let Some(child) = &mut self.child else {
+            return;
+        };
+        if self.signalled {
             child.signal(libc::SIGKILL);
+        } else {
+            child.signal(signal);
+            self.signalled = true;
+            self.soft_stop = false;
+            self.stopping = Some(Instant::now());
         }
     }
     /// Notices the CLI's exit after all its output was read, settles the turn,
@@ -731,6 +801,7 @@ impl Actor {
             let stopped = self.stopping.take().is_some();
             self.child = None;
             self.soft_stop = false;
+            self.signalled = false;
             if !stopped && self.turn.is_none() {
                 self.persist(
                     0,

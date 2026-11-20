@@ -1,10 +1,11 @@
 //! The Lead chat transport: one long-lived structured child per Lead, never
 //! terminal bytes. `protocol::LeadProtocol` is the per-CLI wire format
-//! (`claude.rs` today); the actor and everything here are shared. All IO
-//! runs on the actor.
+//! (`claude.rs`, `codex.rs`); the actor and everything here are shared. All
+//! IO runs on the actor.
 mod actor;
 mod claude;
-// The Codex app-server and ACP adapters build on it; nothing does yet.
+mod codex;
+// Shared by the Codex app-server and ACP adapters; some of it is ACP's alone.
 #[cfg_attr(not(test), allow(dead_code))]
 mod jsonrpc;
 mod protocol;
@@ -94,27 +95,61 @@ enum Parsed {
     Ignore,
     /// The conversation id the CLI reported, for CLIs that allocate it
     /// (Codex `thread/start`, ACP `session/new`). It must equal any id Shika
-    /// already holds; Claude keeps `Confirmed`, where the id is checked.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// already holds, and binds the history to it. The id is saved only on a
+    /// later `Confirmed`, once the CLI keeps the conversation; Claude has
+    /// only `Confirmed`, where the id is checked.
     Identity(String),
     /// Frames to write at once without the author: a handshake step, or the
     /// empty success a report request expects. Never a permission or
     /// question answer.
-    #[cfg_attr(not(test), allow(dead_code))]
     Reply(Vec<u8>),
     /// The CLI acknowledged the send, when that is separate from the write
     /// (`LeadProtocol::write_accepts` is false).
-    #[cfg_attr(not(test), allow(dead_code))]
     Accepted,
     /// The send was accepted and starts no turn; it settles with no bubble.
     #[cfg_attr(not(test), allow(dead_code))]
     Handled,
+    /// The conversation now holds `ChatLaunch::instructions`, for a CLI that
+    /// keeps them from its creation (Codex): created with them, or sent them
+    /// after a resume. The actor records it, so the next resume sends them
+    /// only when they changed.
+    Instructed,
+    /// A stopped turn ended but left a tool running, such as a blocking
+    /// `shika wait`. The process is ended so the tool is too; the next send
+    /// resumes the conversation in a new one.
+    Lingering,
+    /// A failure that ends the transport, like `Strings::unreadable`, for
+    /// example a resume the CLI refused.
+    Fatal(&'static str),
+}
+
+/// The preset ids with a chat protocol, as the transport's own `&'static`
+/// names. Core's routing only; whether the app offers a chat Lead for one is
+/// a separate gate.
+pub(crate) fn chat_cli(preset: &str) -> Option<&'static str> {
+    ["claude", "codex"].into_iter().find(|cli| *cli == preset)
+}
+
+/// Whether a fresh conversation's id comes from the CLI's handshake (Codex
+/// `thread/start`) rather than one Shika chose before the launch.
+pub(crate) fn reports_identity(cli: &str) -> bool {
+    cli == "codex"
+}
+
+/// The error for a CLI that answered with another conversation.
+pub(crate) fn other_conversation(cli: &str) -> &'static str {
+    protocol::for_cli(cli)
+        .map(|protocol| protocol.strings().other_conversation)
+        .unwrap_or("The Lead returned a different conversation")
 }
 
 pub(crate) struct ChatLaunch {
     /// The chat preset id; `protocol::for_cli` picks its wire format.
     pub cli: &'static str,
     pub usage: Option<crate::usage::Source>,
+    /// Registers `usage` when the CLI reports its id, for a Codex thread
+    /// that cwd discovery cannot find.
+    pub usage_threads: Option<crate::usage::CodexThreads>,
     pub program: PathBuf,
     pub cwd: PathBuf,
     pub path: String,
@@ -123,6 +158,9 @@ pub(crate) struct ChatLaunch {
     /// Empty until a CLI that allocates its own id reports it.
     pub conversation: String,
     pub resumed: bool,
+    /// The conversation already holds exactly `instructions` (the store's
+    /// record, see `Parsed::Instructed`). Set by the transport.
+    pub instructed: bool,
     pub history: Option<String>,
     pub data: PathBuf,
     pub project: String,
@@ -161,7 +199,7 @@ impl ChatTransport {
         Self::start_with(launch, protocol)
     }
     fn start_with(
-        launch: ChatLaunch,
+        mut launch: ChatLaunch,
         mut protocol: Box<dyn protocol::LeadProtocol>,
     ) -> ChatResult<Self> {
         let mut store = ChatStore::open(&launch.data, &launch.project)?;
@@ -180,6 +218,8 @@ impl ChatTransport {
         } else {
             store.bind(protocol.cli(), &launch.conversation)?
         };
+        launch.instructed = !launch.conversation.is_empty()
+            && store.instructed(protocol.cli(), &launch.conversation, &launch.instructions);
         let next_turn = store.next_turn()?;
         let (input, rx) = mpsc::channel();
         let (frames, frame_rx) = mpsc::sync_channel(8);
@@ -211,6 +251,7 @@ impl ChatTransport {
                     turn: None,
                     stopping: None,
                     soft_stop: false,
+                    signalled: false,
                     unacknowledged: false,
                     exiting: false,
                     save_failed: false,

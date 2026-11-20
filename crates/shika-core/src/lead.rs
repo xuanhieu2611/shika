@@ -175,12 +175,25 @@ impl Core {
         self.start_lead_inner(project_id, preset_id, size, sink, launch, false)
     }
 
-    /// Claude-only chat: the logical Lead has no PTY. Same worktree, guide,
+    /// Claude Code chat: the logical Lead has no PTY. Same worktree, guide,
     /// conversation choice and control environment as a terminal Lead.
     pub fn start_claude_lead(&self, project_id: &str, launch: LeadLaunch) -> Result<LeadStart> {
+        self.start_chat_lead(project_id, "claude", launch)
+    }
+
+    /// A chat Lead for any CLI with a chat protocol (`lead_transport::chat_cli`).
+    /// The app starts only Claude Code chat Leads until each other CLI's
+    /// acceptance (plan Step 6); Codex is reached from Core tests.
+    pub(crate) fn start_chat_lead(
+        &self,
+        project_id: &str,
+        preset_id: &str,
+        launch: LeadLaunch,
+    ) -> Result<LeadStart> {
+        crate::lead_transport::chat_cli(preset_id).ok_or(Error::UnknownCli)?;
         self.start_lead_inner(
             project_id,
-            "claude",
+            preset_id,
             PtySize::default(),
             |_, _| {},
             launch,
@@ -388,24 +401,35 @@ impl Core {
         Ok((session, bootstrap_sent))
     }
 
-    /// Starts the Claude Code chat transport on the chosen conversation, with
-    /// the same control environment a terminal Lead gets.
+    /// Starts the chat transport on the chosen conversation, with the same
+    /// control environment a terminal Lead gets. A fresh conversation's id is
+    /// the one Shika chose (Claude Code), or the one the handshake reports
+    /// (Codex), so it is empty here.
     fn start_lead_chat(
         &self,
         plan: &LeadPlan,
         program: &Path,
         control: &WorkerEnv,
     ) -> Result<crate::lead_transport::ChatTransport> {
+        let cli = crate::lead_transport::chat_cli(&plan.preset.id).ok_or(Error::UnknownCli)?;
         let conversation_id = match plan.conversation {
             Conversation::Fresh { id: Some(id) } | Conversation::Resume { id } => id.clone(),
-            _ => return Err(Error::UnknownCli),
+            Conversation::Fresh { id: None } if crate::lead_transport::reports_identity(cli) => {
+                String::new()
+            }
+            Conversation::Fresh { id: None } => return Err(Error::UnknownCli),
         };
+        let usage = self.cli_home.as_ref().zip(self.usage.get());
         crate::lead_transport::ChatTransport::start(crate::lead_transport::ChatLaunch {
-            cli: "claude",
-            usage: self
-                .cli_home
-                .as_ref()
-                .and_then(|home| self.usage.get()?.register(home, "claude", plan.path)),
+            cli,
+            // Codex indexes app-server threads as `vscode`, which the cwd
+            // source never finds: register the thread once its id is known.
+            usage: usage
+                .filter(|_| cli != "codex")
+                .and_then(|(home, usage)| usage.register(home, cli, plan.path)),
+            usage_threads: usage
+                .filter(|_| cli == "codex")
+                .map(|(home, usage)| usage.codex_threads(home, plan.path)),
             program: program.to_path_buf(),
             cwd: plan.path.to_path_buf(),
             path: session::control_path(&control.bin_dir, plan.env.path()),
@@ -413,6 +437,7 @@ impl Core {
             instructions: plan.instructions.to_string(),
             conversation: conversation_id,
             resumed: matches!(plan.conversation, Conversation::Resume { .. }),
+            instructed: false,
             history: plan
                 .project
                 .lead
@@ -547,7 +572,13 @@ impl Core {
         };
         let project = self.projects.get(&lead.project_id)?;
         let saved = project.lead.ok_or(Error::NoSavedLead)?;
-        if saved.session_id.is_some() {
+        // A chat Lead's id comes from its handshake (`confirm_lead_chat`).
+        let chat = self
+            .chats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(lead_id);
+        if saved.session_id.is_some() || chat {
             return Ok(saved.session_id);
         }
         let Some(home) = self.cli_home.as_ref().filter(|_| saved.cli == "codex") else {

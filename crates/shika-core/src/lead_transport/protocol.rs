@@ -9,21 +9,25 @@ use super::{ChatLaunch, Parsed};
 
 /// How Stop generating reaches the CLI.
 pub(super) enum Interrupt {
-    /// SIGINT to the child's process group; the child exits and the next send
-    /// starts a new one on the same conversation.
+    /// `LeadProtocol::stop_signal` to the child's process group; the child
+    /// exits and the next send starts a new one on the same conversation.
     Signal,
     /// A frame that asks the CLI to end the turn and keep running. The turn
-    /// settles as stopped on the protocol's next `Final` or `Handled`.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// settles as stopped on the protocol's next `Final` or `Handled`, or
+    /// `Lingering`, which ends the process after all. One that has not ended
+    /// 2 seconds later gets the stop signal.
     Frame(Vec<u8>),
+    /// Nothing is running on the CLI's side, for example a send it has not
+    /// been given yet: the turn settles as stopped at once.
+    Idle,
 }
 
 /// How Stop Lead and quit end the child.
 pub(super) enum Shutdown {
-    /// The same SIGINT to the group as `Interrupt::Signal`.
+    /// The same signal to the group as `Interrupt::Signal`.
     Signal,
-    /// Close stdin, which the CLI documents as a request to exit.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Close stdin, which the CLI documents as a request to exit. One still
+    /// running 2 seconds later gets the stop signal.
     CloseStdin,
 }
 
@@ -83,10 +87,18 @@ pub(super) trait LeadProtocol: Send {
     /// Stop generating. Drops any unpublished candidate.
     fn interrupt(&mut self) -> Interrupt;
     fn shutdown(&self) -> Shutdown;
+    /// The signal that ends the process group for `Interrupt::Signal`, or
+    /// when a gentler stop did not end it in time. SIGKILL follows 2 seconds
+    /// later.
+    fn stop_signal(&self) -> i32 {
+        libc::SIGINT
+    }
     /// Decodes one complete line of the CLI's stdout.
     fn parse(&mut self, line: &[u8]) -> Parsed;
-    /// Called about every 25ms while a process runs, so requests can expire
-    /// without a line arriving.
+    /// Called after every line and about every 25ms while a process runs, so
+    /// requests can expire without a line arriving. The actor calls it again
+    /// until it returns `Ignore`, before the next line or command, so a
+    /// protocol can queue the further results one line has.
     fn poll(&mut self, _now: Instant) -> Parsed {
         Parsed::Ignore
     }
@@ -96,6 +108,7 @@ pub(super) trait LeadProtocol: Send {
 pub(super) fn for_cli(cli: &str) -> Option<Box<dyn LeadProtocol>> {
     match cli {
         "claude" => Some(Box::new(super::claude::ClaudeStream::new(String::new()))),
+        "codex" => Some(Box::new(super::codex::CodexAppServer::new())),
         _ => None,
     }
 }
