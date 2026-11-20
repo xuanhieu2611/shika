@@ -1,5 +1,5 @@
-//! The Lead chat actor: the one thread that owns the Claude Code process,
-//! writes its input frames, decodes its output, and persists the turns.
+//! The Lead chat actor: the one thread that owns the CLI process, writes the
+//! frames its protocol builds, acts on what it decodes, and persists the turns.
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
@@ -12,18 +12,18 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
+use super::protocol::{Interrupt, LeadProtocol, Shutdown};
 use super::{
-    BAD_STREAM, ChatEvent, ChatLaunch, ChatStatus, ClaudeStream, CommandIn, INCOMPLETE, MAX_FRAME,
-    Parsed, UNSUPPORTED,
+    ChatEvent, ChatLaunch, ChatStatus, CommandIn, INCOMPLETE, MAX_FRAME, Parsed, UNSUPPORTED,
 };
 use crate::lead_chat_store::{ChatContent, ChatOrigin, ChatResult, ChatStore};
 
 pub(super) struct Process {
     child: Child,
-    stdin: ChildStdin,
-    decoder: ClaudeStream,
+    /// None once closed for a `Shutdown::CloseStdin`.
+    stdin: Option<ChildStdin>,
     reader_done: bool,
     question: Option<String>,
     input_epoch: u64,
@@ -32,12 +32,13 @@ pub(super) struct Process {
 impl Process {
     pub(super) fn spawn(
         launch: &ChatLaunch,
-        resumed: bool,
+        protocol: &mut dyn LeadProtocol,
         generation: u64,
         input: mpsc::SyncSender<CommandIn>,
     ) -> ChatResult<Self> {
+        let strings = protocol.strings();
         let mut cmd = Command::new(&launch.program);
-        cmd.args(launch.args(resumed))
+        cmd.args(protocol.args(launch))
             .current_dir(&launch.cwd)
             .env("PATH", &launch.path)
             .env("PWD", &launch.cwd)
@@ -48,18 +49,14 @@ impl Process {
         for key in crate::worktree::GIT_REDIRECTS
             .into_iter()
             .chain(crate::pty::CONTROL_VARS)
+            .chain(protocol.env_remove().iter().copied())
         {
             cmd.env_remove(key);
         }
-        // A parent Claude session must not disable this Lead's persistence.
-        cmd.env_remove("CLAUDE_CODE_CHILD_SESSION")
-            .env_remove("CLAUDECODE");
         for (k, v) in &launch.env {
             cmd.env(k, v);
         }
-        let mut child = cmd
-            .spawn()
-            .map_err(|_| "Could not start Claude Code".to_string())?;
+        let mut child = cmd.spawn().map_err(|_| strings.start_failed.to_string())?;
         let mut stdin = child.stdin.take().expect("piped stdin");
         let flags = unsafe { libc::fcntl(stdin.as_raw_fd(), libc::F_GETFL) };
         if flags < 0
@@ -70,10 +67,17 @@ impl Process {
                 libc::kill(-(child.id() as i32), libc::SIGKILL);
             }
             let _ = child.wait();
-            return Err("Could not open Claude Code input".into());
+            return Err(strings.input_failed.into());
         }
-        if stdin.write_all(b"{\"type\":\"control_request\",\"request_id\":\"shika-initialize\",\"request\":{\"subtype\":\"initialize\"}}\n").and_then(|_|stdin.flush()).is_err() {
-            let _=child.kill();let _=child.wait();return Err("Could not initialize Claude Code".into());
+        let handshake = protocol.handshake(launch);
+        if stdin
+            .write_all(&handshake)
+            .and_then(|_| stdin.flush())
+            .is_err()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(strings.handshake_failed.into());
         }
         let stdout = child.stdout.take().expect("piped stdout");
         let mut stderr = child.stderr.take().expect("piped stderr");
@@ -105,13 +109,18 @@ impl Process {
         });
         Ok(Self {
             child,
-            stdin,
-            decoder: ClaudeStream::new(launch.conversation.clone()),
+            stdin: Some(stdin),
             reader_done: false,
             question: None,
             input_epoch: 0,
             started: Instant::now(),
         })
+    }
+    fn write(&mut self, bytes: &[u8], cancel: &AtomicU64, epoch: u64) -> std::io::Result<()> {
+        match &mut self.stdin {
+            Some(stdin) => write_frame(stdin, bytes, cancel, epoch),
+            None => Err(std::io::ErrorKind::BrokenPipe.into()),
+        }
     }
     fn signal(&mut self, signal: i32) {
         // The child is unreaped here, so its process group cannot be reused.
@@ -172,6 +181,7 @@ pub(super) struct Actor {
     pub(super) cancel_seen: u64,
     pub(super) cancel: Arc<AtomicU64>,
     pub(super) launch: ChatLaunch,
+    pub(super) protocol: Box<dyn LeadProtocol>,
     pub(super) store: ChatStore,
     pub(super) output: mpsc::Sender<ChatEvent>,
     pub(super) frames: mpsc::SyncSender<CommandIn>,
@@ -180,6 +190,11 @@ pub(super) struct Actor {
     pub(super) next_turn: i64,
     pub(super) turn: Option<i64>,
     pub(super) stopping: Option<Instant>,
+    /// The stop in progress is an `Interrupt::Frame`: the process stays, and
+    /// its lines are still read until the turn ends.
+    pub(super) soft_stop: bool,
+    /// The turn's frame was written; the CLI has not acknowledged it yet.
+    pub(super) unacknowledged: bool,
     pub(super) exiting: bool,
     pub(super) save_failed: bool,
     pub(super) pending: Vec<(i64, ChatContent)>,
@@ -241,6 +256,7 @@ impl Actor {
     }
     fn complete(&mut self, text: Option<String>, error: Option<&str>) {
         let input = self.active_input.take();
+        self.unacknowledged = false;
         if let Some(turn) = self.turn.take() {
             let mut records = Vec::new();
             if let Some(text) = text {
@@ -268,15 +284,48 @@ impl Actor {
         }
     }
     fn interrupt(&mut self) {
-        if self.stopping.is_none() {
-            if let Some(child) = &mut self.child {
-                child.decoder.candidate = None;
-                child.signal(libc::SIGINT);
-                self.stopping = Some(Instant::now());
-                self.emit(ChatEvent::Stopping);
-            } else {
-                self.settle(Some("Reply stopped"));
+        self.stop_turn(false);
+    }
+    /// Stops the turn the protocol's way, or with SIGINT to the group when
+    /// `hard` or the frame cannot be written. A hard stop also ends a soft
+    /// stop in progress.
+    fn stop_turn(&mut self, hard: bool) {
+        if self.stopping.is_some() && !(hard && self.soft_stop) {
+            return;
+        }
+        let Some(child) = &mut self.child else {
+            self.settle(Some("Reply stopped"));
+            return;
+        };
+        let soft = match self.protocol.interrupt() {
+            Interrupt::Frame(bytes) if !hard => {
+                let epoch = self.cancel.load(Ordering::Acquire);
+                child.write(&bytes, &self.cancel, epoch).is_ok()
             }
+            _ => false,
+        };
+        if !soft {
+            child.signal(libc::SIGINT);
+        }
+        self.soft_stop = soft;
+        if self.stopping.is_none() {
+            self.stopping = Some(Instant::now());
+            self.emit(ChatEvent::Stopping);
+        }
+    }
+    /// A soft stop ended with the turn: settle it as stopped and keep the
+    /// process, unless the transport already failed and must exit.
+    fn finish_soft_stop(&mut self) {
+        if self.failed {
+            self.stop_turn(true);
+            return;
+        }
+        self.soft_stop = false;
+        self.stopping = None;
+        if self.turn.is_some() {
+            self.settle(Some("Reply stopped"));
+        } else {
+            self.emit(ChatEvent::Status(ChatStatus::Ready));
         }
     }
     pub(super) fn run(mut self, rx: mpsc::Receiver<CommandIn>, frames: mpsc::Receiver<CommandIn>) {
@@ -286,6 +335,7 @@ impl Actor {
                 break;
             }
             self.fail_slow_initialize();
+            self.poll_protocol();
             let input = match rx.try_recv() {
                 Ok(command) => Ok(command),
                 Err(mpsc::TryRecvError::Empty) => frames.recv_timeout(Duration::from_millis(25)),
@@ -316,20 +366,49 @@ impl Actor {
     /// child left to wait for.
     fn begin_exit(&mut self) -> bool {
         self.exiting = true;
-        self.interrupt();
+        match self.protocol.shutdown() {
+            Shutdown::Signal => self.stop_turn(true),
+            Shutdown::CloseStdin => self.close_input(),
+        }
         self.child.is_none()
     }
-    /// A CLI that has not answered initialize within 10 seconds is unreadable.
+    /// Closes stdin for a CLI that exits on EOF. Its lines are no longer read;
+    /// the usual slow-stop deadline kills it if it lingers.
+    fn close_input(&mut self) {
+        let Some(child) = &mut self.child else {
+            if self.stopping.is_none() {
+                self.settle(Some("Reply stopped"));
+            }
+            return;
+        };
+        child.stdin = None;
+        self.soft_stop = false;
+        if self.stopping.is_none() {
+            self.stopping = Some(Instant::now());
+            self.emit(ChatEvent::Stopping);
+        }
+    }
+    /// A CLI whose handshake has not finished within 10 seconds is unreadable.
     fn fail_slow_initialize(&mut self) {
         if self.stopping.is_none()
-            && self.child.as_ref().is_some_and(|child| {
-                !child.decoder.initialized && child.started.elapsed() >= Duration::from_secs(10)
-            })
+            && !self.protocol.ready()
+            && self
+                .child
+                .as_ref()
+                .is_some_and(|child| child.started.elapsed() >= Duration::from_secs(10))
         {
+            let unreadable = self.protocol.strings().unreadable;
             self.failed = true;
-            self.settle(Some(BAD_STREAM));
-            self.emit(ChatEvent::Error(BAD_STREAM.into()));
+            self.settle(Some(unreadable));
+            self.emit(ChatEvent::Error(unreadable.into()));
             self.interrupt();
+        }
+    }
+    /// Lets the protocol expire requests while no line arrives.
+    fn poll_protocol(&mut self) {
+        if self.child.is_some() && (self.stopping.is_none() || self.soft_stop) {
+            let parsed = self.protocol.poll(Instant::now());
+            self.act(parsed);
         }
     }
     /// One command from the handle or one frame from the CLI's reader.
@@ -364,14 +443,15 @@ impl Actor {
                 self.emit(ChatEvent::DeliveryFailed);
             }
             Ok(CommandIn::Line(generation, line))
-                if generation == self.generation && self.stopping.is_none() =>
+                if generation == self.generation && (self.stopping.is_none() || self.soft_stop) =>
             {
                 self.read_line(&line);
             }
             Ok(CommandIn::BadFrame(generation)) if generation == self.generation => {
+                let unreadable = self.protocol.strings().unreadable;
                 self.failed = true;
-                self.settle(Some(BAD_STREAM));
-                self.emit(ChatEvent::Error(BAD_STREAM.into()));
+                self.settle(Some(unreadable));
+                self.emit(ChatEvent::Error(unreadable.into()));
                 self.interrupt();
             }
             Ok(CommandIn::Eof(generation)) if generation == self.generation => {
@@ -389,14 +469,9 @@ impl Actor {
         if let Some(child) = &mut self.child
             && child.question.as_ref() == Some(&request_id)
         {
-            let response = if let Some(input) = answer {
-                json!({"behavior":"allow","updatedInput":input})
-            } else {
-                json!({"behavior":"deny","message":"The author cancelled this question."})
-            };
-            let mut bytes=serde_json::to_vec(&json!({"type":"control_response","response":{"subtype":"success","request_id":request_id,"response":response}})).expect("JSON value");
-            bytes.push(b'\n');
-            if write_frame(&mut child.stdin, &bytes, &self.cancel, child.input_epoch).is_err() {
+            let bytes = self.protocol.answer(&request_id, answer);
+            let epoch = child.input_epoch;
+            if child.write(&bytes, &self.cancel, epoch).is_err() {
                 self.settle(Some(
                     "The answer could not be delivered. Work may already have started.",
                 ));
@@ -445,25 +520,36 @@ impl Actor {
             return Flow::NextRound;
         }
         let child = self.child.as_mut().expect("started child");
-        child.decoder.begin();
+        let bytes = self.protocol.send(&text);
         child.input_epoch = epoch;
-        let mut bytes =
-            serde_json::to_vec(&json!({"type":"user", "message":{"role":"user", "content":text}}))
-                .expect("JSON value");
-        bytes.push(b'\n');
-        if write_frame(&mut child.stdin, &bytes, &self.cancel, epoch).is_err() {
+        if child.write(&bytes, &self.cancel, epoch).is_err() {
             if self.cancel.load(Ordering::Acquire) != epoch {
                 self.interrupt();
                 return Flow::NextRound;
             }
             self.settle(Some("Delivery unknown. Work may already have started. Send again only when you are ready to retry."));
             self.interrupt();
+        } else if self.protocol.write_accepts() {
+            self.accept(turn);
         } else {
-            self.persist(turn, ChatContent::Accepted);
-            self.emit(ChatEvent::Accepted);
-            self.emit(ChatEvent::Status(ChatStatus::Working));
+            self.unacknowledged = true;
         }
         Flow::Continue
+    }
+    /// The CLI has the turn.
+    fn accept(&mut self, turn: i64) {
+        self.persist(turn, ChatContent::Accepted);
+        self.emit(ChatEvent::Accepted);
+        self.emit(ChatEvent::Status(ChatStatus::Working));
+    }
+    /// The acknowledgement a written turn waits for. A turn that finishes
+    /// first was plainly accepted too.
+    fn acknowledge(&mut self) {
+        if std::mem::take(&mut self.unacknowledged)
+            && let Some(turn) = self.turn
+        {
+            self.accept(turn);
+        }
     }
     /// Starts a new CLI process for a send after the last one exited. False,
     /// with the turn settled, when it could not start.
@@ -474,13 +560,13 @@ impl Actor {
         }
         match Process::spawn(
             &self.launch,
-            self.launch.resumed,
+            self.protocol.as_mut(),
             self.generation,
             self.frames.clone(),
         ) {
             Ok(child) => self.child = Some(child),
             Err(_) => {
-                self.settle(Some("Could not start Claude Code. Try sending again."));
+                self.settle(Some(self.protocol.strings().restart_failed));
                 return false;
             }
         }
@@ -488,18 +574,41 @@ impl Actor {
     }
     /// Decodes one line of the current process's output and acts on it.
     fn read_line(&mut self, line: &[u8]) {
-        let parsed = self
-            .child
-            .as_mut()
-            .map(|c| c.decoder.parse(line))
-            .unwrap_or(Parsed::Ignore);
+        let parsed = if self.child.is_some() {
+            self.protocol.parse(line)
+        } else {
+            Parsed::Ignore
+        };
+        self.act(parsed);
+    }
+    /// Acts on one decoded line or poll result.
+    fn act(&mut self, parsed: Parsed) {
+        if self.soft_stop {
+            // Nothing from a turn being stopped reaches the author; its end
+            // settles the stop.
+            match parsed {
+                Parsed::Final(_) | Parsed::Handled => return self.finish_soft_stop(),
+                Parsed::Started | Parsed::Question(_) | Parsed::Blocked | Parsed::Cancelled(_) => {
+                    return;
+                }
+                _ => {}
+            }
+        }
         match parsed {
             Parsed::Started if self.turn.is_none() => self.start_cli_turn(),
-            Parsed::Confirmed | Parsed::Started => {
-                self.launch.resumed = true;
-                self.emit(ChatEvent::Confirmed(self.launch.conversation.clone()))
+            Parsed::Confirmed | Parsed::Started => self.confirm(),
+            Parsed::Identity(id) => self.identity(id),
+            Parsed::Reply(bytes) => self.reply(&bytes),
+            Parsed::Accepted => self.acknowledge(),
+            Parsed::Handled if self.turn.is_some() => {
+                self.acknowledge();
+                self.complete(None, None);
             }
-            Parsed::Final(text) => self.complete(text, None),
+            Parsed::Handled => {}
+            Parsed::Final(text) => {
+                self.acknowledge();
+                self.complete(text, None);
+            }
             Parsed::Blocked => {
                 self.emit(ChatEvent::Status(ChatStatus::Asking));
                 self.emit(ChatEvent::Error(UNSUPPORTED.into()));
@@ -520,9 +629,52 @@ impl Actor {
     }
     /// A turn the CLI started itself while idle, such as after one of the
     /// Lead's background commands finished.
-    fn start_cli_turn(&mut self) {
+    fn confirm(&mut self) {
         self.launch.resumed = true;
         self.emit(ChatEvent::Confirmed(self.launch.conversation.clone()));
+    }
+    /// The id a CLI reported. The first one binds the history to it; any
+    /// other id fails like an unexpected conversation.
+    fn identity(&mut self, id: String) {
+        if self.launch.conversation.is_empty() {
+            match self.store.bind(self.protocol.cli(), &id) {
+                Ok(boundary) => {
+                    if let Some(boundary) = boundary {
+                        self.emit(ChatEvent::Record(boundary));
+                    }
+                }
+                Err(error) => {
+                    self.failed = true;
+                    self.settle(Some(&error));
+                    self.emit(ChatEvent::Error(error));
+                    self.interrupt();
+                    return;
+                }
+            }
+            self.launch.conversation = id;
+        } else if self.launch.conversation != id {
+            self.fail_turn(self.protocol.strings().other_conversation);
+            return;
+        }
+        self.confirm();
+    }
+    /// Writes a frame the protocol owes the CLI without the author. A failed
+    /// write ends the turn like a reply cut short; a Stop already moving the
+    /// cancel epoch handles it instead.
+    fn reply(&mut self, bytes: &[u8]) {
+        let Some(child) = &mut self.child else {
+            return;
+        };
+        let epoch = self.cancel.load(Ordering::Acquire);
+        if child.write(bytes, &self.cancel, epoch).is_err()
+            && self.cancel.load(Ordering::Acquire) == epoch
+        {
+            self.settle(Some(INCOMPLETE));
+            self.interrupt();
+        }
+    }
+    fn start_cli_turn(&mut self) {
+        self.confirm();
         // No Outgoing row: Accepted alone marks a turn the
         // CLI took without Shika input, so recovery and
         // numbering treat it like any other accepted turn.
@@ -537,12 +689,12 @@ impl Actor {
     }
     /// A decoding or reply failure settles the turn and interrupts the CLI.
     fn fail_turn(&mut self, error: &'static str) {
-        self.failed =
-            error == BAD_STREAM || error == "Claude Code returned a different conversation";
-        let display = if error == BAD_STREAM {
+        let strings = self.protocol.strings();
+        self.failed = error == strings.unreadable || error == strings.other_conversation;
+        let display = if error == strings.unreadable {
             self.child
                 .as_ref()
-                .and_then(|c| c.decoder.version.as_ref())
+                .and(self.protocol.version())
                 .map(|version| format!("{error} ({version})"))
                 .unwrap_or_else(|| error.into())
         } else {
@@ -578,6 +730,7 @@ impl Actor {
             // children have a bounded fallback when descendants hold a pipe.
             let stopped = self.stopping.take().is_some();
             self.child = None;
+            self.soft_stop = false;
             if !stopped && self.turn.is_none() {
                 self.persist(
                     0,
@@ -604,3 +757,7 @@ impl Actor {
         false
     }
 }
+
+#[cfg(test)]
+#[path = "actor_tests.rs"]
+mod tests;

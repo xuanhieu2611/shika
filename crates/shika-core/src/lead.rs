@@ -401,6 +401,7 @@ impl Core {
             _ => return Err(Error::UnknownCli),
         };
         crate::lead_transport::ChatTransport::start(crate::lead_transport::ChatLaunch {
+            cli: "claude",
             usage: self
                 .cli_home
                 .as_ref()
