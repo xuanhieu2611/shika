@@ -17,7 +17,7 @@ mod view;
 
 pub use catalog::{Theme, ThemeUi};
 pub use io::PtyWriter;
-pub use terminal::{Notices, PtyHost, Terminal, TerminalOptions};
+pub use terminal::{LiveScreen, Notices, PtyHost, Terminal, TerminalOptions};
 pub use theme::Palette;
 pub use types::*;
 pub use view::{

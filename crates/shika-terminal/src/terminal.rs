@@ -4,7 +4,7 @@
 //! read or copying one screen.
 
 use std::io::{self, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -64,6 +64,12 @@ impl Notices {
     }
 }
 
+/// Activity input, independent of the painted viewport.
+pub struct LiveScreen {
+    pub lines: Vec<String>,
+    pub title: Option<String>,
+}
+
 type Waker = Arc<dyn Fn() + Send + Sync>;
 
 struct Shared {
@@ -71,6 +77,8 @@ struct Shared {
     host: Box<dyn PtyHost>,
     /// The grid changed since the view last took a snapshot.
     dirty: AtomicBool,
+    /// Published under the engine lock, independently of paint damage.
+    live_revision: AtomicU64,
     /// Notices are waiting for the UI thread.
     notice_pending: AtomicBool,
     /// A synchronized update is open and the UI has been told to watch its
@@ -100,6 +108,7 @@ impl Terminal {
                 engine: parking_lot::Mutex::new(engine),
                 host: Box::new(host),
                 dirty: AtomicBool::new(true),
+                live_revision: AtomicU64::new(0),
                 notice_pending: AtomicBool::new(false),
                 sync_pending: AtomicBool::new(false),
                 notices: Mutex::new(Notices::default()),
@@ -119,6 +128,12 @@ impl Terminal {
         let changed = engine.advance(bytes);
         let output = engine.take_output();
         let syncing = engine.sync_deadline().is_some();
+        if let Some(title) = &output.title {
+            *lock(&self.shared.title) = title.clone();
+        }
+        if changed || output.title.is_some() {
+            self.shared.live_revision.fetch_add(1, Ordering::Release);
+        }
         // Hand the lock straight to a waiting UI thread so a flood cannot
         // starve the next snapshot.
         MutexGuard::unlock_fair(engine);
@@ -132,7 +147,6 @@ impl Terminal {
             {
                 let mut notices = lock(&self.shared.notices);
                 if let Some(title) = output.title {
-                    *lock(&self.shared.title) = title.clone();
                     notices.title = Some(title);
                 }
                 notices.bell |= output.bell;
@@ -202,6 +216,9 @@ impl Terminal {
         }
         let grid_changed = !engine.size().same_grid(&size);
         engine.resize(size);
+        if grid_changed {
+            self.shared.live_revision.fetch_add(1, Ordering::Release);
+        }
         drop(engine);
         self.shared.dirty.store(true, Ordering::Release);
         if grid_changed {
@@ -229,6 +246,21 @@ impl Terminal {
     /// Does not change the viewport, selection, cursor, dirty state, or wakeups.
     pub fn live_text_lines(&self) -> Vec<String> {
         self.shared.engine.lock().live_text_lines()
+    }
+
+    /// Copy live text and title on the first sample and after possible changes.
+    /// The caller starts with `None` and must reset it when changing terminals.
+    /// An unchanged sample does not acquire the engine lock or affect painting.
+    pub fn sample_live_screen(&self, revision: &mut Option<u64>) -> Option<LiveScreen> {
+        if *revision == Some(self.shared.live_revision.load(Ordering::Acquire)) {
+            return None;
+        }
+        let engine = self.shared.engine.lock();
+        *revision = Some(self.shared.live_revision.load(Ordering::Relaxed));
+        Some(LiveScreen {
+            lines: engine.live_text_lines(),
+            title: self.title(),
+        })
     }
 
     /// The live screen with up to `history` lines of scrollback above it, one
@@ -309,6 +341,7 @@ impl Terminal {
     pub(crate) fn flush_expired_sync(&self) -> Option<Instant> {
         let mut engine = self.shared.engine.lock();
         if engine.flush_sync_if_expired(Instant::now()) {
+            self.shared.live_revision.fetch_add(1, Ordering::Release);
             drop(engine);
             self.shared.sync_pending.store(false, Ordering::Release);
             self.shared.dirty.store(true, Ordering::Release);
@@ -432,6 +465,49 @@ mod tests {
         term.feed(b"?");
         assert_eq!(wakes.load(Ordering::SeqCst), count + 1);
         assert!(term.take_dirty());
+    }
+
+    #[test]
+    fn live_sample_revision_is_independent_of_paint_and_tracks_title_and_resize() {
+        let (term, _) = terminal();
+        let mut revision = None;
+        assert_eq!(
+            term.sample_live_screen(&mut revision).unwrap().lines.len(),
+            5
+        );
+        assert!(term.sample_live_screen(&mut revision).is_none());
+        term.feed(b"visible\x1b]2;test title\x07");
+        assert!(term.take_dirty());
+        let screen = term.sample_live_screen(&mut revision).unwrap();
+        assert_eq!(screen.lines[0], "visible");
+        assert_eq!(screen.title.as_deref(), Some("test title"));
+        term.scroll(1);
+        assert!(term.sample_live_screen(&mut revision).is_none());
+        term.feed(b"\x1b]2;new title\x07");
+        let screen = term.sample_live_screen(&mut revision).unwrap();
+        assert_eq!(screen.title.as_deref(), Some("new title"));
+        assert_eq!(screen.lines[0], "visible");
+        term.resize(TerminalSize::new(6, 20));
+        assert_eq!(
+            term.sample_live_screen(&mut revision).unwrap().lines.len(),
+            6
+        );
+        assert!(term.sample_live_screen(&mut revision).is_none());
+    }
+
+    #[test]
+    fn live_sample_sees_synchronized_output_only_when_applied() {
+        let (term, _) = terminal();
+        let mut revision = None;
+        term.feed(b"\x1b[?2026h");
+        term.sample_live_screen(&mut revision).unwrap();
+        term.feed(b"buffered");
+        assert!(term.sample_live_screen(&mut revision).is_none());
+        term.feed(b"\x1b[?2026l");
+        assert_eq!(
+            term.sample_live_screen(&mut revision).unwrap().lines[0],
+            "buffered"
+        );
     }
 
     #[test]

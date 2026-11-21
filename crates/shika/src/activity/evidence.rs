@@ -50,12 +50,27 @@ impl OutputEvidence {
         // geometry changes. A future/old timestamp cannot retroactively credit
         // an already observed screen change.
         self.transcript = Some(signature);
+        self.record_output(changed, output, interaction, now)
+    }
+
+    /// An unchanged screen cannot credit bytes as meaningful, but a new
+    /// arrival still advances the watermark exactly as a repeated scan would.
+    pub fn observe_unchanged(&mut self, output: Option<Instant>, now: Instant) -> Option<Instant> {
+        self.record_output(false, output, None, now)
+    }
+
+    fn record_output(
+        &mut self,
+        changed: bool,
+        output: Option<Instant>,
+        interaction: Option<Instant>,
+        now: Instant,
+    ) -> Option<Instant> {
         if let Some(output) = output
             .filter(|t| *t <= now && self.observed_output.is_none_or(|previous| *t > previous))
         {
             self.observed_output = Some(output);
-            let geometry_echo = !is_agent_output(interaction.filter(|t| *t <= now), output);
-            if changed && !geometry_echo {
+            if changed && is_agent_output(interaction.filter(|t| *t <= now), output) {
                 self.meaningful_output = Some(output);
             }
         }

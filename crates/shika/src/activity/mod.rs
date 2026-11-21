@@ -11,6 +11,9 @@ mod detect;
 mod evidence;
 mod turn;
 
+use shika_terminal::Terminal;
+
+#[cfg(test)]
 pub use detect::detect;
 pub use evidence::OutputEvidence;
 pub use turn::{Activity, Transition};
@@ -21,6 +24,37 @@ pub enum Signal {
     Idle,
     Working,
     Blocked,
+}
+
+/// Cached classification of one agent pane, not of a card position or turn.
+pub(crate) struct ScreenWatch {
+    revision: Option<u64>,
+    signal: Signal,
+}
+
+impl Default for ScreenWatch {
+    fn default() -> Self {
+        Self {
+            revision: None,
+            signal: Signal::Unknown,
+        }
+    }
+}
+
+impl ScreenWatch {
+    pub(crate) fn sample(
+        &mut self,
+        terminal: &Terminal,
+        preset: &str,
+    ) -> (Signal, Option<Vec<String>>) {
+        let lines = terminal
+            .sample_live_screen(&mut self.revision)
+            .map(|screen| {
+                self.signal = detect::detect(preset, &screen.lines, screen.title.as_deref());
+                screen.lines
+            });
+        (self.signal, lines)
+    }
 }
 
 #[cfg(test)]

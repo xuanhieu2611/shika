@@ -366,6 +366,12 @@ Automated validation: workspace tests (including `column` settings defaults, cla
 - [ ] A small window clamps the column so the terminal keeps 420px; growing the window brings the saved width back. Quit and relaunch keeps width and hidden state.
 - [ ] Light and dark, opaque and translucent, and full screen (button at the 18px inset with no traffic lights).
 
+## Activity sampling with many open agents
+
+The synthetic `benchmark_unchanged_agent_screens` compares the old unconditional text copy, detector, and signature pass with cached sampling on 12 unchanged 40-row, 120-column panes. Run `cargo test -p shika benchmark_unchanged_agent_screens -- --ignored --nocapture`. In one Apple silicon debug run, 500 passes took 2.51s rescanning versus 0.14ms reusing the samples. This measures just the inspection loop, not the full app tick, CPU while streaming, or key-to-display latency. Regression tests check title and resize invalidation, synchronized output, and that unchanged samples still allow idle confirmation and consume output watermarks.
+
+- [ ] In optimized builds, compare idle CPU and occasional typing stalls with several open agents, then repeat with multiple panes streaming. Verify hidden agents still show status and notify on completion or a recognized blocker.
+
 ## Sidebar cost during terminal typing
 
 A GPUI regression test with disposable app data and a terminal pane verifies that a terminal-only invalidation repaints the terminal without rebuilding the sidebar. Notifying Shika still rebuilds the sidebar. This tests redraw isolation, not macOS input-to-display latency.

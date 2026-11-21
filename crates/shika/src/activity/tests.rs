@@ -15,6 +15,133 @@ fn at(start: Instant, ms: u64) -> Instant {
     start + Duration::from_millis(ms)
 }
 
+struct SilentPty;
+
+impl shika_terminal::PtyHost for SilentPty {
+    fn write(&self, _: &[u8], _: shika_terminal::InputSource) {}
+    fn resize(&self, _: shika_terminal::TerminalSize) {}
+}
+
+#[test]
+fn cached_screen_matches_repeated_scans_through_idle_confirmation_and_title_changes() {
+    let terminal = Terminal::new(shika_terminal::TerminalOptions::default(), SilentPty);
+    let mut watch = ScreenWatch::default();
+    let mut cached = OutputEvidence::default();
+    let mut rescanned = OutputEvidence::default();
+    let start = Instant::now();
+    let mut activity = Activity::new(start);
+    let mut last_output = None;
+    for (ms, bytes, expect_copy) in [
+        (0, "", true),
+        (100, "\x1b]2;Action Required\x07", true),
+        (200, "", false),
+        (
+            300,
+            "\x1b]2;Codex\x07\r\n› Type a message\r\n  ? for shortcuts",
+            true,
+        ),
+        (500, "", false),
+        (900, "", false),
+    ] {
+        let now = at(start, ms);
+        if !bytes.is_empty() {
+            terminal.feed(bytes.as_bytes());
+            last_output = Some(now);
+        }
+        let (signal, lines) = watch.sample(&terminal, "codex");
+        assert_eq!(lines.is_some(), expect_copy);
+        let reference_lines = terminal.live_text_lines();
+        assert_eq!(
+            signal,
+            detect("codex", &reference_lines, terminal.title().as_deref())
+        );
+        let output = match lines.as_deref() {
+            Some(lines) => cached.observe("codex", lines, last_output, None, now),
+            None => cached.observe_unchanged(last_output, now),
+        };
+        assert_eq!(
+            output,
+            rescanned.observe("codex", &reference_lines, last_output, None, now)
+        );
+        activity.advance(signal, None, output, now, false);
+        if matches!(ms, 100 | 200) {
+            assert_eq!(activity.status, Status::Asking);
+        }
+    }
+    assert_eq!(activity.status, Status::Ready);
+}
+
+#[test]
+fn unchanged_screen_still_consumes_output_watermark() {
+    let start = Instant::now();
+    let mut evidence = OutputEvidence::default();
+    evidence.observe("codex", &["baseline".into()], None, None, start);
+    assert_eq!(evidence.observe_unchanged(Some(start), start), None);
+    assert_eq!(
+        evidence.observe(
+            "codex",
+            &["new text".into()],
+            Some(start),
+            None,
+            at(start, 100)
+        ),
+        None
+    );
+}
+
+#[test]
+#[ignore = "synthetic activity sampling benchmark"]
+fn benchmark_unchanged_agent_screens() {
+    use shika_terminal::{TerminalOptions, TerminalSize};
+    use std::hint::black_box;
+
+    let mut panes = (0..12)
+        .map(|_| {
+            let terminal = Terminal::new(
+                TerminalOptions {
+                    size: TerminalSize::new(40, 120),
+                    ..Default::default()
+                },
+                SilentPty,
+            );
+            terminal.feed(
+                "A sample terminal transcript row. "
+                    .repeat(3)
+                    .repeat(40)
+                    .as_bytes(),
+            );
+            let mut watch = ScreenWatch::default();
+            let (_, lines) = watch.sample(&terminal, "codex");
+            let mut evidence = OutputEvidence::default();
+            evidence.observe("codex", &lines.unwrap(), None, None, Instant::now());
+            (terminal, watch, evidence)
+        })
+        .collect::<Vec<_>>();
+    let now = Instant::now();
+    let started = Instant::now();
+    for _ in 0..500 {
+        for (terminal, _, evidence) in &mut panes {
+            let lines = terminal.live_text_lines();
+            black_box(detect("codex", &lines, terminal.title().as_deref()));
+            black_box(evidence.observe("codex", &lines, None, None, now));
+        }
+    }
+    let rescanned = started.elapsed();
+    let started = Instant::now();
+    for _ in 0..500 {
+        for (terminal, watch, evidence) in &mut panes {
+            let (signal, lines) = watch.sample(terminal, "codex");
+            assert!(lines.is_none());
+            black_box(signal);
+            black_box(evidence.observe_unchanged(None, now));
+        }
+    }
+    eprintln!(
+        "12 unchanged 40x120 screens, 500 passes: rescan {rescanned:?}, cached {:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn chat_status_uses_explicit_results_and_retains_the_turn_clock() {
     let now = Instant::now();

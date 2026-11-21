@@ -188,16 +188,13 @@ impl Shika {
             // Sample live terminal chrome, never the user's scrollback. Read
             // the engine before taking HostState so query replies cannot
             // create an inverted lock order.
-            let lines = if !card.creating && card.session.is_some() && card.next_agent.is_none() {
-                card.agent.terminal.live_text_lines()
-            } else {
-                Vec::new()
-            };
-            let screen = activity::detect(
-                &card.launch_preset,
-                &lines,
-                card.agent.terminal.title().as_deref(),
-            );
+            let (screen, lines) =
+                if !card.creating && card.session.is_some() && card.next_agent.is_none() {
+                    card.screen
+                        .sample(&card.agent.terminal, &card.launch_preset)
+                } else {
+                    (activity::Signal::Unknown, None)
+                };
             // The helpers below take the card mutably while the guard holds
             // HostState, so the guard borrows its own handle to the state.
             let host = card.agent.state.clone();
@@ -220,7 +217,8 @@ impl Shika {
             }
             let submission = take_submission(card, &mut state);
             request_pi_lifecycle(card, &mut state, now, &self.core, cx);
-            let transition = advance_card_activity(card, &state, screen, &lines, submission, now);
+            let transition =
+                advance_card_activity(card, &state, screen, lines.as_deref(), submission, now);
             out.changed |= transition.changed;
             note_usage_read(card, &state, transition.ready, &mut out.usage_reads);
             if let Some(session) = &card.session {
@@ -583,7 +581,7 @@ fn advance_card_activity(
     card: &mut Card,
     state: &HostState,
     screen: activity::Signal,
-    lines: &[String],
+    lines: Option<&[String]>,
     submission: Option<Instant>,
     now: Instant,
 ) -> activity::Transition {
@@ -593,13 +591,16 @@ fn advance_card_activity(
     } else {
         lifecycle.unwrap_or(screen)
     };
-    let output = card.evidence.observe(
-        &card.launch_preset,
-        lines,
-        state.last_output,
-        state.last_interaction,
-        now,
-    );
+    let output = match lines {
+        Some(lines) => card.evidence.observe(
+            &card.launch_preset,
+            lines,
+            state.last_output,
+            state.last_interaction,
+            now,
+        ),
+        None => card.evidence.observe_unchanged(state.last_output, now),
+    };
     let transition = if lifecycle.is_some() && screen != activity::Signal::Blocked {
         card.activity
             .advance_authoritative(signal, submission, output, now, state.exited)

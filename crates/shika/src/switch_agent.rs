@@ -316,6 +316,7 @@ impl Shika {
         card.activity = activity;
         card.submitted = submitted;
         card.evidence = activity::OutputEvidence::default();
+        card.screen = activity::ScreenWatch::default();
         card.lifecycle = lifecycle::Lifecycle::default();
         card.lifecycle_checked = None;
         // A draft task watches the new CLI's own title from its first turn.

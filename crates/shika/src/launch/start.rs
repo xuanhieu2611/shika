@@ -211,6 +211,7 @@ fn launch_card(
         since: Instant::now(),
         activity: activity::Activity::new(Instant::now()),
         evidence: activity::OutputEvidence::default(),
+        screen: activity::ScreenWatch::default(),
         lifecycle: lifecycle::Lifecycle::default(),
         lifecycle_checked: None,
         agent: pane,

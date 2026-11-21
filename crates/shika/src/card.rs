@@ -52,6 +52,7 @@ pub(crate) struct Card {
     pub(crate) since: Instant,
     pub(crate) activity: activity::Activity,
     pub(crate) evidence: activity::OutputEvidence,
+    pub(crate) screen: activity::ScreenWatch,
     pub(crate) lifecycle: lifecycle::Lifecycle,
     pub(crate) lifecycle_checked: Option<Instant>,
     /// Unbound host/identity pane for a chat card; never receives a PTY or CLI bytes.

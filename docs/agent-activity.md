@@ -131,7 +131,9 @@ Capture is not a full replica of every provider editor. Local commands, history 
 
 ### Live screen, not scrollback
 
-`Terminal::live_text_lines` reads the current bottom/live viewport directly from the engine, independent of the user's display offset. Sampling does not scroll the terminal, move the cursor, alter selection, clear paint dirty state, or produce extra wakeups. Hidden agent terminals remain alive and drain output.
+`Terminal::sample_live_screen` reads the current bottom/live viewport directly from the engine, independent of the user's display offset. Sampling does not scroll the terminal, move the cursor, alter selection, clear paint dirty state, or produce extra wakeups. Hidden agent terminals remain alive and drain output.
+
+Each pane's `ScreenWatch` reuses its last classification and transcript signature until PTY parsing, a synchronized-update flush, or a grid resize may have changed the live screen. An unchanged tick skips the engine lock and text scan, but still advances the output watermark, consumes submissions and lifecycle reports, and runs the timer and notification logic. A revision is not proof of changed text: a redraw can still trigger a scan and produce identical evidence. Switch agent discards the old pane's cache.
 
 The detector looks for anchored working indicators, framed editors, dialog controls, and explicit title markers. It avoids treating quoted examples, stale spinners above a later response, or draft text as live controls. An agent-owned transcript viewer is not the current prompt state.
 
