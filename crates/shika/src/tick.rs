@@ -48,6 +48,7 @@ impl Shika {
         changed |= self.route_notification_clicks(window, cx);
         changed |= self.mark_seen(now, window, cx);
         changed |= self.expire_toast(now);
+        self.expire_prefix(now, window, cx);
         if changed {
             cx.notify();
         }

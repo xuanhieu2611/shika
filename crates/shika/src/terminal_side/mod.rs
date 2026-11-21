@@ -21,10 +21,15 @@ impl Shika {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let feedback = if self.prefix.armed() {
+            Some(prefix::HINT)
+        } else {
+            self.toast.as_ref().map(|(text, _)| text.as_str())
+        };
         if let Some(chat) = self.chat_side(chrome, window, cx) {
             // The chat stands where the terminal does, and so does the toast:
             // a refused resume's fallback is announced there.
-            let Some((text, _)) = &self.toast else {
+            let Some(text) = feedback else {
                 return chat;
             };
             return div()
@@ -34,7 +39,7 @@ impl Shika {
                 .h_full()
                 .flex()
                 .child(chat)
-                .child(toast(text.clone(), chrome))
+                .child(toast(text.to_string(), chrome))
                 .into_any_element();
         }
         // With the column hidden, this row is the whole title bar: it starts
@@ -78,8 +83,8 @@ impl Shika {
         } else {
             right = right.child(self.empty_terminal(show_column, chrome, cx));
         }
-        if let Some((text, _)) = &self.toast {
-            right = right.child(toast(text.clone(), chrome));
+        if let Some(text) = feedback {
+            right = right.child(toast(text.to_string(), chrome));
         }
         if let Some(card) = &self.update_notice
             && !card.centered()
@@ -133,7 +138,7 @@ impl Shika {
                     .flex()
                     .gap(px(14.))
                     .child(key("j", "select"))
-                    .child(key("\u{2318}N", "new agent")),
+                    .child(key(self.prefix.style().new_agent_key(), "new agent")),
             ),
         };
         div()

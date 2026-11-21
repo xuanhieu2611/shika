@@ -144,6 +144,12 @@ impl Shika {
         self.select_tab(tab, window, cx);
     }
 
+    pub(super) fn close_selected_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(i) = self.selected_card() {
+            self.close_tab(self.cards[i].active_tab, window, cx);
+        }
+    }
+
     pub(super) fn close_tab(&mut self, tab: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.overlay.is_some() || tab == 0 {
             return;

@@ -28,7 +28,7 @@ On the cards (the column has focus):
 | Enter | Focus the selected terminal, or resume a resting Lead |
 | Right-click a card | Rename task or Close task |
 
-From anywhere:
+App shortcuts (shown for the default Native style):
 
 | Keys | Action |
 | --- | --- |
@@ -52,6 +52,18 @@ From anywhere:
 | Cmd+, | Settings |
 
 Settings > Keyboard can change the New Agent in Checkout, Changes panel, and Usage chords, and can point Cmd+1 to Cmd+9 at agents (the Nth card in the column) instead of tabs. Typing in a terminal or text field never runs card keys, and a stray click never moves focus out of the terminal. Confirmation dialogs are yes/no questions: press `y` to confirm and `n` (or Escape) to cancel, as in other Mac apps. Bare Enter never confirms, and a dialog ignores keys for its first 300ms. Contributor details are in [keyboard flow](keyboard-flow.md).
+
+### Shortcut style
+
+Choose **Settings > Keyboard > Shortcut style**. **Native** is the default. **Prefix** replaces Cmd+N and Cmd+W with two-key sequences. Other shortcuts, menus, and mouse controls stay the same. Press and release Ctrl+B, then press the next key:
+
+| Sequence | Action |
+| --- | --- |
+| Ctrl+B, then `n` | Open New agent |
+| Ctrl+B, then `x` | Close the selected shell tab. The pinned tab and task stay open. |
+| Ctrl+B, then Ctrl+B | Send one Ctrl+B to the focused terminal, for a shell binding or a nested tmux session |
+
+Escape cancels a pending prefix. An unrecognized key cancels it and still goes to the focused view. The hint also disappears after two seconds, on a click, or when focus changes. Prefix works on the cards, in the terminal, and in Changes, not in dialogs or text fields. From Lead chat, use Ctrl+Q to go back to the cards first.
 
 ## Supported agents
 

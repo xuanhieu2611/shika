@@ -469,6 +469,16 @@ Implemented with automated coverage for agent-only traversal (headers, wrapping,
 - [ ] The Agent menu lists shortcuts. New and agent/shell tooltips show their Command keys. Check light and dark appearance.
 - [ ] Settings, Keyboard: set Hide or show changes to ⌘R. ⌥⌘B stops opening the panel, and ⌘R opens and closes it from the cards, a terminal, and the panel. The toggle tooltip and the View menu show ⌘R. Set Go to agent 1 to ⌘1. ⌘1 selects the first card in the column and no longer jumps to a tab. With fewer than four cards, ⌘4 does nothing. Escape cancels a recording. ⌘N is refused. Delete clears the row.
 
+## Native and Prefix shortcut styles
+
+Native GUI checks pending. Test with isolated app data and a disposable repository.
+
+- [ ] Native is the default: Cmd+N and Cmd+W work, and Ctrl+B reaches the shell. Select Prefix under Settings > Keyboard > Shortcut style, quit, and verify it stays selected after relaunch. Existing shortcut recording and clearing preserve the style. Switching back to Native restores Cmd+N and Cmd+W immediately.
+- [ ] Ctrl+B shows a hint. Then `n` opens the ordinary New picker from cards, terminal, and Changes; Escape restores opening focus. Plain `n` still types in the terminal. Then `x` closes the selected shell only; when the pinned tab is selected it does nothing. In Prefix, Cmd+N and Cmd+W do nothing, but menu items and mouse controls still work. Check the Projects `+` tooltip, empty terminal hint, active shell close tooltip, and Agent menu show no stale Command keys.
+- [ ] Ctrl+B twice sends exactly one Ctrl+B to the active terminal (for example, moves back one character at a shell prompt). Holding Ctrl+B does not do this. No suffix reaches the PTY for a recognized app action.
+- [ ] Escape cancels without sending Escape to the terminal; the next Escape reaches it. Try an unrecognized letter, Cmd+B, Ctrl+Tab, a click, switching apps, and waiting two seconds: none leaves a pending prefix. Keys still do their normal actions afterwards.
+- [ ] A New prompt, the Lead composer, IME composition in the terminal, and confirmation dialogs retain normal input. Check the hint and the Settings row at minimum window width in light and dark.
+
 ## Optional worktree preparation
 
 Checked the built debug `.app` opened with `open -n`, isolated `--data-dir`, a disposable repository, and native macOS keyboard input. The foreground process was checked before each input. The real Claude CLI was started only after successful setup, at its workspace-trust prompt; no model prompt was sent and no actual dependency installation was performed. Normal app data was not used. Light/dark appearance was restored after screenshots.

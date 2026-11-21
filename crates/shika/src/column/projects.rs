@@ -17,8 +17,13 @@ impl Shika {
                 .on_click(cx.listener(|this, _, window, cx| this.add_project(window, cx))),
             )
             .child(
-                icon_button("new-agent", None, "New agent  \u{2318}N", chrome)
-                    .on_click(cx.listener(|this, _, window, cx| this.picker(window, cx))),
+                icon_button(
+                    "new-agent",
+                    None,
+                    format!("New agent  {}", self.prefix.style().new_agent_key()),
+                    chrome,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.picker(window, cx))),
             )
     }
 

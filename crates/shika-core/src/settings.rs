@@ -660,6 +660,9 @@ pub struct Settings {
     /// Only chords the user changed are written.
     #[serde(default, skip_serializing_if = "KeyOverrides::is_empty")]
     pub keys: KeyOverrides,
+    /// Use Ctrl+B in place of Cmd+N and Cmd+W. Missing means Native.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub prefix_shortcuts: bool,
     /// The background image painted behind the translucent column, and the
     /// terminal when translucency covers it. Missing means none.
     #[serde(
@@ -682,6 +685,7 @@ impl Default for Settings {
             changes: Changes::default(),
             agents: AgentSettings::default(),
             keys: KeyOverrides::default(),
+            prefix_shortcuts: false,
             background: None,
         }
     }

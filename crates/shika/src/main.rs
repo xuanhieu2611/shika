@@ -26,6 +26,7 @@ mod model;
 mod name_input;
 mod notifications;
 mod overlay;
+mod prefix;
 mod project_motion;
 mod projects;
 mod publish;
@@ -207,6 +208,7 @@ struct Shika {
     agents: AgentSettings,
     /// Shortcut overrides. Missing entries keep the built-in chords.
     keys: KeyOverrides,
+    prefix: prefix::Shortcuts,
     /// The agent column's stored width and whether it is hidden.
     column: Column,
     /// The column as it was when the current drag on its edge began. The
@@ -269,6 +271,14 @@ impl Shika {
         };
         let reduce_transparency = appearance::reduce_transparency();
         let appearance_watch = Self::watch_window_appearance(window, cx);
+        let style = if settings.prefix_shortcuts {
+            prefix::Style::Prefix
+        } else {
+            prefix::Style::Native
+        };
+        let prefix = prefix::Shortcuts::new(style, window, cx);
+        cx.observe_window_activation(window, |this, _, cx| this.cancel_prefix(cx))
+            .detach();
         let this = Self {
             core: core.clone(),
             projects,
@@ -319,6 +329,7 @@ impl Shika {
             notification_sound,
             agents,
             keys,
+            prefix,
             column,
             column_drag_from: None,
             bases: HashMap::new(),
@@ -333,7 +344,7 @@ impl Shika {
             project_order_epoch: 0,
         };
         Self::load_catalog_then_tick(core, diagnostics, window, cx);
-        install_keys(cx, &this.keys);
+        this.refresh_keys(cx);
         this
     }
     /// Repaints the terminals in the light or dark theme when macOS switches.
@@ -383,6 +394,10 @@ impl Shika {
         })
         .detach();
     }
+    fn refresh_keys(&self, cx: &mut App) {
+        install_keys(cx, &self.keys, self.prefix.style());
+    }
+
     fn message(&mut self, text: String) {
         self.toast = Some((text, Instant::now()));
     }
@@ -396,7 +411,9 @@ impl Render for Shika {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_saved_lead_chats(window, cx);
         self.sync_window_backdrop(window, cx);
-        self.observe_dialog(Instant::now());
+        let now = Instant::now();
+        self.observe_dialog(now);
+        self.expire_prefix(now, window, cx);
         let cards_focused = self.focus.is_focused(window);
         let chrome = self.chrome(window);
         let backdrop = self.backdrop_layers(&chrome, window, cx);
@@ -584,9 +601,7 @@ impl Shika {
                 cx.listener(|this, _: &NewTerminal, window, cx| this.new_shell(true, window, cx)),
             )
             .on_action(cx.listener(|this, _: &CloseTerminal, window, cx| {
-                if let Some(i) = this.selected_card() {
-                    this.close_tab(this.cards[i].active_tab, window, cx);
-                }
+                this.close_selected_shell(window, cx);
             }))
             .on_action(cx.listener(|this, _: &RenameTask, window, cx| this.rename_task(window, cx)))
             .on_action(cx.listener(|this, _: &CloseTask, window, cx| {
@@ -617,6 +632,7 @@ impl Shika {
                 cx.listener(|this, _: &PreviousAgent, window, cx| this.move_agent(-1, window, cx)),
             )
             .capture_key_down(cx.listener(Self::key))
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| this.cancel_prefix(cx)))
             .on_action(
                 cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
             )
@@ -659,18 +675,16 @@ impl Shika {
 }
 /// Bind the terminal, the fixed app shortcuts, and the user's overrides, then
 /// refresh the menus so they show the chords that are actually bound.
-fn install_keys(cx: &mut App, keys: &KeyOverrides) {
+fn install_keys(cx: &mut App, keys: &KeyOverrides, style: prefix::Style) {
     cx.clear_key_bindings();
     shika_terminal::init(cx);
     let mut bindings = vec![
-        gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
         gpui::KeyBinding::new("cmd-l", NewLead, Some("Shika")),
         gpui::KeyBinding::new("cmd-o", AddProject, Some("Shika")),
         gpui::KeyBinding::new("cmd-shift-b", BaseBranch, Some("Shika")),
         gpui::KeyBinding::new("cmd-t", NewTerminal, Some("Shika")),
         gpui::KeyBinding::new("cmd-shift-p", CreatePr, Some("Shika")),
         gpui::KeyBinding::new("cmd-shift-a", SwitchAgent, Some("Shika")),
-        gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
         gpui::KeyBinding::new("cmd-shift-w", CloseTask, Some("Shika")),
         gpui::KeyBinding::new("cmd-shift-r", RenameTask, Some("Shika")),
         gpui::KeyBinding::new("ctrl-tab", NextTerminal, Some("Shika")),
@@ -683,6 +697,12 @@ fn install_keys(cx: &mut App, keys: &KeyOverrides) {
         gpui::KeyBinding::new("cmd-h", Hide, None),
         gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
     ];
+    if style == prefix::Style::Native {
+        bindings.extend([
+            gpui::KeyBinding::new("cmd-n", NewAgent, Some("Shika")),
+            gpui::KeyBinding::new("cmd-w", CloseTerminal, Some("Shika")),
+        ]);
+    }
     for binding in shortcuts::bindings(keys) {
         let Some(chord) = binding.chord.as_deref() else {
             continue;

@@ -26,17 +26,29 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.marked_text.is_some() {
-            return;
-        }
-        let Some((key, mods)) = key_for(&event.keystroke, self.config.option_as_meta) else {
-            return;
-        };
-        let modes = self.terminal.modes();
-        if let Some(bytes) = input::encode_key(key, mods, &modes) {
-            self.send_input(&bytes, cx);
+        if self.send_keystroke(&event.keystroke, cx) {
             cx.stop_propagation();
         }
+    }
+
+    pub fn is_composing(&self) -> bool {
+        self.marked_text.is_some()
+    }
+
+    /// Send a keystroke reserved by the host app through the same encoder
+    /// as ordinary terminal keys, including the terminal's current modes.
+    pub fn send_keystroke(&mut self, stroke: &Keystroke, cx: &mut Context<Self>) -> bool {
+        if self.is_composing() {
+            return false;
+        }
+        let Some((key, mods)) = key_for(stroke, self.config.option_as_meta) else {
+            return false;
+        };
+        let Some(bytes) = input::encode_key(key, mods, &self.terminal.modes()) else {
+            return false;
+        };
+        self.send_input(&bytes, cx);
+        true
     }
 
     pub(super) fn copy(&mut self, _: &Copy, _window: &mut Window, cx: &mut Context<Self>) {

@@ -65,6 +65,7 @@ impl Shika {
             changes: self.changes.width,
             agents: self.agents.clone(),
             keys: self.keys.clone(),
+            prefix_shortcuts: self.prefix.style() == prefix::Style::Prefix,
             background: self.background.clone(),
         };
         if let Err(e) = self.core.save_settings(&settings) {

@@ -133,7 +133,8 @@ pub struct Binding {
 
 /// Chords Settings must not take. They belong to the rest of the app, to
 /// the terminal's copy and paste, or to text editing: a binding is matched
-/// before a focused text field sees the key.
+/// before a focused text field sees the key. Keep Cmd+N and Cmd+W reserved
+/// in both styles so switching styles cannot invalidate a custom binding.
 const RESERVED: &[(&str, &str)] = &[
     ("cmd-n", "New agent"),
     ("cmd-l", "New Lead"),

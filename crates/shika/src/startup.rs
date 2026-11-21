@@ -151,7 +151,7 @@ pub(crate) fn install_app_handlers(cx: &mut App, core: &Arc<Core>) {
         cx.set_global(updater);
         cx.on_action(|_: &CheckForUpdates, cx| cx.global::<updates::Updater>().check());
     }
-    install_keys(cx, &KeyOverrides::default());
+    install_keys(cx, &KeyOverrides::default(), prefix::Style::Native);
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
             cx.quit();

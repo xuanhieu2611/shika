@@ -76,8 +76,17 @@ impl Shika {
         );
         let labels = tab_labels(card);
         let last = labels.len() - 1;
+        let close_key = self.prefix.style().close_shell_key();
         for (tab, (label, closable)) in labels.into_iter().enumerate() {
-            let body = tab_body(tab, label, closable, active_tab == tab, chrome, cx);
+            let body = tab_body(
+                tab,
+                label,
+                closable,
+                active_tab == tab,
+                close_key,
+                chrome,
+                cx,
+            );
             tabs = tabs.child(tab_wrapper(card, tab, chrome).pb(px(1.)).child(body));
         }
         tabs.child(
@@ -174,6 +183,7 @@ fn tab_body(
     label: String,
     closable: bool,
     active: bool,
+    close_key: &'static str,
     chrome: &Chrome,
     cx: &mut Context<Shika>,
 ) -> gpui::Stateful<gpui::Div> {
@@ -222,7 +232,9 @@ fn tab_body(
                 .child(label),
         )
         .when(closable, |d| {
-            d.child(shell_close_button(tab, group, active, chrome, cx))
+            d.child(shell_close_button(
+                tab, group, active, close_key, chrome, cx,
+            ))
         })
         .on_click(cx.listener(move |this, _, window, cx| this.select_tab(tab, window, cx)))
 }
@@ -232,6 +244,7 @@ fn shell_close_button(
     tab: usize,
     group: SharedString,
     active: bool,
+    close_key: &'static str,
     chrome: &Chrome,
     cx: &mut Context<Shika>,
 ) -> gpui::Stateful<gpui::Div> {
@@ -255,7 +268,11 @@ fn shell_close_button(
             cx.new(|_| KeyTip {
                 bg: tip_bg,
                 fg: tip_fg,
-                text: "Close shell tab (stops its processes)  ⌘W".into(),
+                text: if active {
+                    format!("Close shell tab (stops its processes)  {close_key}").into()
+                } else {
+                    "Close shell tab (stops its processes)".into()
+                },
             })
             .into()
         })

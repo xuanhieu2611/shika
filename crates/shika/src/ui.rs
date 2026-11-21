@@ -276,9 +276,10 @@ pub(super) fn home_dir() -> Option<PathBuf> {
 pub(super) fn icon_button(
     id: &'static str,
     icon: Option<&'static [u8]>,
-    tip: &'static str,
+    tip: impl Into<SharedString>,
     chrome: &Chrome,
 ) -> gpui::Stateful<gpui::Div> {
+    let tip = tip.into();
     let (hover, ink_1, ink_3) = (chrome.hover, chrome.ink_1, chrome.ink_3);
     let (tip_bg, tip_fg) = (chrome.toast_bg, chrome.toast_fg);
     let button = div()
@@ -298,7 +299,7 @@ pub(super) fn icon_button(
             cx.new(|_| KeyTip {
                 bg: tip_bg,
                 fg: tip_fg,
-                text: tip.into(),
+                text: tip.clone(),
             })
             .into()
         });

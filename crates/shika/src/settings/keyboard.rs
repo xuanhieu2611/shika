@@ -2,6 +2,13 @@
 //! the key hints shown in the Settings footer.
 use super::*;
 
+const SHORTCUT_STYLE_ROW: usize = 0;
+const FIRST_SHORTCUT_ROW: usize = 1;
+
+fn command_at_row(row: usize) -> Option<&'static shortcuts::Command> {
+    shortcuts::COMMANDS.get(row.checked_sub(FIRST_SHORTCUT_ROW)?)
+}
+
 impl Shika {
     /// Settings is open and waiting for the next Command shortcut.
     pub(super) fn key_recording(&self) -> bool {
@@ -51,7 +58,7 @@ impl Shika {
     }
 
     fn clear_shortcut(&mut self, row: usize, cx: &mut Context<Self>) {
-        let Some(command) = shortcuts::COMMANDS.get(row) else {
+        let Some(command) = command_at_row(row) else {
             return;
         };
         match shortcuts::assign(&self.keys, command.id, None) {
@@ -59,7 +66,7 @@ impl Shika {
                 self.keys = next;
                 self.set_key_note(None);
                 self.save_settings();
-                install_keys(cx, &self.keys);
+                self.refresh_keys(cx);
                 cx.notify();
             }
             Err(text) => {
@@ -79,10 +86,7 @@ impl Shika {
             self.set_key_note(None);
             return;
         }
-        let Some(command) = self
-            .keyboard_row()
-            .and_then(|row| shortcuts::COMMANDS.get(row))
-        else {
+        let Some(command) = self.keyboard_row().and_then(command_at_row) else {
             self.set_key_recording(false);
             return;
         };
@@ -94,7 +98,7 @@ impl Shika {
                     self.set_key_recording(false);
                     self.set_key_note(None);
                     self.save_settings();
-                    install_keys(cx, &self.keys);
+                    self.refresh_keys(cx);
                 }
                 Err(text) => self.set_key_note(Some(text)),
             },
@@ -120,12 +124,25 @@ impl Shika {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let count = shortcuts::COMMANDS.len();
+        let count = FIRST_SHORTCUT_ROW + shortcuts::COMMANDS.len();
         match key {
-            "j" | "down" | "tab" if count > 0 => {
+            "enter" if row == SHORTCUT_STYLE_ROW => {
+                let style = match self.prefix.style() {
+                    prefix::Style::Native => prefix::Style::Prefix,
+                    prefix::Style::Prefix => prefix::Style::Native,
+                };
+                self.set_shortcut_style(style, window, cx);
+            }
+            "h" | "left" if row == SHORTCUT_STYLE_ROW => {
+                self.set_shortcut_style(prefix::Style::Native, window, cx);
+            }
+            "l" | "right" if row == SHORTCUT_STYLE_ROW => {
+                self.set_shortcut_style(prefix::Style::Prefix, window, cx);
+            }
+            "j" | "down" | "tab" => {
                 self.select_setting((row + 1) % count, window, cx);
             }
-            "k" | "up" if count > 0 => {
+            "k" | "up" => {
                 self.select_setting((row + count - 1) % count, window, cx);
             }
             "enter" => self.begin_key_recording(row, cx),
@@ -142,7 +159,7 @@ impl Shika {
         editing: bool,
     ) -> &'static [(&'static str, &'static str)] {
         match section {
-            SettingsSection::Keyboard => self.keyboard_keys(),
+            SettingsSection::Keyboard => self.keyboard_keys(row),
             SettingsSection::Projects => &[
                 ("j k", "project"),
                 ("↵", "setup"),
@@ -162,9 +179,16 @@ impl Shika {
     }
 
     /// Settings > Keyboard hints: recording takes only Escape.
-    fn keyboard_keys(&self) -> &'static [(&'static str, &'static str)] {
+    fn keyboard_keys(&self, row: usize) -> &'static [(&'static str, &'static str)] {
         if self.key_recording() {
             &[("esc", "cancel")]
+        } else if row == SHORTCUT_STYLE_ROW {
+            &[
+                ("j k", "choose"),
+                ("↵", "toggle"),
+                ("[ ]", "section"),
+                ("esc", "done"),
+            ]
         } else {
             &[
                 ("j k", "choose"),
@@ -259,6 +283,78 @@ impl Shika {
         }
     }
 
+    fn set_shortcut_style(
+        &mut self,
+        style: prefix::Style,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.prefix.style() != style {
+            self.prefix = prefix::Shortcuts::new(style, window, cx);
+            self.refresh_keys(cx);
+            self.save_settings();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn shortcut_style_row(
+        &self,
+        row: usize,
+        chrome: &Chrome,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let style = self.prefix.style();
+        let choice = |id: &'static str, label: &'static str, value| {
+            let chosen = style == value;
+            segment(id, label, chosen, chrome.raised, chrome.ink_1, chrome.ink_3)
+                .when(chosen, |d| {
+                    d.shadow(vec![
+                        BoxShadow::new(px(0.), px(1.), chrome.control_shadow.into())
+                            .blur_radius(px(1.)),
+                    ])
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.select_setting(SHORTCUT_STYLE_ROW, window, cx);
+                    this.set_shortcut_style(value, window, cx);
+                }))
+        };
+        let detail = format!(
+            "{} new agent · {} close shell tab",
+            style.new_agent_key(),
+            style.close_shell_key(),
+        );
+        list_row(row == SHORTCUT_STYLE_ROW, chrome)
+            .justify_between()
+            .gap(px(12.))
+            .child(
+                div().flex().flex_col().child("Shortcut style").child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(chrome.ink_3)
+                        .child(detail),
+                ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(px(7.))
+                    .bg(chrome.sunken)
+                    .child(choice(
+                        "shortcut-style-native",
+                        "Native",
+                        prefix::Style::Native,
+                    ))
+                    .child(choice(
+                        "shortcut-style-prefix",
+                        "Prefix",
+                        prefix::Style::Prefix,
+                    )),
+            )
+    }
+
     /// One shortcut: its name, and the chord or "none". Enter or a click on
     /// the chord records the next Command shortcut.
     pub(crate) fn shortcut_row(
@@ -268,14 +364,8 @@ impl Shika {
         chrome: &Chrome,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let selected = matches!(
-            &self.overlay,
-            Some(Overlay::Settings(SettingsDialog {
-                section: SettingsSection::Keyboard,
-                row,
-                ..
-            })) if *row == index
-        );
+        let index = FIRST_SHORTCUT_ROW + index;
+        let selected = self.keyboard_row() == Some(index);
         let recording = selected && self.key_recording();
         let label = command.label;
         let chord = shortcuts::bound_label(&self.keys, command.id);

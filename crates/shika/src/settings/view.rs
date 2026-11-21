@@ -549,6 +549,7 @@ impl Shika {
             SettingsSection::Agents => rows = self.agent_rows(rows, home, chrome, cx),
             SettingsSection::Projects => rows = self.project_rows(rows, row, home, chrome, cx),
             SettingsSection::Keyboard => {
+                rows = rows.child(self.shortcut_style_row(row, chrome, cx));
                 for (index, command) in shortcuts::COMMANDS.iter().enumerate() {
                     rows = rows.child(self.shortcut_row(index, command, chrome, cx));
                 }

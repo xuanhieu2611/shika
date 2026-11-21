@@ -20,6 +20,7 @@ fn a_missing_file_is_the_opaque_default() {
     assert!(settings.appearance.is_opaque());
     assert_eq!(settings.font_size.points(), 14.0);
     assert!(settings.notification_sound);
+    assert!(!settings.prefix_shortcuts);
 }
 
 #[test]
@@ -47,6 +48,7 @@ fn appearance_round_trips() {
         changes: Changes { width: 610 },
         agents: AgentSettings::default(),
         keys: KeyOverrides::default(),
+        prefix_shortcuts: true,
         background: Some(Background {
             file: "background-1-2-3.png".into(),
             name: "Sky.png".into(),
@@ -68,6 +70,7 @@ fn appearance_round_trips() {
     assert!(text.contains("\"branchPrefix\": \"dev/\""));
     assert!(text.contains("\"fontSize\": 14.5"));
     assert!(text.contains("\"notificationSound\": false"));
+    assert!(text.contains("\"prefixShortcuts\": true"));
     assert!(text.contains("\"column\": {"));
     assert!(text.contains("\"share\": 2500"));
     assert!(text.contains("\"hidden\": true"));
@@ -97,6 +100,7 @@ fn missing_fields_take_defaults_and_values_are_clamped() {
     assert_eq!(settings.branch_prefix, "");
     assert_eq!(settings.font_size.points(), 32.0);
     assert!(settings.notification_sound);
+    assert!(!settings.prefix_shortcuts);
     assert_eq!(settings.column, Column::default());
     assert_eq!(settings.changes, Changes::default());
     assert_eq!(settings.theme, ThemeSettings::default());

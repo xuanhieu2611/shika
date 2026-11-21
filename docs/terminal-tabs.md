@@ -45,7 +45,7 @@ With tools:     Pi   │ Shell × │ Shell 2   +                [Close task c]
 | --- | --- |
 | `+`, Cmd+T | Add and focus a new shell in the selected task |
 | Shell `×` | Close that specific shell, whether selected or not |
-| Cmd+W | Close the selected shell. On the pinned agent it does nothing, and it does not start Close task |
+| Cmd+W (Native) or Ctrl+B, then `x` (Prefix) | Close the selected shell. On the pinned agent it does nothing, and it does not start Close task |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next/previous task-local tab, wrapping; focus the destination |
 | Cmd+1 through Cmd+9 | Jump to that tab and focus it. Cmd+1 is the pinned agent. A missing tab does nothing |
 | Cmd+] / Cmd+[ | Navigate tasks, not tabs; preserve card versus terminal focus |
@@ -53,7 +53,7 @@ With tools:     Pi   │ Shell × │ Shell 2   +                [Close task c]
 | Cmd+Shift+W | Close task, from the cards or a terminal. Existing safe-close flow for the whole task |
 | Enter from cards / Ctrl+Q from terminal | Focus the selected tab / return to cards |
 
-Tab actions are blocked while an overlay is open or the app is busy; adding shells is also blocked while the card is being created/prepared. Ordinary typing and Escape still belong to the terminal program. Command shortcuts, Ctrl+Tab, and Ctrl+Shift+Tab are app actions, not PTY input.
+Tab actions are blocked while an overlay is open or the app is busy; adding shells is also blocked while the card is being created/prepared. Ordinary typing and Escape belong to the terminal program. Command shortcuts, Ctrl+Tab, and Ctrl+Shift+Tab are app actions, not PTY input. In the [Prefix style](keyboard-flow.md#shortcut-styles), Ctrl+B then `x` replaces Cmd+W, and Escape cancels a pending prefix.
 
 The title row stays 48px high. Tabs are connected tabs, not the old segmented control: the active tab takes the terminal's fill, its sides flare into the header's bottom line, and the line breaks under it. `paint_active_tab` draws the tab, its flares, and its outline as one path, in a canvas that extends `TAB_FLARE` past both sides of the active tab's wrapper without affecting layout. The scroll strip starts with a `TAB_LEAD` space and ends with a `TAB_FLARE` space, so the outer flares of the first and last tabs are not clipped; `Card::reveal_active_tab` maps a tab to its strip child, revealing those spaces for the end tabs. An earlier version that overlapped tabs with negative margins lost the whole strip once a second tab opened; keep the flares out of layout. Inactive wrappers draw their own line segment, shortened beside the active tab, because a translucent flare cannot hide a line under it. Hover fills the same shape (`tab_shape`) in the hover wash, above the line rather than through it; `Card::hovered_tab` tracks the tab under the pointer so its canvas can be painted, and the side that meets an active neighbor rounds inward to fit inside that flare. `+` follows the last tab, outside the scrolling strip, so it stays visible when tabs overflow; Close task stays at the right. The project name, branch (its tooltip is the worktree path), Create PR, and focus hint sit in a row beneath, on the terminal background, as part of the active tab's page. Tabs, `+`, and Close occlude title dragging; empty title-row space, including above the tabs, still drags the window.
 

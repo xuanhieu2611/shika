@@ -1,6 +1,6 @@
 # Keyboard flow
 
-How Shika lets users move between tasks without leaving their working context, why the shortcuts use Command, and where to look when focus or navigation goes wrong.
+How Shika lets users move between tasks without leaving their working context, how Native and Prefix shortcut styles differ, and where to look when focus or navigation goes wrong.
 
 Start here for keyboard-related contributions. This document holds the keyboard rules and explains their implementation; [design/DESIGN.md](../design/DESIGN.md) holds the visual and focus specification. For task-local shell ownership, terminal-tab lifecycle, and extension traps, read [terminal-tabs.md](terminal-tabs.md). The Changes panel's own keys and refresh rules are in [changes-panel.md](changes-panel.md). [MANUAL_CHECKS.md](../MANUAL_CHECKS.md#command-keyboard-flow) tracks GUI validation.
 
@@ -90,7 +90,7 @@ The resting Lead's pointer menu is not a confirmation: its one item, Forget Lead
 
 ## Settings sections
 
-Settings (`Cmd-,`) is Appearance, Keyboard, Agents, and Projects. `j`/`k` move within the section. `[` and `]` change section. Appearance keeps its row keys. On Keyboard, Enter or a click on the chord records the next Command shortcut, Delete clears that row, and Escape cancels the recording. A chord already used by another Keyboard row moves to the new row. A chord used by a fixed shortcut, such as New agent, or by text editing, such as Cmd+Left or Cmd+Delete, is refused: a binding is matched before a focused text field sees the key. A saved override with such a chord no longer binds. On Agents, `h` turns the selected CLI off and `l` turns it on. Projects lists repositories by name/path; Enter or a click opens that project's Worktree setup. Escape closes Settings, except inside setup where it returns to Projects.
+Settings (`Cmd-,`) is Appearance, Keyboard, Agents, and Projects. `j`/`k` move within the section. `[` and `]` change section. Appearance keeps its row keys. On Keyboard, the first row selects Shortcut style (Native or Prefix; click, use `h`/`l`, or press Enter to switch). On a shortcut row, Enter or a click on the chord records the next Command shortcut, Delete clears that row, and Escape cancels the recording. A chord already used by another Keyboard row moves to the new row. A chord used by a fixed shortcut, such as New agent, or by text editing, such as Cmd+Left or Cmd+Delete, is refused: a binding is matched before a focused text field sees the key. A saved override with such a chord no longer binds. On Agents, `h` turns the selected CLI off and `l` turns it on. Projects lists repositories by name/path; Enter or a click opens that project's Worktree setup. Escape closes Settings, except inside setup where it returns to Projects.
 
 New lists CLIs that are on the login-shell PATH and turned on, followed by Terminal in both worktree and checkout mode. Number keys match that list and select; Enter starts. Terminal works without an installed agent. A worktree Terminal uses the setup flow; a checkout Terminal starts the shell directly. An empty Lead list opens Settings on Agents and keeps New's focus return. See [Terminal tasks](terminal-tasks.md).
 
@@ -134,19 +134,23 @@ Implementation: `Overlay::CardMenu` in `overlay.rs`; `CardMenu::target_index`, `
 - Close cancellation restores the opening focus and leaves the shown tab alone. It does not open or select a shell.
 - A checkout card stays first in its project; other cards remain sorted by attention within each project. This improvement does not stabilize their order during status changes.
 - One terminal is visible at a time. Hidden views and PTYs stay alive. The Changes panel is a read-only diff beside it, not a second terminal.
-- Keyboard in Settings can rebind New agent in checkout, Hide or show changes, Show or hide usage, and the numbered agent and tab jumps. It does not add a prefix mode, and it does not rebind the other shortcuts. Terminal tabs add no persistence. Core's memory-only Session now records `shell_ptys`; `open_shell` creates a fresh PTY on each call and `close_shell` validates task ownership before stopping one.
+- Keyboard in Settings can rebind New agent in checkout, Hide or show changes, Show or hide usage, and the numbered agent and tab jumps. It does not rebind the other Command shortcuts. Terminal tabs add no persistence. Core's memory-only Session now records `shell_ptys`; `open_shell` creates a fresh PTY on each call and `close_shell` validates task ownership before stopping one.
 
-## Why Command, not a multiplexer prefix
+## Why Command by default
 
 Shika is a terminal workspace inside a native Mac app. Users should be able to keep typing in the CLI while invoking explicit app actions.
 
 Command provides a useful ownership boundary: Shika owns its Command shortcuts; ordinary typing and Control combinations generally belong to the CLI. `Ctrl+Q` leaves the terminal for the cards. `Ctrl+Tab` and `Ctrl+Shift+Tab` cycle this task's tabs, the same cycle other Mac apps use, and are kept out of the PTY. This avoids taking Escape or common shell/TUI keys away from the program.
 
-A multiplexer prefix would add a keyboard mode and an extra step to frequent transitions. It also needs cancellation, conflict handling, and a way to send the prefix itself into the terminal. Being a developer does not imply wanting that trade-off.
+A prefix adds an extra step. It is opt-in for people who already use that pattern, and does not replace mouse controls or macOS conventions such as Copy, Paste, Settings, and Quit.
 
 Dialogs are the one place a plain letter answers: Y and N, behind a grace period (a reversal of the earlier Command-chord rule). See [Accidental typing](#accidental-typing).
 
-The decision is one interaction model with a small, predictable default shortcut set. Settings can replace a few of those Command chords. It does not add a second mode, and a plain key still belongs to the cards or the CLI.
+## Shortcut styles
+
+Settings > Keyboard > Shortcut style offers Native (default) and Prefix. Prefix saves `prefixShortcuts: true` and replaces Cmd+N with Ctrl+B then `n` (New agent), and Cmd+W with Ctrl+B then `x` (close the selected shell tab). Only the chosen shortcuts work, but the action handlers, including the pinned-tab, busy, and overlay guards, are the same. Menus keep the two actions without their Command key equivalents, and hints and tooltips show the selected style. Other bindings, including New Agent in Checkout and Close task, stay unchanged. This is a Shika shortcut style, not a tmux/Herdr keymap or terminal multiplexer.
+
+On the cards, in Changes, or in the selected terminal, the exact Ctrl+B shows a two-second hint without moving focus or sending input. One plain `n` or `x` consumes the prefix and runs its action. Escape consumes and cancels the prefix; an unrecognized key cancels it and dispatches normally. A click, timeout, focus or selection change, window deactivation, or an overlay also cancels. Holding Ctrl+B cannot count as a second press. Press Ctrl+B twice to send one Ctrl+B to a focused terminal through its normal key encoder, respecting terminal modes. In Native, Ctrl+B goes to the terminal immediately. Native input, including the Lead composer and active terminal IME composition, keeps its keys.
 
 ## Implementation map
 
@@ -180,6 +184,7 @@ App symbols below are in `crates/shika/src/main.rs` unless this map names anothe
 | Changes panel | `ToggleChanges`, bound from `shortcuts::bindings` (default `cmd-alt-b`) in the `Shika` context, View menu; `crates/shika/src/changes/`: `Shika::toggle_changes`, `close_changes`, `restore_changes_focus`, `changes_key` on the panel's `Changes` key context, `Panel::focus`, `Panel::return_focus`; `selection.rs`: `move_agent` | Toggle, saved return focus, panel-local scrolling keys (see [changes-panel.md](changes-panel.md#architecture-and-code-map)) |
 | Usage (Settings section) | `ToggleUsage`, bound from `shortcuts::bindings` (default `cmd-shift-u`) in the `Shika` context, View menu "Usage"; `settings/mod.rs`: `Shika::toggle_usage`, `show_settings`, `select_section`, `on_usage_key`; `overlay.rs`: `cancel_overlay` | Opens Settings on Usage with saved return focus; switches an open Settings; inert under another overlay; a second press closes and restores focus |
 | Checkout entry and Stop | `crates/shika/src/checkout.rs`: `new_in_checkout`, `show_checkout`, `start_checkout`; `Overlay::CheckoutClose` in `overlay.rs` with `CheckoutCloseDialog`, `close_key`, `close_answer_key`, `checkout_close_view` in `close.rs`, routed from `dialog_answer_key` in `keys.rs`; `cancel_overlay` in `overlay.rs` | Reuses picker focus restoration; an existing card focuses its shown terminal. Active/blocked Stop asks Yes/No (`y`/`n`) behind the 300ms guard; No or Escape restores opening focus and leaves the shown tab alone |
+| Shortcut style | `prefix.rs`, `keys.rs`, `settings/keyboard.rs`, `install_keys` | Only Native installs Cmd+N and Cmd+W. Root capture handles the two Prefix sequences on workspace surfaces; an interceptor clears the prefix before a different key can take a direct binding. Both styles and the menus use the same New and Close shell paths. |
 | Custom shortcuts | `crates/shika/src/shortcuts.rs`: `COMMANDS`, `bindings`, `assign`; `install_keys` in `main.rs`; `KeyOverrides` in `settings.json` | The Keyboard rows, conflict handling, and the chords actually bound |
 
 ### Agent navigation

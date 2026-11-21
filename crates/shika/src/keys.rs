@@ -119,7 +119,8 @@ impl Shika {
     }
 
     /// The root key router. Each phase takes the keystroke or passes it on,
-    /// in this fixed order: Cmd+Q, the dialogs that take every keystroke,
+    /// in this fixed order: Cmd+Q, workspace prefix shortcuts (only outside
+    /// overlays), the dialogs that take every keystroke,
     /// Ctrl+Q out of a terminal, Settings prefix typing, Publish and Base
     /// branch, shortcut recording, yes/no answers, then a plain key for the
     /// open overlay or the cards.
@@ -133,7 +134,7 @@ impl Shika {
         if self.quit_chord_key(stroke, window, cx) {
             return;
         }
-        if self.typing_dialog_key(event, window, cx) {
+        if self.prefix_input(event, window, cx) || self.typing_dialog_key(event, window, cx) {
             return;
         }
         if self.leave_terminal_key(stroke, window, cx) {
