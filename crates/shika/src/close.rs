@@ -348,7 +348,7 @@ impl Shika {
         dialog(chrome, max_h)
             .child(dialog_title(div()).child("Stop the agent?"))
             .child(dialog_text(chrome).child("The agent is still active. Yes stops its terminals. Your checkout and files stay unchanged."))
-            .child(dialog_buttons()
+            .child(confirmation_buttons()
                 .child(self.no_button("No", chrome, cx))
                 .child(primary_button("stop-checkout", "Yes", "Y", chrome)
                     .on_click(cx.listener(move |this, _, window, cx| this.finish_close(i, 4, window, cx)))))
@@ -391,7 +391,7 @@ impl Shika {
         }));
         let action = close_action(state);
         let yes = cx.listener(move |this, _, window, cx| this.finish_close(i, action, window, cx));
-        let mut buttons = dialog_buttons().child(self.no_button("No", chrome, cx));
+        let mut buttons = confirmation_buttons().child(self.no_button("No", chrome, cx));
         if can_push {
             buttons = buttons.child(dialog_button("discard", "Discard", "D", chrome).on_click(
                 cx.listener(move |this, _, window, cx| this.finish_close(i, 1, window, cx)),
@@ -427,7 +427,7 @@ impl Shika {
             );
         }
         panel.child(
-            dialog_buttons()
+            confirmation_buttons()
                 .child(self.no_button("No", chrome, cx))
                 .child(
                     primary_button("close-switched", "Yes", "Y", chrome).on_click(

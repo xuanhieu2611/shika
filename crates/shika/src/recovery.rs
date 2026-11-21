@@ -111,7 +111,7 @@ impl Shika {
                 crate::lead_chat::warning(self.queued_lead_messages(None, cx))
                     .map(|note| dialog_text(chrome).child(note)),
             )
-            .child(dialog_buttons()
+            .child(confirmation_buttons()
                 .child(dialog_button("cancel-quit", "No, keep working", "N", chrome)
                     .on_click(cx.listener(|this, _, window, cx| this.cancel_quit(window, cx))))
                 .child(primary_button("confirm-quit", if self.busy { "Saving..." } else { "Yes, quit" }, "Y", chrome)
@@ -234,7 +234,7 @@ impl Shika {
                     })),
             );
         }
-        let mut buttons = dialog_buttons().child(
+        let mut buttons = confirmation_buttons().child(
             dialog_button("cancel-recovery", "No", "N", chrome).on_click(cx.listener(
                 |this, _, _, cx| {
                     this.overlay = Some(Overlay::Leftovers);
@@ -425,7 +425,7 @@ impl Shika {
                 dialog_text(chrome).child("Yes deletes any uncommitted work and the local branch."),
             )
             .child(
-                dialog_buttons()
+                confirmation_buttons()
                     .child(self.no_button("No", chrome, cx))
                     .child(
                         primary_button("remove-confirm", "Yes", "Y", chrome).on_click(

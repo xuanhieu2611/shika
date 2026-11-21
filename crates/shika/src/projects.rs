@@ -121,7 +121,7 @@ impl Shika {
                     .map(|note| dialog_text(chrome).child(note)),
             )
             .child(
-                dialog_buttons()
+                confirmation_buttons()
                     .child(self.no_button("No", chrome, cx))
                     .child(
                         primary_button("remove-project", "Yes", "Y", chrome).on_click(

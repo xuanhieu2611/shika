@@ -855,7 +855,7 @@ impl Shika {
         if let Some(note) = note {
             panel = panel.child(dialog_text(chrome).child(note));
         }
-        let buttons = dialog_buttons().child(self.no_button("No", chrome, cx));
+        let buttons = confirmation_buttons().child(self.no_button("No", chrome, cx));
         let yes = primary_button("lead-yes", "Yes", "Y", chrome).on_click(
             cx.listener(move |this, _, window, cx| this.finish_lead_close(!stopping, window, cx)),
         );

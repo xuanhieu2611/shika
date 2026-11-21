@@ -258,6 +258,11 @@ pub(super) fn dialog_buttons() -> gpui::Div {
     div().flex().justify_end().gap(px(8.)).mt(px(10.))
 }
 
+/// Confirmation actions are centered, with Yes before secondary choices and No.
+pub(super) fn confirmation_buttons() -> gpui::Div {
+    dialog_buttons().flex_row_reverse().justify_center()
+}
+
 /// `$HOME`, to write paths with `~`.
 pub(super) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
