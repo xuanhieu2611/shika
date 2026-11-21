@@ -160,7 +160,7 @@ pub(crate) fn chat_cli(preset: &str) -> Option<&'static str> {
 /// this list in the commit that records that acceptance, which is the one
 /// switch the app needs.
 pub fn lead_chat_supported(cli: &str) -> bool {
-    const SHIPPED: [&str; 3] = ["claude", "codex", "pi"];
+    const SHIPPED: [&str; 4] = ["claude", "codex", "pi", "cursor"];
     SHIPPED.contains(&cli) && chat_cli(cli).is_some()
 }
 

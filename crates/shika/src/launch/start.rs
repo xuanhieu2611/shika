@@ -702,13 +702,13 @@ mod tests {
             focus: false,
         });
         let task = LaunchOwner::of(&Launch::Task { prompt: None });
-        for cli in ["claude", "codex", "pi"] {
+        for cli in ["claude", "codex", "pi", "cursor"] {
             assert!(lead.chat(cli), "{cli}");
             assert!(restart.chat(cli), "{cli}");
             assert!(!task.chat(cli), "{cli}");
         }
-        // Cursor CLI stays a terminal Lead until its acceptance.
-        for cli in ["cursor", "terminal"] {
+        // Terminal is never a Lead CLI, and a Kiro Lead would be a terminal.
+        for cli in ["terminal", "kiro"] {
             assert!(!lead.chat(cli), "{cli}");
         }
     }

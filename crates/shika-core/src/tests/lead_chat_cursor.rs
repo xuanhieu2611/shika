@@ -48,7 +48,9 @@ while IFS= read -r line; do
  *'"method":"session/load"'*)
   if [ -e "$rule" ]; then echo load-rule:yes >> "$log"; else echo load-rule:no >> "$log"; fi
   sid=$(printf '%s\n' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
-  if [ -f "$store/$sid" ]; then
+  if [ -f "$store/$sid" ] && grep -q unreadable "$store/$sid"; then
+   printf '{"jsonrpc":"2.0","id":%s,"result":{"modes":{}}}\n' "$id"
+  elif [ -f "$store/$sid" ]; then
    upd '{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"private replayed question"}}'
    chunk 'private replayed answer'
    printf '{"jsonrpc":"2.0","id":%s,"result":{"modes":{}}}\n' "$id"
@@ -425,6 +427,57 @@ fn a_saved_terminal_cursor_lead_is_reported_missing_and_starts_fresh_with_its_me
     assert_eq!(lines(&scratch, "new-rule:"), ["new-rule:yes"]);
     // The stopped Lead's transport is gone: its answer no longer counts.
     assert_eq!(core.saved_lead_session_exists(&project.id).unwrap(), None);
+    core.stop_lead(&start.session.id).unwrap();
+}
+
+/// Cursor opens a session whose store it cannot read as an empty one, with
+/// no error. Shika refuses that resume and keeps the saved id, so the app
+/// rests the Lead with its retry-or-Forget toast instead of continuing
+/// without context.
+#[test]
+fn a_saved_cursor_session_loaded_empty_is_refused_and_keeps_its_id() {
+    let scratch = Scratch::new();
+    let core = cursor_core(&scratch, "2026.11.19-f005e9d");
+    let project = core
+        .add_project(&scratch.repo("cursor-empty-load-demo"))
+        .unwrap()
+        .project;
+    const SAVED: &str = "5c0ffee0-0000-4000-8000-0000000000c3";
+    let store = scratch.path.join("cursor-store");
+    fs::create_dir_all(&store).unwrap();
+    fs::write(store.join(SAVED), "unreadable").unwrap();
+    core.projects
+        .set_lead(
+            &project.id,
+            Some(SavedLead {
+                cli: "cursor".into(),
+                session_id: Some(SAVED.into()),
+                reported_workers: Vec::new(),
+                chat_history: None,
+            }),
+        )
+        .unwrap();
+    let start = core
+        .start_chat_lead(&project.id, "cursor", lead_launch(&scratch))
+        .unwrap();
+    assert_eq!(start.conversation, LeadConversation::Resumed);
+    let events = collect(&core, &start.session.id, |e| matches!(e, ChatEvent::Exit));
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            ChatEvent::Error(text) if text == "Cursor CLI could not resume this conversation"
+        )),
+        "{events:?}"
+    );
+    assert_eq!(calls(&scratch, "session/load").len(), 1);
+    assert!(calls(&scratch, "session/prompt").is_empty());
+    // Not reported missing: the app keeps the id and rests the Lead.
+    assert_ne!(
+        core.saved_lead_session_exists(&project.id).unwrap(),
+        Some(false)
+    );
+    let saved = core.saved_lead(&project.id).unwrap().unwrap();
+    assert_eq!(saved.session_id.as_deref(), Some(SAVED));
     core.stop_lead(&start.session.id).unwrap();
 }
 

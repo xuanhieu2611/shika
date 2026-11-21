@@ -8,7 +8,8 @@
 //! Shika advertises no filesystem or terminal capability, so the agent uses
 //! its own tools. A `session/load` replays the whole conversation as updates
 //! before its response; all of it is swallowed, since the transcript is
-//! Shika's own.
+//! Shika's own. A load that replays nothing is refused: Cursor answers a
+//! session it cannot read with an empty one instead of an error.
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -122,6 +123,8 @@ struct Run {
     /// `initialize` answered and `session/load` was sent: the replay may
     /// take longer than the handshake check allows.
     loading: bool,
+    /// The load replayed at least one update for the loaded session.
+    replayed: bool,
     session: Option<String>,
     turn: Turn,
     interrupting: bool,
@@ -152,6 +155,7 @@ impl Run {
             instructed: false,
             version: None,
             loading: false,
+            replayed: false,
             session: None,
             turn: Turn::Idle,
             interrupting: false,
@@ -278,11 +282,18 @@ impl AcpClient {
         self.flush_deferred(None);
         Parsed::Identity(id.into())
     }
-    /// The replay is over. A session whose instructions or notes changed
-    /// since it last got them is sent the current notes first, with any
-    /// send that waited, or as a Shika turn of its own.
+    /// The replay is over. A saved session always has a turn to replay (its
+    /// id is saved at a turn's first output), so a load that replayed
+    /// nothing opened an empty session: Cursor does that, with no error,
+    /// for a session whose store it cannot read. Refused like a failed load,
+    /// keeping the id. Otherwise a session whose instructions or notes
+    /// changed since it last got them is sent the current notes first, with
+    /// any send that waited, or as a Shika turn of its own.
     fn loaded(&mut self) -> Parsed {
         self.run.loading = false;
+        if !self.run.replayed {
+            return Parsed::Fatal(self.texts().resume_refused);
+        }
         self.run.session = self.run.resume.clone();
         if self.run.instructed {
             self.flush_deferred(None);
@@ -322,6 +333,9 @@ impl AcpClient {
     /// last tool event, released only by `end_turn`. Thoughts, plans,
     /// commands, titles and mode or config updates are ignored.
     fn update(&mut self, params: &Value) -> Parsed {
+        if self.run.loading && params["sessionId"].as_str() == self.run.resume.as_deref() {
+            self.run.replayed = true;
+        }
         if self.run.loading
             || self.run.turn != Turn::Prompting
             || params["sessionId"].as_str() != self.run.session.as_deref()

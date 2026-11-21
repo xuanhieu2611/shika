@@ -32,7 +32,7 @@ A keyboard-first Mac app for running several coding agents at once, each in the 
 - **Knows who needs you.** Each card shows whether its agent is working, asking you something, or ready to check, and a notification names the task.
 - **Shells next to the agent.** Add terminal tabs in the same worktree to test, commit, and push.
 - **Safe Close, one-step PRs.** Close asks before throwing away uncommitted or unpushed work, and never commits. Create PR commits, pushes, and opens a GitHub PR only after you confirm.
-- **A Lead to delegate to.** Chat with one Lead per project. It starts and manages up to four worker agents, checks their results, and opens PRs only when you confirm. A Claude Code, Codex, or Pi Lead is a native chat that shows only your messages and its final answers.
+- **A Lead to delegate to.** Chat with one Lead per project. It starts and manages up to four worker agents, checks their results, and opens PRs only when you confirm. Every Lead (Claude Code, Codex, Cursor CLI, or Pi) is a native chat that shows only your messages and its final answers.
 
 ## Install
 

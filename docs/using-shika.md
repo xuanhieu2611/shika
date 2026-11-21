@@ -87,7 +87,7 @@ The checkout card sits first in its project and shows a checkout icon and the cu
 
 ## The Lead
 
-Press Cmd+L to start a Lead for the selected project: one of your CLIs that you talk to, which starts up to four ordinary worker cards, waits for them, reads their reports, and brings back what needs your decision. It opens Create PR and Close dialogs for its workers, and you confirm every one. A Claude Code, Codex, or Pi Lead is a native chat that shows only your messages and its final answers; a Cursor CLI Lead keeps its terminal. Closing a Lead stops it and keeps its conversation, so it rests in the column and resumes on Enter or Cmd+L. See [Lead agent](lead-agent.md) and [Lead chat](lead-chat.md).
+Press Cmd+L to start a Lead for the selected project: one of your CLIs that you talk to, which starts up to four ordinary worker cards, waits for them, reads their reports, and brings back what needs your decision. It opens Create PR and Close dialogs for its workers, and you confirm every one. Every Lead is a native chat that shows only your messages and its final answers, whichever CLI runs it. Closing a Lead stops it and keeps its conversation, so it rests in the column and resumes on Enter or Cmd+L. See [Lead agent](lead-agent.md) and [Lead chat](lead-chat.md).
 
 ## Worktree preparation
 

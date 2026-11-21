@@ -27,7 +27,7 @@ These guides explain why features exist, how they are implemented, and where to 
 | [Software updates](updates.md) | The update notice, Sparkle loading, the signed feed and its redirect, releasing, signing keys, and testing an update locally |
 | [Branch-switch close](branch-switch-close.md) | Safe recovery after switching branches, publication checks, branch preservation, confirmation rechecks, and debugging |
 | [Lead agent](lead-agent.md) | The decision and contract for one Lead per project that starts worker cards, waits for them, reads and steers them, and is woken by a doorbell, through the `shika` command |
-| [Lead chat](lead-chat.md) | The native chat of Claude Code, Codex, and Pi Leads: evolution and decisions, each CLI's structured transport, final-response filters, lifetime history, doorbell and status, debugging, fixtures, and adding Cursor CLI |
+| [Lead chat](lead-chat.md) | The native chat of Claude Code, Codex, Pi, and Cursor CLI Leads: evolution and decisions, each CLI's structured transport, final-response filters, lifetime history, doorbell and status, debugging, fixtures, and adding another CLI |
 | [The `shika` command](shika-cli.md) | Reference for the Lead's control CLI: commands and exact output, exit codes, `wait` rules, wire protocol, token and scope, debugging recipes, and adding a command |
 
 [MANUAL_CHECKS.md](../MANUAL_CHECKS.md) and [terminal checks](../crates/shika-terminal/MANUAL_CHECKS.md) track acceptance evidence and remaining GUI checks. Passing unit tests is not proof that all native UI behavior has been exercised.

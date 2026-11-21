@@ -981,12 +981,11 @@ mod tests {
 
     #[test]
     fn only_accepted_chat_clis_are_shipped_and_each_has_a_protocol() {
-        // Codex and Pi passed their acceptance on 2026-11-20. Cursor has a
-        // chat protocol in Core but stays a terminal Lead until its own.
-        for cli in ["claude", "codex", "pi"] {
+        // Codex, Pi and Cursor CLI passed their acceptance on 2026-11-20.
+        for cli in ["claude", "codex", "pi", "cursor"] {
             assert!(crate::lead_chat_supported(cli), "{cli}");
         }
-        for cli in ["cursor", "terminal", "kiro", ""] {
+        for cli in ["terminal", "kiro", ""] {
             assert!(!crate::lead_chat_supported(cli), "{cli}");
         }
         for cli in crate::control::CLI_IDS {

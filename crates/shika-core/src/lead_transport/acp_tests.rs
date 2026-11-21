@@ -701,6 +701,7 @@ fn a_resumed_session_without_the_current_notes_gets_one_memory_line() {
     let mut replay = Replay::new();
     replay.handshake(&launch(&cwd, SESSION, true, &["Keep this note"]));
     replay.receive(&json!({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}}}));
+    replay.receive(&chunk("replayed history"));
     replay.receive(&json!({"jsonrpc": "2.0", "id": 2, "result": {}}));
     assert!(
         replay
@@ -741,5 +742,40 @@ fn a_resumed_session_without_the_current_notes_gets_one_memory_line() {
         Some(&Parsed::Fatal(
             "Cursor CLI could not resume this conversation"
         ))
+    );
+}
+
+/// Cursor answers a load of a session whose store it cannot read with an
+/// empty session and no error (seen in the acceptance run, 2026-11-20). A
+/// saved session always replays its turns, so an empty load is refused and
+/// keeps the id, and nothing is sent; another session's updates do not count.
+#[test]
+fn a_load_that_replays_nothing_is_refused_and_sends_nothing() {
+    let cwd = Worktree::new();
+    let mut replay = Replay::new();
+    replay.handshake(&launch(&cwd, SESSION, false, &["Keep this note"]));
+    replay.acp.send("Workers changed");
+    replay.receive(&json!({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}}}));
+    let mut other = chunk("another session");
+    other["params"]["sessionId"] = "00000000-0000-4000-8000-000000000009".into();
+    replay.receive(&other);
+    replay.receive(&json!({"jsonrpc": "2.0", "id": 2, "result": {}}));
+    assert_eq!(
+        replay.parsed.last(),
+        Some(&Parsed::Fatal(
+            "Cursor CLI could not resume this conversation"
+        ))
+    );
+    assert!(
+        replay
+            .written
+            .iter()
+            .all(|f| f["method"] != "session/prompt")
+    );
+    assert!(
+        !replay
+            .parsed
+            .iter()
+            .any(|p| matches!(p, Parsed::ShikaInput(_) | Parsed::Accepted))
     );
 }
