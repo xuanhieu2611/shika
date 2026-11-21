@@ -22,7 +22,8 @@ static STRINGS: Strings = Strings {
 };
 
 /// `id X`, `confirm`, `reply X`, `ack`, `handled`, `instructed`,
-/// `lingering`, `fatal`, `final X` and `final` map to the matching `Parsed`;
+/// `lingering`, `fatal`, `missing`, `said X`, `shika`, `final X` and `final`
+/// map to the matching `Parsed`;
 /// anything else is ignored. `idle` makes the next interrupt `Idle`. A line
 /// past `MAX_FRAME` that starts with `skip` may be dropped unread.
 struct LineProtocol {
@@ -79,6 +80,12 @@ impl LeadProtocol for LineProtocol {
             "instructed" => Parsed::Instructed,
             "lingering" => Parsed::Lingering,
             "fatal" => Parsed::Fatal("Test refused the conversation"),
+            "missing" => Parsed::Missing("Test has no such conversation"),
+            "said" => Parsed::Explained {
+                text: format!("Test failed ({rest})"),
+                fatal: false,
+            },
+            "shika" => Parsed::ShikaInput("Shika sent the test its notes."),
             "idle" => {
                 self.idle = true;
                 Parsed::Ignore
@@ -143,6 +150,7 @@ impl Fixture {
                 path: std::env::var("PATH").unwrap_or_default(),
                 env: Vec::new(),
                 instructions: "guide".into(),
+                notes: Vec::new(),
                 conversation: conversation.into(),
                 resumed: !conversation.is_empty(),
                 instructed: false,
@@ -565,4 +573,90 @@ fn an_oversized_line_the_protocol_never_reads_is_dropped_and_any_other_fails() {
     let rows = fixture.rows();
     assert!(rows.contains(&(1, "lead After".into())), "{rows:?}");
     assert!(!rows.iter().any(|(_, row)| row.contains("Never")));
+}
+
+#[test]
+fn a_missing_conversation_ends_the_transport_and_is_reported() {
+    let fixture = Fixture::new(" hello) echo missing;;");
+    let transport = fixture.start("thread-1", true);
+    assert!(!transport.conversation_missing());
+    let events = until(&transport, |e| matches!(e, ChatEvent::Exit));
+    assert!(
+        events.iter().any(
+            |e| matches!(e, ChatEvent::Error(text) if text == "Test has no such conversation")
+        )
+    );
+    assert!(transport.conversation_missing());
+    transport.stop();
+}
+
+#[test]
+fn a_failure_in_the_clis_words_settles_the_turn_and_offers_the_text_again() {
+    let fixture = Fixture::new(" 'send hi') echo 'said limit reached';;");
+    let transport = fixture.start("thread-1", true);
+    transport
+        .send("hi".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    let events = until(&transport, ready);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ChatEvent::Error(text) if text == "Test failed (limit reached)"))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ChatEvent::Rejected(text) if text == "hi"))
+    );
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::Exit)));
+    assert!(!transport.conversation_missing());
+    transport.stop();
+}
+
+/// Shika's own input the protocol wrote is a Shika-origin turn with its
+/// row, counted as a submission (`Started`), never as the acceptance of
+/// something the app sent; inside a turn the row joins that turn.
+#[test]
+fn shika_input_opens_a_shika_turn_or_joins_the_one_in_progress() {
+    let fixture = Fixture::new(
+        " hello) echo shika;;\n 'send hi') echo shika; echo 'final Hi';;\n interrupt) echo final;;",
+    );
+    let transport = fixture.start("thread-1", true);
+    let events = until(&transport, |e| matches!(e, ChatEvent::Started));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, ChatEvent::Status(ChatStatus::Working)))
+    );
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::Accepted)));
+    // The turn is busy: a send is refused until it settles.
+    transport
+        .send("early".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    until(&transport, |e| matches!(e, ChatEvent::DeliveryFailed));
+    transport.interrupt();
+    let events = until(&transport, ready);
+    assert!(!events.iter().any(|e| matches!(e, ChatEvent::Rejected(_))));
+    transport
+        .send("hi".into(), ChatOrigin::Author, Vec::new())
+        .unwrap();
+    until(&transport, ready);
+    transport.stop();
+    assert_eq!(
+        fixture.rows(),
+        [
+            (0, "context test thread-1".into()),
+            (1, "event Shika sent the test its notes.".into()),
+            (1, "outgoing".into()),
+            (1, "accepted".into()),
+            (1, "event Reply stopped".into()),
+            (1, "settled".into()),
+            (2, "author hi".into()),
+            (2, "outgoing".into()),
+            (2, "accepted".into()),
+            (2, "event Shika sent the test its notes.".into()),
+            (2, "lead Hi".into()),
+            (2, "settled".into()),
+        ]
+    );
 }

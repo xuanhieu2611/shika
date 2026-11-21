@@ -23,6 +23,7 @@ fn launch(conversation: &str) -> ChatLaunch {
         path: String::new(),
         env: Vec::new(),
         instructions: "Fixture instructions.".into(),
+        notes: Vec::new(),
         conversation: conversation.into(),
         resumed: false,
         instructed: false,

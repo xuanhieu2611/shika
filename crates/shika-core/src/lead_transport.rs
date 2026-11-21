@@ -1,15 +1,20 @@
 //! The Lead chat transport: one long-lived structured child per Lead, never
 //! terminal bytes. `protocol::LeadProtocol` is the per-CLI wire format
-//! (`claude.rs`, `codex.rs`, `pi.rs`); the actor and everything here are
-//! shared. All IO runs on the actor.
+//! (`claude.rs`, `codex.rs`, `pi.rs`, and `acp.rs` with its Cursor flavor in
+//! `cursor.rs`); the actor and everything here are shared. All IO runs on
+//! the actor.
+mod acp;
 mod actor;
 mod claude;
 mod codex;
-// Shared by the Codex app-server and ACP adapters; some of it is ACP's alone.
+mod cursor;
+// Shared by the Codex app-server and ACP adapters; some of it only tests use.
 #[cfg_attr(not(test), allow(dead_code))]
 mod jsonrpc;
 mod pi;
 mod protocol;
+
+pub(crate) use cursor::{CURSOR_MINIMUM, CURSOR_RULE, cursor_version_supported};
 
 use std::path::PathBuf;
 use std::sync::{
@@ -121,6 +126,22 @@ enum Parsed {
     /// A failure that ends the transport, like `Strings::unreadable`, for
     /// example a resume the CLI refused.
     Fatal(&'static str),
+    /// A failure whose text carries the CLI's own reason, already bounded
+    /// (`jsonrpc::bounded`). `fatal` ends the transport, as `Fatal` does.
+    Explained {
+        text: String,
+        fatal: bool,
+    },
+    /// A resume the CLI refused because it has no such conversation: fatal,
+    /// and the transport reports the id missing
+    /// ([`ChatTransport::conversation_missing`]), so the app's refused-resume
+    /// rule starts the Lead fresh once.
+    Missing(&'static str),
+    /// The protocol wrote Shika's own input, not the author's, shown as this
+    /// event row: the memory notes a resumed conversation lacks (Cursor).
+    /// Within a turn the row joins it; otherwise it opens a Shika-origin
+    /// turn, counted as a submission as `Started` is.
+    ShikaInput(&'static str),
 }
 
 /// The preset ids with a chat protocol in Core, as the transport's own
@@ -128,7 +149,7 @@ enum Parsed {
 /// accept. Whether the app offers a chat Lead for one is
 /// [`lead_chat_supported`].
 pub(crate) fn chat_cli(preset: &str) -> Option<&'static str> {
-    ["claude", "codex", "pi"]
+    ["claude", "codex", "pi", "cursor"]
         .into_iter()
         .find(|cli| *cli == preset)
 }
@@ -162,6 +183,9 @@ pub(crate) struct ChatLaunch {
     pub path: String,
     pub env: Vec<(String, String)>,
     pub instructions: String,
+    /// The project's memory notes, which also end `instructions`, for a CLI
+    /// sent them on their own on a resume (Cursor, see `Parsed::ShikaInput`).
+    pub notes: Vec<String>,
     /// Empty until a CLI that allocates its own id reports it.
     pub conversation: String,
     pub resumed: bool,
@@ -193,6 +217,7 @@ enum CommandIn {
 }
 pub(crate) struct ChatTransport {
     stop: Arc<AtomicBool>,
+    missing: Arc<AtomicBool>,
     cancel: Arc<AtomicU64>,
     pub history: String,
     input: mpsc::Sender<CommandIn>,
@@ -240,12 +265,15 @@ impl ChatTransport {
         let actor_cancel = cancel.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let actor_stop = stop.clone();
+        let missing = Arc::new(AtomicBool::new(false));
+        let actor_missing = missing.clone();
         let join = thread::Builder::new()
             .name("lead-chat".into())
             .spawn(move || {
                 Actor {
                     cancel: actor_cancel,
                     stop: actor_stop,
+                    missing: actor_missing,
                     cancel_seen: 0,
                     launch,
                     protocol,
@@ -271,6 +299,7 @@ impl ChatTransport {
             .map_err(|_| "Could not start the Lead".to_string())?;
         Ok(Self {
             stop,
+            missing,
             cancel,
             history,
             input,
@@ -296,6 +325,11 @@ impl ChatTransport {
     pub fn interrupt(&self) {
         self.cancel.fetch_add(1, Ordering::AcqRel);
         let _ = self.input.send(CommandIn::Interrupt);
+    }
+    /// The CLI said the conversation this transport resumed does not exist
+    /// (`Parsed::Missing`).
+    pub fn conversation_missing(&self) -> bool {
+        self.missing.load(Ordering::Acquire)
     }
     pub fn retry_save(&self) {
         let _ = self.input.send(CommandIn::RetrySave);

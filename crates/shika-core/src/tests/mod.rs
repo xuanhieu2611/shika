@@ -17,6 +17,7 @@ mod external_rename;
 mod lead;
 mod lead_chat;
 mod lead_chat_codex;
+mod lead_chat_cursor;
 mod lead_chat_pi;
 mod lead_lifecycle;
 mod lead_resume;

@@ -222,6 +222,8 @@ enum Flow {
 }
 pub(super) struct Actor {
     pub(super) stop: Arc<AtomicBool>,
+    /// Set on `Parsed::Missing`; read by `ChatTransport::conversation_missing`.
+    pub(super) missing: Arc<AtomicBool>,
     pub(super) cancel_seen: u64,
     pub(super) cancel: Arc<AtomicU64>,
     pub(super) launch: ChatLaunch,
@@ -705,6 +707,12 @@ impl Actor {
             }
             Parsed::Failed(error) => self.fail_turn(error, false),
             Parsed::Fatal(error) => self.fail_turn(error, true),
+            Parsed::Explained { text, fatal } => self.fail_with(text, fatal),
+            Parsed::Missing(error) => {
+                self.missing.store(true, Ordering::Release);
+                self.fail_turn(error, true);
+            }
+            Parsed::ShikaInput(row) => self.shika_input(row),
             Parsed::Ignore => {}
         }
     }
@@ -790,12 +798,39 @@ impl Actor {
         self.emit(ChatEvent::Started);
         self.emit(ChatEvent::Status(ChatStatus::Working));
     }
+    /// Shika's own input the protocol wrote (`Parsed::ShikaInput`): its row
+    /// joins the turn in progress, or opens a Shika-origin turn the way a
+    /// turn the CLI starts itself is opened. There is no input to offer
+    /// again if it fails, and nothing of the app's waits on its acceptance.
+    fn shika_input(&mut self, row: &str) {
+        let event = ChatContent::Event {
+            text: row.into(),
+            key: None,
+        };
+        if let Some(turn) = self.turn {
+            self.persist(turn, event);
+            return;
+        }
+        let turn = self.allocate_turn();
+        self.turn = Some(turn);
+        if let Some(child) = &mut self.child {
+            child.input_epoch = self.cancel.load(Ordering::Acquire);
+        }
+        let origin = ChatOrigin::ShikaEvent;
+        self.persist_batch(vec![
+            (turn, event),
+            (turn, ChatContent::Outgoing { origin }),
+            (turn, ChatContent::Accepted),
+        ]);
+        self.emit(ChatEvent::Started);
+        self.emit(ChatEvent::Status(ChatStatus::Working));
+    }
     /// A decoding or reply failure settles the turn and interrupts the CLI.
     /// A `fatal` one, an unreadable stream or another conversation also ends
     /// the transport.
     fn fail_turn(&mut self, error: &'static str, fatal: bool) {
         let strings = self.protocol.strings();
-        self.failed = fatal || error == strings.unreadable || error == strings.other_conversation;
+        let fatal = fatal || error == strings.unreadable || error == strings.other_conversation;
         let display = if error == strings.unreadable {
             self.child
                 .as_ref()
@@ -805,6 +840,10 @@ impl Actor {
         } else {
             error.into()
         };
+        self.fail_with(display, fatal);
+    }
+    fn fail_with(&mut self, display: String, fatal: bool) {
+        self.failed = fatal;
         self.settle(Some(&display));
         self.emit(ChatEvent::Error(display));
         self.interrupt();

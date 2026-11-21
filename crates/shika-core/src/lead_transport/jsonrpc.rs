@@ -13,6 +13,9 @@ const MAX_ERROR_CHARS: usize = 200;
 pub(super) struct RpcError {
     pub code: i64,
     pub message: String,
+    /// `data.message` or `data.details` when the CLI sent one (ACP puts the
+    /// specific reason there), bounded like `message`; empty otherwise.
+    pub detail: String,
 }
 
 /// One decoded line. `K` is the caller's tag for what a request was for.
@@ -41,7 +44,8 @@ pub(super) enum Message<K> {
 
 struct Pending<K> {
     kind: K,
-    deadline: Instant,
+    /// None for a request that may stay open as long as the CLI needs.
+    deadline: Option<Instant>,
 }
 
 pub(super) struct Rpc<K> {
@@ -75,15 +79,23 @@ impl<K> Rpc<K> {
         timeout: Duration,
         now: Instant,
     ) -> Vec<u8> {
+        self.pending_request(method, params, kind, Some(now + timeout))
+    }
+    /// A request with no deadline, for one that stays open for a whole turn
+    /// (ACP `session/prompt`).
+    pub fn request_open(&mut self, method: &str, params: Value, kind: K) -> Vec<u8> {
+        self.pending_request(method, params, kind, None)
+    }
+    fn pending_request(
+        &mut self,
+        method: &str,
+        params: Value,
+        kind: K,
+        deadline: Option<Instant>,
+    ) -> Vec<u8> {
         let id = self.next;
         self.next += 1;
-        self.pending.insert(
-            id,
-            Pending {
-                kind,
-                deadline: now + timeout,
-            },
-        );
+        self.pending.insert(id, Pending { kind, deadline });
         self.frame(object(
             json!({"id": id, "method": method, "params": params}),
         ))
@@ -108,7 +120,7 @@ impl<K> Rpc<K> {
         let ids: Vec<u64> = self
             .pending
             .iter()
-            .filter(|(_, p)| p.deadline <= now)
+            .filter(|(_, p)| p.deadline.is_some_and(|deadline| deadline <= now))
             .map(|(id, _)| *id)
             .collect();
         ids.into_iter()
@@ -148,6 +160,12 @@ impl<K> Rpc<K> {
             (None, Some(error)) => Err(RpcError {
                 code: error["code"].as_i64().unwrap_or(0),
                 message: bounded(error["message"].as_str().unwrap_or("")),
+                detail: bounded(
+                    error["data"]["message"]
+                        .as_str()
+                        .or_else(|| error["data"]["details"].as_str())
+                        .unwrap_or(""),
+                ),
             }),
             _ => return Message::Invalid,
         };

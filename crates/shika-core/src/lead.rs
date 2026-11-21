@@ -10,8 +10,10 @@
 //!
 //! The Lead instructions travel in the CLI's system prompt on every start
 //! (`agents::lead_flags`), so a resumed Lead reads the current text, and the
-//! app does not type anything into a fresh one. Cursor has no such flag and
-//! gets a positional bootstrap prompt on a fresh start only.
+//! app does not type anything into a fresh one. Cursor has no such flag: a
+//! terminal Cursor Lead gets a positional bootstrap prompt on a fresh start
+//! only, and a chat one an always-applied rule while its session is created
+//! (`lead_transport/cursor.rs`).
 //!
 //! The project's memory notes (`memory.rs`) are appended to the instructions on
 //! every start, so a fresh conversation begins with what the last one learned.
@@ -19,22 +21,22 @@
 //! The decisions, the per-CLI facts, and the traps: `docs/lead-agent.md`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::agents::{self, CliPreset, Conversation};
 use crate::control::random_bytes;
 use crate::error::{Error, Result};
 use crate::memory::{self, MemoryNote};
 use crate::projects::{Project, SavedLead};
-use crate::pty::{CONTROL_VARS, PtyId, PtySink, PtySize};
+use crate::pty::{PtyId, PtySink, PtySize};
 use crate::session::{self, Session, WorkerEnv};
-use crate::worktree::{self, GIT_REDIRECTS, JournalEntry, LeadWorktree};
+use crate::worktree::{self, JournalEntry, LeadWorktree};
 use crate::{Core, PathEnv, PreparationControl};
 
-/// How long Cursor's `create-chat` may take before the Lead starts without a
-/// conversation id.
-const CREATE_CHAT_TIMEOUT: Duration = Duration::from_secs(10);
+mod commands;
+#[cfg(test)]
+use commands::create_chat_within;
+use commands::{check_cursor_version, create_chat};
 
 /// What a Lead is started with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +132,7 @@ struct LeadPlan<'a> {
     base_ref: &'a Option<String>,
     env: &'a PathEnv,
     instructions: &'a str,
+    notes: &'a [MemoryNote],
     conversation: &'a Conversation,
     launch: &'a LeadLaunch,
     chat: bool,
@@ -180,12 +183,14 @@ impl Core {
     /// speaks the CLI's chat protocol. Same worktree, guide, conversation
     /// choice and control environment as [`Core::start_lead`]. A fresh
     /// conversation's id is preallocated by Shika (Claude Code, Pi), or
-    /// reported by the handshake (Codex); either is saved by
+    /// reported by the handshake (Codex, Cursor CLI); either is saved by
     /// [`Core::confirm_lead_chat`] once the CLI keeps the conversation. See
     /// `Identity`. Any CLI with a chat protocol in Core starts here
     /// ([`Error::UnknownCli`] otherwise), including one the app does not offer
     /// yet: the app routes a Lead here only when
-    /// [`crate::lead_chat_supported`] says so. Blocking, like `start_lead`.
+    /// [`crate::lead_chat_supported`] says so. A Cursor CLI older than the
+    /// version its chat was verified with is [`Error::ChatCliTooOld`].
+    /// Blocking, like `start_lead`; for Cursor it also runs `agent --version`.
     pub fn start_chat_lead(
         &self,
         project_id: &str,
@@ -224,6 +229,9 @@ impl Core {
         if self.lead_for_project(project_id).is_some() {
             return Err(Error::LeadExists);
         }
+        if chat && preset.id == "cursor" {
+            check_cursor_version(&program, env.path(), &preset.name)?;
+        }
         let project = self.projects.get(project_id)?;
         self.freshen_base(&project);
         // A process for Cursor, so before the lock like the fetch above.
@@ -244,6 +252,13 @@ impl Core {
             project.base_branch.as_deref(),
         )?;
         let started_at = SystemTime::now();
+        // The rule a chat Cursor Lead's session is created with must never
+        // show in `git status`, or a leftover would keep the tree from moving
+        // and make Forget ask about changes.
+        if chat && preset.id == "cursor" {
+            let rule = format!("/{}", crate::lead_transport::CURSOR_RULE);
+            worktree::ensure_excluded_path(&git, env.path(), &project.path, &rule)?;
+        }
         let tree = worktree::prepare_lead_worktree(&git, env.path(), &project.path, base.start())?;
         let created = tree == LeadWorktree::Created;
         let path = worktree::lead_worktree_path(&project.path);
@@ -269,6 +284,7 @@ impl Core {
             base_ref: &base.reference,
             env,
             instructions: &instructions,
+            notes: &notes,
             conversation: &conversation,
             launch: &launch,
             chat,
@@ -350,8 +366,9 @@ impl Core {
             bin_dir: plan.launch.bin_dir.clone(),
         };
         let args = agents::lead_flags(plan.preset, plan.path, plan.instructions, plan.conversation);
+        // A chat Cursor Lead gets its instructions as a rule instead.
         let bootstrap = match plan.conversation {
-            Conversation::Fresh { .. } if plan.preset.id == "cursor" => {
+            Conversation::Fresh { .. } if plan.preset.id == "cursor" && !plan.chat => {
                 plan.launch.cursor_bootstrap.as_deref()
             }
             _ => None,
@@ -437,6 +454,7 @@ impl Core {
             path: session::control_path(&control.bin_dir, plan.env.path()),
             env: session::control_env(&control.socket, &control.token),
             instructions: plan.instructions.to_string(),
+            notes: plan.notes.iter().map(|note| note.text.clone()).collect(),
             conversation: conversation_id,
             resumed: matches!(plan.conversation, Conversation::Resume { .. }),
             instructed: false,
@@ -707,10 +725,11 @@ impl Core {
     }
 
     /// Whether the CLI still stores the saved Lead's conversation: `Some`
-    /// when Shika can tell (Claude Code, Codex, Pi), `None` for a CLI it
-    /// cannot read (Cursor), without a saved conversation id, or without a
-    /// home directory. [`Error::NoSavedLead`] without a saved Lead.
-    /// Blocking: reads the CLI's files.
+    /// when Shika can tell (Claude Code, Codex, Pi, and a chat Lead whose CLI
+    /// said it has no such conversation, as Cursor CLI's `session/load`
+    /// does), `None` for a CLI it cannot read (Cursor), without a saved
+    /// conversation id, or without a home directory. [`Error::NoSavedLead`]
+    /// without a saved Lead. Blocking: reads the CLI's files.
     pub fn saved_lead_session_exists(&self, project_id: &str) -> Result<Option<bool>> {
         let project = self.projects.get(project_id)?;
         let saved = project.lead.ok_or(Error::NoSavedLead)?;
@@ -721,6 +740,18 @@ impl Core {
         else {
             return Ok(None);
         };
+        // The live chat Lead's transport resumed exactly the saved id.
+        if let Some(lead) = self.lead_for_project(project_id)
+            && lead.preset_id == saved.cli
+            && self
+                .chats
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&lead.id)
+                .is_some_and(|chat| chat.conversation_missing())
+        {
+            return Ok(Some(false));
+        }
         let cwd = worktree::lead_worktree_path(&project.path);
         Ok(self
             .cli_home
@@ -822,11 +853,13 @@ pub(crate) enum Identity {
 }
 
 /// How a fresh Lead on `preset` gets its id, as a chat Lead (`chat`, which
-/// needs a chat protocol, `lead_transport::chat_cli`) or a terminal one.
+/// needs a chat protocol, `lead_transport::chat_cli`) or a terminal one. A
+/// chat Cursor Lead's id comes from `session/new`: an id `agent create-chat`
+/// makes is a terminal chat, which ACP cannot load.
 pub(crate) fn identity(preset: &str, chat: bool) -> Option<Identity> {
     match (preset, chat) {
         ("claude" | "pi", _) => Some(Identity::Preallocated),
-        ("codex", _) => Some(Identity::Reported),
+        ("codex", _) | ("cursor", true) => Some(Identity::Reported),
         ("cursor", false) => Some(Identity::Created),
         _ => None,
     }
@@ -861,56 +894,6 @@ fn new_uuid() -> String {
         &hex[16..20],
         &hex[20..]
     )
-}
-
-/// `agent create-chat`: a new empty Cursor chat, whose id it prints. The same
-/// environment other children get (login-shell `PATH`, no git redirects, no
-/// control variables), a 10 second limit, and None on any failure, in which
-/// case the Lead starts without an id. Blocking.
-fn create_chat(program: &Path, path_env: &str, cwd: &Path) -> Option<String> {
-    create_chat_within(program, path_env, cwd, CREATE_CHAT_TIMEOUT)
-}
-
-fn create_chat_within(
-    program: &Path,
-    path_env: &str,
-    cwd: &Path,
-    timeout: Duration,
-) -> Option<String> {
-    let mut cmd = Command::new(program);
-    cmd.arg("create-chat")
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    if !path_env.is_empty() {
-        cmd.env("PATH", path_env);
-    }
-    for key in GIT_REDIRECTS.iter().chain(CONTROL_VARS.iter()) {
-        cmd.env_remove(key);
-    }
-    let mut child = cmd.spawn().ok()?;
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
-    if !status.success() {
-        return None;
-    }
-    let mut out = String::new();
-    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-    let id = out.trim().to_string();
-    agents::valid_conversation_id(&id).then_some(id)
 }
 
 /// The chosen CLI preset and its binary on the login-shell PATH.
@@ -994,11 +977,12 @@ mod tests {
     use super::*;
     use crate::lead_transport::chat_cli;
     use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn only_accepted_chat_clis_are_shipped_and_each_has_a_protocol() {
-        // Codex and Pi passed their acceptance on 2026-11-20. Cursor has no
-        // chat protocol yet and stays a terminal Lead.
+        // Codex and Pi passed their acceptance on 2026-11-20. Cursor has a
+        // chat protocol in Core but stays a terminal Lead until its own.
         for cli in ["claude", "codex", "pi"] {
             assert!(crate::lead_chat_supported(cli), "{cli}");
         }
@@ -1025,6 +1009,7 @@ mod tests {
         assert_eq!(identity("pi", true), Some(Identity::Preallocated));
         assert_eq!(identity("pi", false), Some(Identity::Preallocated));
         assert_eq!(identity("cursor", false), Some(Identity::Created));
+        assert_eq!(identity("cursor", true), Some(Identity::Reported));
         assert_eq!(identity("codex", false), Some(Identity::Reported));
         assert_eq!(identity("kiro", false), None);
     }

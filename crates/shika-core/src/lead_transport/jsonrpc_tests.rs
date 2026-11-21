@@ -73,7 +73,8 @@ fn responses_correlate_once_and_unknown_ids_are_stray() {
             kind: "a",
             result: Err(RpcError {
                 code: -32000,
-                message: "thread not found".into()
+                message: "thread not found".into(),
+                detail: String::new(),
             })
         }
     );
@@ -173,4 +174,37 @@ fn error_text_is_one_bounded_line() {
         bounded(&"é".repeat(MAX_ERROR_CHARS)).chars().count(),
         MAX_ERROR_CHARS
     );
+}
+
+#[test]
+fn an_open_request_never_expires_and_an_error_keeps_its_data_reason() {
+    let now = Instant::now();
+    let mut rpc = Rpc::new(true);
+    let open = line(&rpc.request_open("session/prompt", json!({}), "prompt"));
+    assert_eq!(open["id"], 1);
+    assert_eq!(open["jsonrpc"], "2.0");
+    assert!(rpc.expired(now + Duration::from_secs(86_400)).is_empty());
+    assert_eq!(
+        rpc.decode(
+            br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params","data":{"message":"Session \"s\" not found"}}}"#
+        ),
+        Message::Response {
+            kind: "prompt",
+            result: Err(RpcError {
+                code: -32602,
+                message: "Invalid params".into(),
+                detail: "Session \"s\" not found".into(),
+            })
+        }
+    );
+    rpc.request_open("session/prompt", json!({}), "prompt");
+    let Message::Response {
+        result: Err(error), ..
+    } = rpc.decode(
+        br#"{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"Internal error","data":{"details":"Session s not found"}}}"#,
+    )
+    else {
+        panic!("expected an error response");
+    };
+    assert_eq!(error.detail, "Session s not found");
 }

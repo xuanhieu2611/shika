@@ -1,6 +1,8 @@
 //! The boundary between the shared Lead chat actor and one CLI's wire format.
 //! The actor owns the process, persistence, fencing and events; a protocol
-//! only builds frames and decodes lines, and never does IO itself.
+//! only builds frames and decodes lines, and never touches the process or
+//! its pipes. The one IO a protocol does is a file its CLI reads: Pi's
+//! extension, and Cursor's rule while `session/new` runs.
 use std::time::Instant;
 
 use serde_json::Value;
@@ -77,7 +79,9 @@ pub(super) trait LeadProtocol: Send {
     /// returns its frame.
     fn send(&mut self, text: &str) -> Vec<u8>;
     /// True when a completed write is the CLI's acceptance. Otherwise the turn
-    /// waits for `Parsed::Accepted` (or `Handled`) from the stream.
+    /// waits for `Parsed::Accepted` (or `Handled`) from the stream. Asked
+    /// right after each `send`, so it may depend on that send (ACP: a send
+    /// held until the session opens is accepted once it is written).
     fn write_accepts(&self) -> bool {
         true
     }
@@ -117,6 +121,7 @@ pub(super) fn for_cli(cli: &str) -> Option<Box<dyn LeadProtocol>> {
         "claude" => Some(Box::new(super::claude::ClaudeStream::new(String::new()))),
         "codex" => Some(Box::new(super::codex::CodexAppServer::new())),
         "pi" => Some(Box::new(super::pi::PiRpc::installed()?)),
+        "cursor" => Some(Box::new(super::cursor::client())),
         _ => None,
     }
 }
@@ -127,6 +132,7 @@ pub(super) fn strings_for(cli: &str) -> Option<&'static Strings> {
         "claude" => Box::new(super::claude::ClaudeStream::new(String::new())),
         "codex" => Box::new(super::codex::CodexAppServer::new()),
         "pi" => Box::new(super::pi::PiRpc::new()),
+        "cursor" => Box::new(super::cursor::client()),
         _ => return None,
     };
     Some(protocol.strings())
