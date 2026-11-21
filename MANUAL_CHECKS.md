@@ -366,6 +366,13 @@ Automated validation: workspace tests (including `column` settings defaults, cla
 - [ ] A small window clamps the column so the terminal keeps 420px; growing the window brings the saved width back. Quit and relaunch keeps width and hidden state.
 - [ ] Light and dark, opaque and translucent, and full screen (button at the 18px inset with no traffic lights).
 
+## Sidebar cost during terminal typing
+
+A GPUI regression test with disposable app data and a terminal pane verifies that a terminal-only invalidation repaints the terminal without rebuilding the sidebar. Notifying Shika still rebuilds the sidebar. This tests redraw isolation, not macOS input-to-display latency.
+
+- [ ] Compare optimized builds before and after with the same window geometry, project list, appearance, and CLI. Test echoed input at an idle prompt, then repeat during steady output. Toggle Cmd+B in each build and compare lag spikes, not just average CPU. Use a plain shell as a control for CLI-specific echo delay.
+- [ ] With the sidebar visible, verify mouse hover and scrolling, selection reveal, resize, theme changes, Working pixels, and project promotion while the terminal is receiving output.
+
 ## Close after a branch switch, 2026-10-05
 
 Automated validation: all 204 workspace tests passed, including rename-then-PR-checkout recovery, protection across Close/Discard/Push, and distinguishing detached HEAD from a genuine git failure. Formatting and diff checks passed. The reported live worktree was inspected read-only; its checkout was not changed.

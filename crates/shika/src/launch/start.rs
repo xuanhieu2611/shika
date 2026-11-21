@@ -4,6 +4,10 @@
 //! core's answer: started, cancelled, setup failed, or failed.
 use super::*;
 
+#[cfg(test)]
+#[path = "sidebar_redraw_tests.rs"]
+mod sidebar_redraw_tests;
+
 /// Who a launch belongs to, read from what it starts.
 struct LaunchOwner {
     started_by: Option<String>,

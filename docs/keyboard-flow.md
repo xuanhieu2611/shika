@@ -229,13 +229,17 @@ While the panel has focus, its plain keys (`j`/`k`, arrows, `d`/`u`, Space, `g`/
 
 ### Selected-row visibility
 
-The sidebar div uses `track_scroll` with `sidebar_scroll`. `render()` compares selection with `last_revealed_selection`; only a changed selection attaches the invisible measurement canvas to the selected header/card.
+The sidebar div uses `track_scroll` with `sidebar_scroll`. `column::Sidebar::render` compares selection with `last_revealed_selection`; only a changed selection attaches the invisible measurement canvas to the selected header/card.
 
 During prepaint, `selection_reveal()` measures that row against the viewport, subtracting any project-reorder translation so it reveals the final layout position. `reveal_delta()` computes the smallest vertical adjustment needed, or zero if visible. The next-frame callback checks that selection still matches before changing the scroll offset and notifying the app. This avoids scrolling for a stale selection after rapid navigation.
 
 Do not run this on every redraw: terminal output and timer updates must not prevent the user from scrolling away from the selected card. The implementation currently keys reveal requests to selection identity, not status-driven reordering or window resizing.
 
 A successful Close records its replacement selection as already revealed. When a Lead's `shika close` returns selection to the Lead, the Lead is revealed as usual, because the dialog had scrolled to the worker. The exit only collapses that card's row and its leading gap; it does not reveal another row or reset manual scrolling. The scroll container still clamps its offset when the remaining content no longer fills the viewport.
+
+### Sidebar and terminal redraws
+
+The sidebar is a cached GPUI sibling of the terminal. A terminal-only notification (such as echo or streaming output) can reuse the sidebar's layout and paint instead of rebuilding the project and card tree. Shika's own notifications invalidate the sidebar, so changes to selection, cards, timers, and settings still update it. Resizing, sidebar interaction and animation, or a full window refresh can also rebuild it. This does not reduce terminal paint time or the CLI's own input/echo work.
 
 ## Debugging
 

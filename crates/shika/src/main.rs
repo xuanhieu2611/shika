@@ -167,6 +167,7 @@ struct Shika {
     /// The image was picked or removed, so the window's own background
     /// (opaque or transparent) changes on the next paint.
     window_backdrop_dirty: bool,
+    sidebar: Entity<column::Sidebar>,
     sidebar_scroll: gpui::ScrollHandle,
     /// The Settings row list's scroll offset and scrollbar drag.
     settings_ui: SettingsUi,
@@ -301,6 +302,7 @@ impl Shika {
             background,
             backdrop: background::Backdrop::default(),
             window_backdrop_dirty: false,
+            sidebar: column::Sidebar::new(cx),
             sidebar_scroll: gpui::ScrollHandle::new(),
             settings_ui: SettingsUi::default(),
             last_revealed_selection: None,
@@ -418,34 +420,17 @@ impl Render for Shika {
         let chrome = self.chrome(window);
         let backdrop = self.backdrop_layers(&chrome, window, cx);
         let home = home_dir();
-        let reveal_selection = *self.selection != self.last_revealed_selection;
-        self.last_revealed_selection = self.selection.clone();
         // The Changes panel follows the selected card. Closed, this is a no-op.
         self.sync_changes(cx);
         self.sync_checkout_selection(cx);
-        let projects = self.column_list(
-            &chrome,
-            home.as_deref(),
-            cards_focused,
-            reveal_selection,
-            cx,
-        );
         let (column_width, changes_width) = self.pane_widths(window);
-        let sidebar = column_width.map(|width| {
-            div()
-                .w(width)
-                .flex_shrink_0()
-                .h_full()
-                .overflow_hidden()
-                .flex()
-                .flex_col()
-                .bg(chrome.column)
-                .border_r_1()
-                .border_color(chrome.hairline)
-                .child(self.top_row(&chrome, window, cx))
-                .child(projects)
-                .child(self.footer(&chrome, width, cx))
-        });
+        if column_width.is_none() {
+            // Record project promotions even when there is no visible sidebar.
+            self.column_layout();
+            self.last_revealed_selection = self.selection.clone();
+        }
+        let sidebar =
+            column_width.map(|width| self.sidebar.clone().cached(column::sidebar_style(width)));
         let root = div().key_context("Shika");
         let mut root = Self::bind_drag_moves(Self::bind_actions(root, cx), cx)
             .relative()

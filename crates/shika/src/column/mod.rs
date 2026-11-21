@@ -7,6 +7,66 @@ mod projects;
 
 pub(crate) use card::*;
 
+/// A GPUI cache boundary: terminal echo dirties the terminal view, not this
+/// sibling. The sidebar still takes all of its state and actions from Shika.
+pub(crate) struct Sidebar {
+    owner: gpui::WeakEntity<Shika>,
+    _owner_changes: Subscription,
+}
+
+impl Sidebar {
+    pub(crate) fn new(cx: &mut Context<Shika>) -> Entity<Self> {
+        let owner = cx.entity();
+        cx.new(|cx: &mut Context<Self>| Self {
+            owner: owner.downgrade(),
+            _owner_changes: cx.observe(&owner, |_, _, cx| cx.notify()),
+        })
+    }
+}
+
+pub(crate) fn sidebar_style(width: Pixels) -> gpui::StyleRefinement {
+    gpui::StyleRefinement::default()
+        .w(width)
+        .h_full()
+        .flex_shrink_0()
+}
+
+impl Render for Sidebar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.owner
+            .update(cx, |owner, cx| {
+                let Some(width) = owner.column_width(window) else {
+                    return gpui::Empty.into_any_element();
+                };
+                let chrome = owner.chrome(window);
+                let home = home_dir();
+                let cards_focused = owner.focus.is_focused(window);
+                let reveal_selection = *owner.selection != owner.last_revealed_selection;
+                owner.last_revealed_selection = owner.selection.clone();
+                let projects = owner.column_list(
+                    &chrome,
+                    home.as_deref(),
+                    cards_focused,
+                    reveal_selection,
+                    cx,
+                );
+                div()
+                    .size_full()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .bg(chrome.column)
+                    .border_r_1()
+                    .border_color(chrome.hairline)
+                    .child(owner.top_row(&chrome, window, cx))
+                    .child(projects)
+                    .child(owner.footer(&chrome, width, cx))
+                    .into_any_element()
+            })
+            .unwrap_or_else(|_| gpui::Empty.into_any_element())
+    }
+}
+
 /// The drag on the agent column's edge. It draws nothing: the column itself
 /// follows the pointer.
 pub(crate) struct ColumnDrag;
