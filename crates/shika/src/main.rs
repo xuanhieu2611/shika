@@ -394,7 +394,7 @@ impl Focusable for Shika {
 }
 impl Render for Shika {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ensure_claude_lead_chats(window, cx);
+        self.ensure_saved_lead_chats(window, cx);
         self.sync_window_backdrop(window, cx);
         self.observe_dialog(Instant::now());
         let cards_focused = self.focus.is_focused(window);
@@ -475,12 +475,16 @@ impl Render for Shika {
     }
 }
 impl Shika {
-    /// Every project whose saved Lead runs Claude Code gets its Lead chat.
-    fn ensure_claude_lead_chats(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Every project whose saved Lead runs a chat CLI gets its Lead chat.
+    fn ensure_saved_lead_chats(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let chat_projects = self
             .projects
             .iter()
-            .filter(|p| p.lead.as_ref().is_some_and(|lead| lead.cli == "claude"))
+            .filter(|p| {
+                p.lead
+                    .as_ref()
+                    .is_some_and(|lead| shika_core::lead_chat_supported(&lead.cli))
+            })
             .map(|p| p.id.clone())
             .collect::<Vec<_>>();
         for project in chat_projects {

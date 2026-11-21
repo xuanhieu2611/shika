@@ -194,22 +194,48 @@ pub fn remove_draft(
 }
 
 pub(super) fn ensure_excluded(git: &Path, path_env: &str, repo: &Path) -> Result<()> {
+    add_exclude(
+        git,
+        path_env,
+        repo,
+        ".worktrees/",
+        &[".worktrees/", ".worktrees"],
+    )
+}
+
+/// Adds `pattern` to the repository's `info/exclude` unless it is there.
+/// Linked worktrees share that file, so a pattern anchored with `/` hides a
+/// path at the root of every worktree, the Lead's included.
+pub(crate) fn ensure_excluded_path(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    pattern: &str,
+) -> Result<()> {
+    add_exclude(git, path_env, repo, pattern, &[pattern])
+}
+
+fn add_exclude(
+    git: &Path,
+    path_env: &str,
+    repo: &Path,
+    pattern: &str,
+    present: &[&str],
+) -> Result<()> {
     let exclude = exclude_file(git, path_env, repo)?;
     let mut text = if exclude.exists() {
         fs::read_to_string(&exclude).map_err(|_| Error::Exclude)?
     } else {
         String::new()
     };
-    if text.lines().any(|line| {
-        let line = line.trim();
-        line == ".worktrees/" || line == ".worktrees"
-    }) {
+    if text.lines().any(|line| present.contains(&line.trim())) {
         return Ok(());
     }
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(".worktrees/\n");
+    text.push_str(pattern);
+    text.push('\n');
     if let Some(parent) = exclude.parent() {
         fs::create_dir_all(parent).map_err(|_| Error::Exclude)?;
     }

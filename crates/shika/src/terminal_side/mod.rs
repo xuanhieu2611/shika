@@ -22,7 +22,20 @@ impl Shika {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         if let Some(chat) = self.chat_side(chrome, window, cx) {
-            return chat;
+            // The chat stands where the terminal does, and so does the toast:
+            // a refused resume's fallback is announced there.
+            let Some((text, _)) = &self.toast else {
+                return chat;
+            };
+            return div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .child(chat)
+                .child(toast(text.clone(), chrome))
+                .into_any_element();
         }
         // With the column hidden, this row is the whole title bar: it starts
         // after the traffic lights with the wordmark and column toggle.

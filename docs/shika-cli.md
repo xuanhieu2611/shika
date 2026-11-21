@@ -459,7 +459,7 @@ Because of step 2 a `wait` returns immediately when everything is `waiting` or a
 
 ## The doorbell
 
-Claude Code Leads receive the same private line through their chat transport. A successful pipe write marks the batch rung; visible keyed Shika event rows replace the terminal paste, with no author bubble. Draft/typing/wait/ownership gates and delivery accounting are unchanged. Other Leads keep the terminal path described below. No command or protocol change is required; see [Lead chat](lead-chat.md).
+Chat Leads (Claude Code, Codex, Pi, Cursor CLI) receive the same private line through their chat transport. A successful pipe write marks the batch rung; visible keyed Shika event rows replace the terminal paste, with no author bubble. Draft/typing/wait/ownership gates and delivery accounting are unchanged. The terminal delivery described below is kept for a Lead on a CLI without a chat adapter; every CLI in this build has one. No command or protocol change is required; see [Lead chat](lead-chat.md).
 
 A Lead that ends its turn cannot notice workers finishing. Shika rings for it: it submits one line into the Lead's terminal, as if the author typed it.
 

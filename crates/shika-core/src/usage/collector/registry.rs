@@ -19,8 +19,18 @@ use crate::cli_title::{self, CliHome};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "cli", rename_all = "lowercase", deny_unknown_fields)]
 pub(super) enum Target {
-    Claude { directories: Vec<PathBuf> },
-    Codex { root: PathBuf, cwds: Vec<PathBuf> },
+    Claude {
+        directories: Vec<PathBuf>,
+    },
+    /// Threads started in one of `cwds` as `cli` (a terminal agent), plus the
+    /// `threads` named by id: a chat Codex Lead's app-server indexes its
+    /// threads as `vscode`, so only its reported id finds them.
+    Codex {
+        root: PathBuf,
+        cwds: Vec<PathBuf>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        threads: Vec<String>,
+    },
 }
 
 impl Target {
@@ -36,6 +46,7 @@ impl Target {
             "codex" => Some(Self::Codex {
                 root: cwd.join(home.codex_root()),
                 cwds: forms,
+                threads: Vec::new(),
             }),
             _ => None,
         }
@@ -55,11 +66,20 @@ impl Target {
                     path(&mut digest, directory);
                 }
             }
-            Self::Codex { root, cwds } => {
+            Self::Codex {
+                root,
+                cwds,
+                threads,
+            } => {
                 digest.update(b"codex");
                 path(&mut digest, root);
                 for cwd in cwds {
                     path(&mut digest, cwd);
+                }
+                // Absent before thread roots existed, so older ids stay.
+                for thread in threads {
+                    digest.update(b"thread");
+                    path(&mut digest, Path::new(thread));
                 }
             }
         }

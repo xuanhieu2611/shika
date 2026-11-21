@@ -377,6 +377,46 @@ impl ChatStore {
         ])?;
         Ok(())
     }
+    /// Whether `conversation` of `cli` last received exactly `instructions`,
+    /// as `set_instructed` recorded. For a CLI that keeps a conversation's
+    /// instructions from its creation (Codex), so a resume sends new ones only
+    /// when they changed.
+    pub fn instructed(&self, cli: &str, conversation: &str, instructions: &str) -> bool {
+        let saved: Option<String> = self
+            .db
+            .query_row(
+                "SELECT value FROM metadata WHERE key='instructions'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        saved.is_some_and(|saved| saved == instructed_value(cli, conversation, instructions))
+    }
+    /// Records that the conversation now holds `instructions`. Only a
+    /// fingerprint is kept, never the text.
+    pub fn set_instructed(
+        &mut self,
+        cli: &str,
+        conversation: &str,
+        instructions: &str,
+    ) -> ChatResult<()> {
+        self.db
+            .execute(
+                "INSERT OR REPLACE INTO metadata VALUES ('instructions',?1)",
+                [instructed_value(cli, conversation, instructions)],
+            )
+            .map(|_| ())
+            .map_err(failure)
+    }
+}
+
+/// `[cli, conversation, md5 of the instructions]` as JSON.
+fn instructed_value(cli: &str, conversation: &str, instructions: &str) -> String {
+    use md5::{Digest, Md5};
+    let digest = format!("{:x}", Md5::digest(instructions.as_bytes()));
+    serde_json::to_string(&(cli, conversation, digest)).expect("JSON strings")
 }
 
 pub(crate) fn delete(data: &Path, project: &str) -> ChatResult<()> {
@@ -398,6 +438,31 @@ pub(crate) fn delete(data: &Path, project: &str) -> ChatResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delivered_instructions_are_a_fingerprint_bound_to_the_conversation() {
+        let dir = std::env::temp_dir().join(format!("shika-chat-{}", crate::control::new_token()));
+        fs::create_dir(&dir).unwrap();
+        let mut store = ChatStore::open(&dir, "p").unwrap();
+        assert!(!store.instructed("codex", "t1", "guide"));
+        store.set_instructed("codex", "t1", "guide").unwrap();
+        drop(store);
+        let store = ChatStore::open(&dir, "p").unwrap();
+        assert!(store.instructed("codex", "t1", "guide"));
+        assert!(!store.instructed("codex", "t1", "guide plus a note"));
+        assert!(!store.instructed("codex", "t2", "guide"));
+        assert!(!store.instructed("cursor", "t1", "guide"));
+        let saved: String = store
+            .db
+            .query_row(
+                "SELECT value FROM metadata WHERE key='instructions'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!saved.contains("guide"), "{saved}");
+        assert!(store.page(None, 60).unwrap().is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn a_turn_the_cli_started_recovers_as_an_interrupted_reply() {
         let dir = std::env::temp_dir().join(format!("shika-chat-{}", crate::control::new_token()));

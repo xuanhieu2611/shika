@@ -74,7 +74,8 @@ pub(super) struct LeadRun {
     /// What became of a resumed Lead that exited early (see
     /// [`model::ResumeExit`]), until the app has acted on it.
     pub(super) resume_exit: Option<model::ResumeExit>,
-    /// Looking for the conversation id the CLI picks (Codex).
+    /// Looking for the conversation id the CLI picks (a terminal Codex
+    /// Lead). A chat Lead's handshake reports it instead.
     discovery: Option<model::Discovery>,
     /// The restart summary, until it has been typed into the Lead.
     pub(super) summary: Option<RestartSummary>,
@@ -88,7 +89,7 @@ pub(super) struct RestartSummary {
 }
 
 impl LeadRun {
-    pub(super) fn new(start: &shika_core::LeadStart, now: Instant) -> Self {
+    pub(super) fn new(start: &shika_core::LeadStart, chat: bool, now: Instant) -> Self {
         let resumed = start.conversation == shika_core::LeadConversation::Resumed;
         let branches = start
             .lost_workers
@@ -99,9 +100,10 @@ impl LeadRun {
             resumed_at: resumed.then_some(now),
             unexpected_exit: false,
             resume_exit: None,
-            // Codex picks its own conversation id, and only once the first
-            // message is submitted.
-            discovery: (start.session.preset_id == "codex" && !resumed)
+            // A terminal Codex picks its own conversation id, and only once
+            // the first message is submitted. A chat Lead of any CLI gets
+            // its id from the protocol (`Core::confirm_lead_chat`).
+            discovery: (!chat && start.session.preset_id == "codex" && !resumed)
                 .then(|| model::Discovery::new(start.started_at, now)),
             summary: model::restart_summary(
                 &branches,
@@ -872,5 +874,68 @@ impl Shika {
         } else {
             buttons.child(yes)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shika_core::{LeadConversation, LeadStart, LeadWorktree, Session, SessionKind};
+
+    fn start(cli: &str, conversation: LeadConversation) -> LeadStart {
+        LeadStart {
+            session: Session {
+                id: "1".into(),
+                project_id: "p".into(),
+                preset_id: cli.into(),
+                preset_name: cli.into(),
+                title: "Lead".into(),
+                manual_title: false,
+                branch: String::new(),
+                repo: "/repo".into(),
+                worktree: "/repo/.worktrees/shika-lead".into(),
+                base_ref: None,
+                pty: None,
+                shell_ptys: Vec::new(),
+                cli_titled: false,
+                prompt_named: false,
+                agent_started: std::time::UNIX_EPOCH,
+                kind: SessionKind::Lead,
+                started_by: None,
+            },
+            conversation,
+            worktree: LeadWorktree::Unchanged,
+            lost_workers: Vec::new(),
+            bootstrap_sent: false,
+            started_at: std::time::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn only_a_fresh_terminal_codex_lead_looks_for_its_conversation_id() {
+        let fresh = LeadConversation::Fresh(shika_core::FreshReason::NoSavedSession);
+        let now = Instant::now();
+        assert!(
+            LeadRun::new(&start("codex", fresh), false, now)
+                .discovery
+                .is_some()
+        );
+        // A chat Lead's protocol reports its id, whatever the CLI.
+        for cli in ["codex", "claude", "pi", "cursor"] {
+            assert!(
+                LeadRun::new(&start(cli, fresh), true, now)
+                    .discovery
+                    .is_none()
+            );
+        }
+        for cli in ["claude", "pi", "cursor"] {
+            assert!(
+                LeadRun::new(&start(cli, fresh), false, now)
+                    .discovery
+                    .is_none()
+            );
+        }
+        let resumed = start("codex", LeadConversation::Resumed);
+        assert!(LeadRun::new(&resumed, false, now).discovery.is_none());
     }
 }

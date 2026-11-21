@@ -66,10 +66,9 @@ impl Shika {
             .projects
             .iter()
             .filter(|project| {
-                project
-                    .lead
-                    .as_ref()
-                    .is_some_and(|lead| lead.cli == "claude" && lead.chat_history.is_some())
+                project.lead.as_ref().is_some_and(|lead| {
+                    shika_core::lead_chat_supported(&lead.cli) && lead.chat_history.is_some()
+                })
             })
             .map(|project| project.id.clone())
             .collect();

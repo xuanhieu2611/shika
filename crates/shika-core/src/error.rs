@@ -92,6 +92,12 @@ pub enum Error {
 
     #[error("That CLI is not available.")]
     UnknownCli,
+    /// A chat Lead needs a CLI at least as new as the one its chat protocol
+    /// was verified with, and this one is older or its version unreadable.
+    #[error(
+        "A chat Lead needs {name} {minimum} or later. Update {name}, then start the Lead again."
+    )]
+    ChatCliTooOld { name: String, minimum: String },
     #[error("{0} was not found.")]
     CliNotFound(String),
     #[error("That conversation is gone.")]

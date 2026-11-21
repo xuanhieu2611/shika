@@ -14,6 +14,35 @@ const MAX_REPORT_BYTES: u64 = 128;
 const EXTENSION: &str = include_str!("pi-activity.ts");
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+/// A new folder only this user can open, `<root>/<prefix>-<pid>-<id>-<n>`,
+/// never one that already exists. `root` is resolved first.
+pub(crate) fn private_dir(root: &Path, prefix: &str) -> io::Result<PathBuf> {
+    let root = fs::canonicalize(root)?;
+    loop {
+        let directory = root.join(format!(
+            "{prefix}-{}-{}-{}",
+            std::process::id(),
+            crate::session::new_id(&[]),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match fs::DirBuilder::new().mode(0o700).create(&directory) {
+            Ok(()) => return Ok(directory),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Writes a new file only this user can read; an existing `path` is an error.
+pub(crate) fn write_private(path: &Path, contents: &str) -> io::Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    std::io::Write::write_all(&mut file, contents.as_bytes())
+}
+
 /// Latest authoritative lifecycle report, not a history of transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,38 +79,18 @@ impl ActivityBridge {
     }
 
     fn install_in(root: &Path) -> io::Result<Self> {
-        let root = fs::canonicalize(root)?;
-        let bridge = loop {
-            let directory = root.join(format!(
-                "shika-pi-activity-{}-{}-{}",
-                std::process::id(),
-                crate::session::new_id(&[]),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match fs::DirBuilder::new().mode(0o700).create(&directory) {
-                Ok(()) => {
-                    break Self(Arc::new(Bridge {
-                        directory,
-                        active: AtomicBool::new(true),
-                        latest: Mutex::new(None),
-                    }));
-                }
-                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(err) => return Err(err),
-            }
-        };
+        let bridge = Self(Arc::new(Bridge {
+            directory: private_dir(root, "shika-pi-activity")?,
+            active: AtomicBool::new(true),
+            latest: Mutex::new(None),
+        }));
         if bridge.extension_path().to_str().is_none() || bridge.metadata_path().to_str().is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Pi extension path is not UTF-8",
             ));
         }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(bridge.extension_path())?;
-        std::io::Write::write_all(&mut file, EXTENSION.as_bytes())?;
+        write_private(&bridge.extension_path(), EXTENSION)?;
         Ok(bridge)
     }
 

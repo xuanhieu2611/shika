@@ -289,6 +289,16 @@ impl LeadChat {
         self.newer = false;
         cx.notify();
     }
+    /// A start finished: the Lead takes messages again, and a failure shown
+    /// for the process before it, such as an unexpected exit, is stale. A
+    /// save failure stays until Retry save.
+    pub fn went_live(&mut self) {
+        self.live = true;
+        self.busy = false;
+        if !self.save_failed {
+            self.error = None;
+        }
+    }
     /// How many messages wait for the Lead.
     pub fn queued_len(&self) -> usize {
         self.queue.len()

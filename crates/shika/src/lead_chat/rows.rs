@@ -292,5 +292,8 @@ fn message_width(message: &Message, window: &mut Window) -> f32 {
             return 480.;
         }
     }
-    (width + 40.).clamp(44., 480.)
+    // Layout snaps the bubble to whole pixels, which can leave the text a
+    // fraction narrower than measured and wrap its last word ("NO TOOL" on
+    // two lines): round up with a pixel to spare.
+    (width.ceil() + 1. + 40.).clamp(44., 480.)
 }

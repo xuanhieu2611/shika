@@ -42,7 +42,7 @@ No `cost-state`, `stats-cache.json`, provider price table, or usage network endp
 
 ### Codex
 
-Open the newest `state_<n>.sqlite` read-only, with a 200ms busy wait and a query execution progress deadline. Find all CLI threads for the registered cwd, then descendants through `thread_spawn_edges`, including children in another cwd. Where that table is absent, readable CLI-root totals are kept with a visible ownership/discovery gap; cwd alone cannot prove a child's ownership. Editor and independent exec threads are not roots.
+Open the newest `state_<n>.sqlite` read-only, with a 200ms busy wait and a query execution progress deadline. Find all CLI threads for the registered cwd, then descendants through `thread_spawn_edges`, including children in another cwd. Where that table is absent, readable CLI-root totals are kept with a visible ownership/discovery gap; cwd alone cannot prove a child's ownership. Editor and independent exec threads are not roots. A Codex chat Lead is the exception: `codex app-server` indexes its thread with `source = 'vscode'`, which the cwd query skips, so the Lead's source names the thread itself (`threads` in the target, registered by the chat actor once `thread/start` or `thread/resume` reports the id) and that thread plus its spawned children are read the same way. A resumed terminal-era thread keeps `source = 'cli'`. See [lead-chat.md](lead-chat.md#codex).
 
 The database is only a rollout-path index. Stream `token_usage_record.payload`, deduplicate by `response_id`, and count `usage.total_tokens`. Do not add cached-input or reasoning subsets again. A copied receipt whose `thread_id` differs from its rollout's thread is inherited history, not newly consumed tokens.
 

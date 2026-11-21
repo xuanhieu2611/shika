@@ -84,7 +84,7 @@ impl Core {
         let lead = self
             .sessions
             .get(id)
-            .filter(|s| s.is_lead() && s.preset_id == "claude")
+            .filter(|s| s.is_lead() && crate::lead_transport::chat_cli(&s.preset_id).is_some())
             .ok_or(Error::UnknownSession)?;
         if !self
             .chats
@@ -99,14 +99,14 @@ impl Core {
             .get(&lead.project_id)?
             .lead
             .ok_or(Error::NoSavedLead)?;
-        if saved.cli != "claude"
+        if saved.cli != lead.preset_id
             || saved
                 .session_id
                 .as_ref()
                 .is_some_and(|saved| saved != conversation)
         {
             return Err(Error::LeadChat(
-                "Claude Code returned a different conversation".into(),
+                crate::lead_transport::other_conversation(&lead.preset_id).into(),
             ));
         }
         self.projects

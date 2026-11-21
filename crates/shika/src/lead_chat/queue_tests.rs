@@ -149,6 +149,39 @@ fn stop_and_an_unexpected_exit_put_the_queue_back_in_the_composer(cx: &mut TestA
     assert!(composer_text(&chat, cx).ends_with("later"));
 }
 
+/// The exit line belongs to the process that exited: once a start makes
+/// the Lead live again (a resume, or the fresh start after a refused one),
+/// it goes. A save failure stays until Retry save.
+#[gpui::test]
+fn going_live_again_clears_the_exit_line_but_not_a_save_failure(cx: &mut TestAppContext) {
+    let cx = cx.add_empty_window();
+    let chat = make(cx);
+    chat.update(cx, |c, cx| {
+        c.live = true;
+        c.receive(
+            ChatEvent::Error("Codex could not resume this conversation".into()),
+            cx,
+        );
+        c.receive(ChatEvent::Exit, cx);
+    });
+    assert_eq!(
+        chat.read_with(cx, |c, _| c.error.clone()).as_deref(),
+        Some("The Lead stopped unexpectedly")
+    );
+    chat.update(cx, |c, _| c.went_live());
+    assert_eq!(
+        chat.read_with(cx, |c, _| (c.live, c.error.clone())),
+        (true, None)
+    );
+
+    chat.update(cx, |c, cx| c.receive(ChatEvent::SaveFailed, cx));
+    chat.update(cx, |c, _| c.went_live());
+    assert_eq!(
+        chat.read_with(cx, |c, _| c.error.clone()).as_deref(),
+        Some("Could not save this conversation")
+    );
+}
+
 #[gpui::test]
 fn queued_messages_take_room_after_the_history_and_leave_following_alone(cx: &mut TestAppContext) {
     let cx = cx.add_empty_window();

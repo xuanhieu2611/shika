@@ -2,7 +2,7 @@
 //! See docs/token-usage.md for recovery, provider limits, and resource bounds.
 
 mod collector;
-pub(crate) use collector::{Collector, Source};
+pub(crate) use collector::{CodexThreads, Collector, Source};
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};

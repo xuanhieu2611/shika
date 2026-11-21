@@ -1,0 +1,9 @@
+{"from": "shika", "frame": {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}, "clientInfo": {"name": "shika-probe", "version": "0.0.0"}}}}
+{"from": "agent", "frame": {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true, "mcpCapabilities": {"http": true, "sse": true}, "promptCapabilities": {"audio": false, "embeddedContext": false, "image": true}, "sessionCapabilities": {"list": {}}}, "authMethods": [{"id": "cursor_login", "name": "Cursor Login", "description": "Authenticate using existing Cursor login credentials. Run 'agent login' first if not logged in."}]}}}
+{"from": "shika", "frame": {"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {"cwd": "/fixture/repo", "mcpServers": []}}}
+{"from": "agent", "frame": {"jsonrpc": "2.0", "id": 2, "error": {"code": -32603, "message": "Internal error", "data": {"message": "Failed to initialize session services"}}}}
+{"from": "shika", "frame": {"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": {"sessionId": "00000000-0000-4000-8000-000000000000", "prompt": [{"type": "text", "text": "hi"}]}}}
+{"from": "agent", "frame": {"jsonrpc": "2.0", "id": 3, "error": {"code": -32603, "message": "Internal error", "data": {"details": "Session 00000000-0000-4000-8000-000000000000 not found"}}}}
+{"from": "shika", "frame": {"jsonrpc": "2.0", "id": 4, "method": "session/prompt", "params": {"sessionId": "00000000-0000-4000-8000-000000000000", "prompt": [{"type": "text", "text": "Reply with the word ok."}]}}}
+{"from": "agent", "frame": {"jsonrpc": "2.0", "id": 4, "error": {"code": -32603, "message": "Internal error", "data": {"details": "Session 00000000-0000-4000-8000-000000000000 not found"}}}}
+{"from": "process", "event": "exit", "code": 0, "how": "stdin-closed", "secondsAfterStdinClose": 0.658}
