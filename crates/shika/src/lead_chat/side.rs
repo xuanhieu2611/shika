@@ -3,8 +3,8 @@
 use super::{ANTLERS_ICON, LeadChat, WorkerSummary};
 use crate::{Chrome, Selection, Shika, Status, appearance};
 use gpui::{
-    Context, Entity, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, Window, div, prelude::FluentBuilder, px,
+    AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 
 impl Shika {
@@ -44,7 +44,9 @@ impl Shika {
             .map_or("", |p| p.name.as_str())
             .to_string();
         let live = self.selected_card().is_some_and(|i| self.cards[i].chat);
-        let workers = chat.read(cx).workers;
+        let state = chat.read(cx);
+        let workers = state.workers;
+        let model = live.then(|| state.model.clone()).flatten();
         let header = div()
             .h(px(crate::BAR_HEIGHT))
             .flex_none()
@@ -67,8 +69,38 @@ impl Shika {
             })
             .when(!self.column.hidden, |d| d.pl(px(20.)))
             .child(lead_mark_badge(chrome))
-            .child(lead_title(chrome, project_name))
+            .child(lead_title(chrome, project_name, live, model))
             .when(live, |d| d.child(worker_summary(chrome, workers)))
+            .when(!live, |d| {
+                let focus = chat.read(cx).model_focus.clone();
+                let project = project.clone();
+                d.child(
+                    crate::secondary_button("lead-chat-model", chrome)
+                        .child("Choose model…")
+                        .when(focus.is_focused(window), |d| d.border_color(chrome.focus))
+                        .track_focus(&focus)
+                        .role(gpui::Role::Button)
+                        .on_key_down(cx.listener({
+                            let project = project.clone();
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                match event.keystroke.key.as_str() {
+                                    "enter" | "space" => {
+                                        this.lead_picker(project.clone(), window, cx)
+                                    }
+                                    "tab" if event.keystroke.modifiers.shift => {
+                                        window.focus_prev(cx)
+                                    }
+                                    "tab" => window.focus_next(cx),
+                                    _ => return,
+                                }
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.lead_picker(project.clone(), window, cx)
+                        })),
+                )
+            })
             .child(Self::lead_header_button(chrome, &chat, live, project, cx));
         Some(
             div()
@@ -153,32 +185,65 @@ fn lead_mark_badge(chrome: &Chrome) -> gpui::Div {
 }
 
 /// "{project} Lead": the project name, truncated, then "Lead".
-fn lead_title(chrome: &Chrome, project_name: String) -> gpui::Div {
+fn lead_title(
+    chrome: &Chrome,
+    project_name: String,
+    live: bool,
+    model: Option<String>,
+) -> gpui::Div {
+    let label = model.as_deref().unwrap_or("Model not reported").to_owned();
+    let bg = chrome.toast_bg;
+    let fg = chrome.toast_fg;
     div()
         .flex_1()
         .min_w_0()
         .flex()
-        .items_center()
-        .gap(px(4.))
-        .text_size(px(14.))
-        .line_height(px(20.))
+        .flex_col()
         .child(
             div()
                 .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(chrome.ink_1)
-                .child(project_name),
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(px(14.))
+                .line_height(px(20.))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(chrome.ink_1)
+                        .child(project_name),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(chrome.ink_3)
+                        .child("Lead"),
+                ),
         )
-        .child(
-            div()
-                .flex_none()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(chrome.ink_3)
-                .child("Lead"),
-        )
+        .when(live, |d| {
+            d.child(
+                div()
+                    .id("lead-model-label")
+                    .min_w_0()
+                    .truncate()
+                    .font_family(crate::MONO)
+                    .text_size(px(11.5))
+                    .line_height(px(14.))
+                    .text_color(chrome.ink_3)
+                    .child(label.clone())
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| crate::ui::KeyTip {
+                            bg,
+                            fg,
+                            text: label.clone().into(),
+                        })
+                        .into()
+                    }),
+            )
+        })
 }
 
 /// A live Lead's workers: the most urgent status dot and the counts.

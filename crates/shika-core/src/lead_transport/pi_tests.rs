@@ -23,6 +23,7 @@ fn launch(conversation: &str) -> ChatLaunch {
         path: String::new(),
         env: Vec::new(),
         instructions: "Fixture instructions.".into(),
+        model: None,
         notes: Vec::new(),
         conversation: conversation.into(),
         resumed: false,
@@ -464,6 +465,38 @@ fn handled_prompts_settle_with_no_bubble_and_a_run_pi_starts_is_a_turn() {
 }
 
 #[test]
+fn model_override_must_match_pi_state_before_a_prompt_is_written() {
+    let mut launch = launch(SESSION);
+    launch.model = Some("test-provider/test-model".into());
+    for (id, matches) in [("test-model", true), ("fallback-model", false)] {
+        let mut pi = PiRpc::new();
+        assert!(
+            pi.args(&launch)
+                .ends_with(&["--model".into(), "test-provider/test-model".into()])
+        );
+        pi.handshake(&launch);
+        assert!(pi.send("wait for the requested model").is_empty());
+        let reply = line(
+            json!({"id": STATE, "type": "response", "command": "get_state", "success": true,
+            "data": {"sessionId": SESSION, "model": {"provider": "test-provider", "id":id}}}),
+        );
+        let parsed = pi.parse(&reply);
+        if matches {
+            assert_eq!(parsed, Parsed::Ignore);
+            assert_eq!(
+                pi.poll(Instant::now()),
+                Parsed::Model("test-provider/test-model".into())
+            );
+            assert!(matches!(pi.poll(Instant::now()), Parsed::Reply(_)));
+        } else {
+            assert!(matches!(parsed, Parsed::Fatal(_)));
+            assert!(!pi.ready());
+            assert_eq!(pi.poll(Instant::now()), Parsed::Ignore);
+        }
+    }
+}
+
+#[test]
 fn a_resume_and_a_missing_id_report_the_session_shika_passed() {
     let replay = Replay::run(
         include_str!("../../tests/fixtures/pi-1.4.0-resume-local.jsonl"),
@@ -475,7 +508,14 @@ fn a_resume_and_a_missing_id_report_the_session_shika_passed() {
     let missing = include_str!("../../tests/fixtures/pi-1.4.0-resume-missing-local.jsonl");
     let replay = Replay::run(missing, MISSING);
     assert!(replay.pi.ready());
-    assert!(replay.parsed.is_empty() || replay.count(|p| *p != Parsed::Ignore) == 0);
+    assert_eq!(
+        replay.count(|p| *p == Parsed::Model("synthetic/synthetic-model".into())),
+        1
+    );
+    assert_eq!(
+        replay.count(|p| !matches!(p, Parsed::Ignore | Parsed::Model(_))),
+        0
+    );
     let mut pi = PiRpc::new();
     pi.handshake(&launch(SESSION));
     let response = missing.lines().nth(1).unwrap().as_bytes();

@@ -23,6 +23,7 @@ fn launch(conversation: &str, instructions: &str, instructed: bool) -> ChatLaunc
         path: String::new(),
         env: Vec::new(),
         instructions: instructions.into(),
+        model: None,
         notes: Vec::new(),
         conversation: conversation.into(),
         resumed: !conversation.is_empty(),
@@ -210,7 +211,8 @@ fn normal_turns_publish_only_the_final_answer_with_phase_and_the_last_message_wi
     // Identity from `thread/start`, held by the instructions it was given;
     // each of our turns acknowledged and confirmed, none started by Codex.
     assert_eq!(replay.parsed[2], Parsed::Identity(THREAD.into()));
-    assert_eq!(replay.parsed[3], Parsed::Instructed);
+    assert_eq!(replay.parsed[3], Parsed::Model("gpt-5".into()));
+    assert_eq!(replay.parsed[4], Parsed::Instructed);
     assert_eq!(replay.count(|p| *p == Parsed::Accepted), 2);
     assert_eq!(replay.count(|p| *p == Parsed::Confirmed), 2);
     assert_eq!(replay.count(|p| *p == Parsed::Started), 0);
@@ -508,6 +510,7 @@ fn changed_instructions_reach_a_resumed_thread_before_the_first_turn() {
         Parsed::Identity(THREAD.into())
     );
     assert!(!codex.ready());
+    assert!(matches!(codex.poll(Instant::now()), Parsed::Model(_)));
     let Parsed::Reply(inject) = codex.poll(Instant::now()) else {
         panic!("the instructions go first");
     };
@@ -531,6 +534,31 @@ fn changed_instructions_reach_a_resumed_thread_before_the_first_turn() {
         codex.parse(br#"{"id":4,"result":{"turn":{"id":"t"}}}"#),
         Parsed::Accepted
     );
+}
+
+#[test]
+fn model_override_is_sent_on_start_and_resume_and_report_uses_the_response() {
+    for (conversation, method) in [("", "thread/start"), (THREAD, "thread/resume")] {
+        let mut codex = CodexAppServer::new();
+        let mut launch = launch(conversation, "guide", true);
+        launch.model = Some("requested-model".into());
+        codex.handshake(&launch);
+        let Parsed::Reply(bytes) = codex.parse(br#"{"id":1,"result":{}}"#) else {
+            panic!("expected the thread request");
+        };
+        let frames = frame(&bytes);
+        assert_eq!(frames[1]["method"], method);
+        assert_eq!(frames[1]["params"]["model"], "requested-model");
+        let reply = json!({"id":2,"result":{"thread":{"id":THREAD},"model":"resolved-model"}});
+        assert_eq!(
+            codex.parse(&serde_json::to_vec(&reply).unwrap()),
+            Parsed::Identity(THREAD.into())
+        );
+        assert_eq!(
+            codex.poll(Instant::now()),
+            Parsed::Model("resolved-model".into())
+        );
+    }
 }
 
 #[test]

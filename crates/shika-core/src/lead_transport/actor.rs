@@ -674,6 +674,7 @@ impl Actor {
             Parsed::Started if self.turn.is_none() => self.start_cli_turn(),
             Parsed::Confirmed | Parsed::Started => self.confirm(),
             Parsed::Identity(id) => self.identity(id),
+            Parsed::Model(model) => self.emit(ChatEvent::Model(model)),
             Parsed::Reply(bytes) => self.reply(&bytes),
             Parsed::Accepted => self.acknowledge(),
             Parsed::Handled if self.turn.is_some() => {

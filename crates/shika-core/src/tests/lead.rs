@@ -64,6 +64,7 @@ fn a_lead_is_a_fixed_detached_worktree_with_its_env_and_no_branch() {
             cli: "claude".into(),
             session_id: Some(session_id),
             reported_workers: Vec::new(),
+            model: None,
             chat_history: None,
         })
     );

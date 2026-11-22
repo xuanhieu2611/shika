@@ -86,6 +86,7 @@ struct Dialog {
 pub(super) struct PiRpc {
     extension: Option<Extension>,
     expected: String,
+    model: Option<String>,
     /// This process was started to continue a saved session.
     resumed: bool,
     ready: bool,
@@ -116,6 +117,7 @@ impl PiRpc {
         Self {
             extension: None,
             expected: String::new(),
+            model: None,
             resumed: false,
             ready: false,
             prompts: 0,
@@ -182,6 +184,22 @@ impl PiRpc {
             Some(id) if id == self.expected => {
                 if self.resumed && v["data"]["messageCount"].as_u64() == Some(0) {
                     return Parsed::Fatal(NOT_RESUMED);
+                }
+                let model = &v["data"]["model"];
+                let id = super::reported_model(&model["id"]);
+                let qualified = super::reported_model(&model["provider"])
+                    .zip(id)
+                    .map(|(provider, id)| format!("{provider}/{id}"));
+                if let Some(requested) = self.model.as_deref()
+                    && Some(requested) != id
+                    && Some(requested) != qualified.as_deref()
+                {
+                    return Parsed::Fatal(
+                        "Pi could not select this model. Use an exact ID from pi --list-models.",
+                    );
+                }
+                if let Some(model) = qualified.or_else(|| id.map(str::to_owned)) {
+                    self.queued.push_back(Parsed::Model(model));
                 }
                 self.ready = true;
                 if let Turn::Deferred(text) = &self.turn {
@@ -561,6 +579,9 @@ impl LeadProtocol for PiRpc {
             "--append-system-prompt".into(),
             launch.instructions.clone(),
         ]);
+        if let Some(model) = &launch.model {
+            args.extend(["--model".into(), model.clone()]);
+        }
         args
     }
     fn handshake(&mut self, launch: &ChatLaunch) -> Vec<u8> {
@@ -568,6 +589,7 @@ impl LeadProtocol for PiRpc {
         *self = Self {
             extension,
             expected: launch.conversation.clone(),
+            model: launch.model.clone(),
             resumed: launch.resumed,
             ..Self::new()
         };

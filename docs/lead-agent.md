@@ -49,6 +49,14 @@ Shika's version differs from those on purpose:
 
 ## User-facing contract
 
+### Choose a Lead model
+
+In **New Lead** (`Cmd+L` for a project without a Lead), select a CLI and open **Model** by clicking it or pressing `m`. Pick a listed model with a click, or move with Up/Down and press Enter. Then press Enter again or click Start. **CLI default** lets the CLI choose, which can include a model restored from a saved conversation. **Enter model ID…** works for unlisted models or if the CLI cannot provide a list. For a custom Pi model use an exact `provider/model-id`. This applies to the Lead only, not its workers.
+
+The chat header shows the model ID the CLI reports, even with no override. Claude Code first reports it when a turn starts. Auto-routing modes may report their mode name, not the physical model behind each response.
+
+Shika saves the override with the project's Lead and reuses it on Resume. To change or clear it, **Stop** the Lead without forgetting it, then click **Choose model…** in the resting chat header. Keeping the same CLI keeps its conversation, if available. Starting with a different CLI starts a new conversation.
+
 - **Start.** The author starts a Lead for a project with any found CLI (Cmd+L or Agent > New Lead, then the picker). A project has at most one live Lead, and the Lead is instant: its instructions are the CLI's system prompt, so it starts idle (Waiting) with no turn and nothing typed into it. Every Lead is a chat and none has a turn at start. (A terminal Cursor Lead, which the app no longer starts, had no system prompt flag and got a bootstrap prompt as its first submission; core still says so with `LeadStart::bootstrap_sent`.)
 - **A Lead outlives the app.** Shika saves which CLI the Lead ran in and the CLI's conversation id in `projects.json`. A project with a saved Lead and no live one shows a **resting Lead** row in the Leads section: the project name, then the CLI name and "Lead", no signal, and the hint `↵ resume` when selected with the cards focused. It is a stop for `j` / `k`, Cmd+] / Cmd+[, and Go to agent N, in row order with the live Leads. Selecting it shows "{project} Lead is not running" in the terminal area.
 - **Resume.** Enter on the selected resting row, a click on the row, a click on the resting terminal area, Cmd+L (Agent > New Lead) for a project with a saved Lead, and `show_lead` all start it in the saved CLI with no picker, select the new Lead card, and focus its terminal. Core resumes the conversation when the CLI still has it and otherwise starts a new one. If the saved CLI is not found or is turned off in Settings, the Lead picker opens for that project instead; another CLI starts a fresh conversation (`CliChanged`). The picker is used only when there is no saved Lead (or that CLI is unavailable).

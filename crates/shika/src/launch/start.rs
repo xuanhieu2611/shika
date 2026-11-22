@@ -696,6 +696,7 @@ mod tests {
             bin_dir: "/tmp/bin".into(),
             instructions: "Lead".into(),
             cursor_bootstrap: None,
+            model: None,
         }
     }
 

@@ -348,6 +348,7 @@ impl Shika {
                 index: 0,
                 mode: crate::PickerMode::Task,
                 prompt: None,
+                lead_model: None,
                 error: None,
             }),
         };

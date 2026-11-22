@@ -66,6 +66,7 @@ fn the_launch_forces_runs_and_trusts_without_the_ignored_yolo() {
         path: String::new(),
         env: Vec::new(),
         instructions: String::new(),
+        model: None,
         notes: Vec::new(),
         conversation: String::new(),
         resumed: false,

@@ -46,6 +46,9 @@ pub struct SavedLead {
     /// or when Cursor's `create-chat` failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Explicit model override; missing lets the CLI choose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Worktrees of workers this Lead started before a relaunch that the
     /// restart summary already named, so a later relaunch does not repeat
     /// them. Pruned when the worktree no longer exists.

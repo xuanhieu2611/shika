@@ -402,6 +402,7 @@ fn a_saved_terminal_pi_lead_resumes_its_session_in_chat_with_empty_history() {
                 cli: "pi".into(),
                 session_id: Some(SAVED.into()),
                 reported_workers: Vec::new(),
+                model: None,
                 chat_history: None,
             }),
         )
@@ -467,6 +468,7 @@ fn a_resume_pi_brings_back_empty_is_refused_and_keeps_the_saved_id() {
                 cli: "pi".into(),
                 session_id: Some(SAVED.into()),
                 reported_workers: Vec::new(),
+                model: None,
                 chat_history: None,
             }),
         )

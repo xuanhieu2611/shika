@@ -142,6 +142,7 @@ fn forgetting_a_lead_never_deletes_a_folder_that_is_not_its_worktree() {
                 cli: "claude".into(),
                 session_id: None,
                 reported_workers: Vec::new(),
+                model: None,
                 chat_history: None,
             }),
         )

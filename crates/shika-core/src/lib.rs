@@ -96,7 +96,10 @@ pub use diff::{
     RENDER_CAP_BYTES, SessionDiff, render_unified,
 };
 pub use error::{Error, Result};
-pub use lead::{FreshReason, LeadConversation, LeadLaunch, LeadLoss, LeadStart, LostWorker};
+pub use lead::{
+    FreshReason, LeadConversation, LeadLaunch, LeadLoss, LeadModelChoice, LeadStart, LostWorker,
+    lead_model_override,
+};
 pub use lead_chat_store::{ChatContent, ChatOrigin, ChatRecord};
 pub use lead_transport::{
     ChatEvent, ChatQuestion, ChatQuestionItem, ChatQuestionOption, ChatStatus, lead_chat_supported,

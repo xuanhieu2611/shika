@@ -45,6 +45,8 @@ pub enum ChatStatus {
 #[derive(Clone, Debug)]
 pub enum ChatEvent {
     Confirmed(String),
+    /// The CLI reported its current model, not Shika's requested override.
+    Model(String),
     Accepted,
     /// The CLI began a turn without Shika input, for example after one of the
     /// Lead's background commands finished. It counts as a submission.
@@ -105,6 +107,7 @@ enum Parsed {
     /// later `Confirmed`, once the CLI keeps the conversation; Claude has
     /// only `Confirmed`, where the id is checked.
     Identity(String),
+    Model(String),
     /// Frames to write at once without the author: a handshake step, or the
     /// empty success a report request expects. Never a permission or
     /// question answer.
@@ -142,6 +145,13 @@ enum Parsed {
     /// Within a turn the row joins it; otherwise it opens a Shika-origin
     /// turn, counted as a submission as `Started` is.
     ShikaInput(&'static str),
+}
+
+/// Treat model metadata as a bounded identifier, never arbitrary CLI text.
+fn reported_model(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .filter(|id| crate::lead::valid_lead_model_id(id))
 }
 
 /// The preset ids with a chat protocol in Core, as the transport's own
@@ -183,6 +193,7 @@ pub(crate) struct ChatLaunch {
     pub path: String,
     pub env: Vec<(String, String)>,
     pub instructions: String,
+    pub model: Option<String>,
     /// The project's memory notes, which also end `instructions`, for a CLI
     /// sent them on their own on a resume (Cursor, see `Parsed::ShikaInput`).
     pub notes: Vec<String>,

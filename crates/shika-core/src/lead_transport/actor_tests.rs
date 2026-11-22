@@ -150,6 +150,7 @@ impl Fixture {
                 path: std::env::var("PATH").unwrap_or_default(),
                 env: Vec::new(),
                 instructions: "guide".into(),
+                model: None,
                 notes: Vec::new(),
                 conversation: conversation.into(),
                 resumed: !conversation.is_empty(),

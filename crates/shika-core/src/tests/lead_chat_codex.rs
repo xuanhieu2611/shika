@@ -351,6 +351,7 @@ fn a_saved_terminal_codex_lead_resumes_its_thread_in_chat_with_empty_history() {
                 cli: "codex".into(),
                 session_id: Some(THREAD.into()),
                 reported_workers: Vec::new(),
+                model: None,
                 chat_history: None,
             }),
         )

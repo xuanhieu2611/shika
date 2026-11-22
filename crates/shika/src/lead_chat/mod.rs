@@ -88,6 +88,7 @@ pub struct LeadChat {
     focus: FocusHandle,
     action_focus: FocusHandle,
     header_focus: FocusHandle,
+    model_focus: FocusHandle,
     new_focus: FocusHandle,
     chrome: Chrome,
     records: Vec<Message>,
@@ -112,6 +113,7 @@ pub struct LeadChat {
     pub activity: &'static str,
     pub steps: ActivitySteps,
     workers: WorkerSummary,
+    model: Option<String>,
     pending: Option<String>,
     /// Messages the author sent while the Lead was Working. Memory only.
     queue: Queue,
@@ -169,6 +171,7 @@ impl LeadChat {
             focus: cx.focus_handle().tab_stop(true),
             action_focus: cx.focus_handle().tab_stop(true),
             header_focus: cx.focus_handle().tab_stop(true).tab_index(10),
+            model_focus: cx.focus_handle().tab_stop(true).tab_index(9),
             new_focus: cx.focus_handle().tab_stop(true),
             chrome,
             records: Vec::new(),
@@ -191,6 +194,7 @@ impl LeadChat {
             activity: "Working...",
             steps: ActivitySteps::default(),
             workers: WorkerSummary::default(),
+            model: None,
             pending: None,
             queue: Queue::default(),
             error: None,
@@ -293,6 +297,7 @@ impl LeadChat {
     /// for the process before it, such as an unexpected exit, is stale. A
     /// save failure stays until Retry save.
     pub fn went_live(&mut self) {
+        self.model = None;
         self.live = true;
         self.busy = false;
         if !self.save_failed {
@@ -361,7 +366,13 @@ impl LeadChat {
                     "Working..."
                 };
             }
-            ChatEvent::Resuming => {}
+            ChatEvent::Model(model) => {
+                if self.model.as_ref() == Some(&model) {
+                    return;
+                }
+                self.model = Some(model);
+            }
+            ChatEvent::Resuming => self.model = None,
             ChatEvent::Stopping => {
                 self.busy = true;
                 self.activity = "Stopping...";

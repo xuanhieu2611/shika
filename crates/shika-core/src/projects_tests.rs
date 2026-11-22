@@ -257,6 +257,7 @@ fn a_saved_lead_round_trips_and_files_without_one_still_load() {
         cli: "claude".into(),
         session_id: Some("0198f2a4-7a3e".into()),
         reported_workers: Vec::new(),
+        model: Some("sonnet".into()),
         chat_history: None,
     };
     db.set_lead("a", Some(saved.clone())).unwrap();
@@ -278,6 +279,7 @@ fn a_saved_lead_round_trips_and_files_without_one_still_load() {
             cli: "codex".into(),
             session_id: None,
             reported_workers: Vec::new(),
+            model: None,
             chat_history: None,
         })
     );
@@ -316,6 +318,7 @@ fn reported_workers_accumulate_dedupe_and_drop_vanished_folders() {
             cli: "claude".into(),
             session_id: None,
             reported_workers: Vec::new(),
+            model: None,
             chat_history: None,
         }),
     )
@@ -358,6 +361,7 @@ fn removing_a_project_drops_its_saved_lead() {
             cli: "pi".into(),
             session_id: None,
             reported_workers: Vec::new(),
+            model: None,
             chat_history: None,
         }),
     )

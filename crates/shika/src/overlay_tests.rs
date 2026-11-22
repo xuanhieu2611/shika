@@ -19,6 +19,7 @@ fn modal_scrim_preserves_appearance_previews_and_pointer_menus() {
             index: 0,
             mode: PickerMode::Task,
             prompt: None,
+            lead_model: None,
             error: None,
         })
         .dims_background()

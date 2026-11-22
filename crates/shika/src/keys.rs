@@ -229,7 +229,7 @@ impl Shika {
             self.switch_key(event, window, cx);
             return true;
         }
-        self.picker_prompt_key(event, window, cx)
+        self.picker_lead_model_key(event, window, cx) || self.picker_prompt_key(event, window, cx)
     }
 
     /// Ctrl+Q leaves a focused terminal. Escape is typed into the program.

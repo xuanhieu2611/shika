@@ -89,6 +89,7 @@ enum Request {
     Initialize,
     New,
     Load,
+    Model,
     Prompt,
 }
 
@@ -126,6 +127,8 @@ struct Run {
     /// The load replayed at least one update for the loaded session.
     replayed: bool,
     session: Option<String>,
+    requested_model: Option<String>,
+    selecting_model: Option<String>,
     turn: Turn,
     interrupting: bool,
     /// This turn's prompt carries the memory line.
@@ -157,6 +160,8 @@ impl Run {
             loading: false,
             replayed: false,
             session: None,
+            requested_model: None,
+            selecting_model: None,
             turn: Turn::Idle,
             interrupting: false,
             delivering: false,
@@ -184,7 +189,7 @@ impl AcpClient {
         Parsed::Failed(self.texts().strings.unreadable)
     }
     fn open(&self) -> bool {
-        self.run.session.is_some()
+        self.run.session.is_some() && self.run.selecting_model.is_none()
     }
     /// A new turn on the agent's side: per-turn decoder state starts over.
     fn begin(&mut self) {
@@ -221,7 +226,8 @@ impl AcpClient {
                     },
                 }
             }
-            (Request::Load, Ok(_)) => self.loaded(),
+            (Request::Load, Ok(v)) => self.loaded(&v),
+            (Request::Model, result) => self.model_selected(result),
             // The agent names a session it has no record of only this way;
             // a terminal-era Cursor chat id is one (Decision 2).
             (Request::Load, Err(e)) if e.code == -32602 && e.detail.contains("not found") => {
@@ -279,7 +285,7 @@ impl AcpClient {
         };
         self.run.session = Some(id.into());
         self.run.queued.push_back(Parsed::Instructed);
-        self.flush_deferred(None);
+        self.select_model(v);
         Parsed::Identity(id.into())
     }
     /// The replay is over. A saved session always has a turn to replay (its
@@ -289,15 +295,59 @@ impl AcpClient {
     /// keeping the id. Otherwise a session whose instructions or notes
     /// changed since it last got them is sent the current notes first, with
     /// any send that waited, or as a Shika turn of its own.
-    fn loaded(&mut self) -> Parsed {
+    fn loaded(&mut self, v: &Value) -> Parsed {
         self.run.loading = false;
         if !self.run.replayed {
             return Parsed::Fatal(self.texts().resume_refused);
         }
         self.run.session = self.run.resume.clone();
-        if self.run.instructed {
-            self.flush_deferred(None);
+        self.select_model(v);
+        Parsed::Ignore
+    }
+    /// Cursor ignores the top-level model flag in ACP. Apply the supported
+    /// ACP config value before a deferred prompt or a resume memory turn.
+    fn select_model(&mut self, v: &Value) {
+        let current = current_model(v);
+        let Some(requested) = self.run.requested_model.as_deref() else {
+            self.session_ready(current);
+            return;
+        };
+        let Some(model) = select_model_id(v, requested) else {
+            self.run.queued.push_back(model_unavailable());
+            return;
+        };
+        if current == Some(model) {
+            self.session_ready(current);
+            return;
+        }
+        self.run.selecting_model = Some(model.into());
+        let frame = self.run.rpc.request(
+            "session/set_config_option",
+            json!({"sessionId": self.run.session, "configId": "model", "value": model}),
+            Request::Model,
+            DEADLINE,
+            Instant::now(),
+        );
+        self.run.queued.push_back(Parsed::Reply(frame));
+    }
+    fn model_selected(&mut self, result: Result<Value, RpcError>) -> Parsed {
+        let chosen = self.run.selecting_model.take();
+        if let Ok(ref v) = result
+            && let Some(model) = current_model(v)
+            && chosen.as_deref() == Some(model)
+        {
+            self.session_ready(Some(model));
             return Parsed::Ignore;
+        }
+        model_unavailable()
+    }
+    fn session_ready(&mut self, model: Option<&str>) {
+        if let Some(model) = model {
+            self.run.queued.push_back(Parsed::Model(model.into()));
+        }
+        if self.run.resume.is_none() || self.run.instructed {
+            self.flush_deferred(None);
+            return;
         }
         let memory = memory_text(&self.run.notes);
         if self.run.turn == Turn::Idle {
@@ -310,7 +360,6 @@ impl AcpClient {
             self.run.queued.push_back(Parsed::ShikaInput(MEMORY_ROW));
             self.flush_deferred(Some(&memory));
         }
-        Parsed::Ignore
     }
     /// A send that waited for the session goes out now, after `memory` when
     /// the session needs it, and is accepted once written.
@@ -496,6 +545,37 @@ fn version(value: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn current_model(v: &Value) -> Option<&str> {
+    let configured = v["configOptions"]
+        .as_array()
+        .and_then(|options| options.iter().find(|option| option["id"] == "model"));
+    configured
+        .and_then(|option| super::reported_model(&option["currentValue"]))
+        .or_else(|| super::reported_model(&v["models"]["currentModelId"]))
+}
+
+fn select_model_id<'a>(v: &'a Value, requested: &str) -> Option<&'a str> {
+    let available = v["models"]["availableModels"].as_array()?;
+    let ids = || {
+        available
+            .iter()
+            .filter_map(|model| super::reported_model(&model["modelId"]))
+    };
+    if let Some(exact) = ids().find(|id| *id == requested) {
+        return Some(exact);
+    }
+    let mut aliases = ids().filter(|id| {
+        id.split_once('[')
+            .is_some_and(|(base, _)| base == requested)
+    });
+    let alias = aliases.next()?;
+    aliases.next().is_none().then_some(alias)
+}
+
+fn model_unavailable() -> Parsed {
+    Parsed::Fatal("Cursor CLI could not select this model. Use an ID from agent models.")
+}
+
 impl LeadProtocol for AcpClient {
     fn cli(&self) -> &'static str {
         self.flavor.cli()
@@ -516,6 +596,7 @@ impl LeadProtocol for AcpClient {
         self.run.cwd = launch.cwd.clone();
         self.run.instructions = launch.instructions.clone();
         self.run.notes = launch.notes.clone();
+        self.run.requested_model = launch.model.clone();
         self.run.instructed = launch.instructed;
         let capabilities = json!({
             "fs": {"readTextFile": false, "writeTextFile": false},

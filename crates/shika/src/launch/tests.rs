@@ -8,6 +8,7 @@ fn switching_location_preserves_the_selected_agent_and_project() {
         index: 1,
         mode: PickerMode::Task,
         prompt: None,
+        lead_model: None,
         error: None,
     };
     assert!(picker.toggle_worktree());
@@ -27,6 +28,7 @@ fn switching_location_keeps_a_selected_terminal() {
             index: agent_count,
             mode: PickerMode::Task,
             prompt: None,
+            lead_model: None,
             error: None,
         };
         assert!(picker.toggle_worktree());
@@ -45,6 +47,7 @@ fn lead_picker_cannot_switch_location() {
         index: 1,
         mode: PickerMode::Lead,
         prompt: None,
+        lead_model: None,
         error: None,
     };
     assert!(!picker.toggle_worktree());

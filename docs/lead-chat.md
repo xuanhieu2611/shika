@@ -191,6 +191,16 @@ Codex stops differently: see [Codex](#codex). With Claude, shell tools the Lead 
 
 Errors are muted event rows or a line above the composer, never fake assistant bubbles. stderr is drained and discarded; no raw JSON, stderr or token is painted.
 
+### Lead model selection
+
+[The New Lead picker](lead-agent.md#choose-a-lead-model) saves an optional `lead.model` override in `projects.json`; older records and blank IDs omit it. Resume and automatic fresh fallback keep the override on the same CLI. The default path still uses the CLI's settings and session state, without reading or rewriting provider configuration in Shika. Only model metadata travels through `ChatEvent::Model` to the header; it is not part of the transcript or prompt.
+
+Opening the dropdown reads the CLI's catalog off-thread using a bounded, short-lived process in a private scratch directory (`lead/models.rs`): Claude's stream JSON `initialize`, Codex's app-server `model/list`, Pi's `--list-models`, or Cursor's ACP `session/new` model metadata. Shika sends no prompt, does not touch the Lead worktree or conversation, and does not read credentials or call model APIs. `CLI default` and `Enter model ID…` stay available during loading or after an error.
+
+- Claude Code and Pi use `--model` as a separate argument when set. Claude reports its model in `system/init` at the start of a turn. Pi reports `provider/id` in `get_state` and refuses to send a prompt if an explicit ID does not match that state.
+- Codex puts the override in `thread/start` or `thread/resume` and shows the `model` from the result.
+- Cursor CLI uses the ACP session's model metadata. When the requested model is different it sends `session/set_config_option` with the canonical model ID and waits for acknowledgment before any author prompt or resume memory turn. A bare ID matches a single parameterized variant; if the match is not unique, use the exact ID.
+
 ### Conversation identity, resume and the fresh-start fallback
 
 - **Choosing.** `start_lead_inner` keeps today's `choose_conversation`: resume when the saved record names the same CLI, has a valid id, and `CliHome::session_exists` finds it (Claude: `<claude config>/projects/*/<id>.jsonl`, `CLAUDE_CONFIG_DIR` honored; Codex: an unarchived `threads` row or a rollout file, `CODEX_HOME` honored; Pi: `<sessions>/<cwd folder>/<timestamp>_<id>.jsonl`, `PI_CODING_AGENT_DIR` honored); otherwise fresh. A fresh Claude or Pi Lead gets a new UUID from Shika; a fresh Codex Lead gets none, and its handshake reports one (`lead::Identity`).

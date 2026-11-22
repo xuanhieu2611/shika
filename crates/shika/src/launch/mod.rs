@@ -2,6 +2,7 @@
 //! which starts every card, lives in `launch/start.rs`.
 use super::*;
 
+mod models;
 mod picker;
 mod start;
 pub(crate) use picker::*;
@@ -58,8 +59,8 @@ impl Shika {
     }
 
     /// Opens the picker for `project`. Task and checkout pickers get the
-    /// prompt field, focused, with any prompt whose start failed; New Lead
-    /// has none.
+    /// prompt field, focused, with any prompt whose start failed. New Lead
+    /// starts on the provider list with a model dropdown.
     pub(super) fn show_picker(
         &mut self,
         project: String,
@@ -76,11 +77,20 @@ impl Shika {
             Some(prompt) => window.focus(&prompt.focus_handle(cx), cx),
             None => window.focus(&self.focus, cx),
         }
+        let choices = self.new_choices(mode);
+        let index = if mode == PickerMode::Lead {
+            self.lead_picker_index(&project, &choices)
+        } else {
+            0
+        };
+        let lead_model =
+            (mode == PickerMode::Lead).then(|| self.new_model_picker(&project, choices.get(index)));
         self.overlay = Some(Overlay::Picker(PickerDialog {
             project,
-            index: 0,
+            index,
             mode,
             prompt,
+            lead_model,
             error: None,
         }));
         cx.notify();
@@ -97,6 +107,7 @@ impl Shika {
             .prompt
             .as_ref()
             .is_some_and(|p| p.read(cx).composing())
+            || picker.lead_model.as_ref().is_some_and(|p| p.composing(cx))
         {
             return;
         }
@@ -104,6 +115,21 @@ impl Shika {
         let text = picker.prompt_text(cx);
         let Some(preset) = self.new_choices(mode).into_iter().nth(index) else {
             return;
+        };
+        let model = picker
+            .lead_model
+            .as_ref()
+            .map(|model| model.selected(cx))
+            .transpose();
+        let model = match model {
+            Ok(model) => model.flatten(),
+            Err(error) => {
+                if let Some(Overlay::Picker(picker)) = &mut self.overlay {
+                    picker.error = Some(error.to_string());
+                }
+                cx.notify();
+                return;
+            }
         };
         let prompt = launch_prompt(&text, &preset);
         // Refused here, while the author can still fix it, never after the
@@ -116,7 +142,7 @@ impl Shika {
             return;
         }
         match mode {
-            PickerMode::Lead => self.start_lead(project, preset, window, cx),
+            PickerMode::Lead => self.start_lead(project, preset, model, window, cx),
             PickerMode::Checkout => self.start_checkout(project, preset, prompt, window, cx),
             PickerMode::Task => self.request_launch(project, preset, None, prompt, window, cx),
         }

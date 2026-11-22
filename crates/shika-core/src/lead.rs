@@ -34,9 +34,11 @@ use crate::worktree::{self, JournalEntry, LeadWorktree};
 use crate::{Core, PathEnv, PreparationControl};
 
 mod commands;
+mod models;
 #[cfg(test)]
 use commands::create_chat_within;
 use commands::{check_cursor_version, create_chat};
+pub use models::LeadModelChoice;
 
 /// What a Lead is started with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +57,24 @@ pub struct LeadLaunch {
     /// its one positional prompt. Ignored for every other CLI and when
     /// resuming. Validated like [`LaunchOptions::prompt`](crate::LaunchOptions).
     pub cursor_bootstrap: Option<String>,
+    /// Optional model ID for a chat Lead. None leaves selection to the CLI.
+    pub model: Option<String>,
+}
+
+/// Trim an optional model ID and reject malformed input before creating a Lead.
+pub fn lead_model_override(text: &str) -> Result<Option<String>> {
+    let model = text.trim();
+    if model.is_empty() {
+        return Ok(None);
+    }
+    if model.starts_with('-') || !valid_lead_model_id(model) {
+        return Err(Error::LeadChat("Enter one model ID without spaces".into()));
+    }
+    Ok(Some(model.into()))
+}
+
+pub(crate) fn valid_lead_model_id(model: &str) -> bool {
+    !model.is_empty() && model.len() <= 256 && model.bytes().all(|b| b.is_ascii_graphic())
 }
 
 /// Whether the Lead continued its conversation.
@@ -215,9 +235,14 @@ impl Core {
         preset_id: &str,
         size: PtySize,
         sink: impl PtySink,
-        launch: LeadLaunch,
+        mut launch: LeadLaunch,
         chat: bool,
     ) -> Result<LeadStart> {
+        launch.model = if chat {
+            lead_model_override(launch.model.as_deref().unwrap_or_default())?
+        } else {
+            None
+        };
         session::check_prompt(&launch.instructions)?;
         if let Some(bootstrap) = &launch.cursor_bootstrap {
             session::check_prompt(bootstrap)?;
@@ -454,6 +479,7 @@ impl Core {
             path: session::control_path(&control.bin_dir, plan.env.path()),
             env: session::control_env(&control.socket, &control.token),
             instructions: plan.instructions.to_string(),
+            model: plan.launch.model.clone(),
             notes: plan.notes.iter().map(|note| note.text.clone()).collect(),
             conversation: conversation_id,
             resumed: matches!(plan.conversation, Conversation::Resume { .. }),
@@ -918,6 +944,7 @@ fn saved_lead(
 ) -> SavedLead {
     SavedLead {
         cli: plan.preset.id.clone(),
+        model: plan.launch.model.clone(),
         session_id: match plan.conversation {
             Conversation::Fresh { id } => {
                 if plan.chat {
@@ -974,6 +1001,22 @@ fn lead_session(plan: &LeadPlan, pty: Option<PtyId>, started: SystemTime) -> Ses
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_override_is_optional_and_is_one_argument() {
+        use super::lead_model_override;
+        assert_eq!(lead_model_override(" \t").unwrap(), None);
+        assert_eq!(
+            lead_model_override("  provider/model[fast=false]  ")
+                .unwrap()
+                .as_deref(),
+            Some("provider/model[fast=false]")
+        );
+        for bad in ["--help", "two IDs", "model\nmodel", "id\x1b[K"] {
+            assert!(lead_model_override(bad).is_err(), "{bad:?}");
+        }
+        assert!(lead_model_override(&"x".repeat(257)).is_err());
+    }
+
     use super::*;
     use crate::lead_transport::chat_cli;
     use std::os::unix::fs::PermissionsExt;

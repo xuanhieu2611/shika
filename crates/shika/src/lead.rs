@@ -142,6 +142,17 @@ impl Shika {
             .collect()
     }
 
+    pub(super) fn saved_lead_model(&self, project: &str, cli: &str) -> Option<&str> {
+        self.projects
+            .iter()
+            .find(|p| p.id == project)?
+            .lead
+            .as_ref()
+            .filter(|lead| lead.cli == cli)?
+            .model
+            .as_deref()
+    }
+
     /// What a Lead is started with, or None (and a toast) without the control
     /// socket it talks through.
     fn lead_launch(&mut self, project: &str) -> Option<LeadLaunch> {
@@ -162,6 +173,7 @@ impl Shika {
             bin_dir: server.bin_dir(),
             instructions: control::lead_guide(&server.bin_dir()),
             cursor_bootstrap: Some(control::lead_prompt(&name, &server.bin_dir())),
+            model: None,
         })
     }
 
@@ -172,6 +184,7 @@ impl Shika {
         &mut self,
         project: String,
         preset: CliPreset,
+        model: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -195,7 +208,7 @@ impl Shika {
             preset,
             false,
             None,
-            Launch::Lead(env),
+            Launch::Lead(LeadLaunch { model, ..env }),
             None,
             window,
             cx,
@@ -220,7 +233,15 @@ impl Shika {
     }
 
     /// The picker in Lead mode for `project`.
-    fn lead_picker(&mut self, project: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn lead_picker(
+        &mut self,
+        project: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.overlay.is_some() {
+            return;
+        }
         if self.control.is_none() {
             let why = self.control_error.clone().unwrap_or_default();
             self.message(format!("The Lead needs Shika's control socket: {why}"));
@@ -277,8 +298,7 @@ impl Shika {
             .projects
             .iter()
             .find(|p| p.id == project)
-            .and_then(|p| p.lead.as_ref())
-            .map(|lead| lead.cli.clone())
+            .and_then(|p| p.lead.clone())
         else {
             return;
         };
@@ -290,14 +310,14 @@ impl Shika {
         let preset = catalog
             .presets
             .iter()
-            .find(|p| p.id == saved && p.found() && self.agents.enabled(&p.id))
+            .find(|p| p.id == saved.cli && p.found() && self.agents.enabled(&p.id))
             .cloned();
         match preset {
-            Some(preset) => self.start_lead(project, preset, window, cx),
+            Some(preset) => self.start_lead(project, preset, saved.model, window, cx),
             None => {
                 self.message(format!(
                     "{} is not available. Another agent starts a new conversation.",
-                    self.cli_name(&saved)
+                    self.cli_name(&saved.cli)
                 ));
                 self.lead_picker(project, window, cx);
             }
@@ -535,7 +555,10 @@ impl Shika {
                 }
                 this.lead_departed(Some(&id), &project, false, cx);
                 this.message("Could not resume the Lead's conversation. Started a new one.".into());
-                if let Some(launch) = this.lead_launch(&project) {
+                if let Some(mut launch) = this.lead_launch(&project) {
+                    launch.model = this
+                        .saved_lead_model(&project, &preset.id)
+                        .map(str::to_owned);
                     // The new card is pushed last; a selected old Lead hands
                     // its selection over.
                     if was_selected {

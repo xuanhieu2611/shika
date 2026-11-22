@@ -64,15 +64,19 @@ fn claude_chat_has_no_pty_confirms_identity_and_keeps_history_until_forget() {
         "claude",
         r#"#!/bin/sh
 id=
+model=default
 while [ "$#" -gt 0 ]; do
- case "$1" in --session-id|--resume) id="$2"; shift;; esac
+ case "$1" in
+ --session-id|--resume) id="$2"; shift;;
+ --model) model="$2"; shift;;
+ esac
  shift
 done
 while IFS= read -r line; do
  case "$line" in
  *shika-initialize*) printf '{"type":"control_response","response":{"request_id":"shika-initialize","subtype":"success"}}\n';;
  *'"type":"user"'*)
- printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$id"
+ printf '{"type":"system","subtype":"init","session_id":"%s","model":"%s"}\n' "$id" "$model"
  case "$line" in *please-interrupt*) sleep 30;; esac
  printf '{"type":"assistant","session_id":"%s","message":{"id":"m1","content":[{"type":"text","text":"private commentary"}]}}\n' "$id"
  printf '{"type":"assistant","session_id":"%s","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}\n' "$id"
@@ -88,9 +92,9 @@ done
         .unwrap()
         .project;
     core.remember(&project.id, "Keep this note").unwrap();
-    let start = core
-        .start_chat_lead(&project.id, "claude", lead_launch(&scratch))
-        .unwrap();
+    let mut launch = lead_launch(&scratch);
+    launch.model = Some("claude-test".into());
+    let start = core.start_chat_lead(&project.id, "claude", launch).unwrap();
     assert_eq!(start.session.pty, None);
     assert_eq!(
         core.saved_lead(&project.id).unwrap().unwrap().session_id,
@@ -124,6 +128,19 @@ done
     )
     .unwrap();
     let events = collect(&|e| matches!(e, ChatEvent::Status(ChatStatus::Ready)));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ChatEvent::Model(model) if model == "claude-test"))
+    );
+    assert_eq!(
+        core.saved_lead(&project.id)
+            .unwrap()
+            .unwrap()
+            .model
+            .as_deref(),
+        Some("claude-test")
+    );
     let confirmed = events
         .iter()
         .find_map(|e| {

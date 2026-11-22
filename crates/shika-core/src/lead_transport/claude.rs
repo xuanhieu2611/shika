@@ -29,6 +29,7 @@ pub(super) struct ClaudeStream {
     pub(super) active: bool,
     pub(super) candidate: Option<(String, String)>,
     messages: HashSet<String>,
+    model: Option<String>,
 }
 impl ClaudeStream {
     pub(super) fn new(expected: String) -> Self {
@@ -40,6 +41,7 @@ impl ClaudeStream {
             active: false,
             candidate: None,
             messages: HashSet::new(),
+            model: None,
         }
     }
     pub(super) fn begin(&mut self) {
@@ -118,6 +120,7 @@ impl ClaudeStream {
             return Parsed::Failed(BAD_STREAM);
         }
         self.confirmed = true;
+        self.model = super::reported_model(&v["model"]).map(str::to_owned);
         // Every turn opens with init. One while idle is a turn the CLI
         // started itself; its final response is filtered the same way.
         if self.active {
@@ -246,7 +249,7 @@ impl LeadProtocol for ClaudeStream {
         &STRINGS
     }
     fn args(&self, launch: &ChatLaunch) -> Vec<String> {
-        [
+        let mut args: Vec<String> = [
             "-p",
             "--input-format",
             "stream-json",
@@ -269,7 +272,11 @@ impl LeadProtocol for ClaudeStream {
         ]
         .into_iter()
         .map(str::to_string)
-        .collect()
+        .collect();
+        if let Some(model) = &launch.model {
+            args.extend(["--model".into(), model.clone()]);
+        }
+        args
     }
     /// A parent Claude session must not disable this Lead's persistence.
     fn env_remove(&self) -> &'static [&'static str] {
@@ -308,6 +315,9 @@ impl LeadProtocol for ClaudeStream {
     }
     fn parse(&mut self, line: &[u8]) -> Parsed {
         ClaudeStream::parse(self, line)
+    }
+    fn poll(&mut self, _: std::time::Instant) -> Parsed {
+        self.model.take().map_or(Parsed::Ignore, Parsed::Model)
     }
 }
 

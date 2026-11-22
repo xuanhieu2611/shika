@@ -1,5 +1,6 @@
 //! The New picker and the worktree setup approval dialog: their state,
 //! keys, and views. Launching itself lives in `launch/mod.rs`.
+use super::models::{ModelPicker, model_picker_view};
 use super::*;
 
 /// The prompt field's hint while an agent row is selected.
@@ -13,15 +14,15 @@ const TERMINAL_ONLY_HINT: &str = "A terminal starts without a prompt.";
 const TERMINAL_CLOSED: &str = "Clear the prompt to choose";
 
 /// The New picker. `index` is a row in `new_choices(mode)` for `project`.
-/// Task and checkout pickers have the optional prompt field; New Lead has
-/// none. `error` is why the last start was refused, such as a prompt the
-/// CLI would read as a flag.
+/// Task and checkout pickers have a prompt field; New Lead has a model ID.
+/// `error` is why the last start was refused.
 #[derive(Clone)]
 pub(crate) struct PickerDialog {
     pub(crate) project: String,
     pub(crate) index: usize,
     pub(crate) mode: PickerMode,
     pub(crate) prompt: Option<Entity<chat_input::ChatInput>>,
+    pub(crate) lead_model: Option<ModelPicker>,
     pub(crate) error: Option<String>,
 }
 
@@ -130,9 +131,54 @@ pub(crate) struct PreparationDialog {
 }
 
 impl Shika {
+    pub(super) fn lead_picker_index(&self, project: &str, choices: &[CliPreset]) -> usize {
+        self.projects
+            .iter()
+            .find(|p| p.id == project)
+            .and_then(|p| p.lead.as_ref())
+            .and_then(|lead| choices.iter().position(|preset| preset.id == lead.cli))
+            .unwrap_or(0)
+    }
+
+    pub(super) fn new_model_picker(
+        &self,
+        project: &str,
+        preset: Option<&CliPreset>,
+    ) -> ModelPicker {
+        ModelPicker::new(preset.and_then(|p| self.saved_lead_model(project, &p.id)))
+    }
+
+    fn reset_model_picker(&mut self, project_changed: bool) {
+        let Some(Overlay::Picker(picker)) = &self.overlay else {
+            return;
+        };
+        if picker.mode != PickerMode::Lead {
+            return;
+        }
+        let choices = self.new_choices(PickerMode::Lead);
+        let index = if project_changed {
+            self.lead_picker_index(&picker.project, &choices)
+        } else {
+            picker.index
+        };
+        let model = self.new_model_picker(&picker.project, choices.get(index));
+        if let Some(Overlay::Picker(picker)) = &mut self.overlay {
+            picker.index = index;
+            picker.lead_model = Some(model);
+            picker.error = None;
+        }
+    }
+
     /// A plain key while the picker is open. Number keys and arrows only
     /// select; Enter starts.
     pub(crate) fn picker_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if key == "m"
+            && matches!(&self.overlay, Some(Overlay::Picker(p)) if p.mode == PickerMode::Lead)
+        {
+            self.toggle_model_list(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if key == "space" {
             self.toggle_picker_worktree(cx);
             return;
@@ -147,6 +193,7 @@ impl Shika {
         let catalog_ready = self.catalog.is_some();
         // A project the picker moved to: fetch the base, or read checkout HEAD.
         let mut moved_to = None;
+        let mut provider_changed = false;
         if let Some(Overlay::Picker(PickerDialog {
             index,
             project,
@@ -159,6 +206,7 @@ impl Shika {
                 .ok()
                 .and_then(|n| n.checked_sub(1))
                 .filter(|&i| choice_open(&choices, i, prompt));
+            let old = *index;
             match key {
                 "j" | "down" => *index = step_choice(&choices, *index, true, prompt),
                 "k" | "up" => *index = step_choice(&choices, *index, false, prompt),
@@ -172,8 +220,11 @@ impl Shika {
                 "escape" => self.cancel_overlay(window, cx),
                 "tab" => {
                     if let Some(at) = self.projects.iter().position(|p| &p.id == project) {
-                        *project = self.projects[(at + 1) % self.projects.len()].id.clone();
-                        moved_to = Some((project.clone(), *mode));
+                        let next = &self.projects[(at + 1) % self.projects.len()].id;
+                        if next != project {
+                            *project = next.clone();
+                            moved_to = Some((project.clone(), *mode));
+                        }
                     }
                 }
                 _ => {
@@ -182,6 +233,17 @@ impl Shika {
                     }
                 }
             }
+            if let Some(Overlay::Picker(picker)) = &self.overlay {
+                provider_changed = picker.index != old;
+            }
+        }
+        if moved_to
+            .as_ref()
+            .is_some_and(|(_, mode)| *mode == PickerMode::Lead)
+        {
+            self.reset_model_picker(true);
+        } else if provider_changed {
+            self.reset_model_picker(false);
         }
         cx.notify();
         if let Some((project, mode)) = moved_to {
@@ -267,9 +329,15 @@ impl Shika {
         let Some(Overlay::Picker(dialog)) = &mut self.overlay else {
             return;
         };
+        let changed = dialog.index != i;
         dialog.index = i;
         if let Some(prompt) = &dialog.prompt {
             window.focus(&prompt.focus_handle(cx), cx);
+        } else if dialog.mode == PickerMode::Lead {
+            window.focus(&self.focus, cx);
+            if changed {
+                self.reset_model_picker(false);
+            }
         }
         if event.click_count() >= 2 {
             self.launch(window, cx);
@@ -322,6 +390,7 @@ impl Shika {
             index,
             mode,
             prompt,
+            lead_model,
             error,
         } = picker;
         let name = self
@@ -347,15 +416,11 @@ impl Shika {
             panel = panel.child(picker_prompt_field(
                 prompt, terminal, hint, chrome, window, cx,
             ));
-            if let Some(error) = error {
-                panel = panel.child(
-                    div().px(px(10.)).pb(px(6.)).child(
-                        dialog_text(chrome)
-                            .text_color(chrome.ink_1)
-                            .child(error.clone()),
-                    ),
-                );
-            }
+        }
+        if prompt.is_some()
+            && let Some(error) = error
+        {
+            panel = panel.child(picker_error(error, chrome));
         }
         if self.catalog.is_none() {
             panel = panel.child(
@@ -382,6 +447,29 @@ impl Shika {
                     open: choice_open(&offered, i, written),
                 };
                 panel = panel.child(picker_preset_row(row, preset, home, chrome, cx));
+            }
+        }
+        if let Some(model) = lead_model
+            && let Some(preset) = offered.get(*index)
+            && shika_core::lead_chat_supported(&preset.id)
+        {
+            if self
+                .projects
+                .iter()
+                .find(|p| &p.id == project)
+                .and_then(|p| p.lead.as_ref())
+                .is_some_and(|lead| lead.cli != preset.id)
+            {
+                panel = panel.child(
+                    div().px(px(10.)).pt(px(6.)).child(
+                        dialog_text(chrome)
+                            .child("Starting a different CLI starts a new conversation."),
+                    ),
+                );
+            }
+            panel = panel.child(model_picker_view(model, chrome, cx));
+            if let Some(error) = error {
+                panel = panel.child(picker_error(error, chrome));
             }
         }
         if *mode == PickerMode::Checkout {
@@ -549,6 +637,14 @@ impl Shika {
                     ),
             )
     }
+}
+
+fn picker_error(error: &str, chrome: &Chrome) -> gpui::Div {
+    div().px(px(10.)).pb(px(6.)).child(
+        dialog_text(chrome)
+            .text_color(chrome.ink_1)
+            .child(error.to_owned()),
+    )
 }
 
 /// The plain keys the picker keeps while its prompt field has focus.

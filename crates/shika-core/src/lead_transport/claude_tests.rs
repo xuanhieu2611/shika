@@ -1,5 +1,29 @@
 use super::*;
 use serde_json::json;
+
+#[test]
+fn model_metadata_is_reported_only_for_the_expected_main_session() {
+    let mut claude = ClaudeStream::new("session".into());
+    claude.begin();
+    let now = std::time::Instant::now();
+    assert_eq!(claude.poll(now), Parsed::Ignore);
+    assert_eq!(
+        claude.parse(
+            br#"{"type":"system","subtype":"init","session_id":"session","model":"claude-test"}"#
+        ),
+        Parsed::Confirmed
+    );
+    assert_eq!(claude.poll(now), Parsed::Model("claude-test".into()));
+    assert_eq!(claude.poll(now), Parsed::Ignore);
+    assert!(matches!(
+        claude.parse(
+            br#"{"type":"system","subtype":"init","session_id":"wrong","model":"wrong-model"}"#
+        ),
+        Parsed::Failed(_)
+    ));
+    assert_eq!(claude.poll(now), Parsed::Ignore);
+}
+
 #[test]
 fn final_only_from_documented_hand_written_fixture() {
     let mut parser = ClaudeStream::new("session".into());

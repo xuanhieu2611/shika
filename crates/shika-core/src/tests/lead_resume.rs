@@ -73,6 +73,7 @@ fn restarting_a_lead_refreshes_its_clean_worktree_and_resumes_claude() {
             cli: "claude".into(),
             session_id: Some(id),
             reported_workers: Vec::new(),
+            model: None,
             chat_history: None,
         })
     );
@@ -123,6 +124,7 @@ fn a_stored_conversation_that_is_gone_or_from_another_cli_starts_fresh_and_says_
                 cli: "claude".into(),
                 session_id: Some("--dangerously-bad".into()),
                 reported_workers: Vec::new(),
+                model: None,
                 chat_history: None,
             }),
         )
@@ -197,6 +199,7 @@ fn codex_has_no_id_until_discovered_then_resumes_with_the_resume_subcommand() {
             cli: "codex".into(),
             session_id: None,
             reported_workers: Vec::new(),
+            model: None,
             chat_history: None,
         })
     );
@@ -339,6 +342,7 @@ fn cursor_gets_a_new_chat_id_and_a_bootstrap_prompt_only_when_fresh() {
             cli: "cursor".into(),
             session_id: Some(chat.into()),
             reported_workers: Vec::new(),
+            model: None,
             chat_history: None,
         })
     );
@@ -382,6 +386,7 @@ fn a_failed_create_chat_launches_cursor_with_the_bootstrap_and_no_id() {
                 cli: "cursor".into(),
                 session_id: None,
                 reported_workers: Vec::new(),
+                model: None,
                 chat_history: None,
             })
         );

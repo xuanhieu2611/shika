@@ -186,6 +186,7 @@ fn lead_launch(scratch: &Scratch) -> LeadLaunch {
         bin_dir: scratch.path.join("control/bin"),
         instructions: LEAD_INSTRUCTIONS.into(),
         cursor_bootstrap: Some(LEAD_BOOTSTRAP.into()),
+        model: None,
     }
 }
 

@@ -57,6 +57,7 @@ fn launch(cwd: &Worktree, conversation: &str, instructed: bool, notes: &[&str]) 
         path: String::new(),
         env: Vec::new(),
         instructions: INSTRUCTIONS.into(),
+        model: None,
         notes: notes.iter().map(|n| n.to_string()).collect(),
         conversation: conversation.into(),
         resumed: !conversation.is_empty(),
@@ -644,6 +645,47 @@ fn a_send_before_the_session_opens_is_written_and_accepted_once_it_does() {
         Some(&Parsed::Failed("This Cursor CLI version could not be read"))
     );
     assert!(!cwd.rule().exists());
+}
+
+#[test]
+fn cursor_model_override_waits_for_acknowledgment_before_prompting() {
+    let cwd = Worktree::new();
+    let mut launch = fresh(&cwd);
+    launch.model = Some("test-model".into());
+    for accepted in [true, false] {
+        let mut replay = Replay::new();
+        replay.handshake(&launch);
+        replay.receive(&json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}));
+        assert!(replay.acp.send("early").is_empty());
+        replay.written.clear();
+        replay.receive(&json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":SESSION,
+            "models":{"currentModelId":"default","availableModels":[{"modelId":"test-model[fast=false]"}]}}}));
+        assert!(!replay.acp.ready());
+        assert_eq!(
+            replay.written.pop_front().unwrap(),
+            json!({"jsonrpc":"2.0","id":3,
+            "method":"session/set_config_option", "params":{"sessionId":SESSION,
+            "configId":"model","value":"test-model[fast=false]"}})
+        );
+        assert!(replay.written.is_empty());
+        let current = if accepted {
+            "test-model[fast=false]"
+        } else {
+            "default"
+        };
+        replay.receive(&json!({"jsonrpc":"2.0","id":3,"result":{"configOptions":[{"id":"model","currentValue":current}]}}));
+        if accepted {
+            assert!(replay.acp.ready());
+            assert_eq!(
+                replay.written.pop_front().unwrap()["method"],
+                "session/prompt"
+            );
+            assert!(replay.parsed.contains(&Parsed::Model(current.into())));
+        } else {
+            assert_eq!(replay.parsed.last(), Some(&model_unavailable()));
+            assert!(replay.written.is_empty());
+        }
+    }
 }
 
 /// A resume whose notes may have changed sends them as one `[shika]` line:

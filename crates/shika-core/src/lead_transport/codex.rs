@@ -63,6 +63,7 @@ pub(super) struct CodexAppServer {
     /// The thread to resume, or None to start one.
     resume: Option<String>,
     cwd: String,
+    model: Option<String>,
     instructions: String,
     /// The thread already holds `instructions`; a resume sends them otherwise.
     instructed: bool,
@@ -91,6 +92,7 @@ impl CodexAppServer {
             rpc: Rpc::new(false),
             resume: None,
             cwd: String::new(),
+            model: None,
             instructions: String::new(),
             instructed: false,
             version: None,
@@ -126,6 +128,9 @@ impl CodexAppServer {
             "approvalPolicy": "never",
             "sandbox": "danger-full-access",
         });
+        if let Some(model) = &self.model {
+            params["model"] = model.clone().into();
+        }
         let method = if let Some(id) = &self.resume {
             params["threadId"] = id.clone().into();
             params["excludeTurns"] = true.into();
@@ -200,6 +205,9 @@ impl CodexAppServer {
             return Parsed::Failed(STRINGS.other_conversation);
         }
         self.thread = Some(id.into());
+        if let Some(model) = super::reported_model(&v["model"]) {
+            self.queued.push_back(Parsed::Model(model.into()));
+        }
         if self.resume.is_none() {
             self.queued.push_back(Parsed::Instructed);
         } else if !self.instructed {
@@ -456,6 +464,7 @@ impl LeadProtocol for CodexAppServer {
         // before Codex confirmed it.
         self.resume = (!launch.conversation.is_empty()).then(|| launch.conversation.clone());
         self.cwd = launch.cwd.to_string_lossy().into_owned();
+        self.model = launch.model.clone();
         self.instructions = launch.instructions.clone();
         self.instructed = launch.instructed;
         let client = json!({"name": "shika", "version": env!("CARGO_PKG_VERSION")});
